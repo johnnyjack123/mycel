@@ -1,7 +1,12 @@
 import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 import { Annotation, type Extension } from '@codemirror/state'
-import { type EditorView, ViewPlugin, type ViewUpdate } from '@codemirror/view'
+import {
+  type EditorView,
+  type PluginValue,
+  ViewPlugin,
+  type ViewUpdate
+} from '@codemirror/view'
 
 export const remoteUpdate = Annotation.define<boolean>()
 
@@ -13,10 +18,20 @@ interface PendingChange {
   insert?: string
 }
 
-export function yTextBinding(ytext: Y.Text, awareness: Awareness): Extension {
+export type YTextBinding = ViewPlugin<PluginValue> & Extension
+
+// `isSessionEditor` tells the binding whether the view it is installed in still
+// shows this session's note. Obsidian reuses an editor across file switches, so
+// without it a switch could push the next note's text into the shared document.
+export function yTextBinding(
+  ytext: Y.Text,
+  awareness: Awareness,
+  isSessionEditor: () => boolean
+): YTextBinding {
   return ViewPlugin.fromClass(
     class {
       private applyingRemote = false
+      private destroyed = false
 
       private readonly observer = (event: Y.YTextEvent, transaction: Y.Transaction): void => {
         if (transaction.origin === LOCAL_ORIGIN) return
@@ -25,17 +40,20 @@ export function yTextBinding(ytext: Y.Text, awareness: Awareness): Extension {
 
       constructor(private readonly view: EditorView) {
         ytext.observe(this.observer)
-        // The session owns seeding; the binding only makes the editor follow the
-        // shared text, otherwise every attach would add another copy of the note.
-        this.syncFromYText()
-        this.publishSelection()
+        // CodeMirror refuses a dispatch while an update is in progress, and this
+        // plugin is constructed from inside the transaction that installs it. A
+        // dispatch here throws, CodeMirror catches it and deactivates the plugin
+        // for good, so local edits would never reach Yjs again. Defer instead:
+        // the installing update has finished by the time a microtask runs.
+        queueMicrotask(() => this.initialSync())
       }
 
       update(update: ViewUpdate): void {
         if (
           update.docChanged &&
           !this.applyingRemote &&
-          !update.transactions.some((transaction) => transaction.annotation(remoteUpdate))
+          !update.transactions.some((transaction) => transaction.annotation(remoteUpdate)) &&
+          isSessionEditor()
         ) {
           this.applyLocalChanges(update)
         }
@@ -43,23 +61,28 @@ export function yTextBinding(ytext: Y.Text, awareness: Awareness): Extension {
       }
 
       destroy(): void {
+        this.destroyed = true
         ytext.unobserve(this.observer)
         awareness.setLocalStateField('cursor', null)
       }
 
-      private syncFromYText(): void {
+      private initialSync(): void {
+        if (this.destroyed || !isSessionEditor()) return
+        // The session owns seeding; the binding only makes the editor follow the
+        // shared text, otherwise every attach would add another copy of the note.
+        // An empty shared text means the room has not been seeded yet, so leaving
+        // the editor alone here keeps it from wiping the open note.
+        if (ytext.length > 0) this.replaceEditorWithYText()
+        this.publishSelection()
+      }
+
+      private replaceEditorWithYText(): void {
         const current = this.view.state.doc.toString()
         const next = ytext.toString()
         if (current === next) return
-        this.applyingRemote = true
-        try {
-          this.view.dispatch({
-            changes: { from: 0, to: this.view.state.doc.length, insert: next },
-            annotations: remoteUpdate.of(true)
-          })
-        } finally {
-          this.applyingRemote = false
-        }
+        this.dispatchRemote({
+          changes: { from: 0, to: this.view.state.doc.length, insert: next }
+        })
       }
 
       private applyRemote(event: Y.YTextEvent): void {
@@ -81,10 +104,22 @@ export function yTextBinding(ytext: Y.Text, awareness: Awareness): Extension {
           }
         }
         if (changes.length === 0) return
-        console.info(`[crdt-sync] remote -> editor changes=${changes.length} ytext=${ytext.length}`)
+        try {
+          this.dispatchRemote({ changes })
+        } catch (error) {
+          // The delta is relative to a Y.Text state the editor may have drifted
+          // from. Recovering the whole text is always correct, just coarser.
+          console.error('[crdt-sync] applying a remote delta failed, resyncing', error)
+          this.replaceEditorWithYText()
+          return
+        }
+        if (this.view.state.doc.length !== ytext.length) this.replaceEditorWithYText()
+      }
+
+      private dispatchRemote(spec: { changes: PendingChange | PendingChange[] }): void {
         this.applyingRemote = true
         try {
-          this.view.dispatch({ changes, annotations: remoteUpdate.of(true) })
+          this.view.dispatch({ ...spec, annotations: remoteUpdate.of(true) })
         } finally {
           this.applyingRemote = false
         }
@@ -109,8 +144,14 @@ export function yTextBinding(ytext: Y.Text, awareness: Awareness): Extension {
       private publishSelection(): void {
         if (!ytext.doc) return
         const range = this.view.state.selection.main
-        const anchor = Y.createRelativePositionFromTypeIndex(ytext, range.anchor)
-        const head = Y.createRelativePositionFromTypeIndex(ytext, range.head)
+        // The editor can be ahead of Y.Text while an update is still settling;
+        // an out-of-range index would throw out of the update handler.
+        const limit = ytext.length
+        const anchor = Y.createRelativePositionFromTypeIndex(
+          ytext,
+          Math.min(range.anchor, limit)
+        )
+        const head = Y.createRelativePositionFromTypeIndex(ytext, Math.min(range.head, limit))
         awareness.setLocalStateField('cursor', { anchor, head })
       }
     }

@@ -65,21 +65,28 @@ export class CollabSession {
     return this.file.basename
   }
 
-  // Resolves once the room state is known. The document is seeded from the file
-  // only when the room is still empty, and after a short grace period so a peer
-  // that joins at the same time can win the seed instead of duplicating it.
-  async ready(): Promise<void> {
-    await Promise.race([this.synced, delay(SYNC_TIMEOUT_MS)])
-    if (this.ytext.length > 0) return
+  // Resolves once the room state is known, reporting whether the server was
+  // reached. The document is seeded from the file only when the room is still
+  // empty, and after a short grace period so a peer that joins at the same time
+  // can win the seed instead of duplicating it. Seeding a room whose state we
+  // never received would create a second, independent copy of the note.
+  async ready(): Promise<boolean> {
+    const synced = await Promise.race([
+      this.synced.then(() => true),
+      delay(SYNC_TIMEOUT_MS).then(() => false)
+    ])
+    if (!synced) return false
+    if (this.ytext.length > 0) return true
 
     await delay(SEED_GRACE_MS)
-    if (this.ytext.length > 0) return
+    if (this.ytext.length > 0) return true
 
     const content = await this.app.vault.read(this.file)
-    if (content.length === 0 || this.ytext.length > 0) return
+    if (content.length === 0 || this.ytext.length > 0) return true
     this.doc.transact(() => {
       this.ytext.insert(0, content)
     })
+    return true
   }
 
   dispose(): void {

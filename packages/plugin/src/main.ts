@@ -1,4 +1,5 @@
 import { MarkdownView, Notice, Plugin, TFile } from 'obsidian'
+import type { EditorView } from '@codemirror/view'
 import type { CollabUser } from '@crdt-sync/shared'
 import { CollabSession } from './collab/CollabSession'
 import { CollabView, COLLAB_VIEW_TYPE } from './editor/CollabView'
@@ -43,6 +44,11 @@ export default class CrdtSyncPlugin extends Plugin {
       name: 'Show collaboration status',
       callback: () => this.showStatus()
     })
+
+    const refresh = (): void => this.refreshAdapters()
+    this.registerEvent(this.app.workspace.on('layout-change', refresh))
+    this.registerEvent(this.app.workspace.on('active-leaf-change', refresh))
+    this.registerEvent(this.app.workspace.on('file-open', refresh))
   }
 
   onunload(): void {
@@ -94,7 +100,15 @@ export default class CrdtSyncPlugin extends Plugin {
       this.statusBar.setText(`CRDT ${event.status}: ${file.basename}`)
     })
 
-    await session.ready()
+    if (!(await session.ready())) {
+      session.dispose()
+      this.statusBar.setText('')
+      new Notice(
+        `Could not reach ${this.settings.serverUrl}. Collaboration on ${file.basename} was not started.`
+      )
+      return
+    }
+
     const adapter = await this.createAdapter(session)
     console.info(`[crdt-sync] adapter=${adapter.kind} room=${session.room}`)
     this.active.set(file.path, { session, adapter })
@@ -108,10 +122,17 @@ export default class CrdtSyncPlugin extends Plugin {
       return adapter
     }
 
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView)
-    const editor = view?.editor
-    if (editor && getEditorView(editor)) {
-      const adapter = new MainEditorCollabAdapter(editor, session.ytext, session.awareness)
+    // Not `getActiveViewOfType`: waiting for the room state above takes long
+    // enough for the user to have switched notes, and the extension has to land
+    // in the editor of this session's own file. The adapter re-resolves the
+    // editor on every check, so it also survives the note being closed and
+    // reopened in a different leaf.
+    const resolveView = (): EditorView | null => {
+      const editor = this.findMarkdownView(session.file)?.editor
+      return editor ? getEditorView(editor) : null
+    }
+    if (resolveView()) {
+      const adapter = new MainEditorCollabAdapter(resolveView, session.ytext, session.awareness)
       try {
         adapter.attach()
         return adapter
@@ -126,6 +147,29 @@ export default class CrdtSyncPlugin extends Plugin {
     const fallback = new CollabViewAdapter(this.app, session)
     await fallback.attach()
     return fallback
+  }
+
+  // Obsidian rebuilds the EditorState — and with it drops every extension added
+  // through `StateEffect.appendConfig` — when a leaf switches file or changes
+  // edit/preview mode. These events are the only notice we get.
+  private refreshAdapters(): void {
+    for (const [path, entry] of this.active) {
+      try {
+        entry.adapter.ensureAttached?.()
+      } catch (error) {
+        console.error(`[crdt-sync] re-attaching the editor for ${path} failed`, error)
+      }
+    }
+  }
+
+  private findMarkdownView(file: TFile): MarkdownView | null {
+    const active = this.app.workspace.getActiveViewOfType(MarkdownView)
+    if (active?.file?.path === file.path) return active
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      const view = leaf.view
+      if (view instanceof MarkdownView && view.file?.path === file.path) return view
+    }
+    return null
   }
 
   private stop(path: string): void {
