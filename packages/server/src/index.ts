@@ -53,6 +53,7 @@ async function handleUpgrade(
       return
     }
     app.log.info({ room, remote: request.socket.remoteAddress }, 'ws upgrade accepted')
+    await persistence.ensureLoaded(room)
     wss.handleUpgrade(request, socket, head, (ws) => {
       setupWSConnection(ws, request, { docName: room, gc: true })
     })

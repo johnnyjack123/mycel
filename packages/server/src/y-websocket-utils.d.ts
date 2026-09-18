@@ -21,5 +21,7 @@ declare module 'y-websocket/bin/utils' {
     conns: Map<unknown, Set<number>>
   }
 
+  export function getYDoc(docName: string, gc?: boolean): WSSharedDoc
+
   export const docs: Map<string, WSSharedDoc>
 }
