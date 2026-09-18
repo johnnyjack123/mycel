@@ -1,5 +1,10 @@
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
+import { WebSocket } from 'ws'
+
+// y-websocket defaults to the global WebSocket, which Node only exposes from
+// v22 on. `engines` allows Node 20, so the polyfill has to be explicit.
+const providerOptions = { WebSocketPolyfill: WebSocket }
 
 const serverUrl = process.argv[2] ?? process.env.CRDT_SYNC_URL ?? 'ws://localhost:1234'
 const room = `selftest-${Date.now().toString(36)}`
@@ -13,8 +18,8 @@ function whenSynced(provider) {
 async function run() {
   const docA = new Y.Doc()
   const docB = new Y.Doc()
-  const providerA = new WebsocketProvider(serverUrl, room, docA)
-  const providerB = new WebsocketProvider(serverUrl, room, docB)
+  const providerA = new WebsocketProvider(serverUrl, room, docA, providerOptions)
+  const providerB = new WebsocketProvider(serverUrl, room, docB, providerOptions)
 
   try {
     console.log(`connecting two clients to ${serverUrl} room=${room}`)

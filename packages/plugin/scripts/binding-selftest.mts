@@ -29,6 +29,7 @@ const { EditorState } = await import('@codemirror/state')
 const { EditorView } = await import('@codemirror/view')
 const Y = await import('yjs')
 const { WebsocketProvider } = await import('y-websocket')
+const { WebSocket } = await import('ws')
 const { MainEditorCollabAdapter } = await import('../src/editor/MainEditorCollabAdapter.js')
 
 const serverUrl = process.argv[2] ?? process.env.CRDT_SYNC_URL ?? 'ws://localhost:1234'
@@ -45,8 +46,14 @@ function makeClient(label: string, editorText: string) {
   const doc = new Y.Doc()
   const ytext = doc.getText('content')
   // BroadcastChannel would sync these clients inside this process and hide a
-  // broken server, so the test forces everything through the WebSocket.
-  const provider = new WebsocketProvider(serverUrl, room, doc, { connect: true, disableBc: true })
+  // broken server, so the test forces everything through the WebSocket. The
+  // polyfill is explicit because Node only exposes a global WebSocket from v22
+  // on, and `engines` allows Node 20.
+  const provider = new WebsocketProvider(serverUrl, room, doc, {
+    connect: true,
+    disableBc: true,
+    WebSocketPolyfill: WebSocket
+  })
   const view = new EditorView({
     state: EditorState.create({ doc: editorText }),
     parent: dom.window.document.body
