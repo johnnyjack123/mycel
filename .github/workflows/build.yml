@@ -1,0 +1,132 @@
+name: Build plugin
+
+on:
+  push:
+    branches: ['**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Two pushes in quick succession would otherwise race to move the rolling tag.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run build:plugin
+
+      # The sync self-tests need a live server, so start one and wait for it.
+      # Both survive the end of this step on the Linux runners.
+      - name: Start the sync server
+        run: |
+          npm run start:server > server.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:1234/health > /dev/null; then
+              echo "server is healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the server never became healthy"
+          cat server.log
+          exit 1
+
+      - name: Relay self-test
+        run: npm run ws-test -- ws://localhost:1234
+
+      # Guards the bug this workflow exists for: a CodeMirror view plugin that
+      # throws while being constructed is silently deactivated, so the plugin
+      # connects and then quietly ignores every keystroke.
+      - name: Live sync self-test
+        run: npm run test:sync -- ws://localhost:1234
+
+      - name: Server log
+        if: always()
+        run: tail -n 50 server.log || true
+
+      - name: Assemble the plugin package
+        id: package
+        run: |
+          set -euo pipefail
+          id=$(node -p "require('./packages/plugin/manifest.json').id")
+          version=$(node -p "require('./packages/plugin/manifest.json').version")
+          mkdir -p "release/$id"
+          cp packages/plugin/main.js \
+             packages/plugin/manifest.json \
+             packages/plugin/styles.css \
+             "release/$id/"
+          (cd release && zip -r "$id-$version.zip" "$id")
+          {
+            echo "id=$id"
+            echo "version=$version"
+            echo "zip=release/$id-$version.zip"
+          } >> "$GITHUB_OUTPUT"
+
+      # Always available, including for pull requests and side branches, where
+      # publishing a release would be wrong.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.id }}-${{ steps.package.outputs.version }}
+          path: release/${{ steps.package.outputs.id }}/
+          if-no-files-found: error
+
+      # A tag is a real release. The loose files sit next to the zip because
+      # that is what Obsidian's community plugin flow and BRAT look for.
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          ZIP: ${{ steps.package.outputs.zip }}
+        run: |
+          set -euo pipefail
+          files=("$ZIP" packages/plugin/main.js packages/plugin/manifest.json packages/plugin/styles.css)
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes "${files[@]}"
+          fi
+
+      # Every push to main refreshes one rolling pre-release instead of piling up
+      # a release per commit. The tag is moved to the new commit each time.
+      - name: Publish rolling development build
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: latest-build
+          ZIP: ${{ steps.package.outputs.zip }}
+          ID: ${{ steps.package.outputs.id }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Development build $VERSION (${GITHUB_SHA:0:7})" \
+            --notes "Automatic build of \`main\` at \`$GITHUB_SHA\`.
+
+          Install manually: unzip \`$ID-$VERSION.zip\` into \`<vault>/.obsidian/plugins/\` and reload Obsidian.
+
+          This pre-release is replaced on every push to \`main\`." \
+            "$ZIP" \
+            packages/plugin/main.js \
+            packages/plugin/manifest.json \
+            packages/plugin/styles.css
