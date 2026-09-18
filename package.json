@@ -14,7 +14,8 @@
     "build:plugin": "npm run build -w @crdt-sync/plugin",
     "dev:server": "npm run dev -w @crdt-sync/server",
     "start:server": "npm run start -w @crdt-sync/server",
-    "ws-test": "node packages/server/scripts/ws-selftest.mjs"
+    "ws-test": "node packages/server/scripts/ws-selftest.mjs",
+    "test:sync": "npm run test:sync -w @crdt-sync/plugin"
   },
   "overrides": {
     "@codemirror/state": "6.5.0",
