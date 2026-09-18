@@ -60,6 +60,28 @@ For development with rebuild-on-save:
 npm run dev:plugin
 ```
 
+### Prebuilt downloads
+
+`.github/workflows/build.yml` builds and tests the plugin on every push:
+
+- Every push to `main` refreshes the **`latest-build`** pre-release with
+  `crdt-sync-<version>.zip` (unzip it into `<vault>/.obsidian/plugins/`) plus the
+  loose `main.js`, `manifest.json` and `styles.css`.
+- Pushing a tag publishes a normal release with the same assets.
+- Pushes on other branches only upload a build artifact, no release.
+
+## Tests
+
+```bash
+npm run start:server      # in another terminal
+npm run ws-test           # does the server relay Yjs updates?
+npm run test:sync         # does the editor binding actually sync? (jsdom)
+```
+
+`test:sync` drives the real `MainEditorCollabAdapter` against the running server:
+initial reconcile, both directions, concurrent edits, deletions, re-attaching
+after Obsidian rebuilds the editor state, and rejoining a persisted room.
+
 ## Try it
 
 1. Start the server.
@@ -82,4 +104,9 @@ To test with two separate vaults, share the same **Vault ID** between them
 - The main-editor integration uses Obsidian-internal CodeMirror APIs
   (`(editor as any).cm`) and may break on Obsidian updates. Use the dedicated
   collaboration view as the stable fallback.
+- Obsidian discards the injected CodeMirror extension whenever it rebuilds the
+  editor state (file switch inside a leaf, edit/preview mode change). The plugin
+  re-attaches on `layout-change`, `active-leaf-change` and `file-open`, and the
+  shared document wins the reconcile — so edits made in that editor while it was
+  detached are discarded.
 - The access token from `/auth/dev-token` is only for testing.
