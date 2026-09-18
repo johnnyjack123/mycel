@@ -8,7 +8,8 @@ collaboration view as fallback. See `PLAN.md`.
 
 ## Requirements
 
-- Node.js 20+ (includes npm; npm workspaces is used)
+- Node.js 22+ (includes npm; npm workspaces is used). Node 20 is end-of-life and
+  jsdom, used by the sync self-test, does not support it.
 - Obsidian 1.7.2+ (desktop or mobile)
 
 ## Install
