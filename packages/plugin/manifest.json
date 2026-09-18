@@ -1,0 +1,9 @@
+{
+  "id": "crdt-sync",
+  "name": "CRDT Sync",
+  "version": "0.0.1",
+  "minAppVersion": "1.7.2",
+  "description": "CRDT-based (Yjs) vault synchronization and live collaboration.",
+  "author": "johnnyjack123",
+  "isDesktopOnly": false
+}

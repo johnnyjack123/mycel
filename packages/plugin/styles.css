@@ -1,0 +1,27 @@
+.crdt-remote-caret {
+  position: relative;
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 2px solid currentColor;
+  border-right: 0;
+  pointer-events: none;
+}
+
+.crdt-remote-caret-label {
+  position: absolute;
+  top: -1.4em;
+  left: -2px;
+  padding: 0 4px;
+  border-radius: 3px 3px 3px 0;
+  color: #fff;
+  font-size: 0.7em;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+}
+
+.crdt-remote-selection {
+  border-radius: 2px;
+}

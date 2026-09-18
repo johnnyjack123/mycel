@@ -1,0 +1,27 @@
+{
+  "name": "obsidian-crdt-sync",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "CRDT-based (Yjs) synchronization and live collaboration for Obsidian vaults.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev:plugin": "npm run dev -w @crdt-sync/plugin",
+    "build:plugin": "npm run build -w @crdt-sync/plugin",
+    "dev:server": "npm run dev -w @crdt-sync/server",
+    "start:server": "npm run start -w @crdt-sync/server",
+    "ws-test": "node packages/server/scripts/ws-selftest.mjs"
+  },
+  "overrides": {
+    "@codemirror/state": "6.5.0",
+    "@codemirror/view": "6.38.6",
+    "@codemirror/commands": "6.6.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
