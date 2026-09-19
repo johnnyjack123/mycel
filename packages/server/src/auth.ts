@@ -1,5 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose'
-import type { CollabUser, JwtClaims } from '@crdt-sync/shared'
+import type { CollabUser, JwtClaims } from '@obsidian-connect/shared'
 import { userColor } from './colors.js'
 
 export interface IssuedToken {
@@ -33,7 +33,7 @@ export class TokenService {
   }
 
   async verify(token: string): Promise<JwtClaims> {
-    const { payload } = await jwtVerify(token, this.key, { issuer: 'crdt-sync' })
+    const { payload } = await jwtVerify(token, this.key, { issuer: 'obsidian-connect' })
     return payload as unknown as JwtClaims
   }
 
@@ -42,7 +42,7 @@ export class TokenService {
     return new SignJWT({ ...(rest as Record<string, unknown>) })
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(id)
-      .setIssuer('crdt-sync')
+      .setIssuer('obsidian-connect')
       .setIssuedAt()
       .setExpirationTime(`${this.ttlSeconds}s`)
       .sign(this.key)

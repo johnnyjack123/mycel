@@ -1,4 +1,4 @@
-# CRDT Sync for Obsidian — Plan
+# Obsidian Connect for Obsidian — Plan
 
 CRDT-based (Yjs) vault synchronization and live collaboration for Obsidian.
 
@@ -76,10 +76,10 @@ Prove or kill the main-editor CodeMirror 6 injection before building anything el
 
 Deliverables:
 - Monorepo scaffold (npm workspaces, TypeScript everywhere).
-- `@crdt-sync/shared` protocol types.
-- `@crdt-sync/server`: health endpoint, dev/ login token endpoints, JWT auth for
+- `@obsidian-connect/shared` protocol types.
+- `@obsidian-connect/server`: health endpoint, dev/ login token endpoints, JWT auth for
   WebSocket upgrades, `y-websocket` room handling, disk persistence.
-- `@crdt-sync/plugin`: connect a note to a room, seed the `Y.Doc` from the file,
+- `@obsidian-connect/plugin`: connect a note to a room, seed the `Y.Doc` from the file,
   attach a lightweight `Y.Text` <-> CodeMirror binding plus remote cursor
   decorations to Obsidian's own editor, with a dedicated collaboration view as a
   guaranteed fallback.

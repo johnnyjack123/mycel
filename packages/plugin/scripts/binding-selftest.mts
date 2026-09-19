@@ -6,7 +6,7 @@
 // CodeMirror, so attaching "succeeds" while typing never reaches Yjs.
 //
 //   npm run start:server
-//   npm run test:sync -w @crdt-sync/plugin -- ws://localhost:1234
+//   npm run test:sync -w @obsidian-connect/plugin -- ws://localhost:1234
 import { JSDOM } from 'jsdom'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true })
@@ -32,7 +32,7 @@ const { WebsocketProvider } = await import('y-websocket')
 const { WebSocket } = await import('ws')
 const { MainEditorCollabAdapter } = await import('../src/editor/MainEditorCollabAdapter.js')
 
-const serverUrl = process.argv[2] ?? process.env.CRDT_SYNC_URL ?? 'ws://localhost:1234'
+const serverUrl = process.argv[2] ?? process.env.OBSIDIAN_CONNECT_URL ?? 'ws://localhost:1234'
 const room = `binding-selftest-${Date.now().toString(36)}`
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 

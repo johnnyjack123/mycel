@@ -1,9 +1,28 @@
 import * as Y from 'yjs'
-import { INDEX_FIELD, type IndexEntry } from '@crdt-sync/shared'
+import { INDEX_FIELD, type IndexEntry } from '@obsidian-connect/shared'
 
 // The index is the only thing that knows which file a document belongs to.
 // Keying rooms by path instead would turn every rename into a new, empty
 // document and orphan the old one along with its history.
+
+/**
+ * Derived from the vault and the path instead of random, so two devices that
+ * adopt the same note before either has seen the other's index arrive at the
+ * same id. A random id per device produced two documents for one file, and
+ * both sides then synced happily past each other.
+ */
+export async function stableDocId(vaultId: string, path: string): Promise<string> {
+  try {
+    const data = new TextEncoder().encode(`${vaultId}::${path}`)
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', data))
+    return Array.from(digest.slice(0, 16))
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('')
+  } catch {
+    // No WebCrypto: a random id still works, it just reopens the race above.
+    return crypto.randomUUID()
+  }
+}
 
 export class VaultIndex {
   readonly doc = new Y.Doc()
@@ -11,7 +30,7 @@ export class VaultIndex {
   private readonly byPath = new Map<string, string>()
   private readonly listeners = new Set<() => void>()
 
-  constructor() {
+  constructor(private readonly vaultId: string) {
     this.files = this.doc.getMap<IndexEntry>(INDEX_FIELD)
     this.files.observeDeep(() => {
       this.rebuild()
@@ -64,14 +83,39 @@ export class VaultIndex {
   }
 
   /** Returns the existing id for a path, or registers a new one. */
-  ensure(path: string): string {
+  async ensure(path: string): Promise<string> {
     const existing = this.docIdForPath(path)
     if (existing) return existing
-    const docId = crypto.randomUUID()
-    this.doc.transact(() => {
-      this.files.set(docId, { path, updatedAt: Date.now() })
-    }, 'local')
+    const docId = await stableDocId(this.vaultId, path)
+    const known = this.files.get(docId)
+    // A tombstone at the same id means the note is being re-created.
+    if (known?.deletedAt) this.revive(docId, path)
+    else if (!known) {
+      this.doc.transact(() => {
+        this.files.set(docId, { path, updatedAt: Date.now() })
+      }, 'local')
+    }
     return docId
+  }
+
+  /**
+   * Ids that ended up pointing at the same file. Deterministic ids make this
+   * rare, but a rename racing between two devices can still produce one.
+   */
+  duplicatePaths(): Array<{ path: string; docIds: string[] }> {
+    const byPath = new Map<string, string[]>()
+    this.files.forEach((entry, docId) => {
+      if (entry.deletedAt) return
+      const ids = byPath.get(entry.path)
+      if (ids) ids.push(docId)
+      else byPath.set(entry.path, [docId])
+    })
+    const duplicates: Array<{ path: string; docIds: string[] }> = []
+    for (const [path, docIds] of byPath) {
+      // Sorted, so every device picks the same winner without coordinating.
+      if (docIds.length > 1) duplicates.push({ path, docIds: docIds.sort() })
+    }
+    return duplicates
   }
 
   adopt(docId: string, path: string): void {

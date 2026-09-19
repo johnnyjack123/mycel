@@ -1,6 +1,6 @@
 import { MarkdownView, Notice, Plugin, TFile, type TAbstractFile } from 'obsidian'
 import type { EditorView } from '@codemirror/view'
-import type { CollabUser } from '@crdt-sync/shared'
+import type { CollabUser } from '@obsidian-connect/shared'
 import { CollabView, COLLAB_VIEW_TYPE } from './editor/CollabView'
 import { CollabViewAdapter } from './editor/CollabViewAdapter'
 import { getEditorView, MainEditorCollabAdapter } from './editor/MainEditorCollabAdapter'
@@ -13,10 +13,10 @@ import { StateStore } from './sync/StateStore'
 import { VaultIndex } from './sync/VaultIndex'
 import { VaultSocket, type SocketStatus } from './sync/VaultSocket'
 import {
-  CrdtSyncSettingTab,
+  ObsidianConnectSettingTab,
   DEFAULT_SETTINGS,
   serverHttpUrl,
-  type CrdtSyncSettings
+  type ObsidianConnectSettings
 } from './settings'
 
 interface BoundEditor {
@@ -26,8 +26,8 @@ interface BoundEditor {
 
 const PLUGIN_COLOR = '#30bced'
 
-export default class CrdtSyncPlugin extends Plugin {
-  settings: CrdtSyncSettings = { ...DEFAULT_SETTINGS }
+export default class ObsidianConnectPlugin extends Plugin {
+  settings: ObsidianConnectSettings = { ...DEFAULT_SETTINGS }
 
   private socket: VaultSocket | null = null
   private index: VaultIndex | null = null
@@ -39,15 +39,17 @@ export default class CrdtSyncPlugin extends Plugin {
   private readonly bound = new Map<string, BoundEditor>()
   private unwatchIndex: (() => void) | null = null
   private indexTimer: number | null = null
+  private started = false
+  private starting = false
 
   async onload(): Promise<void> {
     await this.loadSettings()
 
     this.statusBar = this.addStatusBarItem()
     this.registerView(COLLAB_VIEW_TYPE, (leaf) => new CollabView(leaf))
-    this.addSettingTab(new CrdtSyncSettingTab(this.app, this))
+    this.addSettingTab(new ObsidianConnectSettingTab(this.app, this))
 
-    this.addRibbonIcon('refresh-cw', 'CRDT Sync status', () => this.showStatus())
+    this.addRibbonIcon('refresh-cw', 'Obsidian Connect status', () => this.showStatus())
     this.addCommand({
       id: 'show-status',
       name: 'Show sync status',
@@ -98,7 +100,7 @@ export default class CrdtSyncPlugin extends Plugin {
   }
 
   private async loadSettings(): Promise<void> {
-    const stored = (await this.loadData()) as Partial<CrdtSyncSettings> | null
+    const stored = (await this.loadData()) as Partial<ObsidianConnectSettings> | null
     this.settings = Object.assign({}, DEFAULT_SETTINGS, stored ?? {})
     if (!this.settings.vaultId) {
       this.settings.vaultId = crypto.randomUUID()
@@ -135,7 +137,7 @@ export default class CrdtSyncPlugin extends Plugin {
     const root = this.pluginDir()
     this.state = new StateStore(this.app.vault.adapter, root)
     this.backups = new BackupStore(this.app.vault.adapter, root)
-    this.index = new VaultIndex()
+    this.index = new VaultIndex(this.settings.vaultId)
     this.socket = new VaultSocket(this.settings.serverUrl, this.settings.vaultId, this.settings.token)
     this.store = new DocStore(
       this.app,
@@ -150,6 +152,10 @@ export default class CrdtSyncPlugin extends Plugin {
       this.socket.onStatus((status) => {
         this.status = status
         this.renderStatus()
+        // The first attempt gives up if the index does not arrive in time;
+        // reconnecting is the moment to try again, otherwise a server that was
+        // down at startup leaves the vault untracked until Obsidian restarts.
+        if (status === 'connected' && !this.started) void this.runStart()
       })
     )
     this.unwatchIndex = this.index.onChange(() => this.scheduleIndexApply())
@@ -157,11 +163,26 @@ export default class CrdtSyncPlugin extends Plugin {
     this.socket.connect()
     void this.backups.prune(this.settings.backupRetentionDays)
 
+    await this.runStart()
+  }
+
+  private async runStart(): Promise<void> {
+    const store = this.store
+    if (!store || this.started || this.starting) return
+    this.starting = true
     try {
-      await this.store.start()
+      this.started = await store.start()
+      if (!this.started) {
+        new Notice(
+          `Obsidian Connect: no answer from ${this.settings.serverUrl}. Nothing is synced until it responds.`,
+          8_000
+        )
+      }
     } catch (error) {
-      console.error('[crdt-sync] starting sync failed', error)
-      new Notice('CRDT Sync could not start; see the console.')
+      console.error('[obsidian-connect] starting sync failed', error)
+      new Notice('Obsidian Connect could not start; see the console.')
+    } finally {
+      this.starting = false
     }
     this.syncEditorBindings()
     this.renderStatus()
@@ -181,6 +202,8 @@ export default class CrdtSyncPlugin extends Plugin {
     await this.store?.stop()
     this.socket?.destroy()
     this.index?.destroy()
+    this.started = false
+    this.starting = false
     this.store = null
     this.socket = null
     this.index = null
@@ -255,7 +278,7 @@ export default class CrdtSyncPlugin extends Plugin {
         try {
           existing.adapter.ensureAttached?.()
         } catch (error) {
-          console.error(`[crdt-sync] re-attaching ${file.path} failed`, error)
+          console.error(`[obsidian-connect] re-attaching ${file.path} failed`, error)
         }
         continue
       }
@@ -312,7 +335,7 @@ export default class CrdtSyncPlugin extends Plugin {
       adapter.attach()
       this.bound.set(file.path, { docId, adapter })
     } catch (error) {
-      console.error('[crdt-sync] main editor integration failed', error)
+      console.error('[obsidian-connect] main editor integration failed', error)
       new Notice('Main editor integration unavailable; opening the fallback view.')
       const fallback = new CollabViewAdapter(this.app, {
         ytext: handle.ytext,
@@ -333,12 +356,12 @@ export default class CrdtSyncPlugin extends Plugin {
     }
     const label =
       this.status === 'connected' ? 'synced' : this.status === 'connecting' ? 'connecting' : 'offline'
-    this.statusBar.setText(`CRDT ${label} · ${this.store.loadedCount()}/${this.store.trackedCount()}`)
+    this.statusBar.setText(`Connect: ${label} · ${this.store.loadedCount()}/${this.store.trackedCount()}`)
   }
 
   private showStatus(): void {
     if (!this.store) {
-      new Notice('CRDT Sync is off. Enable it in the plugin settings.')
+      new Notice('Obsidian Connect is off. Enable it in the plugin settings.')
       return
     }
     new Notice(
@@ -381,7 +404,7 @@ export default class CrdtSyncPlugin extends Plugin {
 
   private openBackups(): void {
     if (!this.backups) {
-      new Notice('CRDT Sync is off.')
+      new Notice('Obsidian Connect is off.')
       return
     }
     new BackupModal(this.app, this.backups).open()
@@ -397,7 +420,7 @@ export default class CrdtSyncPlugin extends Plugin {
       await this.store.syncFile(file, true)
       new Notice(`${file.basename} resynced.`)
     } catch (error) {
-      console.error('[crdt-sync] resync failed', error)
+      console.error('[obsidian-connect] resync failed', error)
       new Notice('Resync failed; see the console.')
     }
   }

@@ -1,9 +1,10 @@
 {
-  "id": "crdt-sync",
-  "name": "CRDT Sync",
+  "id": "obsidian-connect",
+  "name": "Obsidian Connect",
   "version": "0.0.1",
   "minAppVersion": "1.7.2",
-  "description": "CRDT-based (Yjs) vault synchronization and live collaboration.",
+  "description": "Syncs your vault across your devices and lets you share single notes for live collaboration, using CRDTs.",
   "author": "johnnyjack123",
+  "authorUrl": "https://github.com/johnnyjack123",
   "isDesktopOnly": false
 }

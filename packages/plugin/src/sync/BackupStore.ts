@@ -115,7 +115,7 @@ export class BackupStore {
         await this.adapter.rmdir(dayPath, true)
         removed += 1
       } catch (error) {
-        console.error(`[crdt-sync] removing old backups in ${dayPath} failed`, error)
+        console.error(`[obsidian-connect] removing old backups in ${dayPath} failed`, error)
       }
     }
     return removed

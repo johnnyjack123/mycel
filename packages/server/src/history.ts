@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { CONTENT_FIELD, type HistoryVersion } from '@crdt-sync/shared'
+import { CONTENT_FIELD, type HistoryVersion } from '@obsidian-connect/shared'
 import { Y } from './yjs.js'
 
 // Every room is stored as a base snapshot plus an append-only log of the raw
@@ -92,7 +92,7 @@ export class HistoryStore {
         await appendFile(join(this.dir, LOG_FILE), encodeFrame(ts, update))
       })
       .catch((error) => {
-        console.error(`[crdt-sync] appending history in ${this.dir} failed`, error)
+        console.error(`[obsidian-connect] appending history in ${this.dir} failed`, error)
       })
     return this.writes
   }
@@ -171,7 +171,7 @@ export class HistoryStore {
         await rm(join(this.dir, LOG_FILE), { force: true })
       })
       .catch((error) => {
-        console.error(`[crdt-sync] compacting history in ${this.dir} failed`, error)
+        console.error(`[obsidian-connect] compacting history in ${this.dir} failed`, error)
       })
     await this.writes
   }

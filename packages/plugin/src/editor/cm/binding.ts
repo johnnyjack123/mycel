@@ -10,7 +10,7 @@ import {
 
 export const remoteUpdate = Annotation.define<boolean>()
 
-const LOCAL_ORIGIN = Symbol('crdt-sync-local')
+const LOCAL_ORIGIN = Symbol('obsidian-connect-local')
 
 interface PendingChange {
   from: number
@@ -109,7 +109,7 @@ export function yTextBinding(
         } catch (error) {
           // The delta is relative to a Y.Text state the editor may have drifted
           // from. Recovering the whole text is always correct, just coarser.
-          console.error('[crdt-sync] applying a remote delta failed, resyncing', error)
+          console.error('[obsidian-connect] applying a remote delta failed, resyncing', error)
           this.replaceEditorWithYText()
           return
         }

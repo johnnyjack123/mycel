@@ -8,7 +8,7 @@ import {
   applyTextEdits,
   textEdits,
   type RoomSummary
-} from '@crdt-sync/shared'
+} from '@obsidian-connect/shared'
 import { HistoryStore } from './history.js'
 import { Y } from './yjs.js'
 
@@ -169,7 +169,7 @@ export class RoomManager {
       // the next cold start from replaying the whole thing.
       void room.history
         .writeSnapshot(Y.encodeStateAsUpdate(room.doc))
-        .catch((error) => console.error(`[crdt-sync] snapshot for ${room.name} failed`, error))
+        .catch((error) => console.error(`[obsidian-connect] snapshot for ${room.name} failed`, error))
         .finally(() => {
           if (room.subscribers.size > 0) return
           this.rooms.delete(room.name)

@@ -1,7 +1,7 @@
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { IndexeddbPersistence } from 'y-indexeddb'
-import { CONTENT_FIELD, docRoom, type CollabUser } from '@crdt-sync/shared'
+import { CONTENT_FIELD, docRoom, type CollabUser } from '@obsidian-connect/shared'
 import type { VaultSocket } from './VaultSocket.js'
 
 // One note. The document is persisted locally before anything touches the
@@ -28,7 +28,7 @@ export class DocHandle {
     this.room = docRoom(docId)
     this.awareness = new Awareness(this.doc)
     this.awareness.setLocalStateField('user', user)
-    this.persistence = new IndexeddbPersistence(`crdt-sync/${vaultId}/${docId}`, this.doc)
+    this.persistence = new IndexeddbPersistence(`obsidian-connect/${vaultId}/${docId}`, this.doc)
     this.socketSynced = socket.register(this.room, this.doc, this.awareness)
   }
 
@@ -72,7 +72,7 @@ export class DocHandle {
     try {
       await this.persistence.destroy()
     } catch (error) {
-      console.error(`[crdt-sync] closing local storage for ${this.docId} failed`, error)
+      console.error(`[obsidian-connect] closing local storage for ${this.docId} failed`, error)
     }
     this.doc.destroy()
   }
@@ -82,7 +82,7 @@ export class DocHandle {
     try {
       await this.persistence.clearData()
     } catch (error) {
-      console.error(`[crdt-sync] clearing local storage for ${this.docId} failed`, error)
+      console.error(`[obsidian-connect] clearing local storage for ${this.docId} failed`, error)
     }
   }
 }

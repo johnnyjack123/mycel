@@ -1,4 +1,4 @@
-import type { CollabUser, JwtClaims } from '@crdt-sync/shared'
+import type { CollabUser, JwtClaims } from '@obsidian-connect/shared'
 import type { TokenService } from './auth.js'
 
 export interface AccessDecision {

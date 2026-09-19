@@ -47,7 +47,7 @@ export class StateStore {
         if (state && typeof state.path === 'string') this.entries.set(docId, state)
       }
     } catch (error) {
-      console.error('[crdt-sync] the local state file is unreadable, starting fresh', error)
+      console.error('[obsidian-connect] the local state file is unreadable, starting fresh', error)
     }
   }
 
@@ -87,7 +87,7 @@ export class StateStore {
         await this.adapter.write(this.path(STATE_FILE), JSON.stringify(plain))
       })
       .catch((error) => {
-        console.error('[crdt-sync] writing the local state failed', error)
+        console.error('[obsidian-connect] writing the local state failed', error)
       })
     return this.writes
   }

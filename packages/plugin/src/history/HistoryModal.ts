@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Setting, TFile, requestUrl } from 'obsidian'
-import { API, docRoom, type HistoryVersion } from '@crdt-sync/shared'
+import { API, docRoom, type HistoryVersion } from '@obsidian-connect/shared'
 
 // Point-in-time rollback for a single note. The server replays its update log,
 // so this restores what the note actually said at that moment rather than what
@@ -52,7 +52,7 @@ export class HistoryModal extends Modal {
       // Newest first: that is the one people look for.
       this.versions = (body.versions ?? []).slice().sort((a, b) => b.ts - a.ts)
     } catch (error) {
-      console.error('[crdt-sync] loading history failed', error)
+      console.error('[obsidian-connect] loading history failed', error)
       this.contentEl.empty()
       this.contentEl.createEl('p', {
         text: 'Could not reach the server. History lives there, so it is unavailable offline.'
@@ -70,7 +70,7 @@ export class HistoryModal extends Modal {
       })
       this.preview = (response.json as { text?: string }).text ?? ''
     } catch (error) {
-      console.error('[crdt-sync] loading a previous version failed', error)
+      console.error('[obsidian-connect] loading a previous version failed', error)
       this.preview = ''
     }
     this.render()
@@ -91,7 +91,7 @@ export class HistoryModal extends Modal {
       this.options.onRestored()
       this.close()
     } catch (error) {
-      console.error('[crdt-sync] restoring failed', error)
+      console.error('[obsidian-connect] restoring failed', error)
       new Notice('Restoring failed; see the console.')
     }
   }
@@ -109,12 +109,12 @@ export class HistoryModal extends Modal {
       text: `${this.versions.length} version(s). Selecting one shows how the note read at that point.`
     })
 
-    const list = contentEl.createDiv({ cls: 'crdt-history-list' })
+    const list = contentEl.createDiv({ cls: 'connect-history-list' })
     for (const version of this.versions.slice(0, 200)) {
-      const row = list.createDiv({ cls: 'crdt-history-row' })
+      const row = list.createDiv({ cls: 'connect-history-row' })
       if (this.selected === version.ts) row.addClass('is-selected')
       row.createSpan({ text: formatTimestamp(version.ts) })
-      row.createSpan({ cls: 'crdt-history-size', text: `${version.bytes} B` })
+      row.createSpan({ cls: 'connect-history-size', text: `${version.bytes} B` })
       row.onclick = () => {
         this.selected = version.ts
         void this.loadPreview(version.ts)
@@ -123,7 +123,7 @@ export class HistoryModal extends Modal {
 
     if (this.selected !== null) {
       contentEl.createEl('h4', { text: `Preview — ${formatTimestamp(this.selected)}` })
-      const box = contentEl.createEl('pre', { cls: 'crdt-history-preview' })
+      const box = contentEl.createEl('pre', { cls: 'connect-history-preview' })
       box.setText(this.preview.slice(0, 5_000))
 
       const selected = this.selected

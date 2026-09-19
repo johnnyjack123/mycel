@@ -1,4 +1,4 @@
-.crdt-remote-caret {
+.connect-remote-caret {
   position: relative;
   margin-left: -1px;
   margin-right: -1px;
@@ -7,7 +7,7 @@
   pointer-events: none;
 }
 
-.crdt-remote-caret-label {
+.connect-remote-caret-label {
   position: absolute;
   top: -1.4em;
   left: -2px;
@@ -22,11 +22,11 @@
   pointer-events: none;
 }
 
-.crdt-remote-selection {
+.connect-remote-selection {
   border-radius: 2px;
 }
 
-.crdt-history-list {
+.connect-history-list {
   max-height: 40vh;
   overflow-y: auto;
   margin: 0.5em 0 1em;
@@ -34,7 +34,7 @@
   border-radius: 6px;
 }
 
-.crdt-history-row {
+.connect-history-row {
   display: flex;
   justify-content: space-between;
   gap: 1em;
@@ -44,26 +44,26 @@
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.crdt-history-row:last-child {
+.connect-history-row:last-child {
   border-bottom: 0;
 }
 
-.crdt-history-row:hover {
+.connect-history-row:hover {
   background-color: var(--background-modifier-hover);
 }
 
-.crdt-history-row.is-selected {
+.connect-history-row.is-selected {
   background-color: var(--background-modifier-active-hover);
   font-weight: 600;
 }
 
-.crdt-history-size {
+.connect-history-size {
   color: var(--text-muted);
   font-size: 0.85em;
   white-space: nowrap;
 }
 
-.crdt-history-preview {
+.connect-history-preview {
   max-height: 30vh;
   overflow: auto;
   padding: 0.6em;

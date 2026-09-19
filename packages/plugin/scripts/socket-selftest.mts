@@ -3,11 +3,11 @@
 // possible at all.
 //
 //   npm run start:server
-//   npm run test:socket -w @crdt-sync/plugin -- ws://localhost:1234
+//   npm run test:socket -w @obsidian-connect/plugin -- ws://localhost:1234
 import { WebSocket as NodeWebSocket } from 'ws'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
-import { CONTENT_FIELD, docRoom, indexRoom } from '@crdt-sync/shared'
+import { CONTENT_FIELD, docRoom, indexRoom } from '@obsidian-connect/shared'
 
 // VaultSocket targets the browser environment Obsidian runs in. Supplying the
 // two globals it uses is lighter than a full DOM.
@@ -20,7 +20,7 @@ globals.window = {
 
 const { VaultSocket } = await import('../src/sync/VaultSocket.js')
 
-const serverUrl = process.argv[2] ?? process.env.CRDT_SYNC_URL ?? 'ws://localhost:1234'
+const serverUrl = process.argv[2] ?? process.env.OBSIDIAN_CONNECT_URL ?? 'ws://localhost:1234'
 const vaultId = `socket-selftest-${Date.now().toString(36)}`
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 

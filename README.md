@@ -1,4 +1,4 @@
-# CRDT Sync for Obsidian
+# Obsidian Connect for Obsidian
 
 CRDT-based (Yjs) vault synchronization and live collaboration.
 
@@ -27,10 +27,10 @@ npm run dev:server
 Configuration is via environment variables (defaults in parentheses):
 
 - `HOST` (`0.0.0.0`), `PORT` (`1234`)
-- `CRDT_SYNC_JWT_SECRET` (`dev-insecure-secret-change-me`)
-- `CRDT_SYNC_DATA_DIR` (`./data`)
-- `CRDT_SYNC_DEV` (`true`, anonymous connections allowed)
-- `CRDT_SYNC_TOKEN_TTL` (`86400` seconds)
+- `OBSIDIAN_CONNECT_JWT_SECRET` (`dev-insecure-secret-change-me`)
+- `OBSIDIAN_CONNECT_DATA_DIR` (`./data`)
+- `OBSIDIAN_CONNECT_DEV` (`true`, anonymous connections allowed)
+- `OBSIDIAN_CONNECT_TOKEN_TTL` (`86400` seconds)
 
 The server starts on `ws://localhost:1234` (REST on the same port):
 
@@ -49,11 +49,11 @@ npm run build:plugin
 Output is `packages/plugin/main.js`. Copy the plugin folder into your vault:
 
 ```
-<vault>/.obsidian/plugins/crdt-sync/
+<vault>/.obsidian/plugins/obsidian-connect/
 ```
 
 Required files: `manifest.json`, `main.js`, `styles.css` (add `versions.json` for
-release). Then enable **CRDT Sync** in Obsidian's community plugins settings.
+release). Then enable **Obsidian Connect** in Obsidian's community plugins settings.
 
 For development with rebuild-on-save:
 
@@ -66,7 +66,7 @@ npm run dev:plugin
 `.github/workflows/build.yml` builds and tests the plugin on every push:
 
 - Every push to `main` refreshes the **`latest-build`** pre-release with
-  `crdt-sync-<version>.zip` (unzip it into `<vault>/.obsidian/plugins/`) plus the
+  `obsidian-connect-<version>.zip` (unzip it into `<vault>/.obsidian/plugins/`) plus the
   loose `main.js`, `manifest.json` and `styles.css`.
 - Pushing a tag publishes a normal release with the same assets.
 - Pushes on other branches only upload a build artifact, no release.
@@ -91,7 +91,7 @@ after Obsidian rebuilds the editor state, and rejoining a persisted room.
 ## Try it
 
 1. Start the server.
-2. In Obsidian settings -> CRDT Sync, set the server URL (default
+2. In Obsidian settings -> Obsidian Connect, set the server URL (default
    `ws://localhost:1234`). Leave the token empty in dev mode.
 3. Copy the **Vault ID** to the second device so both join the same vault.
 4. Edit a note on either device.
@@ -116,7 +116,7 @@ Commands: *Show sync status*, *Open version history for this note*,
   backed up first. Regions both sides changed keep both versions.
 - The server appends every update to a per-room log, which is what makes
   point-in-time rollback possible. Older versions fold into a snapshot after
-  `CRDT_SYNC_HISTORY_DAYS` (default 30).
+  `OBSIDIAN_CONNECT_HISTORY_DAYS` (default 30).
 
 ## Limitations
 
@@ -145,8 +145,8 @@ Commands: *Show sync status*, *Open version history for this note*,
 Server environment variables, defaults in parentheses:
 
 - `HOST` (`0.0.0.0`), `PORT` (`1234`)
-- `CRDT_SYNC_JWT_SECRET` (`dev-insecure-secret-change-me`)
-- `CRDT_SYNC_DATA_DIR` (`./data`)
-- `CRDT_SYNC_DEV` (`true`, anonymous connections allowed)
-- `CRDT_SYNC_TOKEN_TTL` (`86400` seconds)
-- `CRDT_SYNC_HISTORY_DAYS` (`30`, individually restorable versions)
+- `OBSIDIAN_CONNECT_JWT_SECRET` (`dev-insecure-secret-change-me`)
+- `OBSIDIAN_CONNECT_DATA_DIR` (`./data`)
+- `OBSIDIAN_CONNECT_DEV` (`true`, anonymous connections allowed)
+- `OBSIDIAN_CONNECT_TOKEN_TTL` (`86400` seconds)
+- `OBSIDIAN_CONNECT_HISTORY_DAYS` (`30`, individually restorable versions)

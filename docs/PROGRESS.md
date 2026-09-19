@@ -25,9 +25,9 @@ the duplicated content left behind by the earlier seeding bug.
 ## Next step
 
 1. Copy `packages/plugin/main.js` (rebuilt, contains the fix) into
-   `<vault>/.obsidian/plugins/crdt-sync/` on **both** devices and reload Obsidian.
+   `<vault>/.obsidian/plugins/obsidian-connect/` on **both** devices and reload Obsidian.
 2. Start the server (`npm run start:server`). `packages/server/data/` was deleted, so rooms start clean.
-3. Type in one client, watch the other. Console filter `[crdt-sync]`.
+3. Type in one client, watch the other. Console filter `[obsidian-connect]`.
 4. Then the requested git setup: push to `https://github.com/johnnyjack123/obsidian-connect.git`.
 
 ## Fixes in this session
@@ -57,7 +57,7 @@ the duplicated content left behind by the earlier seeding bug.
   is restored.
 - **New `.github/workflows/build.yml`** — typecheck, build, then both self-tests against a server
   started in the job. Every push to `main` refreshes the `latest-build` pre-release
-  (`crdt-sync-<version>.zip` + loose `main.js`/`manifest.json`/`styles.css`); a tag publishes a
+  (`obsidian-connect-<version>.zip` + loose `main.js`/`manifest.json`/`styles.css`); a tag publishes a
   normal release; other branches only get a build artifact.
 
 ## In flight / half-finished

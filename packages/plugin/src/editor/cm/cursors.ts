@@ -13,7 +13,7 @@ import {
   ViewPlugin,
   WidgetType
 } from '@codemirror/view'
-import type { CollabUser } from '@crdt-sync/shared'
+import type { CollabUser } from '@obsidian-connect/shared'
 import { awarenessFacet, yTextFacet } from './facets'
 
 interface AwarenessCursor {
@@ -34,10 +34,10 @@ class CaretWidget extends WidgetType {
 
   toDOM(): HTMLElement {
     const caret = document.createElement('span')
-    caret.className = 'crdt-remote-caret'
+    caret.className = 'connect-remote-caret'
     caret.style.borderColor = this.user.color
     const label = document.createElement('span')
-    label.className = 'crdt-remote-caret-label'
+    label.className = 'connect-remote-caret-label'
     label.style.backgroundColor = this.user.color
     label.textContent = this.user.name
     caret.appendChild(label)
@@ -80,7 +80,7 @@ function buildDecorations(state: EditorState): DecorationSet {
     if (from !== to) {
       ranges.push(
         Decoration.mark({
-          class: 'crdt-remote-selection',
+          class: 'connect-remote-selection',
           attributes: { style: `background-color: ${user.colorLight}` }
         }).range(from, to)
       )

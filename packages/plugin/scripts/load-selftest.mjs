@@ -3,7 +3,7 @@
 // time - a missing export, a bad top-level call - which in Obsidian shows up
 // only as a plugin that silently refuses to start.
 //
-//   npm run build:plugin && npm run test:load -w @crdt-sync/plugin
+//   npm run build:plugin && npm run test:load -w @obsidian-connect/plugin
 import Module from 'node:module'
 import { createRequire } from 'node:module'
 import { copyFileSync, mkdtempSync } from 'node:fs'
@@ -16,7 +16,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 // parse main.js as ESM. Obsidian evaluates it as CommonJS itself; the .cjs copy
 // reproduces that.
 const source = join(here, '..', 'main.js')
-const bundle = join(mkdtempSync(join(tmpdir(), 'crdt-load-')), 'main.cjs')
+const bundle = join(mkdtempSync(join(tmpdir(), 'connect-load-')), 'main.cjs')
 copyFileSync(source, bundle)
 
 class Stub {
@@ -36,7 +36,7 @@ const obsidian = {
     constructor() {
       super()
       this.app = {}
-      this.manifest = { id: 'crdt-sync', dir: '.obsidian/plugins/crdt-sync' }
+      this.manifest = { id: 'obsidian-connect', dir: '.obsidian/plugins/obsidian-connect' }
     }
     addStatusBarItem() {
       return { setText: fn }

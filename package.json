@@ -1,5 +1,5 @@
 {
-  "name": "obsidian-crdt-sync",
+  "name": "obsidian-connect",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -10,16 +10,16 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "dev:plugin": "npm run dev -w @crdt-sync/plugin",
-    "build:plugin": "npm run build -w @crdt-sync/plugin",
-    "dev:server": "npm run dev -w @crdt-sync/server",
-    "start:server": "npm run start -w @crdt-sync/server",
+    "dev:plugin": "npm run dev -w @obsidian-connect/plugin",
+    "build:plugin": "npm run build -w @obsidian-connect/plugin",
+    "dev:server": "npm run dev -w @obsidian-connect/server",
+    "start:server": "npm run start -w @obsidian-connect/server",
     "ws-test": "node packages/server/scripts/ws-selftest.mjs",
-    "test:merge": "npm run test:merge -w @crdt-sync/plugin",
-    "test:socket": "npm run test:socket -w @crdt-sync/plugin",
-    "test:sync": "npm run test:sync -w @crdt-sync/plugin",
+    "test:merge": "npm run test:merge -w @obsidian-connect/plugin",
+    "test:socket": "npm run test:socket -w @obsidian-connect/plugin",
+    "test:sync": "npm run test:sync -w @obsidian-connect/plugin",
     "test:history": "node packages/server/scripts/history-selftest.mjs",
-    "test:load": "npm run test:load -w @crdt-sync/plugin"
+    "test:load": "npm run test:load -w @obsidian-connect/plugin"
   },
   "overrides": {
     "@codemirror/state": "6.5.0",

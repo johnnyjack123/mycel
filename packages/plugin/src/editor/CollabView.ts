@@ -6,7 +6,7 @@ import { yCollab } from 'y-codemirror.next'
 import type * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 
-export const COLLAB_VIEW_TYPE = 'crdt-sync-collab-view'
+export const COLLAB_VIEW_TYPE = 'obsidian-connect-collab-view'
 
 /** What the fallback view needs; deliberately not tied to a whole document handle. */
 export interface CollabTarget {

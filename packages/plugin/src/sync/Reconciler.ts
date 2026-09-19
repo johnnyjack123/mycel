@@ -1,4 +1,4 @@
-import { lineDiff, threeWayMerge, type TextEdit } from '@crdt-sync/shared'
+import { lineDiff, threeWayMerge, type TextEdit } from '@obsidian-connect/shared'
 
 // Deciding what happens when a file and its document disagree. Kept pure and
 // free of Obsidian so it can be reasoned about and tested on its own: this is

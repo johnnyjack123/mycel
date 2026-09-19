@@ -8,7 +8,7 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
 
-const serverUrl = process.argv[2] ?? process.env.CRDT_SYNC_URL ?? 'ws://localhost:1234'
+const serverUrl = process.argv[2] ?? process.env.OBSIDIAN_CONNECT_URL ?? 'ws://localhost:1234'
 const httpUrl = serverUrl.replace(/^ws/, 'http').replace(/\/+$/, '')
 const room = `history-selftest-${Date.now().toString(36)}`
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

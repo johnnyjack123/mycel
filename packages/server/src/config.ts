@@ -20,10 +20,10 @@ export function loadConfig(): ServerConfig {
   return {
     host: process.env.HOST ?? '0.0.0.0',
     port: parseIntFallback(process.env.PORT, 1234),
-    jwtSecret: process.env.CRDT_SYNC_JWT_SECRET ?? 'dev-insecure-secret-change-me',
-    dataDir: resolve(process.env.CRDT_SYNC_DATA_DIR ?? './data'),
-    devAllowAnonymous: (process.env.CRDT_SYNC_DEV ?? 'true') !== 'false',
-    accessTokenTtlSeconds: parseIntFallback(process.env.CRDT_SYNC_TOKEN_TTL, 86_400),
-    historyRetentionDays: parseIntFallback(process.env.CRDT_SYNC_HISTORY_DAYS, 30)
+    jwtSecret: process.env.OBSIDIAN_CONNECT_JWT_SECRET ?? 'dev-insecure-secret-change-me',
+    dataDir: resolve(process.env.OBSIDIAN_CONNECT_DATA_DIR ?? './data'),
+    devAllowAnonymous: (process.env.OBSIDIAN_CONNECT_DEV ?? 'true') !== 'false',
+    accessTokenTtlSeconds: parseIntFallback(process.env.OBSIDIAN_CONNECT_TOKEN_TTL, 86_400),
+    historyRetentionDays: parseIntFallback(process.env.OBSIDIAN_CONNECT_HISTORY_DAYS, 30)
   }
 }

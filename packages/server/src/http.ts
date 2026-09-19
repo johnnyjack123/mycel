@@ -6,7 +6,7 @@ import {
   type DevTokenRequest,
   type HistoryRestoreRequest,
   type LoginRequest
-} from '@crdt-sync/shared'
+} from '@obsidian-connect/shared'
 import type { ServerConfig } from './config.js'
 import type { TokenService } from './auth.js'
 import type { RoomManager } from './rooms.js'
@@ -24,7 +24,7 @@ export function createHttpApp(
 
   app.get(API.health, async () => ({
     ok: true,
-    service: 'crdt-sync-server',
+    service: 'obsidian-connect-server',
     protocol: PROTOCOL_VERSION
   }))
 

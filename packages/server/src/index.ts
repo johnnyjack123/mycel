@@ -93,4 +93,4 @@ async function shutdown(): Promise<void> {
 }
 
 await app.listen({ host: config.host, port: config.port })
-app.log.info(`CRDT Sync server is listening on ${config.host}:${config.port}`)
+app.log.info(`Obsidian Connect server is listening on ${config.host}:${config.port}`)

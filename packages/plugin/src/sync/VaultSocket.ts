@@ -8,7 +8,7 @@ import {
 import * as syncProtocol from 'y-protocols/sync'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { MUX } from '@crdt-sync/shared'
+import { MUX } from '@obsidian-connect/shared'
 
 // One WebSocket carries every document of the vault. `y-websocket` opens a
 // socket per room, which is fine for a handful of shared notes and impossible
@@ -73,7 +73,7 @@ export class VaultSocket {
     try {
       socket = new WebSocket(this.url())
     } catch (error) {
-      console.error('[crdt-sync] opening the vault socket failed', error)
+      console.error('[obsidian-connect] opening the vault socket failed', error)
       this.scheduleReconnect()
       return
     }
@@ -117,7 +117,7 @@ export class VaultSocket {
     try {
       this.ws?.send(data)
     } catch (error) {
-      console.error('[crdt-sync] sending on the vault socket failed', error)
+      console.error('[obsidian-connect] sending on the vault socket failed', error)
     }
   }
 
@@ -159,7 +159,7 @@ export class VaultSocket {
     const type = decoding.readVarUint(decoder)
 
     if (type === MUX.error) {
-      console.error(`[crdt-sync] server rejected a room: ${decoding.readVarString(decoder)}`)
+      console.error(`[obsidian-connect] server rejected a room: ${decoding.readVarString(decoder)}`)
       return
     }
 

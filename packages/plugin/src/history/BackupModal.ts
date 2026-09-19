@@ -18,12 +18,12 @@ export class BackupModal extends Modal {
   }
 
   async onOpen(): Promise<void> {
-    this.titleEl.setText('CRDT Sync backups')
+    this.titleEl.setText('Obsidian Connect backups')
     this.contentEl.createEl('p', { text: 'Loading…' })
     try {
       this.records = await this.backups.list()
     } catch (error) {
-      console.error('[crdt-sync] listing backups failed', error)
+      console.error('[obsidian-connect] listing backups failed', error)
     }
     this.render()
   }
@@ -33,7 +33,7 @@ export class BackupModal extends Modal {
     try {
       this.preview = await this.backups.read(record.path)
     } catch (error) {
-      console.error('[crdt-sync] reading a backup failed', error)
+      console.error('[obsidian-connect] reading a backup failed', error)
       this.preview = ''
     }
     this.render()
@@ -73,19 +73,19 @@ export class BackupModal extends Modal {
       text: `${this.records.length} backup(s). "local" is what this device had, "remote" the shared document, "merged" the result.`
     })
 
-    const list = contentEl.createDiv({ cls: 'crdt-history-list' })
+    const list = contentEl.createDiv({ cls: 'connect-history-list' })
     for (const record of this.records.slice(0, 300)) {
-      const row = list.createDiv({ cls: 'crdt-history-row' })
+      const row = list.createDiv({ cls: 'connect-history-row' })
       if (this.selected?.path === record.path) row.addClass('is-selected')
       row.createSpan({ text: `${record.day} · ${record.note}` })
-      row.createSpan({ cls: 'crdt-history-size', text: record.kind })
+      row.createSpan({ cls: 'connect-history-size', text: record.kind })
       row.onclick = () => void this.select(record)
     }
 
     if (this.selected) {
       const selected = this.selected
       contentEl.createEl('h4', { text: `${selected.note} (${selected.kind})` })
-      contentEl.createEl('pre', { cls: 'crdt-history-preview' }).setText(this.preview.slice(0, 5_000))
+      contentEl.createEl('pre', { cls: 'connect-history-preview' }).setText(this.preview.slice(0, 5_000))
       new Setting(contentEl).addButton((button) =>
         button
           .setButtonText('Write this back to the note')

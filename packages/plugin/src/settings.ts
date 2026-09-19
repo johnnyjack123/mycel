@@ -1,9 +1,9 @@
 import { App, PluginSettingTab, Setting } from 'obsidian'
-import type CrdtSyncPlugin from './main'
+import type ObsidianConnectPlugin from './main'
 
 export type AdapterMode = 'main-editor' | 'collab-view'
 
-export interface CrdtSyncSettings {
+export interface ObsidianConnectSettings {
   serverUrl: string
   token: string
   displayName: string
@@ -18,7 +18,7 @@ export interface CrdtSyncSettings {
   syncTimeoutMs: number
 }
 
-export const DEFAULT_SETTINGS: CrdtSyncSettings = {
+export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
   serverUrl: 'ws://localhost:1234',
   token: '',
   displayName: '',
@@ -41,8 +41,8 @@ export function serverHttpUrl(serverUrl: string): string {
   return trimmed
 }
 
-export class CrdtSyncSettingTab extends PluginSettingTab {
-  constructor(app: App, private readonly plugin: CrdtSyncPlugin) {
+export class ObsidianConnectSettingTab extends PluginSettingTab {
+  constructor(app: App, private readonly plugin: ObsidianConnectPlugin) {
     super(app, plugin)
   }
 
@@ -54,7 +54,7 @@ export class CrdtSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Server URL')
-      .setDesc('WebSocket endpoint of the CRDT Sync server.')
+      .setDesc('WebSocket endpoint of the Obsidian Connect server.')
       .addText((text) =>
         text
           .setPlaceholder('ws://localhost:1234')

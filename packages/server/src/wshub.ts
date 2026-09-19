@@ -1,7 +1,7 @@
 import type { WebSocket } from 'ws'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { MUX, indexRoom, isDocRoom } from '@crdt-sync/shared'
+import { MUX, indexRoom, isDocRoom } from '@obsidian-connect/shared'
 import type { RoomManager, RoomSubscriber } from './rooms.js'
 
 const WS_OPEN = 1
@@ -37,7 +37,7 @@ function serializer(): (task: () => Promise<void>) => void {
   let chain: Promise<void> = Promise.resolve()
   return (task) => {
     chain = chain.then(task).catch((error) => {
-      console.error('[crdt-sync] websocket message failed', error)
+      console.error('[obsidian-connect] websocket message failed', error)
     })
   }
 }

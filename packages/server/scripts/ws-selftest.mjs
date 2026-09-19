@@ -6,7 +6,7 @@ import { WebSocket } from 'ws'
 // v22 on. `engines` allows Node 20, so the polyfill has to be explicit.
 const providerOptions = { WebSocketPolyfill: WebSocket }
 
-const serverUrl = process.argv[2] ?? process.env.CRDT_SYNC_URL ?? 'ws://localhost:1234'
+const serverUrl = process.argv[2] ?? process.env.OBSIDIAN_CONNECT_URL ?? 'ws://localhost:1234'
 const room = `selftest-${Date.now().toString(36)}`
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 

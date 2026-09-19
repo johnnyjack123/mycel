@@ -1,7 +1,7 @@
 // Unit checks for the only code path that can delete a user's text. No server,
 // no DOM, no Obsidian - just the merge logic.
 //
-//   npm run test:merge -w @crdt-sync/plugin
+//   npm run test:merge -w @obsidian-connect/plugin
 import * as Y from 'yjs'
 import {
   CONTENT_FIELD,
@@ -9,7 +9,7 @@ import {
   splitLines,
   textEdits,
   threeWayMerge
-} from '@crdt-sync/shared'
+} from '@obsidian-connect/shared'
 import { additiveEdits, reconcile } from '../src/sync/Reconciler.js'
 
 const failures: string[] = []
@@ -160,6 +160,31 @@ check(
     additiveEdits('kept\nremote only\n', 'kept\nlocal only\n').every((edit) => edit.to === edit.from),
     'additive edits never delete'
   )
+}
+
+// --- document identity -------------------------------------------------------
+
+{
+  const { stableDocId } = await import('../src/sync/VaultIndex.js')
+  const { matchesGlob } = await import('../src/sync/glob.js')
+
+  // Two devices adopting the same note before either has seen the other's
+  // index must arrive at the same id. Random ids per device produced two
+  // documents for one file, and both sides then synced past each other.
+  const a = await stableDocId('vault-1', 'Notes/Test.md')
+  const b = await stableDocId('vault-1', 'Notes/Test.md')
+  check(a === b, 'the same vault and path always give the same document id')
+  check(a.length === 32, 'the document id is a 128-bit hex string', a)
+  check(
+    (await stableDocId('vault-1', 'Notes/Other.md')) !== a,
+    'different paths give different ids'
+  )
+  check((await stableDocId('vault-2', 'Notes/Test.md')) !== a, 'different vaults give different ids')
+
+  check(matchesGlob('Private/Secret.md', 'Private/**'), 'glob: ** matches across segments')
+  check(matchesGlob('Notes/a.md', 'Notes/*.md'), 'glob: * matches inside a segment')
+  check(!matchesGlob('Notes/sub/a.md', 'Notes/*.md'), 'glob: * does not cross a separator')
+  check(!matchesGlob('Public/Secret.md', 'Private/**'), 'glob: unrelated paths do not match')
 }
 
 // --- splitLines --------------------------------------------------------------

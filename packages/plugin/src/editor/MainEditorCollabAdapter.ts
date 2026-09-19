@@ -34,7 +34,7 @@ export class MainEditorCollabAdapter implements CollabAdapter {
       throw new Error('Unable to access the Obsidian CodeMirror EditorView.')
     }
     this.install(view)
-    console.info('[crdt-sync] main editor extension attached')
+    console.info('[obsidian-connect] main editor extension attached')
   }
 
   // Obsidian discards `StateEffect.appendConfig` extensions whenever it rebuilds
@@ -49,7 +49,7 @@ export class MainEditorCollabAdapter implements CollabAdapter {
     if (!view) return false
     if (view === this.view && this.binding && view.plugin(this.binding) !== null) return false
     this.install(view)
-    console.info('[crdt-sync] main editor extension re-attached')
+    console.info('[obsidian-connect] main editor extension re-attached')
     return true
   }
 
