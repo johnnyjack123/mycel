@@ -15,7 +15,11 @@
     "dev:server": "npm run dev -w @crdt-sync/server",
     "start:server": "npm run start -w @crdt-sync/server",
     "ws-test": "node packages/server/scripts/ws-selftest.mjs",
-    "test:sync": "npm run test:sync -w @crdt-sync/plugin"
+    "test:merge": "npm run test:merge -w @crdt-sync/plugin",
+    "test:socket": "npm run test:socket -w @crdt-sync/plugin",
+    "test:sync": "npm run test:sync -w @crdt-sync/plugin",
+    "test:history": "node packages/server/scripts/history-selftest.mjs",
+    "test:load": "npm run test:load -w @crdt-sync/plugin"
   },
   "overrides": {
     "@codemirror/state": "6.5.0",
