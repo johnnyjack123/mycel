@@ -1,22 +1,44 @@
-import { MarkdownView, Notice, Plugin, TFile } from 'obsidian'
+import { MarkdownView, Notice, Plugin, TFile, type TAbstractFile } from 'obsidian'
 import type { EditorView } from '@codemirror/view'
 import type { CollabUser } from '@crdt-sync/shared'
-import { CollabSession } from './collab/CollabSession'
 import { CollabView, COLLAB_VIEW_TYPE } from './editor/CollabView'
 import { CollabViewAdapter } from './editor/CollabViewAdapter'
 import { getEditorView, MainEditorCollabAdapter } from './editor/MainEditorCollabAdapter'
 import type { CollabAdapter } from './editor/types'
-import { CrdtSyncSettingTab, DEFAULT_SETTINGS, type CrdtSyncSettings } from './settings'
+import { HistoryModal } from './history/HistoryModal'
+import { BackupModal } from './history/BackupModal'
+import { BackupStore } from './sync/BackupStore'
+import { DocStore, type DocStoreOptions } from './sync/DocStore'
+import { StateStore } from './sync/StateStore'
+import { VaultIndex } from './sync/VaultIndex'
+import { VaultSocket, type SocketStatus } from './sync/VaultSocket'
+import {
+  CrdtSyncSettingTab,
+  DEFAULT_SETTINGS,
+  serverHttpUrl,
+  type CrdtSyncSettings
+} from './settings'
 
-interface ActiveCollab {
-  session: CollabSession
+interface BoundEditor {
+  docId: string
   adapter: CollabAdapter
 }
 
+const PLUGIN_COLOR = '#30bced'
+
 export default class CrdtSyncPlugin extends Plugin {
   settings: CrdtSyncSettings = { ...DEFAULT_SETTINGS }
-  private readonly active = new Map<string, ActiveCollab>()
+
+  private socket: VaultSocket | null = null
+  private index: VaultIndex | null = null
+  private store: DocStore | null = null
+  private state: StateStore | null = null
+  private backups: BackupStore | null = null
   private statusBar!: HTMLElement
+  private status: SocketStatus = 'disconnected'
+  private readonly bound = new Map<string, BoundEditor>()
+  private unwatchIndex: (() => void) | null = null
+  private indexTimer: number | null = null
 
   async onload(): Promise<void> {
     await this.loadSettings()
@@ -24,178 +46,359 @@ export default class CrdtSyncPlugin extends Plugin {
     this.statusBar = this.addStatusBarItem()
     this.registerView(COLLAB_VIEW_TYPE, (leaf) => new CollabView(leaf))
     this.addSettingTab(new CrdtSyncSettingTab(this.app, this))
-    this.addRibbonIcon('users', 'Toggle CRDT collaboration', () => {
-      void this.toggleActive()
-    })
+
+    this.addRibbonIcon('refresh-cw', 'CRDT Sync status', () => this.showStatus())
     this.addCommand({
-      id: 'toggle-collaboration',
-      name: 'Toggle collaboration on the current note',
-      callback: () => {
-        void this.toggleActive()
-      }
-    })
-    this.addCommand({
-      id: 'stop-all-collaboration',
-      name: 'Stop all collaboration sessions',
-      callback: () => this.stopAll()
-    })
-    this.addCommand({
-      id: 'show-collaboration-status',
-      name: 'Show collaboration status',
+      id: 'show-status',
+      name: 'Show sync status',
       callback: () => this.showStatus()
     })
+    this.addCommand({
+      id: 'open-history',
+      name: 'Open version history for this note',
+      callback: () => void this.openHistory()
+    })
+    this.addCommand({
+      id: 'open-backups',
+      name: 'Browse backups',
+      callback: () => this.openBackups()
+    })
+    this.addCommand({
+      id: 'resync-note',
+      name: 'Force resync of this note',
+      callback: () => void this.resyncActive()
+    })
+    this.addCommand({
+      id: 'restart-sync',
+      name: 'Reconnect and rescan the vault',
+      callback: () => void this.restartSync()
+    })
 
-    const refresh = (): void => this.refreshAdapters()
+    this.registerVaultEvents()
+
+    const refresh = (): void => this.syncEditorBindings()
     this.registerEvent(this.app.workspace.on('layout-change', refresh))
     this.registerEvent(this.app.workspace.on('active-leaf-change', refresh))
     this.registerEvent(this.app.workspace.on('file-open', refresh))
+
+    // The vault is not fully indexed while Obsidian is still starting, and a
+    // scan that races it would treat half the notes as missing.
+    this.app.workspace.onLayoutReady(() => {
+      void this.startSync()
+    })
   }
 
-  onunload(): void {
-    this.stopAll()
+  async onunload(): Promise<void> {
+    await this.stopSync()
   }
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings)
+    this.store?.setOptions(this.storeOptions())
   }
 
   private async loadSettings(): Promise<void> {
     const stored = (await this.loadData()) as Partial<CrdtSyncSettings> | null
     this.settings = Object.assign({}, DEFAULT_SETTINGS, stored ?? {})
-  }
-
-  private async toggleActive(): Promise<void> {
-    const file = this.app.workspace.getActiveFile()
-    if (!(file instanceof TFile) || file.extension !== 'md') {
-      new Notice('Open a markdown note first.')
-      return
-    }
-    if (this.active.has(file.path)) {
-      this.stop(file.path)
-      new Notice(`Stopped collaboration on ${file.basename}.`)
-      return
-    }
-    await this.start(file)
-  }
-
-  private async start(file: TFile): Promise<void> {
     if (!this.settings.vaultId) {
       this.settings.vaultId = crypto.randomUUID()
-      await this.saveSettings()
+      await this.saveData(this.settings)
     }
+  }
 
-    const user: CollabUser = {
-      id: this.settings.displayName || 'local-user',
-      name: this.settings.displayName || 'Local user',
-      color: '#30bced',
-      colorLight: '#30bced33'
-    }
-    const session = new CollabSession(this.app, file, {
-      serverUrl: this.settings.serverUrl,
-      token: this.settings.token,
+  private user(): CollabUser {
+    const name = this.settings.displayName || 'Local user'
+    return { id: name, name, color: PLUGIN_COLOR, colorLight: `${PLUGIN_COLOR}33` }
+  }
+
+  private pluginDir(): string {
+    return this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`
+  }
+
+  private storeOptions(): DocStoreOptions {
+    return {
       vaultId: this.settings.vaultId,
-      user
-    })
-    session.provider.on('status', (event: { status: string }) => {
-      this.statusBar.setText(`CRDT ${event.status}: ${file.basename}`)
-    })
+      user: this.user(),
+      excludeGlobs: this.settings.excludeGlobs,
+      conflictMarkers: this.settings.conflictMarkers,
+      maxLoadedDocuments: this.settings.maxLoadedDocuments,
+      syncTimeoutMs: this.settings.syncTimeoutMs,
+      writeDebounceMs: this.settings.writeDebounceMs
+    }
+  }
 
-    if (!(await session.ready())) {
-      session.dispose()
-      this.statusBar.setText('')
-      new Notice(
-        `Could not reach ${this.settings.serverUrl}. Collaboration on ${file.basename} was not started.`
-      )
+  // --- lifecycle -----------------------------------------------------------
+
+  private async startSync(): Promise<void> {
+    if (!this.settings.syncEnabled || this.store) return
+
+    const root = this.pluginDir()
+    this.state = new StateStore(this.app.vault.adapter, root)
+    this.backups = new BackupStore(this.app.vault.adapter, root)
+    this.index = new VaultIndex()
+    this.socket = new VaultSocket(this.settings.serverUrl, this.settings.vaultId, this.settings.token)
+    this.store = new DocStore(
+      this.app,
+      this.socket,
+      this.index,
+      this.state,
+      this.backups,
+      this.storeOptions()
+    )
+
+    this.register(
+      this.socket.onStatus((status) => {
+        this.status = status
+        this.renderStatus()
+      })
+    )
+    this.unwatchIndex = this.index.onChange(() => this.scheduleIndexApply())
+
+    this.socket.connect()
+    void this.backups.prune(this.settings.backupRetentionDays)
+
+    try {
+      await this.store.start()
+    } catch (error) {
+      console.error('[crdt-sync] starting sync failed', error)
+      new Notice('CRDT Sync could not start; see the console.')
+    }
+    this.syncEditorBindings()
+    this.renderStatus()
+  }
+
+  private async stopSync(): Promise<void> {
+    for (const [path, entry] of this.bound) {
+      void entry.adapter.detach()
+      this.bound.delete(path)
+    }
+    if (this.indexTimer !== null) {
+      window.clearTimeout(this.indexTimer)
+      this.indexTimer = null
+    }
+    this.unwatchIndex?.()
+    this.unwatchIndex = null
+    await this.store?.stop()
+    this.socket?.destroy()
+    this.index?.destroy()
+    this.store = null
+    this.socket = null
+    this.index = null
+    this.state = null
+    this.backups = null
+    this.statusBar.setText('')
+  }
+
+  async restartSync(): Promise<void> {
+    await this.stopSync()
+    await this.startSync()
+  }
+
+  // --- vault events --------------------------------------------------------
+
+  private registerVaultEvents(): void {
+    this.registerEvent(
+      this.app.vault.on('modify', (file: TAbstractFile) => {
+        if (file instanceof TFile) void this.store?.onModify(file)
+      })
+    )
+    this.registerEvent(
+      this.app.vault.on('create', (file: TAbstractFile) => {
+        if (file instanceof TFile) void this.store?.onCreate(file)
+      })
+    )
+    this.registerEvent(
+      this.app.vault.on('delete', (file: TAbstractFile) => {
+        void this.store?.onDelete(file.path)
+      })
+    )
+    this.registerEvent(
+      this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
+        if (file instanceof TFile) void this.store?.onRename(file, oldPath)
+      })
+    )
+  }
+
+  private scheduleIndexApply(): void {
+    if (this.indexTimer !== null) window.clearTimeout(this.indexTimer)
+    this.indexTimer = window.setTimeout(() => {
+      this.indexTimer = null
+      void this.store?.applyRemoteIndexChanges()
+    }, 500)
+  }
+
+  // --- editor integration --------------------------------------------------
+
+  private markdownViews(): MarkdownView[] {
+    const views: MarkdownView[] = []
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      if (leaf.view instanceof MarkdownView && leaf.view.file) views.push(leaf.view)
+    }
+    return views
+  }
+
+  private syncEditorBindings(): void {
+    const store = this.store
+    const index = this.index
+    if (!store || !index) return
+
+    const open = new Set<string>()
+    for (const view of this.markdownViews()) {
+      const file = view.file
+      if (!file || store.isExcluded(file.path)) continue
+      open.add(file.path)
+      const docId = index.docIdForPath(file.path)
+      if (!docId) continue
+
+      const existing = this.bound.get(file.path)
+      if (existing && existing.docId === docId) {
+        try {
+          existing.adapter.ensureAttached?.()
+        } catch (error) {
+          console.error(`[crdt-sync] re-attaching ${file.path} failed`, error)
+        }
+        continue
+      }
+      if (existing) {
+        void existing.adapter.detach()
+        store.unpin(existing.docId)
+        this.bound.delete(file.path)
+      }
+      void this.bindEditor(file, docId)
+    }
+
+    for (const [path, entry] of Array.from(this.bound)) {
+      if (open.has(path)) continue
+      void entry.adapter.detach()
+      store.unpin(entry.docId)
+      this.bound.delete(path)
+    }
+  }
+
+  private async bindEditor(file: TFile, docId: string): Promise<void> {
+    const store = this.store
+    if (!store) return
+    // Pin first: the handle must not be evicted while an editor shows it.
+    store.pin(docId)
+    const handle = await store.handleFor(docId)
+
+    if (this.settings.adapterMode === 'collab-view') {
+      const adapter = new CollabViewAdapter(this.app, {
+        ytext: handle.ytext,
+        awareness: handle.awareness,
+        title: file.basename
+      })
+      await adapter.attach()
+      this.bound.set(file.path, { docId, adapter })
       return
     }
 
-    const adapter = await this.createAdapter(session)
-    console.info(`[crdt-sync] adapter=${adapter.kind} room=${session.room}`)
-    this.active.set(file.path, { session, adapter })
-    new Notice(`Collaborating on ${file.basename}.`)
-  }
-
-  private async createAdapter(session: CollabSession): Promise<CollabAdapter> {
-    if (this.settings.adapterMode === 'collab-view') {
-      const adapter = new CollabViewAdapter(this.app, session)
-      await adapter.attach()
-      return adapter
-    }
-
-    // Not `getActiveViewOfType`: waiting for the room state above takes long
-    // enough for the user to have switched notes, and the extension has to land
-    // in the editor of this session's own file. The adapter re-resolves the
-    // editor on every check, so it also survives the note being closed and
-    // reopened in a different leaf.
     const resolveView = (): EditorView | null => {
-      const editor = this.findMarkdownView(session.file)?.editor
-      return editor ? getEditorView(editor) : null
-    }
-    if (resolveView()) {
-      const adapter = new MainEditorCollabAdapter(resolveView, session.ytext, session.awareness)
-      try {
-        adapter.attach()
-        return adapter
-      } catch (error) {
-        console.error('[crdt-sync] main editor integration failed', error)
-        new Notice('Main editor integration unavailable; opening the fallback view.')
+      for (const view of this.markdownViews()) {
+        if (view.file?.path !== file.path) continue
+        const editor = view.editor
+        return editor ? getEditorView(editor) : null
       }
-    } else {
+      return null
+    }
+
+    if (!resolveView()) {
+      store.unpin(docId)
+      return
+    }
+
+    const adapter = new MainEditorCollabAdapter(resolveView, handle.ytext, handle.awareness)
+    try {
+      adapter.attach()
+      this.bound.set(file.path, { docId, adapter })
+    } catch (error) {
+      console.error('[crdt-sync] main editor integration failed', error)
       new Notice('Main editor integration unavailable; opening the fallback view.')
-    }
-
-    const fallback = new CollabViewAdapter(this.app, session)
-    await fallback.attach()
-    return fallback
-  }
-
-  // Obsidian rebuilds the EditorState — and with it drops every extension added
-  // through `StateEffect.appendConfig` — when a leaf switches file or changes
-  // edit/preview mode. These events are the only notice we get.
-  private refreshAdapters(): void {
-    for (const [path, entry] of this.active) {
-      try {
-        entry.adapter.ensureAttached?.()
-      } catch (error) {
-        console.error(`[crdt-sync] re-attaching the editor for ${path} failed`, error)
-      }
+      const fallback = new CollabViewAdapter(this.app, {
+        ytext: handle.ytext,
+        awareness: handle.awareness,
+        title: file.basename
+      })
+      await fallback.attach()
+      this.bound.set(file.path, { docId, adapter: fallback })
     }
   }
 
-  private findMarkdownView(file: TFile): MarkdownView | null {
-    const active = this.app.workspace.getActiveViewOfType(MarkdownView)
-    if (active?.file?.path === file.path) return active
-    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
-      const view = leaf.view
-      if (view instanceof MarkdownView && view.file?.path === file.path) return view
-    }
-    return null
-  }
+  // --- commands ------------------------------------------------------------
 
-  private stop(path: string): void {
-    const entry = this.active.get(path)
-    if (!entry) return
-    void entry.adapter.detach()
-    entry.session.dispose()
-    this.active.delete(path)
-    if (this.active.size === 0) this.statusBar.setText('')
-  }
-
-  private stopAll(): void {
-    for (const path of Array.from(this.active.keys())) {
-      this.stop(path)
+  private renderStatus(): void {
+    if (!this.store) {
+      this.statusBar.setText('')
+      return
     }
+    const label =
+      this.status === 'connected' ? 'synced' : this.status === 'connecting' ? 'connecting' : 'offline'
+    this.statusBar.setText(`CRDT ${label} · ${this.store.loadedCount()}/${this.store.trackedCount()}`)
   }
 
   private showStatus(): void {
-    if (this.active.size === 0) {
-      new Notice('No active collaboration sessions.')
+    if (!this.store) {
+      new Notice('CRDT Sync is off. Enable it in the plugin settings.')
       return
     }
-    const lines = Array.from(this.active.entries()).map(
-      ([path, entry]) =>
-        `${path} -> ${entry.session.provider.wsconnected ? 'connected' : 'offline'} (${entry.adapter.kind})\n${entry.session.room}`
+    new Notice(
+      [
+        `Connection: ${this.status}`,
+        `Server: ${this.settings.serverUrl}`,
+        `Vault ID: ${this.settings.vaultId}`,
+        `Notes tracked: ${this.store.trackedCount()}`,
+        `Documents in memory: ${this.store.loadedCount()}`,
+        `Editors bound: ${this.bound.size}`
+      ].join('\n'),
+      15_000
     )
-    new Notice(lines.join('\n\n'), 20_000)
+  }
+
+  private activeFile(): TFile | null {
+    const file = this.app.workspace.getActiveFile()
+    return file instanceof TFile && file.extension === 'md' ? file : null
+  }
+
+  private async openHistory(): Promise<void> {
+    const file = this.activeFile()
+    if (!file || !this.index) {
+      new Notice('Open a markdown note first.')
+      return
+    }
+    const docId = this.index.docIdForPath(file.path)
+    if (!docId) {
+      new Notice('This note is not tracked yet.')
+      return
+    }
+    new HistoryModal(this.app, {
+      httpUrl: serverHttpUrl(this.settings.serverUrl),
+      token: this.settings.token,
+      docId,
+      file,
+      onRestored: () => this.syncEditorBindings()
+    }).open()
+  }
+
+  private openBackups(): void {
+    if (!this.backups) {
+      new Notice('CRDT Sync is off.')
+      return
+    }
+    new BackupModal(this.app, this.backups).open()
+  }
+
+  private async resyncActive(): Promise<void> {
+    const file = this.activeFile()
+    if (!file || !this.store) {
+      new Notice('Open a markdown note first.')
+      return
+    }
+    try {
+      await this.store.syncFile(file, true)
+      new Notice(`${file.basename} resynced.`)
+    } catch (error) {
+      console.error('[crdt-sync] resync failed', error)
+      new Notice('Resync failed; see the console.')
+    }
   }
 }

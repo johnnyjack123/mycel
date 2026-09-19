@@ -9,6 +9,13 @@ export interface CrdtSyncSettings {
   displayName: string
   adapterMode: AdapterMode
   vaultId: string
+  syncEnabled: boolean
+  excludeGlobs: string[]
+  conflictMarkers: boolean
+  backupRetentionDays: number
+  maxLoadedDocuments: number
+  writeDebounceMs: number
+  syncTimeoutMs: number
 }
 
 export const DEFAULT_SETTINGS: CrdtSyncSettings = {
@@ -16,7 +23,22 @@ export const DEFAULT_SETTINGS: CrdtSyncSettings = {
   token: '',
   displayName: '',
   adapterMode: 'main-editor',
-  vaultId: ''
+  vaultId: '',
+  syncEnabled: true,
+  excludeGlobs: [],
+  conflictMarkers: true,
+  backupRetentionDays: 14,
+  maxLoadedDocuments: 500,
+  writeDebounceMs: 700,
+  syncTimeoutMs: 5_000
+}
+
+/** The REST endpoint that belongs to a `ws://` or `wss://` server URL. */
+export function serverHttpUrl(serverUrl: string): string {
+  const trimmed = serverUrl.trim().replace(/\/+$/, '')
+  if (trimmed.startsWith('wss://')) return `https://${trimmed.slice('wss://'.length)}`
+  if (trimmed.startsWith('ws://')) return `http://${trimmed.slice('ws://'.length)}`
+  return trimmed
 }
 
 export class CrdtSyncSettingTab extends PluginSettingTab {
@@ -27,6 +49,8 @@ export class CrdtSyncSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this
     containerEl.empty()
+
+    new Setting(containerEl).setName('Connection').setHeading()
 
     new Setting(containerEl)
       .setName('Server URL')
@@ -65,8 +89,93 @@ export class CrdtSyncSettingTab extends PluginSettingTab {
       )
 
     new Setting(containerEl)
+      .setName('Vault ID')
+      .setDesc(
+        'Shared by all devices that sync the same vault. Generated automatically; copy it to a second device to pair them.'
+      )
+      .addText((text) =>
+        text.setValue(this.plugin.settings.vaultId).onChange(async (value) => {
+          this.plugin.settings.vaultId = value.trim()
+          await this.plugin.saveSettings()
+        })
+      )
+
+    new Setting(containerEl).setName('Synchronization').setHeading()
+
+    new Setting(containerEl)
+      .setName('Sync this vault')
+      .setDesc('Keep every markdown note backed by a CRDT. Turning this off stops all syncing.')
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.syncEnabled).onChange(async (value) => {
+          this.plugin.settings.syncEnabled = value
+          await this.plugin.saveSettings()
+          await this.plugin.restartSync()
+        })
+      )
+
+    new Setting(containerEl)
+      .setName('Exclude')
+      .setDesc('One glob per line, matched against the vault-relative path. Example: Private/**')
+      .addTextArea((area) =>
+        area
+          .setPlaceholder('Templates/**\nArchive/**')
+          .setValue(this.plugin.settings.excludeGlobs.join('\n'))
+          .onChange(async (value) => {
+            this.plugin.settings.excludeGlobs = value
+              .split('\n')
+              .map((line) => line.trim())
+              .filter((line) => line.length > 0)
+            await this.plugin.saveSettings()
+          })
+      )
+
+    new Setting(containerEl)
+      .setName('Conflict markers')
+      .setDesc(
+        'Wrap regions both sides changed incompatibly in <<<<<<< markers. Off keeps both versions one after the other, without markers.'
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.conflictMarkers).onChange(async (value) => {
+          this.plugin.settings.conflictMarkers = value
+          await this.plugin.saveSettings()
+        })
+      )
+
+    new Setting(containerEl)
+      .setName('Documents kept in memory')
+      .setDesc(
+        'Notes beyond this stop receiving live updates until opened again. Lower it on mobile.'
+      )
+      .addText((text) =>
+        text
+          .setValue(String(this.plugin.settings.maxLoadedDocuments))
+          .onChange(async (value) => {
+            const parsed = Number.parseInt(value, 10)
+            if (!Number.isFinite(parsed) || parsed < 1) return
+            this.plugin.settings.maxLoadedDocuments = parsed
+            await this.plugin.saveSettings()
+          })
+      )
+
+    new Setting(containerEl).setName('Safety').setHeading()
+
+    new Setting(containerEl)
+      .setName('Keep backups for')
+      .setDesc('Days. Backups are written before every merge, into the plugin folder.')
+      .addText((text) =>
+        text
+          .setValue(String(this.plugin.settings.backupRetentionDays))
+          .onChange(async (value) => {
+            const parsed = Number.parseInt(value, 10)
+            if (!Number.isFinite(parsed) || parsed < 0) return
+            this.plugin.settings.backupRetentionDays = parsed
+            await this.plugin.saveSettings()
+          })
+      )
+
+    new Setting(containerEl)
       .setName('Editor integration')
-      .setDesc('How remote edits are applied to an open note.')
+      .setDesc('How live edits from other people appear in an open note.')
       .addDropdown((dropdown) =>
         dropdown
           .addOption('main-editor', 'Main editor (experimental)')
@@ -76,18 +185,6 @@ export class CrdtSyncSettingTab extends PluginSettingTab {
             this.plugin.settings.adapterMode = value as AdapterMode
             await this.plugin.saveSettings()
           })
-      )
-
-    new Setting(containerEl)
-      .setName('Vault ID')
-      .setDesc(
-        'Identifier shared by all devices (and, for testing, other vaults) that should sync the same notes. Generated automatically; set the same value in a second vault to join the same rooms. Rooms are keyed by vault ID + note path.'
-      )
-      .addText((text) =>
-        text.setValue(this.plugin.settings.vaultId).onChange(async (value) => {
-          this.plugin.settings.vaultId = value.trim()
-          await this.plugin.saveSettings()
-        })
       )
   }
 }
