@@ -1,8 +1,7 @@
-import { createRequire } from 'node:module'
+import * as Y from 'yjs'
 
-const nodeRequire = createRequire(import.meta.url)
-
-// yjs ships separate ESM and CJS builds. y-websocket/bin/utils.cjs loads the
-// CJS build, so the server must load the same one. Mixing both triggers
-// "Yjs was already imported" and breaks yjs constructor checks.
-export const Y = nodeRequire('yjs') as typeof import('yjs')
+// The server used to load yjs as CJS because `y-websocket/bin/utils.cjs` did,
+// and mixing both builds triggers "Yjs was already imported". The room layer is
+// ours now and speaks y-protocols directly, so plain ESM is enough. Everything
+// server-side still goes through this module so there is one place to change.
+export { Y }

@@ -7,6 +7,8 @@ export interface ServerConfig {
   dataDir: string
   devAllowAnonymous: boolean
   accessTokenTtlSeconds: number
+  /** Days of individually restorable versions. Older ones fold into the snapshot. */
+  historyRetentionDays: number
 }
 
 function parseIntFallback(value: string | undefined, fallback: number): number {
@@ -21,6 +23,7 @@ export function loadConfig(): ServerConfig {
     jwtSecret: process.env.CRDT_SYNC_JWT_SECRET ?? 'dev-insecure-secret-change-me',
     dataDir: resolve(process.env.CRDT_SYNC_DATA_DIR ?? './data'),
     devAllowAnonymous: (process.env.CRDT_SYNC_DEV ?? 'true') !== 'false',
-    accessTokenTtlSeconds: parseIntFallback(process.env.CRDT_SYNC_TOKEN_TTL, 86_400)
+    accessTokenTtlSeconds: parseIntFallback(process.env.CRDT_SYNC_TOKEN_TTL, 86_400),
+    historyRetentionDays: parseIntFallback(process.env.CRDT_SYNC_HISTORY_DAYS, 30)
   }
 }
