@@ -32,6 +32,16 @@ jobs:
 
       - run: npm run build:plugin
 
+      # Pure logic, no server: the merge is the only code path able to delete a
+      # user's text, so it is checked before anything else runs.
+      - name: Merge self-test
+        run: npm run test:merge
+
+      # Imports the built bundle with Obsidian stubbed. A plugin that throws at
+      # import time just fails to appear in Obsidian, with nothing in the log.
+      - name: Bundle load self-test
+        run: npm run test:load
+
       # The sync self-tests need a live server, so start one and wait for it.
       # Both survive the end of this step on the Linux runners.
       - name: Start the sync server
@@ -50,6 +60,12 @@ jobs:
 
       - name: Relay self-test
         run: npm run ws-test -- ws://localhost:1234
+
+      - name: Multiplexed vault socket self-test
+        run: npm run test:socket -- ws://localhost:1234
+
+      - name: Version history self-test
+        run: npm run test:history -- ws://localhost:1234
 
       # Guards the bug this workflow exists for: a CodeMirror view plugin that
       # throws while being constructed is silently deactivated, so the plugin
