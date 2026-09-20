@@ -123,6 +123,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       user: this.user(),
       excludeGlobs: this.settings.excludeGlobs,
       conflictMarkers: this.settings.conflictMarkers,
+      liveCollaboration: this.settings.liveCollaboration,
       maxLoadedDocuments: this.settings.maxLoadedDocuments,
       syncTimeoutMs: this.settings.syncTimeoutMs,
       writeDebounceMs: this.settings.writeDebounceMs
@@ -285,6 +286,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       if (existing) {
         void existing.adapter.detach()
         store.unpin(existing.docId)
+        store.setEditorOwned(existing.docId, false)
         this.bound.delete(file.path)
       }
       void this.bindEditor(file, docId)
@@ -294,6 +296,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       if (open.has(path)) continue
       void entry.adapter.detach()
       store.unpin(entry.docId)
+      store.setEditorOwned(entry.docId, false)
       this.bound.delete(path)
     }
   }
@@ -330,9 +333,15 @@ export default class ObsidianConnectPlugin extends Plugin {
       return
     }
 
-    const adapter = new MainEditorCollabAdapter(resolveView, handle.ytext, handle.awareness)
+    const adapter = new MainEditorCollabAdapter(
+      resolveView,
+      handle.ytext,
+      handle.collabEnabled ? handle.awareness : null
+    )
     try {
       adapter.attach()
+      // Obsidian saves this buffer itself; a second writer would loop.
+      store.setEditorOwned(docId, true)
       this.bound.set(file.path, { docId, adapter })
     } catch (error) {
       console.error('[obsidian-connect] main editor integration failed', error)

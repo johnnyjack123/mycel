@@ -134,6 +134,42 @@ a.view.dispatch({ changes: { from: 3, to: 9 } })
 await delay(1_000)
 check(a.text() === b.text(), 'deletions propagate')
 
+// Obsidian reloads an open buffer when it thinks the file changed, replacing
+// the whole document even when the text is identical. Treated as a user edit
+// that is "delete everything, insert everything", and two devices doing it
+// concurrently keep both insertions - the text doubled on every round trip
+// until the note was unusable.
+{
+  let updates = 0
+  const count = (): void => {
+    updates += 1
+  }
+  a.doc.on('update', count)
+  const before = a.text()
+  a.view.dispatch({ changes: { from: 0, to: a.view.state.doc.length, insert: before } })
+  await delay(800)
+  a.doc.off('update', count)
+
+  check(updates === 0, 'replacing the buffer with identical text emits no update', updates)
+  check(a.text() === before, 'and leaves the document untouched')
+  check(b.text() === before, 'and does not reach the other client', b.text())
+}
+
+// The same replacement repeated must not accumulate either.
+{
+  const before = a.text()
+  for (let i = 0; i < 5; i += 1) {
+    a.view.dispatch({ changes: { from: 0, to: a.view.state.doc.length, insert: before } })
+    b.view.dispatch({ changes: { from: 0, to: b.view.state.doc.length, insert: before } })
+  }
+  await delay(1_200)
+  check(a.text() === before && b.text() === before, 'repeated no-op replacements do not grow the text', {
+    a: a.text().length,
+    b: b.text().length,
+    expected: before.length
+  })
+}
+
 // --- Obsidian rebuilding the editor state -----------------------------------
 const beforeRebuild = a.text()
 a.simulateObsidianRebuild('whatever is on disk')

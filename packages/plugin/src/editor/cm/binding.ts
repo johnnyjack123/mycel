@@ -7,10 +7,10 @@ import {
   ViewPlugin,
   type ViewUpdate
 } from '@codemirror/view'
+import { EDITOR_ORIGIN } from '../../sync/origin.js'
 
 export const remoteUpdate = Annotation.define<boolean>()
 
-const LOCAL_ORIGIN = Symbol('obsidian-connect-local')
 
 interface PendingChange {
   from: number
@@ -25,7 +25,7 @@ export type YTextBinding = ViewPlugin<PluginValue> & Extension
 // without it a switch could push the next note's text into the shared document.
 export function yTextBinding(
   ytext: Y.Text,
-  awareness: Awareness,
+  awareness: Awareness | null,
   isSessionEditor: () => boolean
 ): YTextBinding {
   return ViewPlugin.fromClass(
@@ -34,7 +34,7 @@ export function yTextBinding(
       private destroyed = false
 
       private readonly observer = (event: Y.YTextEvent, transaction: Y.Transaction): void => {
-        if (transaction.origin === LOCAL_ORIGIN) return
+        if (transaction.origin === EDITOR_ORIGIN) return
         this.applyRemote(event)
       }
 
@@ -63,7 +63,7 @@ export function yTextBinding(
       destroy(): void {
         this.destroyed = true
         ytext.unobserve(this.observer)
-        awareness.setLocalStateField('cursor', null)
+        awareness?.setLocalStateField('cursor', null)
       }
 
       private initialSync(): void {
@@ -128,6 +128,17 @@ export function yTextBinding(
       private applyLocalChanges(update: ViewUpdate): void {
         const doc = ytext.doc
         if (!doc) return
+
+        // Obsidian replaces the whole buffer when a file it considers changed is
+        // reloaded, even when the text is identical. Taken at face value that
+        // becomes "delete everything, insert everything" in the CRDT, and two
+        // devices doing it concurrently keep both insertions - the text doubles
+        // on every round trip. Only the length check runs on a normal keystroke;
+        // the full compare happens exactly when the change might be a no-op.
+        if (update.state.doc.length === ytext.length && update.state.doc.toString() === ytext.toString()) {
+          return
+        }
+
         let offset = 0
         doc.transact(() => {
           update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
@@ -138,11 +149,11 @@ export function yTextBinding(
             if (text.length > 0) ytext.insert(from, text)
             offset += text.length - deleted
           })
-        }, LOCAL_ORIGIN)
+        }, EDITOR_ORIGIN)
       }
 
       private publishSelection(): void {
-        if (!ytext.doc) return
+        if (!awareness || !ytext.doc) return
         const range = this.view.state.selection.main
         // The editor can be ahead of Y.Text while an update is still settling;
         // an out-of-range index would throw out of the update handler.

@@ -2,6 +2,7 @@ import { Notice, TFile, type App } from 'obsidian'
 import { applyTextEdits, indexRoom, textEdits, type CollabUser } from '@obsidian-connect/shared'
 import { additiveEdits } from './Reconciler.js'
 import { matchesGlob } from './glob.js'
+import { SYNC_ORIGIN } from './origin.js'
 import type { BackupStore } from './BackupStore.js'
 import { DocHandle } from './DocHandle.js'
 import { reconcile, type ReconcileOutcome } from './Reconciler.js'
@@ -14,12 +15,12 @@ export interface DocStoreOptions {
   user: CollabUser
   excludeGlobs: string[]
   conflictMarkers: boolean
+  liveCollaboration: boolean
   maxLoadedDocuments: number
   syncTimeoutMs: number
   writeDebounceMs: number
 }
 
-const LOCAL_ORIGIN = 'obsidian-connect-local'
 const SCAN_BATCH = 25
 
 /** `extra` folded into `base` without removing anything already there. */
@@ -38,6 +39,7 @@ export class DocStore {
   private readonly handles = new Map<string, DocHandle>()
   private readonly lastUsed = new Map<string, number>()
   private readonly pinned = new Set<string>()
+  private readonly editorOwned = new Set<string>()
   private readonly writeTimers = new Map<string, number>()
   private readonly inFlight = new Map<string, Promise<DocHandle>>()
   private indexReady = false
@@ -67,6 +69,23 @@ export class DocStore {
 
   unpin(docId: string): void {
     this.pinned.delete(docId)
+  }
+
+  /**
+   * While an editor is bound to a note, Obsidian owns the file: it saves the
+   * buffer the binding keeps in step with the document. Writing the file
+   * ourselves as well made Obsidian reload the open editor, which the binding
+   * then read back as a user edit - a loop that doubled the text on every pass.
+   */
+  setEditorOwned(docId: string, owned: boolean): void {
+    if (owned) {
+      this.editorOwned.add(docId)
+      return
+    }
+    if (!this.editorOwned.delete(docId)) return
+    // The editor is gone, so anything it never got round to saving is ours
+    // to write out now.
+    this.scheduleWrite(docId)
   }
 
   async start(): Promise<boolean> {
@@ -114,12 +133,12 @@ export class DocStore {
     if (pending) return pending
 
     const creation = (async () => {
-      const handle = new DocHandle(docId, this.options.vaultId, this.socket, this.options.user)
+      const handle = new DocHandle(docId, this.options.vaultId, this.socket, this.options.user, this.options.liveCollaboration)
       this.handles.set(docId, handle)
       this.touch(docId)
       await handle.whenLocalReady()
       handle.ytext.observe((_event, transaction) => {
-        if (transaction.origin === LOCAL_ORIGIN) return
+        if (transaction.origin === SYNC_ORIGIN) return
         this.scheduleWrite(docId)
       })
       return handle
@@ -166,7 +185,7 @@ export class DocStore {
   }
 
   private scheduleWrite(docId: string): void {
-    if (this.stopped) return
+    if (this.stopped || this.editorOwned.has(docId)) return
     const existing = this.writeTimers.get(docId)
     if (existing !== undefined) window.clearTimeout(existing)
     const timer = window.setTimeout(() => {
@@ -207,7 +226,7 @@ export class DocStore {
   private applyToDocument(handle: DocHandle, target: string): void {
     const edits = textEdits(handle.text(), target)
     if (edits.length === 0) return
-    handle.doc.transact(() => applyTextEdits(handle.ytext, edits), LOCAL_ORIGIN)
+    handle.doc.transact(() => applyTextEdits(handle.ytext, edits), SYNC_ORIGIN)
   }
 
   /**
