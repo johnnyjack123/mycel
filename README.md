@@ -65,9 +65,13 @@ npm run dev:plugin
 
 `.github/workflows/build.yml` builds and tests the plugin on every push:
 
-- Every push to `main` refreshes the **`latest-build`** pre-release with
-  `obsidian-connect-<version>.zip` (unzip it into `<vault>/.obsidian/plugins/`) plus the
-  loose `main.js`, `manifest.json` and `styles.css`.
+- Every push to `main` refreshes the **`latest-build`** pre-release with two zips
+  plus the loose `main.js`, `manifest.json` and `styles.css`:
+  - `obsidian-connect-<version>.zip` contains the plugin folder — unzip it into
+    `<vault>/.obsidian/plugins/` for a **first install**.
+  - `obsidian-connect-<version>-update.zip` contains the three files at the root
+    — unzip it straight into `<vault>/.obsidian/plugins/obsidian-connect/` and
+    overwrite to **update** an existing install. Settings and local state stay.
 - Pushing a tag publishes a normal release with the same assets.
 - Pushes on other branches only upload a build artifact, no release.
 

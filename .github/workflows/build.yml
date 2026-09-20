@@ -88,11 +88,20 @@ jobs:
              packages/plugin/manifest.json \
              packages/plugin/styles.css \
              "release/$id/"
+
+          # Two zips on purpose. The nested one carries the plugin folder and is
+          # what you unpack into `.obsidian/plugins/` for a first install. The
+          # flat one holds the three files at the root, so updating an existing
+          # install is "extract here, overwrite" without digging through a
+          # wrapper directory.
           (cd release && zip -r "$id-$version.zip" "$id")
+          (cd "release/$id" && zip "../$id-$version-update.zip" main.js manifest.json styles.css)
+
           {
             echo "id=$id"
             echo "version=$version"
             echo "zip=release/$id-$version.zip"
+            echo "update_zip=release/$id-$version-update.zip"
           } >> "$GITHUB_OUTPUT"
 
       # Always available, including for pull requests and side branches, where
@@ -111,9 +120,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           ZIP: ${{ steps.package.outputs.zip }}
+          UPDATE_ZIP: ${{ steps.package.outputs.update_zip }}
         run: |
           set -euo pipefail
-          files=("$ZIP" packages/plugin/main.js packages/plugin/manifest.json packages/plugin/styles.css)
+          files=("$ZIP" "$UPDATE_ZIP" packages/plugin/main.js packages/plugin/manifest.json packages/plugin/styles.css)
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --clobber
           else
@@ -128,6 +138,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: latest-build
           ZIP: ${{ steps.package.outputs.zip }}
+          UPDATE_ZIP: ${{ steps.package.outputs.update_zip }}
           ID: ${{ steps.package.outputs.id }}
           VERSION: ${{ steps.package.outputs.version }}
         run: |
@@ -139,10 +150,13 @@ jobs:
             --title "Development build $VERSION (${GITHUB_SHA:0:7})" \
             --notes "Automatic build of \`main\` at \`$GITHUB_SHA\`.
 
-          Install manually: unzip \`$ID-$VERSION.zip\` into \`<vault>/.obsidian/plugins/\` and reload Obsidian.
+          **First install:** unzip \`$ID-$VERSION.zip\` into \`<vault>/.obsidian/plugins/\`, then enable the plugin.
+
+          **Update an existing install:** unzip \`$ID-$VERSION-update.zip\` straight into \`<vault>/.obsidian/plugins/$ID/\` and overwrite, then reload Obsidian. Settings and local state are kept.
 
           This pre-release is replaced on every push to \`main\`." \
             "$ZIP" \
+            "$UPDATE_ZIP" \
             packages/plugin/main.js \
             packages/plugin/manifest.json \
             packages/plugin/styles.css
