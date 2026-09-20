@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { CONTENT_FIELD, type HistoryVersion } from '@obsidian-connect/shared'
 import { Y } from './yjs.js'
@@ -161,27 +161,6 @@ export class HistoryStore {
     const temp = `${target}.tmp`
     await writeFile(temp, Buffer.from(update))
     await rename(temp, target)
-  }
-
-  /** Collapses the log into the snapshot without dropping any content. */
-  async compact(doc: Y.Doc): Promise<void> {
-    this.writes = this.writes
-      .then(async () => {
-        await this.writeSnapshot(Y.encodeStateAsUpdate(doc))
-        await rm(join(this.dir, LOG_FILE), { force: true })
-      })
-      .catch((error) => {
-        console.error(`[obsidian-connect] compacting history in ${this.dir} failed`, error)
-      })
-    await this.writes
-  }
-
-  async logBytes(): Promise<number> {
-    try {
-      return (await stat(join(this.dir, LOG_FILE))).size
-    } catch {
-      return 0
-    }
   }
 
   /** Waits for every queued append, so a shutdown does not lose the tail. */
