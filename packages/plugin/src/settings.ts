@@ -10,8 +10,6 @@ export interface ObsidianConnectSettings {
   adapterMode: AdapterMode
   vaultId: string
   syncEnabled: boolean
-  /** Presence and remote cursors. Sync works without it; this is the collab half. */
-  liveCollaboration: boolean
   excludeGlobs: string[]
   conflictMarkers: boolean
   backupRetentionDays: number
@@ -27,7 +25,6 @@ export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
   adapterMode: 'main-editor',
   vaultId: '',
   syncEnabled: true,
-  liveCollaboration: false,
   excludeGlobs: [],
   conflictMarkers: true,
   backupRetentionDays: 14,
@@ -112,21 +109,6 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
         toggle.setValue(this.plugin.settings.syncEnabled).onChange(async (value) => {
           this.plugin.settings.syncEnabled = value
           await this.plugin.saveSettings()
-          await this.plugin.restartSync()
-        })
-      )
-
-    new Setting(containerEl)
-      .setName('Live collaboration')
-      .setDesc(
-        'Show other people’s cursors and selections, and share yours. Off by default: syncing your own devices does not need presence, and your caret position stays on this machine.'
-      )
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.liveCollaboration).onChange(async (value) => {
-          this.plugin.settings.liveCollaboration = value
-          await this.plugin.saveSettings()
-          // Presence is wired up when a document is opened, so existing
-          // documents have to be rebuilt for this to take effect.
           await this.plugin.restartSync()
         })
       )

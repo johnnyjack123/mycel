@@ -37,6 +37,8 @@ export default class ObsidianConnectPlugin extends Plugin {
   private statusBar!: HTMLElement
   private status: SocketStatus = 'disconnected'
   private readonly bound = new Map<string, BoundEditor>()
+  /** Paths whose editor binding is currently being set up. */
+  private readonly binding = new Set<string>()
   private unwatchIndex: (() => void) | null = null
   private indexTimer: number | null = null
   private started = false
@@ -123,7 +125,6 @@ export default class ObsidianConnectPlugin extends Plugin {
       user: this.user(),
       excludeGlobs: this.settings.excludeGlobs,
       conflictMarkers: this.settings.conflictMarkers,
-      liveCollaboration: this.settings.liveCollaboration,
       maxLoadedDocuments: this.settings.maxLoadedDocuments,
       syncTimeoutMs: this.settings.syncTimeoutMs,
       writeDebounceMs: this.settings.writeDebounceMs
@@ -274,6 +275,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       const docId = index.docIdForPath(file.path)
       if (!docId) continue
 
+      if (this.binding.has(file.path)) continue
       const existing = this.bound.get(file.path)
       if (existing && existing.docId === docId) {
         try {
@@ -304,55 +306,69 @@ export default class ObsidianConnectPlugin extends Plugin {
   private async bindEditor(file: TFile, docId: string): Promise<void> {
     const store = this.store
     if (!store) return
-    // Pin first: the handle must not be evicted while an editor shows it.
-    store.pin(docId)
-    const handle = await store.handleFor(docId)
 
-    if (this.settings.adapterMode === 'collab-view') {
-      const adapter = new CollabViewAdapter(this.app, {
-        ytext: handle.ytext,
-        awareness: handle.awareness,
-        title: file.basename
-      })
-      await adapter.attach()
-      this.bound.set(file.path, { docId, adapter })
-      return
-    }
-
-    const resolveView = (): EditorView | null => {
-      for (const view of this.markdownViews()) {
-        if (view.file?.path !== file.path) continue
-        const editor = view.editor
-        return editor ? getEditorView(editor) : null
-      }
-      return null
-    }
-
-    if (!resolveView()) {
-      store.unpin(docId)
-      return
-    }
-
-    const adapter = new MainEditorCollabAdapter(
-      resolveView,
-      handle.ytext,
-      handle.collabEnabled ? handle.awareness : null
-    )
+    // Opening a note fires layout-change, active-leaf-change and file-open in
+    // quick succession. Because the bookkeeping below only happens after the
+    // first await, every one of them used to start another bind: several
+    // bindings on one editor, each applying the same keystroke to the document
+    // again, and - on the fallback path - a new pane per event.
+    if (this.binding.has(file.path)) return
+    this.binding.add(file.path)
     try {
-      adapter.attach()
-      // Obsidian saves this buffer itself; a second writer would loop.
-      store.setEditorOwned(docId, true)
-      this.bound.set(file.path, { docId, adapter })
-    } catch (error) {
-      console.error('[obsidian-connect] main editor integration failed', error)
-      new Notice('Main editor integration unavailable; opening the fallback view.')
-      const fallback = new CollabViewAdapter(this.app, {
-        ytext: handle.ytext,
-        awareness: handle.awareness,
-        title: file.basename
-      })
-      await fallback.attach()
-      this.bound.set(file.path, { docId, adapter: fallback })
+      // Pin first: the handle must not be evicted while an editor shows it.
+      store.pin(docId)
+      const handle = await store.handleFor(docId)
+      if (this.store !== store) return
+
+      if (this.settings.adapterMode === 'collab-view') {
+        const adapter = new CollabViewAdapter(this.app, {
+          ytext: handle.ytext,
+          awareness: handle.awareness,
+          title: file.basename
+        })
+        await adapter.attach()
+        this.bound.set(file.path, { docId, adapter })
+        return
+      }
+
+      const resolveView = (): EditorView | null => {
+        for (const view of this.markdownViews()) {
+          if (view.file?.path !== file.path) continue
+          const editor = view.editor
+          return editor ? getEditorView(editor) : null
+        }
+        return null
+      }
+
+      if (!resolveView()) {
+        store.unpin(docId)
+        return
+      }
+
+      const adapter = new MainEditorCollabAdapter(
+        resolveView,
+        handle.ytext,
+        handle.collabEnabled ? handle.awareness : null
+      )
+      try {
+        adapter.attach()
+        // Obsidian saves this buffer itself; a second writer would loop.
+        store.setEditorOwned(docId, true)
+        this.bound.set(file.path, { docId, adapter })
+      } catch (error) {
+        // Hijacking a pane for a replacement editor is worse than the problem
+        // it solves. The note keeps syncing through the file instead: without
+        // an editor bound, the store writes remote changes to disk and
+        // Obsidian picks them up.
+        console.error('[obsidian-connect] main editor integration failed', error)
+        new Notice(
+          `Obsidian Connect could not attach to the editor for ${file.basename}. The note still syncs through the file; see the console.`,
+          8_000
+        )
+        store.unpin(docId)
+      }
+    } finally {
+      this.binding.delete(file.path)
     }
   }
 

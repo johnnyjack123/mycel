@@ -15,7 +15,6 @@ export interface DocStoreOptions {
   user: CollabUser
   excludeGlobs: string[]
   conflictMarkers: boolean
-  liveCollaboration: boolean
   maxLoadedDocuments: number
   syncTimeoutMs: number
   writeDebounceMs: number
@@ -40,6 +39,10 @@ export class DocStore {
   private readonly lastUsed = new Map<string, number>()
   private readonly pinned = new Set<string>()
   private readonly editorOwned = new Set<string>()
+  // Presence belongs to a shared document, not to the vault: syncing your own
+  // devices must not broadcast your caret. Phase 2 fills this from the share
+  // ACL; until sharing exists it stays empty and no awareness is registered.
+  private readonly sharedDocs = new Set<string>()
   private readonly writeTimers = new Map<string, number>()
   private readonly inFlight = new Map<string, Promise<DocHandle>>()
   private indexReady = false
@@ -133,7 +136,7 @@ export class DocStore {
     if (pending) return pending
 
     const creation = (async () => {
-      const handle = new DocHandle(docId, this.options.vaultId, this.socket, this.options.user, this.options.liveCollaboration)
+      const handle = new DocHandle(docId, this.options.vaultId, this.socket, this.options.user, this.sharedDocs.has(docId))
       this.handles.set(docId, handle)
       this.touch(docId)
       await handle.whenLocalReady()

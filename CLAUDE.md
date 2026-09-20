@@ -38,6 +38,18 @@ not preferences.
    CodeMirror catches the exception and silently deactivates the plugin forever,
    so the editor reports success and then ignores every keystroke. Defer with
    `queueMicrotask`.
+7. **Only one writer per file, and only one binding per editor.** While an
+   editor is bound, Obsidian saves that buffer — `DocStore.setEditorOwned`
+   suppresses our own write. Writing anyway made Obsidian reload the open
+   buffer, which the binding read back as a user edit; two devices doing that
+   concurrently doubled the text on every round trip. Likewise, `bindEditor`
+   guards with a synchronous `binding` set: opening a note fires three workspace
+   events, and without the guard each one attached another binding to the same
+   editor, applying every keystroke several times.
+8. **A change whose result already equals the document is not an edit.**
+   `applyLocalChanges` returns early in that case. Obsidian replaces the whole
+   buffer on reload even when the text is identical, and taken literally that
+   becomes "delete everything, insert everything".
 
 ## Architecture
 
@@ -136,6 +148,15 @@ Decided with the user, not yet implemented.
 ### Sharing
 
 Granting account B access to `doc:<docId>` plus an entry in B's vault index.
+
+**Sharing is per document and lives in the UI, not in the settings.** The flow
+is: open a note, "Share this note", pick a person the server knows, done. There
+must be no global "collaboration on/off" switch — that was built once and was
+wrong. Presence (cursors, selections) follows from a document being shared:
+`DocStore.sharedDocs` is the seam, and `DocHandle` only registers awareness with
+the socket for documents in it. Syncing your own devices never broadcasts a
+caret.
+
 Agreed rules:
 
 - A dedicated share folder is only a **default landing spot**, never the source
@@ -167,11 +188,24 @@ document key                -> symmetric, one per document, per epoch
   be sent.
 - Documents are **not** encrypted with the password-derived key directly, so a
   password change only re-wraps the master key instead of the whole vault.
-- **Key epochs:** a revoke rotates the document key. Handing over only the newest
-  epoch also gives "history from the share point onward" — but the recipient then
-  needs a **snapshot re-encrypted under the current epoch key**, because the text
-  itself was built in earlier epochs. Default is to share all epochs (full
-  history) with a notice.
+- **Key epochs.** There is no "document" next to the log — the current state *is*
+  the result of applying every update. A snapshot is only a compaction artifact.
+  So:
+  - One key, never rotated: works, no epochs, no snapshot. But anyone who ever
+    held the key can read future updates too if they can reach the frames, which
+    makes access control purely server-enforced — exactly what E2E is meant to
+    avoid.
+  - **Rotating on revoke** is therefore the real reason epochs exist.
+  - **Rotating on share** additionally hides the prior history from the new
+    participant. It requires handing them a **snapshot re-encrypted under the
+    new epoch key**: the newer frames are deltas against a base they cannot
+    read, so without it they get a broken document, not a shorter history.
+  - The owner keeps every epoch key and therefore always sees the full history.
+  - Sharing every epoch instead (full history, with a notice) needs no snapshot
+    at all: hand over both keys and nothing special happens.
+
+  Which of the last two is the default is still open — rotate-on-share is the
+  more private one and costs the snapshot step.
 - Later: recovery codes, strength estimation instead of composition rules, 2FA.
 
 **What E2E costs, concretely:** the server can no longer maintain a `Y.Doc`, so
