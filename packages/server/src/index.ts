@@ -12,7 +12,8 @@ const config = loadConfig()
 const tokens = new TokenService(config.jwtSecret, config.accessTokenTtlSeconds)
 const rooms = new RoomManager({
   dataDir: config.dataDir,
-  historyRetentionDays: config.historyRetentionDays
+  historyRetentionDays: config.historyRetentionDays,
+  logUpdates: config.logUpdates
 })
 const app = createHttpApp(config, tokens, rooms)
 

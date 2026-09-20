@@ -9,6 +9,8 @@ export interface ServerConfig {
   accessTokenTtlSeconds: number
   /** Days of individually restorable versions. Older ones fold into the snapshot. */
   historyRetentionDays: number
+  /** Log every document update. Off by default: one line per keystroke. */
+  logUpdates: boolean
 }
 
 function parseIntFallback(value: string | undefined, fallback: number): number {
@@ -24,6 +26,7 @@ export function loadConfig(): ServerConfig {
     dataDir: resolve(process.env.OBSIDIAN_CONNECT_DATA_DIR ?? './data'),
     devAllowAnonymous: (process.env.OBSIDIAN_CONNECT_DEV ?? 'true') !== 'false',
     accessTokenTtlSeconds: parseIntFallback(process.env.OBSIDIAN_CONNECT_TOKEN_TTL, 86_400),
-    historyRetentionDays: parseIntFallback(process.env.OBSIDIAN_CONNECT_HISTORY_DAYS, 30)
+    historyRetentionDays: parseIntFallback(process.env.OBSIDIAN_CONNECT_HISTORY_DAYS, 30),
+    logUpdates: process.env.OBSIDIAN_CONNECT_LOG_UPDATES === 'true'
   }
 }

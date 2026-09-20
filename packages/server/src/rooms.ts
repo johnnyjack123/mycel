@@ -39,6 +39,7 @@ const HISTORY_ORIGIN = 'history'
 export interface RoomManagerOptions {
   dataDir: string
   historyRetentionDays: number
+  logUpdates?: boolean
 }
 
 export class RoomManager {
@@ -72,6 +73,9 @@ export class RoomManager {
       // log without adding a single new version.
       if (origin === HISTORY_ORIGIN) return
       void history.append(update)
+      if (this.options.logUpdates) {
+        console.info(`[obsidian-connect] ${name}: +${update.length}B -> ${room.subscribers.size - 1} peer(s)`)
+      }
       const encoder = encoding.createEncoder()
       syncProtocol.writeUpdate(encoder, update)
       const payload = encoding.toUint8Array(encoder)

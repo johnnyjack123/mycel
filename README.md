@@ -154,3 +154,9 @@ Server environment variables, defaults in parentheses:
 - `OBSIDIAN_CONNECT_DEV` (`true`, anonymous connections allowed)
 - `OBSIDIAN_CONNECT_TOKEN_TTL` (`86400` seconds)
 - `OBSIDIAN_CONNECT_HISTORY_DAYS` (`30`, individually restorable versions)
+- `OBSIDIAN_CONNECT_LOG_UPDATES` (`false`) — log a line per document update.
+  Normal operation logs only HTTP requests and WebSocket upgrades, so silence
+  while you type is expected; turn this on to see edits arriving.
+
+`GET /rooms` is the quieter check: it lists each room with its character count
+and number of versions.
