@@ -1,5 +1,5 @@
 import type { Editor } from 'obsidian'
-import type { EditorView } from '@codemirror/view'
+import { EditorView } from '@codemirror/view'
 import { Compartment, StateEffect } from '@codemirror/state'
 import type * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
@@ -70,16 +70,44 @@ export class MainEditorCollabAdapter implements CollabAdapter {
 
   private install(view: EditorView): void {
     this.detach()
-    const collab = mainEditorCollab(this.ytext, this.awareness, () => this.resolveView() === view)
-    view.dispatch({
-      effects: StateEffect.appendConfig.of(this.compartment.of(collab.extension))
-    })
-    if (view.plugin(collab.binding) === null) {
-      throw new Error(
-        'The CodeMirror collaboration plugin did not start; see the console for the underlying error.'
-      )
+
+    let crash: unknown = null
+    const collab = mainEditorCollab(
+      this.ytext,
+      this.awareness,
+      () => this.resolveView() === view,
+      (error) => {
+        crash = error
+        console.error('[obsidian-connect] the editor extension threw', error)
+      }
+    )
+
+    try {
+      view.dispatch({
+        effects: StateEffect.appendConfig.of(this.compartment.of(collab.extension))
+      })
+    } catch (error) {
+      throw new Error(`installing the editor extension failed: ${describe(error)}`)
     }
+
+    if (view.plugin(collab.binding) === null) {
+      // Everything known about the editor at the moment it refused, because
+      // the cause has so far only been reproducible on one machine.
+      const context = [
+        `crash=${crash ? describe(crash) : 'none reported'}`,
+        `docLength=${view.state.doc.length}`,
+        `inDom=${view.dom.isConnected}`,
+        `editable=${view.state.facet(EditorView.editable)}`
+      ].join(', ')
+      throw new Error(`the editor extension did not start (${context})`)
+    }
+
     this.view = view
     this.binding = collab.binding
   }
+}
+
+function describe(error: unknown): string {
+  if (error instanceof Error) return `${error.name}: ${error.message}`
+  return String(error)
 }

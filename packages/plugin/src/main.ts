@@ -361,9 +361,10 @@ export default class ObsidianConnectPlugin extends Plugin {
         // an editor bound, the store writes remote changes to disk and
         // Obsidian picks them up.
         console.error('[obsidian-connect] main editor integration failed', error)
+        const reason = error instanceof Error ? error.message : String(error)
         new Notice(
-          `Obsidian Connect could not attach to the editor for ${file.basename}. The note still syncs through the file; see the console.`,
-          8_000
+          `Obsidian Connect could not attach to the editor for ${file.basename}:\n${reason}\n\nThe note still syncs through the file.`,
+          15_000
         )
         store.unpin(docId)
       }

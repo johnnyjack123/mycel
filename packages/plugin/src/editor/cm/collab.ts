@@ -1,4 +1,5 @@
 import type { Extension } from '@codemirror/state'
+import { EditorView } from '@codemirror/view'
 import type * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 import { awarenessFacet, yTextFacet } from './facets'
@@ -18,14 +19,19 @@ export interface MainEditorCollab {
 export function mainEditorCollab(
   ytext: Y.Text,
   awareness: Awareness | null,
-  isSessionEditor: () => boolean
+  isSessionEditor: () => boolean,
+  onException?: (error: unknown) => void
 ): MainEditorCollab {
   const binding = yTextBinding(ytext, awareness, isSessionEditor)
+  // CodeMirror swallows an exception thrown while a view plugin is built and
+  // only logs it. Without a sink the caller sees "the plugin did not start"
+  // and has to go digging for the real cause in the console.
+  const sink = onException ? [EditorView.exceptionSink.of(onException)] : []
   return {
     binding,
     extension: awareness
-      ? [yTextFacet.of(ytext), awarenessFacet.of(awareness), binding, remoteCursors()]
+      ? [...sink, yTextFacet.of(ytext), awarenessFacet.of(awareness), binding, remoteCursors()]
       : // Sync only: no presence facet, no cursor decorations.
-        [yTextFacet.of(ytext), binding]
+        [...sink, yTextFacet.of(ytext), binding]
   }
 }

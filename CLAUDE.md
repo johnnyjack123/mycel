@@ -134,13 +134,26 @@ Changes there need on-device verification.
   evaluates it itself; Node needs a `.cjs` copy (see `load-selftest.mjs`).
 - **Never put raw control characters in source.** A NUL sentinel in the glob
   matcher survived two rewrites unnoticed.
-- **Stop the dev server after testing, and verify it.** `pkill` from Git Bash
-  does not kill Windows processes; a server left running on 1234 has three
-  times been mistaken for the user's own, once while its data directory was
-  being deleted underneath it. Use PowerShell and check:
+- **Never test on port 1234 and never delete `packages/server/data/`.** That is
+  the user's server and the user's history. Assuming otherwise has, three times,
+  meant killing their server, wiping its data while it ran, and writing test
+  rooms into it — and because `npm run start:server` then fails with
+  `EADDRINUSE` while the tests happily keep going, it looks like everything
+  passed.
+
+  Always use a separate port and a scratch data directory:
+
+  ```bash
+  PORT=1235 OBSIDIAN_CONNECT_DATA_DIR="$TMPDIR/oc-test-data" npm run start:server
+  npm run test:socket -- ws://localhost:1235
+  ```
+
+  Check the server log for `EADDRINUSE` before trusting a green run, and stop
+  it afterwards with PowerShell — `pkill` from Git Bash does not kill Windows
+  processes:
 
   ```powershell
-  Get-NetTCPConnection -LocalPort 1234 -State Listen -ErrorAction SilentlyContinue |
+  Get-NetTCPConnection -LocalPort 1235 -State Listen -ErrorAction SilentlyContinue |
     ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
   ```
 
