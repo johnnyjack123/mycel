@@ -17,17 +17,15 @@ export interface MainEditorCollab {
 
 export function mainEditorCollab(
   ytext: Y.Text,
-  awareness: Awareness,
+  awareness: Awareness | null,
   isSessionEditor: () => boolean
 ): MainEditorCollab {
   const binding = yTextBinding(ytext, awareness, isSessionEditor)
   return {
     binding,
-    extension: [
-      yTextFacet.of(ytext),
-      awarenessFacet.of(awareness),
-      binding,
-      remoteCursors()
-    ]
+    extension: awareness
+      ? [yTextFacet.of(ytext), awarenessFacet.of(awareness), binding, remoteCursors()]
+      : // Sync only: no presence facet, no cursor decorations.
+        [yTextFacet.of(ytext), binding]
   }
 }

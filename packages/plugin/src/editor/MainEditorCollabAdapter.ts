@@ -25,7 +25,7 @@ export class MainEditorCollabAdapter implements CollabAdapter {
   constructor(
     private readonly resolveView: SessionEditorResolver,
     private readonly ytext: Y.Text,
-    private readonly awareness: Awareness
+    private readonly awareness: Awareness | null
   ) {}
 
   attach(): void {

@@ -22,14 +22,23 @@ export class DocHandle {
     readonly docId: string,
     vaultId: string,
     socket: VaultSocket,
-    user: CollabUser
+    user: CollabUser,
+    readonly collabEnabled: boolean
   ) {
     this.ytext = this.doc.getText(CONTENT_FIELD)
     this.room = docRoom(docId)
+    // The awareness object always exists because the fallback view's `yCollab`
+    // needs one, but with collaboration off it is never registered with the
+    // socket: no presence leaves this device and no remote cursors arrive.
+    // Syncing your own devices should not broadcast where your caret is.
     this.awareness = new Awareness(this.doc)
-    this.awareness.setLocalStateField('user', user)
+    if (collabEnabled) this.awareness.setLocalStateField('user', user)
     this.persistence = new IndexeddbPersistence(`obsidian-connect/${vaultId}/${docId}`, this.doc)
-    this.socketSynced = socket.register(this.room, this.doc, this.awareness)
+    this.socketSynced = socket.register(
+      this.room,
+      this.doc,
+      collabEnabled ? this.awareness : null
+    )
   }
 
   /** Resolves once the locally stored state is loaded. */
