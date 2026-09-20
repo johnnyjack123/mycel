@@ -7,6 +7,7 @@ import {
   ViewPlugin,
   type ViewUpdate
 } from '@codemirror/view'
+import { textEdits } from '@obsidian-connect/shared'
 import { EDITOR_ORIGIN } from '../../sync/origin.js'
 
 export const remoteUpdate = Annotation.define<boolean>()
@@ -80,8 +81,14 @@ export function yTextBinding(
         const current = this.view.state.doc.toString()
         const next = ytext.toString()
         if (current === next) return
+        // Minimal edits rather than one document-wide replacement. Replacing
+        // everything discards the selection and the scroll position, and it
+        // left CodeMirror's height map pointing past the end of the new
+        // document - it then crashed while measuring the scroll anchor.
+        const edits = textEdits(current, next)
+        if (edits.length === 0) return
         this.dispatchRemote({
-          changes: { from: 0, to: this.view.state.doc.length, insert: next }
+          changes: edits.map((edit) => ({ from: edit.from, to: edit.to, insert: edit.insert }))
         })
       }
 

@@ -350,24 +350,44 @@ export default class ObsidianConnectPlugin extends Plugin {
         handle.ytext,
         handle.collabEnabled ? handle.awareness : null
       )
-      try {
-        adapter.attach()
-        // Obsidian saves this buffer itself; a second writer would loop.
-        store.setEditorOwned(docId, true)
-        this.bound.set(file.path, { docId, adapter })
-      } catch (error) {
-        // Hijacking a pane for a replacement editor is worse than the problem
-        // it solves. The note keeps syncing through the file instead: without
-        // an editor bound, the store writes remote changes to disk and
-        // Obsidian picks them up.
-        console.error('[obsidian-connect] main editor integration failed', error)
-        const reason = error instanceof Error ? error.message : String(error)
-        new Notice(
-          `Obsidian Connect could not attach to the editor for ${file.basename}:\n${reason}\n\nThe note still syncs through the file.`,
-          15_000
-        )
-        store.unpin(docId)
-      }
+      // Attaching dispatches into the editor, and we arrive here from a
+      // workspace event, so Obsidian may still be laying out. Dispatching in
+      // the middle of that crashed CodeMirror while it measured the scroll
+      // anchor. Let the current work finish first, and allow one more frame
+      // before giving up.
+      await new Promise<void>((done) => {
+        const attempt = (retriesLeft: number): void => {
+          if (this.store !== store || !resolveView()) {
+            store.unpin(docId)
+            done()
+            return
+          }
+          try {
+            adapter.attach()
+            // Obsidian saves this buffer itself; a second writer would loop.
+            store.setEditorOwned(docId, true)
+            this.bound.set(file.path, { docId, adapter })
+          } catch (error) {
+            if (retriesLeft > 0) {
+              window.requestAnimationFrame(() => attempt(retriesLeft - 1))
+              return
+            }
+            // Hijacking a pane for a replacement editor is worse than the
+            // problem it solves. The note keeps syncing through the file
+            // instead: with no editor bound, the store writes remote changes
+            // to disk and Obsidian picks them up.
+            console.error('[obsidian-connect] main editor integration failed', error)
+            const reason = error instanceof Error ? error.message : String(error)
+            new Notice(
+              `Obsidian Connect could not attach to the editor for ${file.basename}:\n${reason}\n\nThe note still syncs through the file.`,
+              15_000
+            )
+            store.unpin(docId)
+          }
+          done()
+        }
+        window.setTimeout(() => attempt(1), 0)
+      })
     } finally {
       this.binding.delete(file.path)
     }
