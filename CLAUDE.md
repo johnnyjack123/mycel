@@ -134,6 +134,15 @@ Changes there need on-device verification.
   evaluates it itself; Node needs a `.cjs` copy (see `load-selftest.mjs`).
 - **Never put raw control characters in source.** A NUL sentinel in the glob
   matcher survived two rewrites unnoticed.
+- **Stop the dev server after testing, and verify it.** `pkill` from Git Bash
+  does not kill Windows processes; a server left running on 1234 has three
+  times been mistaken for the user's own, once while its data directory was
+  being deleted underneath it. Use PowerShell and check:
+
+  ```powershell
+  Get-NetTCPConnection -LocalPort 1234 -State Listen -ErrorAction SilentlyContinue |
+    ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+  ```
 
 ## Planned — Phase 2
 
@@ -144,6 +153,33 @@ Decided with the user, not yet implemented.
 - **`vaultId` must become derived, not random:** `username + vault name`. One
   vault per name per user, so a new device pairs by signing in instead of
   copying a UUID. Today it is a generated UUID the user copies by hand.
+
+### Settings: account-wide vs device-local
+
+Some settings must be identical on every device of an account, others must not.
+Syncing all of them would be wrong.
+
+- **Account-wide** (belongs in a settings document next to the vault index):
+  history retention, backup retention, exclude globs, conflict markers.
+- **Device-local** (must stay in `data.json`): the access token, and anything
+  that legitimately differs per machine — `maxLoadedDocuments` (lower on
+  mobile), `writeDebounceMs`, and the server URL, which may differ between a
+  LAN address and a VPN one.
+
+History retention in particular *has* to be account-wide: pruning is
+client-driven, so a device with a shorter setting silently prunes for all the
+others.
+
+### Retention on a shared document
+
+Same failure mode across accounts, and the answer is a rule, not a negotiation:
+**the owner's retention governs the shared log, and only the owner's client may
+instruct compaction.** Without that, whichever participant has the shortest
+retention destroys history for everyone, silently.
+
+A participant who wants more can keep more: every client fetches and holds the
+frames locally anyway, so a longer *local* archive is always possible. What a
+participant cannot do is change how long the shared log lives.
 
 ### Sharing
 
@@ -204,8 +240,16 @@ document key                -> symmetric, one per document, per epoch
   - Sharing every epoch instead (full history, with a notice) needs no snapshot
     at all: hand over both keys and nothing special happens.
 
-  Which of the last two is the default is still open — rotate-on-share is the
-  more private one and costs the snapshot step.
+  **This is a per-share choice, not a global default.** The share dialog asks
+  whether to include the history:
+  - *with history* — hand over every epoch key. No rotation, no snapshot.
+  - *without history* — rotate to a new epoch, hand over only the new key plus
+    a snapshot re-encrypted under it.
+
+  Two consequences worth surfacing in the dialog: "without history" only hides
+  what came before, not what the participant sees from then on; and producing
+  the snapshot needs the owner's client to have the document loaded, so an
+  owner who is offline cannot create that kind of share.
 - Later: recovery codes, strength estimation instead of composition rules, 2FA.
 
 **What E2E costs, concretely:** the server can no longer maintain a `Y.Doc`, so
