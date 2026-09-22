@@ -18,6 +18,7 @@
     "test:merge": "npm run test:merge -w @obsidian-connect/plugin",
     "test:socket": "npm run test:socket -w @obsidian-connect/plugin",
     "test:sync": "npm run test:sync -w @obsidian-connect/plugin",
+    "test:vault": "npm run test:vault -w @obsidian-connect/plugin",
     "test:history": "node packages/server/scripts/history-selftest.mjs",
     "test:rooms": "npm run test:rooms -w @obsidian-connect/server",
     "test:load": "npm run test:load -w @obsidian-connect/plugin"

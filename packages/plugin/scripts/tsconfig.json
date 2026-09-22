@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "obsidian": ["./stubs/obsidian.ts"]
+    }
+  },
+  "include": ["./**/*.mts", "./stubs/**/*.ts", "../src"]
+}

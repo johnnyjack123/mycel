@@ -1,11 +1,16 @@
 import { Notice, TFile, type App } from 'obsidian'
-import { applyTextEdits, indexRoom, textEdits, type CollabUser } from '@obsidian-connect/shared'
-import { additiveEdits } from './Reconciler.js'
+import {
+  applyTextEdits,
+  indexRoom,
+  textEdits,
+  type CollabUser,
+  type IndexEntry
+} from '@obsidian-connect/shared'
+import { additiveEdits, reconcile, type ReconcileOutcome } from './Reconciler.js'
 import { matchesGlob } from './glob.js'
 import { SYNC_ORIGIN } from './origin.js'
 import type { BackupStore } from './BackupStore.js'
-import { DocHandle } from './DocHandle.js'
-import { reconcile, type ReconcileOutcome } from './Reconciler.js'
+import { DocHandle, openIndexedDb, type OpenLocalStore } from './DocHandle.js'
 import type { StateStore } from './StateStore.js'
 import type { VaultIndex } from './VaultIndex.js'
 import type { VaultSocket } from './VaultSocket.js'
@@ -20,7 +25,15 @@ export interface DocStoreOptions {
   writeDebounceMs: number
 }
 
-const SCAN_BATCH = 25
+// Enough to hide the round trip per note, few enough not to flood the socket
+// or IndexedDB on a vault of thousands.
+const CONCURRENCY = 8
+// How long a write of ours is recognised when it comes back as a file event
+// or as Obsidian reloading an open editor.
+const OWN_WRITE_TTL_MS = 10_000
+// Upper bound on how long stopping waits for running file operations, so
+// unloading the plugin never hangs on a server that stopped answering.
+const STOP_DRAIN_MS = 2_000
 
 /** `extra` folded into `base` without removing anything already there. */
 function mergeAdditively(base: string, extra: string): string {
@@ -34,17 +47,29 @@ function mergeAdditively(base: string, extra: string): string {
   return result
 }
 
+function parentOf(path: string): string {
+  const slash = path.lastIndexOf('/')
+  return slash < 0 ? '' : path.slice(0, slash)
+}
+
 export class DocStore {
   private readonly handles = new Map<string, DocHandle>()
   private readonly lastUsed = new Map<string, number>()
   private readonly pinned = new Set<string>()
   private readonly editorOwned = new Set<string>()
-  // Presence belongs to a shared document, not to the vault: syncing your own
-  // devices must not broadcast your caret. Phase 2 fills this from the share
-  // ACL; until sharing exists it stays empty and no awareness is registered.
-  private readonly sharedDocs = new Set<string>()
   private readonly writeTimers = new Map<string, number>()
   private readonly inFlight = new Map<string, Promise<DocHandle>>()
+  // One file operation per document at a time. The scan, vault events, remote
+  // changes and an editor binding all reach the same note concurrently, and
+  // two reconciles interleaving on one note is how text gets applied twice.
+  private readonly locks = new Map<string, Promise<void>>()
+  private readonly ownWrites = new Map<string, { text: string; timer: number }>()
+  /** Documents whose file and document have agreed at least once this session. */
+  private readonly agreed = new Set<string>()
+  private readonly readyListeners = new Set<() => void>()
+  /** Renames and deletes that happened before the index arrived. */
+  private readonly early: Array<() => Promise<void>> = []
+  private indexWork: Promise<void> = Promise.resolve()
   private indexReady = false
   private stopped = false
 
@@ -54,15 +79,34 @@ export class DocStore {
     private readonly index: VaultIndex,
     private readonly state: StateStore,
     private readonly backups: BackupStore,
-    private options: DocStoreOptions
+    private options: DocStoreOptions,
+    private readonly openLocal: OpenLocalStore = openIndexedDb
   ) {}
 
   setOptions(options: DocStoreOptions): void {
     this.options = options
   }
 
+  get ready(): boolean {
+    return this.indexReady && !this.stopped
+  }
+
+  /** Fires once the vault index has arrived and notes can be bound to editors. */
+  onReady(listener: () => void): () => void {
+    this.readyListeners.add(listener)
+    return () => this.readyListeners.delete(listener)
+  }
+
   isExcluded(path: string): boolean {
     return this.options.excludeGlobs.some((pattern) => pattern && matchesGlob(path, pattern))
+  }
+
+  private tracks(file: TFile): boolean {
+    return this.ready && file.extension === 'md' && !this.isExcluded(file.path)
+  }
+
+  isShared(docId: string): boolean {
+    return this.index.isShared(docId)
   }
 
   /** Keeps a document loaded while it is open in an editor. */
@@ -91,6 +135,51 @@ export class DocStore {
     this.scheduleWrite(docId)
   }
 
+  isEditorOwned(docId: string): boolean {
+    return this.editorOwned.has(docId)
+  }
+
+  private withLock<T>(docId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(docId) ?? Promise.resolve()
+    const run = previous.then(task)
+    const tail = run.then(
+      () => undefined,
+      () => undefined
+    )
+    this.locks.set(docId, tail)
+    void tail.then(() => {
+      if (this.locks.get(docId) === tail) this.locks.delete(docId)
+    })
+    return run
+  }
+
+  // --- own writes ------------------------------------------------------------
+
+  private rememberOwnWrite(docId: string, text: string): void {
+    const previous = this.ownWrites.get(docId)
+    if (previous) window.clearTimeout(previous.timer)
+    const timer = window.setTimeout(() => {
+      if (this.ownWrites.get(docId)?.timer === timer) this.ownWrites.delete(docId)
+    }, OWN_WRITE_TTL_MS)
+    this.ownWrites.set(docId, { text, timer })
+  }
+
+  /**
+   * The text this device wrote to the note's file within the last few seconds.
+   * It comes back as a modify event, and Obsidian may reload it into an editor
+   * that is bound by then; neither is an edit.
+   */
+  recentWrite(docId: string): string | null {
+    return this.ownWrites.get(docId)?.text ?? null
+  }
+
+  private async writeFile(docId: string, file: TFile, text: string): Promise<void> {
+    this.rememberOwnWrite(docId, text)
+    await this.app.vault.modify(file, text)
+  }
+
+  // --- lifecycle -------------------------------------------------------------
+
   async start(): Promise<boolean> {
     await this.state.load()
     // Without the index we do not know which document a file belongs to.
@@ -107,36 +196,99 @@ export class DocStore {
       return false
     }
     this.indexReady = true
+    for (const replay of this.early.splice(0)) await replay()
+    for (const listener of this.readyListeners) listener()
+
+    // Deletes before the scan: the scan would otherwise find the file of a note
+    // another device deleted and bring it back.
+    await this.applyRemoteDeletes()
     await this.scanVault()
+    await this.applyRemoteIndexChanges()
     return true
+  }
+
+  /** Resolves when the vault index arrives, however long that takes. */
+  whenIndexSynced(): Promise<void> {
+    return this.socket.whenSynced(indexRoom(this.options.vaultId))
+  }
+
+  /**
+   * Catches up after the connection came back: notes that could not be
+   * settled while the server was unreachable, and whatever the index gained
+   * in the meantime.
+   */
+  async resume(): Promise<void> {
+    if (!this.ready) return
+    const unsettled = this.app.vault.getMarkdownFiles().filter((file) => {
+      if (this.isExcluded(file.path)) return false
+      const docId = this.index.docIdForPath(file.path)
+      return !docId || !this.agreed.has(docId)
+    })
+    await this.pool(unsettled, (file) => this.syncFile(file))
+    await this.applyRemoteIndexChanges()
   }
 
   async stop(): Promise<void> {
     this.stopped = true
     for (const timer of this.writeTimers.values()) window.clearTimeout(timer)
     this.writeTimers.clear()
-    for (const handle of this.handles.values()) await handle.destroy(this.socket)
+    // Let file operations already under way record their outcome. Saving the
+    // state before a pull finished forgot that this device has the note, and
+    // a delete from elsewhere was then no longer applied to it.
+    await Promise.race([
+      Promise.all(Array.from(this.locks.values())),
+      new Promise((resolve) => window.setTimeout(resolve, STOP_DRAIN_MS))
+    ])
+    for (const { timer } of this.ownWrites.values()) window.clearTimeout(timer)
+    this.ownWrites.clear()
+    for (const handle of this.handles.values()) await handle.destroy()
     this.handles.clear()
-    await this.state.flush()
+    this.readyListeners.clear()
+    await this.state.close()
   }
 
-  // --- document lifecycle --------------------------------------------------
+  private async pool<T>(items: T[], task: (item: T) => Promise<void>): Promise<void> {
+    let next = 0
+    const worker = async (): Promise<void> => {
+      while (!this.stopped && next < items.length) {
+        const item = items[next] as T
+        next += 1
+        try {
+          await task(item)
+        } catch (error) {
+          console.error('[obsidian-connect] syncing a note failed', error)
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker))
+  }
+
+  // --- document lifecycle ----------------------------------------------------
 
   private touch(docId: string): void {
     this.lastUsed.set(docId, Date.now())
   }
 
   async handleFor(docId: string): Promise<DocHandle> {
+    // In flight first: the handle is in the map before its local state has
+    // loaded, and a second caller must not see that empty document.
+    const pending = this.inFlight.get(docId)
+    if (pending) return pending
     const existing = this.handles.get(docId)
     if (existing && !existing.isDestroyed) {
       this.touch(docId)
       return existing
     }
-    const pending = this.inFlight.get(docId)
-    if (pending) return pending
 
     const creation = (async () => {
-      const handle = new DocHandle(docId, this.options.vaultId, this.socket, this.options.user, this.sharedDocs.has(docId))
+      const handle = new DocHandle(
+        docId,
+        this.options.vaultId,
+        this.socket,
+        this.options.user,
+        this.isShared(docId),
+        this.openLocal
+      )
       this.handles.set(docId, handle)
       this.touch(docId)
       await handle.whenLocalReady()
@@ -165,20 +317,38 @@ export class DocStore {
     const limit = Math.max(this.options.maxLoadedDocuments, this.pinned.size + 1)
     if (this.handles.size <= limit) return
     const candidates = Array.from(this.handles.keys())
-      .filter((docId) => !this.pinned.has(docId) && !this.writeTimers.has(docId))
+      .filter(
+        (docId) =>
+          !this.pinned.has(docId) &&
+          !this.inFlight.has(docId) &&
+          !this.writeTimers.has(docId) &&
+          !this.locks.has(docId) &&
+          !this.editorOwned.has(docId)
+      )
       .sort((a, b) => (this.lastUsed.get(a) ?? 0) - (this.lastUsed.get(b) ?? 0))
 
     for (const docId of candidates) {
       if (this.handles.size <= limit) break
-      const handle = this.handles.get(docId)
-      if (!handle) continue
-      this.handles.delete(docId)
-      this.lastUsed.delete(docId)
-      await handle.destroy(this.socket)
+      await this.dropHandle(docId)
     }
   }
 
-  // --- file <-> document ---------------------------------------------------
+  private async dropHandle(docId: string): Promise<void> {
+    const timer = this.writeTimers.get(docId)
+    if (timer !== undefined) window.clearTimeout(timer)
+    this.writeTimers.delete(docId)
+    const handle = this.handles.get(docId)
+    this.handles.delete(docId)
+    this.lastUsed.delete(docId)
+    await handle?.destroy()
+  }
+
+  private forget(docId: string): void {
+    this.state.forget(docId)
+    this.agreed.delete(docId)
+  }
+
+  // --- file <-> document -----------------------------------------------------
 
   private fileFor(docId: string): TFile | null {
     const path = this.index.pathFor(docId)
@@ -193,13 +363,16 @@ export class DocStore {
     if (existing !== undefined) window.clearTimeout(existing)
     const timer = window.setTimeout(() => {
       this.writeTimers.delete(docId)
-      void this.writeToFile(docId)
+      void this.withLock(docId, () => this.writeToFile(docId))
     }, this.options.writeDebounceMs)
     this.writeTimers.set(docId, timer)
   }
 
   /** Projects the document onto disk. The document is the source of truth. */
   private async writeToFile(docId: string): Promise<void> {
+    // Checked again here: an editor may have claimed the note since this was
+    // scheduled, and from then on Obsidian is the only writer.
+    if (this.stopped || this.editorOwned.has(docId)) return
     const handle = this.handles.get(docId)
     const file = this.fileFor(docId)
     if (!handle || !file) return
@@ -210,7 +383,16 @@ export class DocStore {
         await this.recordAgreement(docId, file, text)
         return
       }
-      await this.app.vault.modify(file, text)
+      const base = await this.state.baseText(docId)
+      // A plain overwrite is only safe for a note that agreed with its
+      // document this session, and whose file has not changed since. Anything
+      // else - a document whose state was never confirmed, a file edit not yet
+      // taken in - goes through the reconcile, which knows how to keep both.
+      if (!this.agreed.has(docId) || (current !== base && current !== this.recentWrite(docId))) {
+        await this.reconcileFile(docId, file)
+        return
+      }
+      await this.writeFile(docId, file, text)
       await this.recordAgreement(docId, file, text)
     } catch (error) {
       console.error(`[obsidian-connect] writing ${file.path} failed`, error)
@@ -224,6 +406,11 @@ export class DocStore {
   private async recordAgreement(docId: string, file: TFile, text: string): Promise<void> {
     await this.state.setBaseText(docId, text)
     this.state.set(docId, { path: file.path, mtime: file.stat.mtime, size: file.stat.size })
+    this.agreed.add(docId)
+  }
+
+  baseText(docId: string): Promise<string | null> {
+    return this.state.baseText(docId)
   }
 
   private applyToDocument(handle: DocHandle, target: string): void {
@@ -236,17 +423,40 @@ export class DocStore {
    * Brings one note into agreement. Everything that can lose text funnels
    * through here, and every branch that can delete takes a backup first.
    */
-  async syncFile(file: TFile, force = false): Promise<void> {
-    if (this.stopped || file.extension !== 'md' || this.isExcluded(file.path)) return
-
+  async syncFile(file: TFile): Promise<void> {
+    if (!this.tracks(file)) return
     const docId = await this.index.ensure(file.path)
-    const known = this.state.get(docId)
-    const unchanged =
-      !force && known && known.path === file.path && known.mtime === file.stat.mtime && known.size === file.stat.size
+    await this.withLock(docId, () => this.reconcileFile(docId, file))
+  }
 
+  /**
+   * Settles a note that is about to be shown in an editor. Resolves to its
+   * document id once file and document agree, or null while that cannot be
+   * established - the server has never been reached for an empty document.
+   */
+  async settle(file: TFile): Promise<string | null> {
+    if (!this.tracks(file)) return null
+    await this.syncFile(file)
+    const docId = this.index.docIdForPath(file.path)
+    return docId && this.agreed.has(docId) ? docId : null
+  }
+
+  private async reconcileFile(docId: string, file: TFile): Promise<void> {
+    // The index may have moved the note on while this waited for the lock.
+    if (this.stopped || this.index.pathFor(docId) !== file.path) return
     const handle = await this.handleFor(docId)
-    const remoteKnown = await handle.whenRemoteReady(this.options.syncTimeoutMs)
 
+    if (this.editorOwned.has(docId)) {
+      // The editor and the document are kept identical keystroke by
+      // keystroke, and Obsidian writes the file from that editor. The file is
+      // at best a slightly older copy of the same text; merging it back in
+      // is what duplicated everything typed since it was saved.
+      const local = await this.app.vault.read(file)
+      if (local === handle.text()) await this.recordAgreement(docId, file, local)
+      return
+    }
+
+    const remoteKnown = await handle.whenRemoteReady(this.options.syncTimeoutMs)
     const local = await this.app.vault.read(file)
     const remote = handle.text()
 
@@ -260,19 +470,14 @@ export class DocStore {
       return
     }
 
-    if (unchanged && local === remote) {
+    if (local === remote) {
       await this.recordAgreement(docId, file, local)
       return
     }
 
-    const outcome = reconcile({
-      base: await this.state.baseText(docId),
-      local,
-      remote,
-      markers: this.options.conflictMarkers
-    })
-
-    await this.applyOutcome(docId, file, handle, local, remote, outcome)
+    const base = await this.state.baseText(docId)
+    const outcome = reconcile({ base, local, remote, markers: this.options.conflictMarkers })
+    await this.applyOutcome(docId, file, handle, local, remote, base, outcome)
   }
 
   private async applyOutcome(
@@ -281,6 +486,7 @@ export class DocStore {
     handle: DocHandle,
     local: string,
     remote: string,
+    base: string | null,
     outcome: ReconcileOutcome
   ): Promise<void> {
     switch (outcome.kind) {
@@ -289,20 +495,19 @@ export class DocStore {
         return
 
       case 'seed':
-        this.applyToDocument(handle, local)
-        await this.recordAgreement(docId, file, local)
-        return
-
       case 'adopt-local':
         this.applyToDocument(handle, local)
         await this.recordAgreement(docId, file, local)
         return
 
       case 'adopt-remote':
-        // The file did not change since the last agreement, so overwriting it
-        // cannot lose anything - but back it up anyway, it is nearly free.
-        await this.backups.write(file.path, 'local', local)
-        await this.app.vault.modify(file, remote)
+        // Text this device wrote itself a moment ago needs no copy, and while
+        // someone types elsewhere every write is superseded by the next one -
+        // a backup each time would bury the real ones.
+        if (!(local === base && local === this.recentWrite(docId))) {
+          await this.backups.write(file.path, 'local', local)
+        }
+        await this.writeFile(docId, file, remote)
         await this.recordAgreement(docId, file, remote)
         return
 
@@ -310,59 +515,78 @@ export class DocStore {
         await this.backups.captureBoth(file.path, local, remote)
         await this.backups.write(file.path, 'merged', outcome.text)
         this.applyToDocument(handle, outcome.text)
-        await this.app.vault.modify(file, outcome.text)
+        await this.writeFile(docId, file, outcome.text)
         await this.recordAgreement(docId, file, outcome.text)
-
-        if (outcome.conflicts > 0) {
-          new Notice(
-            `${file.basename}: ${outcome.conflicts} conflicting change(s) kept side by side. Backups are in the plugin folder.`,
-            10_000
-          )
-        } else if (outcome.additiveOnly) {
-          new Notice(
-            `${file.basename}: merged without a known base, so nothing was deleted. Check for duplicates.`,
-            10_000
-          )
-        }
+        this.announceMerge(file, outcome)
         return
       }
     }
   }
 
-  // --- vault events --------------------------------------------------------
+  private announceMerge(file: TFile, outcome: ReconcileOutcome & { kind: 'merge' }): void {
+    if (outcome.conflicts > 0) {
+      new Notice(
+        `${file.basename}: ${outcome.conflicts} conflicting change(s) kept side by side. Backups are in the plugin folder.`,
+        10_000
+      )
+    } else if (outcome.additiveOnly) {
+      new Notice(
+        `${file.basename}: merged without a known base, so nothing was deleted. Check for duplicates.`,
+        10_000
+      )
+    }
+  }
+
+  /**
+   * Edits made in an editor before it was bound - typed while the note was
+   * still being settled. Returns the text editor and document both take on;
+   * the caller applies it to both at once.
+   */
+  async resolveEditorEdits(docId: string, local: string, remote: string): Promise<string> {
+    const file = this.fileFor(docId)
+    const path = file?.path ?? this.index.pathFor(docId) ?? docId
+    const base = await this.state.baseText(docId)
+    const outcome = reconcile({ base, local, remote, markers: this.options.conflictMarkers })
+    switch (outcome.kind) {
+      case 'agree':
+        return remote
+      case 'seed':
+      case 'adopt-local':
+        return local
+      case 'adopt-remote':
+        if (local !== base) await this.backups.write(path, 'local', local)
+        return remote
+      case 'merge':
+        await this.backups.captureBoth(path, local, remote)
+        await this.backups.write(path, 'merged', outcome.text)
+        if (file) this.announceMerge(file, outcome)
+        return outcome.text
+    }
+  }
+
+  // --- vault events ----------------------------------------------------------
 
   async onModify(file: TFile): Promise<void> {
-    if (!this.indexReady) return
-    const docId = this.index.docIdForPath(file.path)
-    if (!docId) {
-      await this.syncFile(file)
-      return
-    }
-    const handle = this.handles.get(docId)
-    if (!handle) {
-      await this.syncFile(file, true)
-      return
-    }
-    const text = await this.app.vault.read(file)
-    // Our own write-back, or the editor saving what the binding already put
-    // into the document. Nothing to merge.
-    if (text === handle.text()) {
-      await this.recordAgreement(docId, file, text)
-      return
-    }
-    await this.syncFile(file, true)
+    await this.syncFile(file)
   }
 
   async onCreate(file: TFile): Promise<void> {
-    if (!this.indexReady) return
-    await this.syncFile(file, true)
+    await this.syncFile(file)
   }
 
   async onRename(file: TFile, oldPath: string): Promise<void> {
-    if (!this.indexReady) return
+    if (file.extension !== 'md' || this.stopped) return
+    if (!this.ready) {
+      // Lost, the index would keep the old path and the old note would be
+      // pulled back in next to the renamed one.
+      this.early.push(() => this.onRename(file, oldPath))
+      return
+    }
+    // Not `tracks`: moving a note into an excluded folder still moves it. Left
+    // at the old path in the index, it would be pulled back in right there.
     const docId = this.index.docIdForPath(oldPath) ?? this.index.docIdForPath(file.path)
     if (!docId) {
-      await this.syncFile(file, true)
+      await this.syncFile(file)
       return
     }
     // The identity is the document, not the path, so a rename is a rename -
@@ -373,19 +597,64 @@ export class DocStore {
   }
 
   async onDelete(path: string): Promise<void> {
-    if (!this.indexReady) return
+    if (this.stopped) return
+    if (!this.ready) {
+      // Lost, the note would be pulled back in from the index.
+      this.early.push(() => this.onDelete(path))
+      return
+    }
     const docId = this.index.docIdForPath(path)
     if (!docId) return
-    const handle = this.handles.get(docId)
-    if (handle) {
-      // Keep a copy: a delete that arrives on another device is irreversible
-      // there unless the text survives somewhere.
-      await this.backups.write(path, 'local', handle.text())
-      this.handles.delete(docId)
-      await handle.destroy(this.socket)
+    await this.withLock(docId, async () => {
+      const handle = this.handles.get(docId)
+      if (handle) {
+        // Keep a copy: a delete that arrives on another device is irreversible
+        // there unless the text survives somewhere.
+        await this.backups.write(path, 'local', handle.text())
+        await this.dropHandle(docId)
+      }
+      this.index.markDeleted(docId)
+      this.forget(docId)
+    })
+  }
+
+  /**
+   * Whatever the index still holds under a deleted folder. Obsidian may report
+   * only the folder, and a note left live in the index would be pulled back.
+   */
+  async onDeleteFolder(path: string): Promise<void> {
+    if (this.stopped) return
+    if (!this.ready) {
+      this.early.push(() => this.onDeleteFolder(path))
+      return
     }
-    this.index.markDeleted(docId)
-    this.state.forget(docId)
+    const prefix = `${path}/`
+    for (const { entry } of this.index.live()) {
+      if (entry.path.startsWith(prefix) && !this.app.vault.getAbstractFileByPath(entry.path)) {
+        await this.onDelete(entry.path)
+      }
+    }
+  }
+
+  // --- remote index changes --------------------------------------------------
+
+  /** Applies what other devices changed in the index. Runs one pass at a time. */
+  applyRemoteIndexChanges(): Promise<void> {
+    this.indexWork = this.indexWork.then(async () => {
+      if (!this.ready) return
+      try {
+        // An entry from the other device may only now reveal that both
+        // adopted the same file independently.
+        await this.mergeDuplicates()
+        await this.applyRemoteDeletes()
+        await this.applyRemoteRenames()
+        await this.pullMissing()
+        this.applySharing()
+      } catch (error) {
+        console.error('[obsidian-connect] applying index changes failed', error)
+      }
+    })
+    return this.indexWork
   }
 
   /**
@@ -396,82 +665,137 @@ export class DocStore {
   private async mergeDuplicates(): Promise<void> {
     for (const { path, docIds } of this.index.duplicatePaths()) {
       const [winnerId, ...losers] = docIds as [string, ...string[]]
-      const winner = await this.handleFor(winnerId)
-      await winner.whenRemoteReady(this.options.syncTimeoutMs)
+      await this.withLock(winnerId, async () => {
+        const winner = await this.handleFor(winnerId)
+        await winner.whenRemoteReady(this.options.syncTimeoutMs)
 
-      for (const loserId of losers) {
-        const loser = await this.handleFor(loserId)
-        await loser.whenRemoteReady(this.options.syncTimeoutMs)
-        const text = loser.text()
-        if (text.length > 0 && text !== winner.text()) {
-          // Additive: the duplicate may hold edits nobody else has.
-          await this.backups.write(path, 'local', text)
-          this.applyToDocument(winner, mergeAdditively(winner.text(), text))
+        for (const loserId of losers) {
+          const loser = await this.handleFor(loserId)
+          await loser.whenRemoteReady(this.options.syncTimeoutMs)
+          const text = loser.text()
+          if (text.length > 0 && text !== winner.text()) {
+            // Additive: the duplicate may hold edits nobody else has.
+            await this.backups.write(path, 'local', text)
+            this.applyToDocument(winner, mergeAdditively(winner.text(), text))
+          }
+          this.index.markDeleted(loserId)
+          await this.dropHandle(loserId)
+          this.forget(loserId)
         }
-        this.index.markDeleted(loserId)
-        this.handles.delete(loserId)
-        await loser.destroy(this.socket)
-        this.state.forget(loserId)
-      }
+      })
       console.info(`[obsidian-connect] merged ${losers.length} duplicate(s) of ${path}`)
     }
   }
 
-  /** Applies renames and deletes that arrived from another device. */
-  async applyRemoteIndexChanges(): Promise<void> {
-    if (!this.indexReady || this.stopped) return
-
-    // An entry from the other device may only now reveal that both adopted the
-    // same file independently.
-    await this.mergeDuplicates()
-
-    for (const { docId, entry } of this.index.live()) {
-      const known = this.state.get(docId)
-      if (!known || known.path === entry.path) continue
-      const current = this.app.vault.getAbstractFileByPath(known.path)
-      if (!(current instanceof TFile)) continue
-      if (this.app.vault.getAbstractFileByPath(entry.path)) continue
-      try {
-        await this.app.fileManager.renameFile(current, entry.path)
-        this.state.set(docId, { ...known, path: entry.path })
-      } catch (error) {
-        console.error(`[obsidian-connect] renaming ${known.path} to ${entry.path} failed`, error)
-      }
-    }
-
+  private async applyRemoteDeletes(): Promise<void> {
     for (const { docId, entry } of this.index.deleted()) {
-      const file = this.app.vault.getAbstractFileByPath(entry.path)
-      if (!(file instanceof TFile)) continue
-      try {
-        await this.backups.write(entry.path, 'local', await this.app.vault.read(file))
-        await this.app.fileManager.trashFile(file)
-      } catch (error) {
-        console.error(`[obsidian-connect] deleting ${entry.path} failed`, error)
-      }
-      this.state.forget(docId)
+      if (this.stopped) return
+      if (!this.state.get(docId)) continue
+      await this.withLock(docId, () => this.applyRemoteDelete(docId, entry))
     }
   }
 
-  // --- startup scan --------------------------------------------------------
+  private async applyRemoteDelete(docId: string, entry: IndexEntry): Promise<void> {
+    // Only a file this device has seen agree with that document is known to
+    // be the note that was deleted. Anything else is not ours to remove.
+    const known = this.state.get(docId)
+    if (!known || !this.index.entry(docId)?.deletedAt) return
+    const claimant = this.index.docIdForPath(known.path)
+    const file = this.app.vault.getAbstractFileByPath(known.path)
+    if ((claimant && claimant !== docId) || !(file instanceof TFile)) {
+      this.forget(docId)
+      return
+    }
+    const local = await this.app.vault.read(file)
+    const base = await this.state.baseText(docId)
+    if (base === null || local !== base) {
+      // Changed here after this device last agreed with the document. A
+      // delete elsewhere does not get to discard that, so the note stays -
+      // for every device.
+      this.index.revive(docId, known.path)
+      new Notice(`${file.basename} was deleted on another device but changed here, so it was kept.`, 10_000)
+      return
+    }
+    await this.backups.write(known.path, 'local', local)
+    await this.dropHandle(docId)
+    this.forget(docId)
+    try {
+      await this.app.fileManager.trashFile(file)
+    } catch (error) {
+      console.error(`[obsidian-connect] deleting ${entry.path} failed`, error)
+    }
+  }
+
+  private async applyRemoteRenames(): Promise<void> {
+    for (const { docId, entry } of this.index.live()) {
+      if (this.stopped) return
+      const known = this.state.get(docId)
+      if (!known || known.path === entry.path) continue
+      await this.withLock(docId, async () => {
+        const target = this.index.pathFor(docId)
+        const current = this.app.vault.getAbstractFileByPath(known.path)
+        if (!target || !(current instanceof TFile)) return
+        if (this.app.vault.getAbstractFileByPath(target)) return
+        try {
+          await this.ensureFolder(parentOf(target))
+          await this.app.fileManager.renameFile(current, target)
+          this.state.set(docId, { ...known, path: target })
+        } catch (error) {
+          console.error(`[obsidian-connect] renaming ${known.path} to ${target} failed`, error)
+        }
+      })
+    }
+  }
+
+  /** Creates the files of notes that exist in the index but not in this vault. */
+  private async pullMissing(): Promise<void> {
+    const missing = this.index
+      .live()
+      .filter(
+        ({ entry }) =>
+          entry.path.endsWith('.md') &&
+          !this.isExcluded(entry.path) &&
+          !this.app.vault.getAbstractFileByPath(entry.path)
+      )
+    await this.pool(missing, ({ docId }) => this.withLock(docId, () => this.pull(docId)))
+  }
+
+  private async pull(docId: string): Promise<void> {
+    const path = this.index.pathFor(docId)
+    if (!path || this.stopped || this.app.vault.getAbstractFileByPath(path)) return
+    const handle = await this.handleFor(docId)
+    const remoteKnown = await handle.whenRemoteReady(this.options.syncTimeoutMs)
+    // Unknown, not empty. The next index change or reconnect tries again.
+    if (!remoteKnown && handle.text().length === 0) return
+    if (this.index.pathFor(docId) !== path || this.app.vault.getAbstractFileByPath(path)) return
+
+    const text = handle.text()
+    await this.ensureFolder(parentOf(path))
+    this.rememberOwnWrite(docId, text)
+    const file = await this.app.vault.create(path, text)
+    await this.recordAgreement(docId, file, text)
+  }
+
+  private async ensureFolder(path: string): Promise<void> {
+    if (!path || this.app.vault.getAbstractFileByPath(path)) return
+    await this.ensureFolder(parentOf(path))
+    try {
+      await this.app.vault.createFolder(path)
+    } catch {
+      // Created concurrently, which is all we wanted.
+    }
+  }
+
+  /** Starts or stops presence for loaded notes whose shared flag changed. */
+  private applySharing(): void {
+    for (const [docId, handle] of this.handles) handle.setShared(this.isShared(docId))
+  }
+
+  // --- startup scan ----------------------------------------------------------
 
   private async scanVault(): Promise<void> {
     const files = this.app.vault.getMarkdownFiles().filter((file) => !this.isExcluded(file.path))
-    for (let i = 0; i < files.length; i += SCAN_BATCH) {
-      if (this.stopped) return
-      const batch = files.slice(i, i + SCAN_BATCH)
-      for (const file of batch) {
-        try {
-          await this.syncFile(file)
-        } catch (error) {
-          console.error(`[obsidian-connect] initial sync of ${file.path} failed`, error)
-        }
-      }
-      // Let Obsidian breathe between batches so a large vault does not freeze
-      // the UI on startup.
-      await new Promise((resolve) => window.setTimeout(resolve, 0))
-    }
-    await this.mergeDuplicates()
-    await this.applyRemoteIndexChanges()
+    await this.pool(files, (file) => this.syncFile(file))
   }
 
   loadedCount(): number {

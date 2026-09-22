@@ -1,13 +1,10 @@
 import { App, PluginSettingTab, Setting } from 'obsidian'
 import type ObsidianConnectPlugin from './main'
 
-export type AdapterMode = 'main-editor' | 'collab-view'
-
 export interface ObsidianConnectSettings {
   serverUrl: string
   token: string
   displayName: string
-  adapterMode: AdapterMode
   vaultId: string
   syncEnabled: boolean
   excludeGlobs: string[]
@@ -22,7 +19,6 @@ export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
   serverUrl: 'ws://localhost:1234',
   token: '',
   displayName: '',
-  adapterMode: 'main-editor',
   vaultId: '',
   syncEnabled: true,
   excludeGlobs: [],
@@ -169,20 +165,6 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
             const parsed = Number.parseInt(value, 10)
             if (!Number.isFinite(parsed) || parsed < 0) return
             this.plugin.settings.backupRetentionDays = parsed
-            await this.plugin.saveSettings()
-          })
-      )
-
-    new Setting(containerEl)
-      .setName('Editor integration')
-      .setDesc('How live edits from other people appear in an open note.')
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('main-editor', 'Main editor (experimental)')
-          .addOption('collab-view', 'Dedicated collaboration view')
-          .setValue(this.plugin.settings.adapterMode)
-          .onChange(async (value) => {
-            this.plugin.settings.adapterMode = value as AdapterMode
             await this.plugin.saveSettings()
           })
       )

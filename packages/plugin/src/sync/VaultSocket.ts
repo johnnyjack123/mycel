@@ -33,6 +33,8 @@ interface Registration {
 
 export type SocketStatus = 'connecting' | 'connected' | 'disconnected'
 
+const never = new Promise<void>(() => undefined)
+
 export class VaultSocket {
   private ws: WebSocket | null = null
   private readonly registrations = new Map<string, Registration>()
@@ -92,7 +94,10 @@ export class VaultSocket {
     }
     socket.onclose = () => {
       this.ws = null
-      for (const registration of this.registrations.values()) registration.synced = false
+      // Whatever arrives after a reconnect has to be waited for again. Keeping
+      // the old, resolved promise would report a state as known that the
+      // server has not confirmed since.
+      for (const registration of this.registrations.values()) this.resetSync(registration)
       this.emit('disconnected')
       this.scheduleReconnect()
     }
@@ -100,6 +105,14 @@ export class VaultSocket {
       // `onclose` always follows, which is where the reconnect lives.
       socket.close()
     }
+  }
+
+  private resetSync(registration: Registration): void {
+    if (!registration.synced) return
+    registration.synced = false
+    registration.whenSynced = new Promise<void>((resolve) => {
+      registration.markSynced = resolve
+    })
   }
 
   private scheduleReconnect(): void {
@@ -141,16 +154,13 @@ export class VaultSocket {
     syncProtocol.writeSyncStep1(sync, registration.doc)
     this.frame(MUX.sync, registration.room, encoding.toUint8Array(sync))
 
-    if (registration.awareness) {
-      const local = registration.awareness.getLocalState()
-      if (local) {
-        this.frame(
-          MUX.awareness,
-          registration.room,
-          encodeAwarenessUpdate(registration.awareness, [registration.awareness.clientID])
-        )
-      }
-    }
+    this.sendLocalAwareness(registration)
+  }
+
+  private sendLocalAwareness(registration: Registration): void {
+    const awareness = registration.awareness
+    if (!awareness || !awareness.getLocalState()) return
+    this.frame(MUX.awareness, registration.room, encodeAwarenessUpdate(awareness, [awareness.clientID]))
   }
 
   private receive(message: Uint8Array): void {
@@ -215,10 +225,11 @@ export class VaultSocket {
         this.frame(MUX.sync, room, encoding.toUint8Array(encoder))
       },
       onAwarenessUpdate: (changes, origin) => {
-        if (origin === this || !awareness) return
+        const current = registration.awareness
+        if (origin === this || !current) return
         const changed = changes.added.concat(changes.updated, changes.removed)
         if (changed.length === 0) return
-        this.frame(MUX.awareness, room, encodeAwarenessUpdate(awareness, changed))
+        this.frame(MUX.awareness, room, encodeAwarenessUpdate(current, changed))
       }
     }
 
@@ -230,6 +241,27 @@ export class VaultSocket {
     else this.connect()
 
     return whenSynced
+  }
+
+  /**
+   * Starts or stops exchanging presence for a room that is already
+   * registered - a note becoming shared while it is open.
+   */
+  setAwareness(room: string, awareness: Awareness | null): void {
+    const registration = this.registrations.get(room)
+    if (!registration || registration.awareness === awareness) return
+    const previous = registration.awareness
+    if (previous) {
+      // Announce the departure while the listener is still attached, or the
+      // others keep showing a caret that is no longer there.
+      removeAwarenessStates(previous, [previous.clientID], 'unshare')
+      previous.off('update', registration.onAwarenessUpdate)
+    }
+    registration.awareness = awareness
+    if (awareness) {
+      awareness.on('update', registration.onAwarenessUpdate)
+      this.sendLocalAwareness(registration)
+    }
   }
 
   unregister(room: string): void {
@@ -256,6 +288,15 @@ export class VaultSocket {
 
   isSynced(room: string): boolean {
     return this.registrations.get(room)?.synced ?? false
+  }
+
+  /**
+   * Resolves once the server state of a registered room has arrived since the
+   * last (re)connect. An unregistered room never resolves: its state is
+   * unknown, and callers race this against a timeout.
+   */
+  whenSynced(room: string): Promise<void> {
+    return this.registrations.get(room)?.whenSynced ?? never
   }
 
   destroy(): void {

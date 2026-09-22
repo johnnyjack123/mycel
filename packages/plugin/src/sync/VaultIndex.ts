@@ -24,6 +24,12 @@ export async function stableDocId(vaultId: string, path: string): Promise<string
   }
 }
 
+/** The entry without its tombstone, keeping everything else - notably `shared`. */
+function live(entry: IndexEntry): IndexEntry {
+  const { deletedAt: _deletedAt, ...rest } = entry
+  return rest
+}
+
 export class VaultIndex {
   readonly doc = new Y.Doc()
   private readonly files: Y.Map<IndexEntry>
@@ -128,8 +134,12 @@ export class VaultIndex {
     const entry = this.files.get(docId)
     if (!entry || entry.path === path) return
     this.doc.transact(() => {
-      this.files.set(docId, { ...entry, path, updatedAt: Date.now(), deletedAt: undefined })
+      this.files.set(docId, live({ ...entry, path, updatedAt: Date.now() }))
     }, 'local')
+  }
+
+  isShared(docId: string): boolean {
+    return this.files.get(docId)?.shared === true
   }
 
   // Deletions are tombstones, not removals: a peer that has been offline needs
@@ -149,7 +159,7 @@ export class VaultIndex {
       return
     }
     this.doc.transact(() => {
-      this.files.set(docId, { path, updatedAt: Date.now() })
+      this.files.set(docId, live({ ...entry, path, updatedAt: Date.now() }))
     }, 'local')
   }
 

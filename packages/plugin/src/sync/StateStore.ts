@@ -18,6 +18,7 @@ export class StateStore {
   private readonly entries = new Map<string, FileState>()
   private saveTimer: number | null = null
   private writes: Promise<void> = Promise.resolve()
+  private closed = false
 
   constructor(
     private readonly adapter: DataAdapter,
@@ -71,6 +72,7 @@ export class StateStore {
   }
 
   private scheduleSave(): void {
+    if (this.closed) return
     if (this.saveTimer !== null) window.clearTimeout(this.saveTimer)
     this.saveTimer = window.setTimeout(() => {
       this.saveTimer = null
@@ -78,7 +80,22 @@ export class StateStore {
     }, SAVE_DEBOUNCE_MS)
   }
 
+  /**
+   * Final save. Nothing is written after this: a restart has already loaded
+   * the file into a new instance, and a late save from this one would
+   * overwrite it with an older picture.
+   */
+  async close(): Promise<void> {
+    if (this.saveTimer !== null) window.clearTimeout(this.saveTimer)
+    this.saveTimer = null
+    await this.flush()
+    this.closed = true
+  }
+
   flush(): Promise<void> {
+    if (this.closed) return this.writes
+    if (this.saveTimer !== null) window.clearTimeout(this.saveTimer)
+    this.saveTimer = null
     this.writes = this.writes
       .then(async () => {
         await this.ensureDir(this.root)

@@ -1,10 +1,6 @@
-import { MarkdownView, Notice, Plugin, TFile, type TAbstractFile } from 'obsidian'
-import type { EditorView } from '@codemirror/view'
+import { Notice, Plugin, TFile, TFolder, editorInfoField, type TAbstractFile } from 'obsidian'
 import type { CollabUser } from '@obsidian-connect/shared'
-import { CollabView, COLLAB_VIEW_TYPE } from './editor/CollabView'
-import { CollabViewAdapter } from './editor/CollabViewAdapter'
-import { getEditorView, MainEditorCollabAdapter } from './editor/MainEditorCollabAdapter'
-import type { CollabAdapter } from './editor/types'
+import { EditorSync } from './editor/EditorSync'
 import { HistoryModal } from './history/HistoryModal'
 import { BackupModal } from './history/BackupModal'
 import { BackupStore } from './sync/BackupStore'
@@ -19,10 +15,8 @@ import {
   type ObsidianConnectSettings
 } from './settings'
 
-interface BoundEditor {
-  docId: string
-  adapter: CollabAdapter
-}
+// Settings earlier versions stored that no longer mean anything.
+const RETIRED_SETTINGS = ['adapterMode', 'liveCollaboration']
 
 const PLUGIN_COLOR = '#30bced'
 
@@ -36,10 +30,12 @@ export default class ObsidianConnectPlugin extends Plugin {
   private backups: BackupStore | null = null
   private statusBar!: HTMLElement
   private status: SocketStatus = 'disconnected'
-  private readonly bound = new Map<string, BoundEditor>()
-  /** Paths whose editor binding is currently being set up. */
-  private readonly binding = new Set<string>()
+  private readonly editors = new EditorSync(
+    () => this.store,
+    (state) => state.field(editorInfoField, false)?.file ?? null
+  )
   private unwatchIndex: (() => void) | null = null
+  private unwatchSocket: (() => void) | null = null
   private indexTimer: number | null = null
   private started = false
   private starting = false
@@ -48,8 +44,10 @@ export default class ObsidianConnectPlugin extends Plugin {
     await this.loadSettings()
 
     this.statusBar = this.addStatusBarItem()
-    this.registerView(COLLAB_VIEW_TYPE, (leaf) => new CollabView(leaf))
     this.addSettingTab(new ObsidianConnectSettingTab(this.app, this))
+    // Obsidian adds this to every Markdown editor and keeps it there across
+    // file switches and mode changes.
+    this.registerEditorExtension(this.editors.extension)
 
     this.addRibbonIcon('refresh-cw', 'Obsidian Connect status', () => this.showStatus())
     this.addCommand({
@@ -77,13 +75,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       name: 'Reconnect and rescan the vault',
       callback: () => void this.restartSync()
     })
-
     this.registerVaultEvents()
-
-    const refresh = (): void => this.syncEditorBindings()
-    this.registerEvent(this.app.workspace.on('layout-change', refresh))
-    this.registerEvent(this.app.workspace.on('active-leaf-change', refresh))
-    this.registerEvent(this.app.workspace.on('file-open', refresh))
 
     // The vault is not fully indexed while Obsidian is still starting, and a
     // scan that races it would treat half the notes as missing.
@@ -104,6 +96,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   private async loadSettings(): Promise<void> {
     const stored = (await this.loadData()) as Partial<ObsidianConnectSettings> | null
     this.settings = Object.assign({}, DEFAULT_SETTINGS, stored ?? {})
+    for (const key of RETIRED_SETTINGS) delete (this.settings as unknown as Record<string, unknown>)[key]
     if (!this.settings.vaultId) {
       this.settings.vaultId = crypto.randomUUID()
       await this.saveData(this.settings)
@@ -141,25 +134,22 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.backups = new BackupStore(this.app.vault.adapter, root)
     this.index = new VaultIndex(this.settings.vaultId)
     this.socket = new VaultSocket(this.settings.serverUrl, this.settings.vaultId, this.settings.token)
-    this.store = new DocStore(
-      this.app,
-      this.socket,
-      this.index,
-      this.state,
-      this.backups,
-      this.storeOptions()
-    )
+    const store = new DocStore(this.app, this.socket, this.index, this.state, this.backups, this.storeOptions())
+    this.store = store
 
-    this.register(
-      this.socket.onStatus((status) => {
-        this.status = status
-        this.renderStatus()
-        // The first attempt gives up if the index does not arrive in time;
-        // reconnecting is the moment to try again, otherwise a server that was
-        // down at startup leaves the vault untracked until Obsidian restarts.
-        if (status === 'connected' && !this.started) void this.runStart()
-      })
-    )
+    // Editors bind as soon as the index is there, not after the whole vault
+    // has been scanned: an open note is settled on its own, first.
+    store.onReady(() => this.editors.refresh())
+    this.unwatchSocket = this.socket.onStatus((status) => {
+      this.status = status
+      this.renderStatus()
+      if (status !== 'connected' || this.store !== store) return
+      // The first attempt gives up if the index does not arrive in time;
+      // reconnecting is the moment to try again, otherwise a server that was
+      // down at startup leaves the vault untracked until Obsidian restarts.
+      if (!this.started) void this.runStart()
+      else void store.resume().then(() => this.editors.refresh())
+    })
     this.unwatchIndex = this.index.onChange(() => this.scheduleIndexApply())
 
     this.socket.connect()
@@ -179,6 +169,10 @@ export default class ObsidianConnectPlugin extends Plugin {
           `Obsidian Connect: no answer from ${this.settings.serverUrl}. Nothing is synced until it responds.`,
           8_000
         )
+        // A slow index is not a dead server; start the moment it arrives.
+        void store.whenIndexSynced().then(() => {
+          if (this.store === store) void this.runStart()
+        })
       }
     } catch (error) {
       console.error('[obsidian-connect] starting sync failed', error)
@@ -186,27 +180,29 @@ export default class ObsidianConnectPlugin extends Plugin {
     } finally {
       this.starting = false
     }
-    this.syncEditorBindings()
+    this.editors.refresh()
     this.renderStatus()
   }
 
   private async stopSync(): Promise<void> {
-    for (const [path, entry] of this.bound) {
-      void entry.adapter.detach()
-      this.bound.delete(path)
-    }
+    // Editors first: releasing them hands their files back to the store,
+    // which must still be there to take them.
+    this.editors.unbindAll()
     if (this.indexTimer !== null) {
       window.clearTimeout(this.indexTimer)
       this.indexTimer = null
     }
     this.unwatchIndex?.()
     this.unwatchIndex = null
-    await this.store?.stop()
+    this.unwatchSocket?.()
+    this.unwatchSocket = null
+    const store = this.store
+    this.store = null
+    await store?.stop()
     this.socket?.destroy()
     this.index?.destroy()
     this.started = false
     this.starting = false
-    this.store = null
     this.socket = null
     this.index = null
     this.state = null
@@ -234,7 +230,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     )
     this.registerEvent(
       this.app.vault.on('delete', (file: TAbstractFile) => {
-        void this.store?.onDelete(file.path)
+        if (file instanceof TFile) void this.store?.onDelete(file.path)
+        else if (file instanceof TFolder) void this.store?.onDeleteFolder(file.path)
       })
     )
     this.registerEvent(
@@ -248,149 +245,14 @@ export default class ObsidianConnectPlugin extends Plugin {
     if (this.indexTimer !== null) window.clearTimeout(this.indexTimer)
     this.indexTimer = window.setTimeout(() => {
       this.indexTimer = null
-      void this.store?.applyRemoteIndexChanges()
-    }, 500)
-  }
-
-  // --- editor integration --------------------------------------------------
-
-  private markdownViews(): MarkdownView[] {
-    const views: MarkdownView[] = []
-    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
-      if (leaf.view instanceof MarkdownView && leaf.view.file) views.push(leaf.view)
-    }
-    return views
-  }
-
-  private syncEditorBindings(): void {
-    const store = this.store
-    const index = this.index
-    if (!store || !index) return
-
-    const open = new Set<string>()
-    for (const view of this.markdownViews()) {
-      const file = view.file
-      if (!file || store.isExcluded(file.path)) continue
-      open.add(file.path)
-      const docId = index.docIdForPath(file.path)
-      if (!docId) continue
-
-      if (this.binding.has(file.path)) continue
-      const existing = this.bound.get(file.path)
-      if (existing && existing.docId === docId) {
-        try {
-          existing.adapter.ensureAttached?.()
-        } catch (error) {
-          console.error(`[obsidian-connect] re-attaching ${file.path} failed`, error)
-        }
-        continue
-      }
-      if (existing) {
-        void existing.adapter.detach()
-        store.unpin(existing.docId)
-        store.setEditorOwned(existing.docId, false)
-        this.bound.delete(file.path)
-      }
-      void this.bindEditor(file, docId)
-    }
-
-    for (const [path, entry] of Array.from(this.bound)) {
-      if (open.has(path)) continue
-      void entry.adapter.detach()
-      store.unpin(entry.docId)
-      store.setEditorOwned(entry.docId, false)
-      this.bound.delete(path)
-    }
-  }
-
-  private async bindEditor(file: TFile, docId: string): Promise<void> {
-    const store = this.store
-    if (!store) return
-
-    // Opening a note fires layout-change, active-leaf-change and file-open in
-    // quick succession. Because the bookkeeping below only happens after the
-    // first await, every one of them used to start another bind: several
-    // bindings on one editor, each applying the same keystroke to the document
-    // again, and - on the fallback path - a new pane per event.
-    if (this.binding.has(file.path)) return
-    this.binding.add(file.path)
-    try {
-      // Pin first: the handle must not be evicted while an editor shows it.
-      store.pin(docId)
-      const handle = await store.handleFor(docId)
-      if (this.store !== store) return
-
-      if (this.settings.adapterMode === 'collab-view') {
-        const adapter = new CollabViewAdapter(this.app, {
-          ytext: handle.ytext,
-          awareness: handle.awareness,
-          title: file.basename
-        })
-        await adapter.attach()
-        this.bound.set(file.path, { docId, adapter })
-        return
-      }
-
-      const resolveView = (): EditorView | null => {
-        for (const view of this.markdownViews()) {
-          if (view.file?.path !== file.path) continue
-          const editor = view.editor
-          return editor ? getEditorView(editor) : null
-        }
-        return null
-      }
-
-      if (!resolveView()) {
-        store.unpin(docId)
-        return
-      }
-
-      const adapter = new MainEditorCollabAdapter(
-        resolveView,
-        handle.ytext,
-        handle.collabEnabled ? handle.awareness : null
-      )
-      // Attaching dispatches into the editor, and we arrive here from a
-      // workspace event, so Obsidian may still be laying out. Dispatching in
-      // the middle of that crashed CodeMirror while it measured the scroll
-      // anchor. Let the current work finish first, and allow one more frame
-      // before giving up.
-      await new Promise<void>((done) => {
-        const attempt = (retriesLeft: number): void => {
-          if (this.store !== store || !resolveView()) {
-            store.unpin(docId)
-            done()
-            return
-          }
-          try {
-            adapter.attach()
-            // Obsidian saves this buffer itself; a second writer would loop.
-            store.setEditorOwned(docId, true)
-            this.bound.set(file.path, { docId, adapter })
-          } catch (error) {
-            if (retriesLeft > 0) {
-              window.requestAnimationFrame(() => attempt(retriesLeft - 1))
-              return
-            }
-            // Hijacking a pane for a replacement editor is worse than the
-            // problem it solves. The note keeps syncing through the file
-            // instead: with no editor bound, the store writes remote changes
-            // to disk and Obsidian picks them up.
-            console.error('[obsidian-connect] main editor integration failed', error)
-            const reason = error instanceof Error ? error.message : String(error)
-            new Notice(
-              `Obsidian Connect could not attach to the editor for ${file.basename}:\n${reason}\n\nThe note still syncs through the file.`,
-              15_000
-            )
-            store.unpin(docId)
-          }
-          done()
-        }
-        window.setTimeout(() => attempt(1), 0)
+      const store = this.store
+      if (!store) return
+      void store.applyRemoteIndexChanges().then(() => {
+        // New notes may have arrived, and a share may have started or ended.
+        this.editors.refresh()
+        this.renderStatus()
       })
-    } finally {
-      this.binding.delete(file.path)
-    }
+    }, 500)
   }
 
   // --- commands ------------------------------------------------------------
@@ -417,7 +279,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         `Vault ID: ${this.settings.vaultId}`,
         `Notes tracked: ${this.store.trackedCount()}`,
         `Documents in memory: ${this.store.loadedCount()}`,
-        `Editors bound: ${this.bound.size}`
+        `Editors bound: ${this.editors.boundCount()}`
       ].join('\n'),
       15_000
     )
@@ -444,7 +306,9 @@ export default class ObsidianConnectPlugin extends Plugin {
       token: this.settings.token,
       docId,
       file,
-      onRestored: () => this.syncEditorBindings()
+      // The rollback edits the live document, so it arrives like any other
+      // remote change; nothing to do here beyond what the binding does.
+      onRestored: () => this.editors.refresh()
     }).open()
   }
 
@@ -463,7 +327,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       return
     }
     try {
-      await this.store.syncFile(file, true)
+      await this.store.syncFile(file)
       new Notice(`${file.basename} resynced.`)
     } catch (error) {
       console.error('[obsidian-connect] resync failed', error)

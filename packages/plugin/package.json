@@ -10,13 +10,13 @@
     "typecheck": "tsc -p tsconfig.json",
     "test:merge": "tsx scripts/merge-selftest.mts",
     "test:socket": "tsx scripts/socket-selftest.mts",
-    "test:sync": "tsx scripts/binding-selftest.mts",
-    "test:load": "node scripts/load-selftest.mjs"
+    "test:sync": "tsx --tsconfig scripts/tsconfig.json scripts/binding-selftest.mts",
+    "test:load": "node scripts/load-selftest.mjs",
+    "test:vault": "tsx --tsconfig scripts/tsconfig.json scripts/vault-selftest.mts"
   },
   "dependencies": {
     "@obsidian-connect/shared": "*",
     "lib0": "^0.2.98",
-    "y-codemirror.next": "^0.3.5",
     "y-indexeddb": "^9.0.12",
     "y-protocols": "^1.0.6",
     "y-websocket": "^2.0.4",

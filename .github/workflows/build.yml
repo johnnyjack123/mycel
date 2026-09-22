@@ -72,11 +72,16 @@ jobs:
       - name: Version history self-test
         run: npm run test:history -- ws://localhost:1234
 
-      # Guards the bug this workflow exists for: a CodeMirror view plugin that
-      # throws while being constructed is silently deactivated, so the plugin
-      # connects and then quietly ignores every keystroke.
+      # The editor binding on its own: a CodeMirror view plugin that throws
+      # while being constructed is silently deactivated, remote changes must
+      # stay out of undo, and a wholesale reload must not become a rewrite.
       - name: Live sync self-test
         run: npm run test:sync -- ws://localhost:1234
+
+      # Two devices and a collaborator through the real store and binding, with
+      # Obsidian's save-and-reload modelled: that interplay doubled text.
+      - name: Vault sync self-test
+        run: npm run test:vault -- ws://localhost:1234
 
       - name: Server log
         if: always()

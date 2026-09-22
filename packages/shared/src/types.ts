@@ -27,6 +27,12 @@ export interface IndexEntry {
   path: string
   updatedAt: number
   deletedAt?: number
+  /**
+   * Other people work on this document too. Presence - cursors and
+   * selections - is exchanged only for these; syncing your own devices never
+   * broadcasts a caret.
+   */
+  shared?: boolean
 }
 
 export interface RoomSummary {

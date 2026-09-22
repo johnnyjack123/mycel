@@ -31,11 +31,32 @@ const chainable = () => {
   return api
 }
 
+// What onload registered, so the test can check it without Obsidian.
+const registered = { commands: [], editorExtensions: [], protocolHandlers: [], layoutReady: [] }
+
+const adapterFiles = new Map()
+const adapter = {
+  exists: async (path) => adapterFiles.has(path),
+  mkdir: async (path) => void adapterFiles.set(path, ''),
+  read: async (path) => adapterFiles.get(path) ?? '',
+  write: async (path, data) => void adapterFiles.set(path, data),
+  remove: async (path) => void adapterFiles.delete(path),
+  list: async () => ({ files: [], folders: [] }),
+  rmdir: async () => undefined
+}
+
 const obsidian = {
   Plugin: class extends Stub {
     constructor() {
       super()
-      this.app = {}
+      this.app = {
+        vault: { on: () => ({}), configDir: '.obsidian', adapter, getMarkdownFiles: () => [] },
+        workspace: {
+          on: () => ({}),
+          onLayoutReady: (callback) => registered.layoutReady.push(callback),
+          getActiveFile: () => null
+        }
+      }
       this.manifest = { id: 'obsidian-connect', dir: '.obsidian/plugins/obsidian-connect' }
     }
     addStatusBarItem() {
@@ -44,10 +65,14 @@ const obsidian = {
     registerView = fn
     addSettingTab = fn
     addRibbonIcon = fn
-    addCommand = fn
+    addCommand = (command) => registered.commands.push(command.id)
     registerEvent = fn
     register = fn
-    loadData = async () => null
+    registerEditorExtension = (extension) => registered.editorExtensions.push(extension)
+    registerObsidianProtocolHandler = (action) => registered.protocolHandlers.push(action)
+    // A short timeout: the stub socket never connects, and the test waits for
+    // the start to give up.
+    loadData = async () => ({ serverUrl: 'ws://127.0.0.1:9', syncTimeoutMs: 200 })
     saveData = async () => undefined
   },
   PluginSettingTab: Stub,
@@ -76,7 +101,9 @@ const obsidian = {
     addButton = () => this
   },
   TFile: Stub,
+  TFolder: Stub,
   TAbstractFile: Stub,
+  editorInfoField: {},
   MarkdownView: Stub,
   normalizePath: (value) => value,
   requestUrl: async () => ({ json: {} })
@@ -200,6 +227,31 @@ if (exported) {
     const instance = new PluginClass()
     check(typeof instance.onload === 'function', 'the plugin exposes onload')
     check(typeof instance.onunload === 'function', 'the plugin exposes onunload')
+
+    // In Obsidian a throw from here shows as "failed to load plugin" and
+    // nothing else, so run the whole of it.
+    try {
+      await instance.onload()
+      check(true, 'onload runs')
+    } catch (error) {
+      check(false, 'onload runs', error?.stack ?? String(error))
+    }
+    check(registered.editorExtensions.length === 1, 'it registers exactly one editor extension', registered.editorExtensions.length)
+
+    try {
+      for (const callback of registered.layoutReady) await callback()
+      // startSync gives up on the unreachable server after syncTimeoutMs.
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      check(true, 'starting sync against an unreachable server does not throw')
+    } catch (error) {
+      check(false, 'starting sync against an unreachable server does not throw', error?.stack ?? String(error))
+    }
+    try {
+      await instance.onunload()
+      check(true, 'onunload runs')
+    } catch (error) {
+      check(false, 'onunload runs', error?.stack ?? String(error))
+    }
   } catch (error) {
     check(false, 'the plugin can be constructed', error?.stack ?? String(error))
   }
