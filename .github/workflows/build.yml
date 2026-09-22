@@ -42,6 +42,11 @@ jobs:
       - name: Bundle load self-test
         run: npm run test:load
 
+      # In-process, scratch directory: history must survive a room going idle
+      # and the server restarting, or restore silently does nothing.
+      - name: Room history self-test
+        run: npm run test:rooms
+
       # The sync self-tests need a live server, so start one and wait for it.
       # Both survive the end of this step on the Linux runners.
       - name: Start the sync server

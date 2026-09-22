@@ -40,6 +40,8 @@ export interface RoomManagerOptions {
   dataDir: string
   historyRetentionDays: number
   logUpdates?: boolean
+  /** How long an unused room stays in memory. */
+  idleCloseMs?: number
 }
 
 export class RoomManager {
@@ -165,21 +167,22 @@ export class RoomManager {
     }
   }
 
+  // No snapshot on close. Replaying to a timestamp starts from the snapshot,
+  // so a snapshot of the current state made every earlier version read as the
+  // latest one and turned every restore into a no-op. The snapshot may only
+  // ever hold what `prune` folded out of the log.
   private scheduleIdleClose(room: RoomState): void {
     if (room.idleTimer) clearTimeout(room.idleTimer)
     room.idleTimer = setTimeout(() => {
       if (room.subscribers.size > 0) return
-      // The log already holds every update; the snapshot is only there to keep
-      // the next cold start from replaying the whole thing.
       void room.history
-        .writeSnapshot(Y.encodeStateAsUpdate(room.doc))
-        .catch((error) => console.error(`[obsidian-connect] snapshot for ${room.name} failed`, error))
+        .flush()
         .finally(() => {
           if (room.subscribers.size > 0) return
           this.rooms.delete(room.name)
           room.doc.destroy()
         })
-    }, IDLE_CLOSE_MS)
+    }, this.options.idleCloseMs ?? IDLE_CLOSE_MS)
     room.idleTimer.unref?.()
   }
 
@@ -251,7 +254,6 @@ export class RoomManager {
     for (const room of this.rooms.values()) {
       if (room.idleTimer) clearTimeout(room.idleTimer)
       await room.history.flush()
-      await room.history.writeSnapshot(Y.encodeStateAsUpdate(room.doc))
       room.doc.destroy()
     }
     this.rooms.clear()
