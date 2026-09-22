@@ -6,6 +6,8 @@ import * as Y from 'yjs'
 import {
   CONTENT_FIELD,
   applyTextEdits,
+  parseShareLink,
+  shareLink,
   splitLines,
   textEdits,
   threeWayMerge
@@ -192,6 +194,20 @@ check(
 check(splitLines('a\nb').join('') === 'a\nb', 'splitLines round-trips without a trailing newline')
 check(splitLines('a\nb\n').join('') === 'a\nb\n', 'splitLines round-trips with a trailing newline')
 check(splitLines('').length === 0, 'splitLines on empty text')
+
+// --- share links -------------------------------------------------------------
+
+{
+  const docId = '0123456789abcdef0123456789abcdef'
+  const link = shareLink({ docId, title: 'Plans & ideas / 2026 #draft' })
+  const parsed = parseShareLink(link)
+  check(parsed?.docId === docId, 'a share link carries the document id', parsed)
+  check(parsed?.title === 'Plans & ideas / 2026 #draft', 'and the title, whatever characters it has', parsed)
+  check(parseShareLink(`  ${docId}\n`)?.docId === docId, 'a bare document id is accepted too')
+  check(parseShareLink('obsidian://connect-share?id=not-an-id&title=x') === null, 'an invalid id is rejected')
+  check(parseShareLink('https://example.com/?title=x') === null, 'a link without an id is rejected')
+  check(parseShareLink('obsidian://connect-share?id=%E0%A4%A&title=x') === null, 'a malformed link is rejected')
+}
 
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)
 process.exit(failures.length === 0 ? 0 : 1)

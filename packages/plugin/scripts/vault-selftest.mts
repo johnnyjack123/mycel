@@ -1,4 +1,4 @@
-// Devices of one person against a running server.
+// Two devices of one person, and one other person, against a running server.
 // Everything real except Obsidian itself: the DocStore, the editor binding in
 // real CodeMirror editors, the socket, the server. The vault and the Markdown
 // view are fakes that save and reload the way Obsidian does, because that
@@ -401,6 +401,67 @@ try {
     )
   } finally {
     await D.shutdown()
+  }
+
+  // --- sharing one note with someone else --------------------------------------
+  const C = new Device('Carol', `vault-selftest-${run}-carol`)
+  try {
+    await A.vault.userCreate('Together.md', 'shared text\n')
+    check(await eventually(() => Boolean(A.index?.docIdForPath('Together.md'))), 'A tracks Together.md')
+    const docId = A.index?.docIdForPath('Together.md') as string
+    A.store?.share(docId, true)
+
+    check(await C.boot(), 'C starts with a vault of her own')
+    const joined = await C.store?.join(docId, 'Together', 'Shared')
+    check(joined?.path === 'Shared/Together.md', 'C joins by document id, into her share folder', joined?.path)
+    check(C.vault.text('Shared/Together.md') === 'shared text\n', 'with the shared content')
+    check(C.vault.paths().join(',') === 'Shared/Together.md', "and nothing else from A's vault", C.vault.paths())
+
+    const aTogether = A.open('Together.md')
+    const cTogether = C.open('Shared/Together.md')
+    check(
+      await eventually(() => A.editors.boundCount() === 1 && C.editors.boundCount() === 1),
+      'both editors bind the shared note'
+    )
+    aTogether.type('from Alice ')
+    check(await eventually(() => cTogether.text() === 'shared text\nfrom Alice '), 'A types, C sees it live')
+    cTogether.type('and Carol', 0)
+    check(
+      await eventually(() => aTogether.text() === 'and Carolshared text\nfrom Alice '),
+      'C types, A sees it live',
+      aTogether.text()
+    )
+    check(
+      await eventually(() => cTogether.view.dom.querySelector('.connect-remote-caret-label')?.textContent === 'Alice'),
+      "C sees Alice's cursor"
+    )
+    check(
+      await eventually(() => aTogether.view.dom.querySelector('.connect-remote-caret-label')?.textContent === 'Carol'),
+      "A sees Carol's cursor"
+    )
+    check(
+      await eventually(() => B.store?.isShared(docId) === true),
+      "A's other device learns the note is shared"
+    )
+
+    // Syncing your own devices never shows a caret.
+    const bWelcome = B.open('Welcome.md')
+    const aWelcome = A.open('Welcome.md')
+    check(
+      await eventually(() => A.editors.boundCount() === 2 && B.editors.boundCount() === 2),
+      'an unshared note binds on both of A\'s devices'
+    )
+    aWelcome.type(' caret?')
+    await delay(600)
+    check(bWelcome.view.dom.querySelector('.connect-remote-caret') === null, 'and shows no cursor between them')
+
+    A.store?.share(docId, false)
+    check(
+      await eventually(() => cTogether.view.dom.querySelector('.connect-remote-caret') === null),
+      "stopping the share takes Alice's cursor away from C"
+    )
+  } finally {
+    await C.shutdown()
   }
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))

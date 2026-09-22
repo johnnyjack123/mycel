@@ -1,6 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose'
-import type { CollabUser, JwtClaims } from '@obsidian-connect/shared'
-import { userColor } from './colors.js'
+import { userColor, type CollabUser, type JwtClaims } from '@obsidian-connect/shared'
 
 export interface IssuedToken {
   token: string

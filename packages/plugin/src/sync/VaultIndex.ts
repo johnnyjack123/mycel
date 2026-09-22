@@ -124,9 +124,11 @@ export class VaultIndex {
     return duplicates
   }
 
-  adopt(docId: string, path: string): void {
+  adopt(docId: string, path: string, options: { shared?: boolean } = {}): void {
+    const entry: IndexEntry = { path, updatedAt: Date.now() }
+    if (options.shared) entry.shared = true
     this.doc.transact(() => {
-      this.files.set(docId, { path, updatedAt: Date.now() })
+      this.files.set(docId, entry)
     }, 'local')
   }
 
@@ -140,6 +142,17 @@ export class VaultIndex {
 
   isShared(docId: string): boolean {
     return this.files.get(docId)?.shared === true
+  }
+
+  setShared(docId: string, shared: boolean): void {
+    const entry = this.files.get(docId)
+    if (!entry || entry.deletedAt || (entry.shared === true) === shared) return
+    const next: IndexEntry = { ...entry, updatedAt: Date.now() }
+    if (shared) next.shared = true
+    else delete next.shared
+    this.doc.transact(() => {
+      this.files.set(docId, next)
+    }, 'local')
   }
 
   // Deletions are tombstones, not removals: a peer that has been offline needs

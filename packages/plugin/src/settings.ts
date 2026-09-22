@@ -5,6 +5,8 @@ export interface ObsidianConnectSettings {
   serverUrl: string
   token: string
   displayName: string
+  /** Where notes other people share with you land. Only a default: moving one out keeps it shared. */
+  sharedFolder: string
   vaultId: string
   syncEnabled: boolean
   excludeGlobs: string[]
@@ -19,6 +21,7 @@ export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
   serverUrl: 'ws://localhost:1234',
   token: '',
   displayName: '',
+  sharedFolder: 'Shared',
   vaultId: '',
   syncEnabled: true,
   excludeGlobs: [],
@@ -76,7 +79,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Display name')
-      .setDesc('Name shown to other collaborators.')
+      .setDesc('Shown next to your cursor in notes you share with other people.')
       .addText((text) =>
         text.setValue(this.plugin.settings.displayName).onChange(async (value) => {
           this.plugin.settings.displayName = value.trim()
@@ -149,6 +152,23 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
             const parsed = Number.parseInt(value, 10)
             if (!Number.isFinite(parsed) || parsed < 1) return
             this.plugin.settings.maxLoadedDocuments = parsed
+            await this.plugin.saveSettings()
+          })
+      )
+
+    new Setting(containerEl).setName('Sharing').setHeading()
+
+    new Setting(containerEl)
+      .setName('Folder for shared notes')
+      .setDesc(
+        'Where a note someone shares with you is created. Move it anywhere afterwards; it stays shared.'
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder('Shared')
+          .setValue(this.plugin.settings.sharedFolder)
+          .onChange(async (value) => {
+            this.plugin.settings.sharedFolder = value.trim().replace(/^\/+|\/+$/g, '')
             await this.plugin.saveSettings()
           })
       )

@@ -52,6 +52,11 @@ function parentOf(path: string): string {
   return slash < 0 ? '' : path.slice(0, slash)
 }
 
+function safeFileName(title: string): string {
+  const cleaned = title.replace(/[\\/:*?"<>|#^[\]]/g, ' ').replace(/\s+/g, ' ').trim()
+  return cleaned.length > 0 ? cleaned.slice(0, 120) : 'Shared note'
+}
+
 export class DocStore {
   private readonly handles = new Map<string, DocHandle>()
   private readonly lastUsed = new Map<string, number>()
@@ -791,6 +796,43 @@ export class DocStore {
     for (const [docId, handle] of this.handles) handle.setShared(this.isShared(docId))
   }
 
+  // --- sharing ---------------------------------------------------------------
+
+  share(docId: string, shared: boolean): void {
+    this.index.setShared(docId, shared)
+    this.applySharing()
+  }
+
+  /**
+   * Adds a note someone shared into this vault, under `folder`, and resolves
+   * to its file. An id the index already knows just resolves to that file.
+   */
+  async join(docId: string, title: string, folder: string): Promise<TFile | null> {
+    if (!this.ready) return null
+    let path = this.index.pathFor(docId)
+    if (path) {
+      this.index.setShared(docId, true)
+    } else {
+      path = this.freePath(folder, title)
+      this.index.adopt(docId, path, { shared: true })
+    }
+    this.applySharing()
+    await this.withLock(docId, () => this.pull(docId))
+    const file = this.app.vault.getAbstractFileByPath(path)
+    return file instanceof TFile ? file : null
+  }
+
+  private freePath(folder: string, title: string): string {
+    const name = safeFileName(title)
+    const prefix = folder.replace(/^\/+|\/+$/g, '')
+    const at = (suffix: string): string => `${prefix ? `${prefix}/` : ''}${name}${suffix}.md`
+    let candidate = at('')
+    for (let n = 2; this.app.vault.getAbstractFileByPath(candidate) || this.index.docIdForPath(candidate); n += 1) {
+      candidate = at(` ${n}`)
+    }
+    return candidate
+  }
+
   // --- startup scan ----------------------------------------------------------
 
   private async scanVault(): Promise<void> {
@@ -804,5 +846,9 @@ export class DocStore {
 
   trackedCount(): number {
     return this.index.live().length
+  }
+
+  sharedCount(): number {
+    return this.index.live().filter(({ entry }) => entry.shared === true).length
   }
 }

@@ -1,8 +1,16 @@
 import { Notice, Plugin, TFile, TFolder, editorInfoField, type TAbstractFile } from 'obsidian'
-import type { CollabUser } from '@obsidian-connect/shared'
+import {
+  SHARE_ACTION,
+  isDocId,
+  shareLink,
+  userColor,
+  type CollabUser,
+  type ShareLink
+} from '@obsidian-connect/shared'
 import { EditorSync } from './editor/EditorSync'
 import { HistoryModal } from './history/HistoryModal'
 import { BackupModal } from './history/BackupModal'
+import { JoinModal } from './share/JoinModal'
 import { BackupStore } from './sync/BackupStore'
 import { DocStore, type DocStoreOptions } from './sync/DocStore'
 import { StateStore } from './sync/StateStore'
@@ -17,8 +25,6 @@ import {
 
 // Settings earlier versions stored that no longer mean anything.
 const RETIRED_SETTINGS = ['adapterMode', 'liveCollaboration']
-
-const PLUGIN_COLOR = '#30bced'
 
 export default class ObsidianConnectPlugin extends Plugin {
   settings: ObsidianConnectSettings = { ...DEFAULT_SETTINGS }
@@ -75,6 +81,27 @@ export default class ObsidianConnectPlugin extends Plugin {
       name: 'Reconnect and rescan the vault',
       callback: () => void this.restartSync()
     })
+    this.addCommand({
+      id: 'share-note',
+      name: 'Share this note live',
+      callback: () => void this.shareActive(true)
+    })
+    this.addCommand({
+      id: 'stop-sharing-note',
+      name: 'Stop sharing this note',
+      callback: () => void this.shareActive(false)
+    })
+    this.addCommand({
+      id: 'open-shared-note',
+      name: 'Open a shared note',
+      callback: () => new JoinModal(this.app, (link) => void this.openShared(link)).open()
+    })
+    this.registerObsidianProtocolHandler(SHARE_ACTION, (params) => {
+      const docId = params.id ?? ''
+      if (isDocId(docId)) void this.openShared({ docId, title: params.title ?? '' })
+      else new Notice('Obsidian Connect: that share link is incomplete.')
+    })
+
     this.registerVaultEvents()
 
     // The vault is not fully indexed while Obsidian is still starting, and a
@@ -104,8 +131,8 @@ export default class ObsidianConnectPlugin extends Plugin {
   }
 
   private user(): CollabUser {
-    const name = this.settings.displayName || 'Local user'
-    return { id: name, name, color: PLUGIN_COLOR, colorLight: `${PLUGIN_COLOR}33` }
+    const name = this.settings.displayName || 'Anonymous'
+    return { id: name, name, ...userColor(name) }
   }
 
   private pluginDir(): string {
@@ -255,6 +282,72 @@ export default class ObsidianConnectPlugin extends Plugin {
     }, 500)
   }
 
+  // --- sharing -------------------------------------------------------------
+
+  private async shareActive(shared: boolean): Promise<void> {
+    const file = this.activeFile()
+    const store = this.store
+    if (!file || !store?.ready || !this.index) {
+      new Notice(store ? 'Open a synced note first.' : 'Obsidian Connect is off.')
+      return
+    }
+    const docId = this.index.docIdForPath(file.path)
+    if (!docId) {
+      new Notice('This note is not synced yet.')
+      return
+    }
+
+    store.share(docId, shared)
+    this.editors.refresh()
+    this.renderStatus()
+
+    if (!shared) {
+      new Notice(
+        `${file.basename} is no longer shown as shared, and cursors are off. Anyone who has the link can still open it: until accounts exist, a link cannot be revoked.`,
+        12_000
+      )
+      return
+    }
+
+    const link = shareLink({ docId, title: file.basename })
+    let copied = false
+    try {
+      await navigator.clipboard.writeText(link)
+      copied = true
+    } catch {
+      // Shown in the notice instead.
+    }
+    const who = this.settings.displayName
+      ? ''
+      : '\n\nSet a display name in the settings so the others see who is typing.'
+    new Notice(
+      `${copied ? 'Share link copied' : `Share link:\n${link}`}\n\nAnyone with this link who uses your server can open and edit ${file.basename} live. Copies they keep stay with them, even if you stop sharing.${who}`,
+      20_000
+    )
+  }
+
+  private async openShared(link: ShareLink): Promise<void> {
+    const store = this.store
+    if (!store?.ready) {
+      new Notice('Obsidian Connect is not connected yet. Try again once the status bar says synced.')
+      return
+    }
+    const file = await store.join(link.docId, link.title, this.settings.sharedFolder)
+    if (!file) {
+      new Notice('The shared note could not be loaded. Is the server reachable?')
+      return
+    }
+    await this.app.workspace.getLeaf('tab').openFile(file)
+    this.editors.refresh()
+    this.renderStatus()
+    if (file.stat.size === 0) {
+      new Notice(
+        `${file.basename} is empty. If the person who shared it sees text, the two of you are not on the same server.`,
+        12_000
+      )
+    }
+  }
+
   // --- commands ------------------------------------------------------------
 
   private renderStatus(): void {
@@ -278,6 +371,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         `Server: ${this.settings.serverUrl}`,
         `Vault ID: ${this.settings.vaultId}`,
         `Notes tracked: ${this.store.trackedCount()}`,
+        `Shared notes: ${this.store.sharedCount()}`,
         `Documents in memory: ${this.store.loadedCount()}`,
         `Editors bound: ${this.editors.boundCount()}`
       ].join('\n'),

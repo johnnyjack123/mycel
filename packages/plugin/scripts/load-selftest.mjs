@@ -237,6 +237,12 @@ if (exported) {
       check(false, 'onload runs', error?.stack ?? String(error))
     }
     check(registered.editorExtensions.length === 1, 'it registers exactly one editor extension', registered.editorExtensions.length)
+    check(
+      ['share-note', 'stop-sharing-note', 'open-shared-note'].every((id) => registered.commands.includes(id)),
+      'it registers the sharing commands',
+      registered.commands
+    )
+    check(registered.protocolHandlers.includes('connect-share'), 'it handles share links', registered.protocolHandlers)
 
     try {
       for (const callback of registered.layoutReady) await callback()

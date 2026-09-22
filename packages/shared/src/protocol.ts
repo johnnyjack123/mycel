@@ -29,6 +29,48 @@ export function isDocRoom(room: string): boolean {
   return room.startsWith('doc:')
 }
 
+// A shared note is addressed by its document id alone. Rooms are global, so
+// the recipient keeps it under a path of their own choosing in their own vault.
+export const SHARE_ACTION = 'connect-share'
+
+export interface ShareLink {
+  docId: string
+  /** Suggested file name for the recipient; the id is what identifies the note. */
+  title: string
+}
+
+// `stableDocId` yields 32 hex digits; its no-WebCrypto fallback is a UUID.
+const DOC_ID = /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/
+
+export function isDocId(value: string): boolean {
+  return DOC_ID.test(value)
+}
+
+export function shareLink(link: ShareLink): string {
+  return `obsidian://${SHARE_ACTION}?id=${link.docId}&title=${encodeURIComponent(link.title)}`
+}
+
+/** Accepts a share link or a bare document id; anything else is null. */
+export function parseShareLink(input: string): ShareLink | null {
+  const trimmed = input.trim()
+  if (isDocId(trimmed)) return { docId: trimmed, title: '' }
+  const query = trimmed.split('?')[1]
+  if (!query) return null
+  const params = new Map<string, string>()
+  for (const pair of query.split('&')) {
+    const separator = pair.indexOf('=')
+    if (separator < 0) continue
+    try {
+      params.set(pair.slice(0, separator), decodeURIComponent(pair.slice(separator + 1).replace(/\+/g, ' ')))
+    } catch {
+      return null
+    }
+  }
+  const docId = params.get('id') ?? ''
+  if (!isDocId(docId)) return null
+  return { docId, title: params.get('title') ?? '' }
+}
+
 // Messages on the multiplexed vault socket. One connection carries every note
 // of a vault; opening a WebSocket per note does not scale past a few hundred.
 export const MUX = {
