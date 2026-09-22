@@ -2,9 +2,9 @@
 
 CRDT-based (Yjs) vault synchronization and live collaboration.
 
-Phase 0 is a technical spike: it validates whether we can bind a Yjs `Y.Text` to
-Obsidian's own CodeMirror 6 editor (with remote cursors), with a dedicated
-collaboration view as fallback. See `PLAN.md`.
+Keeps a vault in sync across your own devices, and lets you share single notes
+with other people for live editing with cursors - in Obsidian's own editor. See
+`CLAUDE.md` for the architecture and `PLAN.md` for the history of the design.
 
 ## Requirements
 
@@ -79,18 +79,29 @@ npm run dev:plugin
 
 ```bash
 npm run test:merge        # merge and reconcile logic (no server, no DOM)
-npm run test:load         # does the built bundle import cleanly?
+npm run test:load         # does the built bundle load, start and unload cleanly?
+npm run test:rooms        # does history survive idle rooms and restarts?
 npm run start:server      # in another terminal, for everything below
 npm run ws-test           # does the server relay Yjs updates?
 npm run test:socket       # many documents over one multiplexed socket
 npm run test:history      # versions, replay and rollback
 npm run test:sync         # does the editor binding actually sync? (jsdom)
+npm run test:vault        # two devices and a collaborator, end to end
+```
+
+Run the server for tests on its own port and data directory, never against the
+one you use:
+
+```bash
+PORT=1235 OBSIDIAN_CONNECT_DATA_DIR=/tmp/oc-test-data npm run start:server
+npm run test:vault -- ws://localhost:1235
 ```
 
 `test:merge` covers the only code path able to delete a user's text.
-`test:sync` drives the real `MainEditorCollabAdapter` against the running server:
-initial reconcile, both directions, concurrent edits, deletions, re-attaching
-after Obsidian rebuilds the editor state, and rejoining a persisted room.
+`test:vault` runs the real sync layer and editor binding against an in-memory
+vault whose editor saves and reloads files the way Obsidian does: pulling a vault
+onto a new device, renames, deletes, both devices typing at once, offline edits
+on both sides, and sharing one note with another vault.
 
 ## Try it
 
@@ -105,6 +116,17 @@ Every markdown note is synced automatically; there is no per-note switch. Use
 
 Commands: *Show sync status*, *Open version history for this note*,
 *Browse backups*, *Force resync of this note*, *Reconnect and rescan the vault*.
+
+### Sharing a note
+
+1. Open the note and run **Share this note live**. A link is copied.
+2. Send it. The other person clicks it, or runs **Open a shared note** and pastes
+   it. The note appears in their `Shared/` folder (configurable) and stays live
+   between you, with each other's cursors.
+3. **Stop sharing this note** turns the cursors off again.
+
+Until accounts exist, anyone with the link who uses the same server can edit the
+note, and a link cannot be revoked. Copies the other person keeps stay with them.
 
 ## How it works
 
@@ -129,19 +151,11 @@ Commands: *Show sync status*, *Open version history for this note*,
 - **Documents beyond `maxLoadedDocuments` stop receiving live updates** until
   opened again. They catch up on the next load, but a note you have not touched
   in a while is not live.
-- **No accounts or per-document sharing yet** (Phase 2). Anyone who can reach the
-  server in dev mode can read and write every room.
+- **No accounts yet** (Phase 2). Anyone who can reach the server in dev mode can
+  read and write every room, and sharing is by link without access control.
 - **Conflicts keep both versions rather than resolving them.** That is
   deliberate - duplication is recoverable, deletion often is not - but it means
   a conflicted note needs manual cleanup.
-- The main-editor integration uses Obsidian-internal CodeMirror APIs
-  (`(editor as any).cm`) and may break on Obsidian updates. Use the dedicated
-  collaboration view as the stable fallback.
-- Obsidian discards the injected CodeMirror extension whenever it rebuilds the
-  editor state (file switch inside a leaf, edit/preview mode change). The plugin
-  re-attaches on `layout-change`, `active-leaf-change` and `file-open`, and the
-  shared document wins that reconcile — so edits made in that editor while it
-  was detached are discarded.
 - The access token from `/auth/dev-token` is only for testing.
 
 ## Configuration

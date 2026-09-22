@@ -1,82 +1,91 @@
 # Progress
 
-_Last updated: 2026-09-20 · Phase 1 built, renamed to **Obsidian Connect**, two pairing bugs fixed. Everything testable headlessly is green; **the in-Obsidian path has still never completed a successful two-device run**._
+_Last updated: 2026-09-22 · Vault sync and editor binding rebuilt, sharing by link added, history fixed. Everything headless is green, including a two-device end-to-end test; **the in-Obsidian run is still outstanding**._
 
 ## Where we are
 
 Monorepo (`npm` workspaces): `packages/shared`, `packages/server`, `packages/plugin`.
 Architecture, invariants and the Phase 2 plan live in **`CLAUDE.md`** — read that first.
 
-Phase 1 is implemented end to end: every markdown note is permanently CRDT-backed, one
-multiplexed WebSocket per vault, local persistence via `y-indexeddb`, file write-back with
-agreement detection, three-way reconcile with backups, rename/delete through the vault index,
-and server-side version history with rollback.
+Branch `fix/vault-sync`, not pushed.
 
 ## Next step
 
-**The user is about to run the first real two-device test.** Nothing else should be built until
-that passes.
+**On-device test with two devices**, then with a second person. Server restart needed
+(history fix), plugin update on both devices.
 
-The plugin id changed, so a clean install is required:
+1. Keep the Vault ID identical on both devices.
+2. Open the same note on both, type on both at once — nothing may double.
+3. Create, rename, delete a note on one device — the other follows.
+4. Close one device, edit the same note on both, reopen — both edits survive.
+5. "Share this note live", open the link on the other person's Obsidian — both see
+   each other's cursor; the note appears in their `Shared/` folder.
 
-1. Delete `.obsidian/plugins/crdt-sync/`, install into `.obsidian/plugins/obsidian-connect/`
-2. Delete `packages/server/data/` (old rooms are path-keyed leftovers)
-3. **Set the identical Vault ID on both devices** — the vault *name* is irrelevant
-4. Status bar reads `Connect: <state> · loaded/tracked`. `0/0` means nothing was adopted,
-   which is an index problem, not a sync problem
-
-Scenario that matters most, because it is the bug everything started with: both devices offline,
-edit the same note on both, bring the server back. Both texts must survive; backups land in
-`.obsidian/plugins/obsidian-connect/backups/`.
+If the editor does not bind (status: *Editors bound: 0* while a note is open), the
+console will show why. The one assumption only a device can confirm: `editorInfoField`
+already reports the new file when Obsidian loads it into a leaf.
 
 ## Fixed in this session
 
-- **Pairing was broken because document ids were random.** `crypto.randomUUID()` was minted by
-  whichever device saw a file first, so two devices scanning before either had received the
-  other's index created two documents for one note and then synced faithfully past each other.
-  Ids are now `stableDocId(vaultId, path)`. `duplicatePaths()` + `mergeDuplicates()` fold
-  together any pair that still diverges, keeping the lower id and merging the other's text
-  additively.
-- **`DocStore.start()` waited on the vault index forever.** With the server unreachable the
-  plugin looked loaded, reported a connection and tracked nothing. Now: timeout, a notice, and a
-  retry when the socket reconnects.
-- **The status bar now shows `loaded/tracked`**, so "nothing was adopted" is visible at a glance.
-- **Removed `HistoryStore.compact()` and `logBytes()`** — dead code, and `compact()` deleted the
-  whole log, i.e. every rollback point, if anyone had ever called it.
-- **Removed a raw NUL byte** used as a placeholder in the glob matcher; the matcher moved to
-  `sync/glob.ts` so it can be tested without importing Obsidian.
-- **Renamed to Obsidian Connect** throughout: plugin id, display name, log prefix
-  `[obsidian-connect]`, CSS classes, workspace scope `@obsidian-connect/*`, env vars
-  `OBSIDIAN_CONNECT_*`.
-- **CI produces a second, flat zip** (`<id>-<version>-update.zip`) holding just `main.js`,
-  `manifest.json` and `styles.css` at the root, for overwriting an existing install.
+What the user saw — nothing syncing, fallback panes, an error on load, a note filling
+itself with `t`s — came from these, all reproduced headlessly first:
+
+- **Notes never reached a device that did not already have them.** Nothing created
+  files from the index. `DocStore.pullMissing` now does, folders included.
+- **The file was reconciled against the document while an editor was bound.**
+  Obsidian's save lags the typing, the three-way merge saw a conflict in the same
+  line and kept both — the text duplicated itself and bounced between devices. The
+  escalation. A bound note's file is now only compared, never merged.
+- **Editors were bound before their note was settled**, to an empty document the
+  server had not sent yet: keystrokes at non-existent positions, then the note
+  seeded a second time. `EditorSync` settles first.
+- **Remote deltas were mapped onto CodeMirror in the wrong coordinates.** Every
+  multi-part change after the first part landed shifted, with the length intact, so
+  nothing noticed editor and document drifting apart.
+- **The editor extension was injected with `appendConfig`** and re-attached from
+  workspace events mid-layout — the crashes and the fallback panes. Replaced by one
+  ViewPlugin through `registerEditorExtension`; the fallback view is gone.
+- Remote changes no longer land in the undo history; a wholesale buffer reload
+  becomes a diff; Obsidian reloading our own write is not taken as an edit.
+- A remote delete is applied before the startup scan could revive the note, and only
+  to an unchanged file; renames/deletes before the index arrived are replayed.
+- One file operation per note at a time (per-document lock); a handle still loading
+  is never handed out; stopping waits for running operations before saving state.
+- `VaultSocket` forgets "synced" on disconnect, so a reconnect is waited for.
+- **Server history**: an idle room wrote a snapshot of the current state, so every
+  older version read as the latest and restore did nothing. Existing rooms keep the
+  collapsed state they already have; new versions are fine.
+- **Sharing (interim, until accounts):** share link carrying the docId, joining adds
+  it to the recipient's own index, presence only for `shared` entries.
 
 ## Known issues / debt
 
-- **Attachments are not synced.** Binary files do not travel through Yjs.
-- **Notes beyond `maxLoadedDocuments` (500) stop receiving live updates** until opened again.
-- **No accounts or ACLs yet.** Dev mode lets anyone who can reach the server read and write every
-  room, and anyone who knows a Vault ID reads that whole vault. Do not expose it to the internet.
-- **Conflicts keep both versions** rather than resolving them — deliberate, but a conflicted note
-  needs manual cleanup.
-- **Edits made while the editor is detached are discarded** when it re-attaches; the shared
-  document wins that reconcile.
-- Main-editor integration uses the Obsidian-internal `(editor as any).cm`; version-fragile, with
-  the dedicated collab view as fallback.
-- The plugin name contains "Obsidian", which the community catalogue forbids. Irrelevant while
-  self-hosted, blocking for a later submission.
+- **Attachments are not synced.**
+- **Notes beyond `maxLoadedDocuments` (500) stop receiving live updates** until
+  opened again or the next restart.
+- **No accounts or ACLs.** Anyone who reaches the server reads and writes every room;
+  a share link cannot be revoked; "Stop sharing" only turns cursors off.
+- **Conflicts keep both versions** — deliberate, but needs manual cleanup.
+- Changing the display name takes effect for notes loaded afterwards.
+- The plugin name contains "Obsidian", which the community catalogue forbids.
 
 ## Verification state
 
-- `npm run typecheck`, `npm run build:plugin`: pass.
-- `test:merge` 33, `test:load` 4, `ws-test` 1, `test:socket` 7, `test:history` 7, `test:sync` 21 —
-  all pass, in the working tree and in a fresh clone with its own server.
-- `.github/workflows/build.yml`: YAML parses, every `run` block passes `bash -n`, the packaging
-  step and all release paths were executed locally against a stubbed `gh`.
-- **On-device Obsidian test: still outstanding.** `DocStore`, `DocHandle`, the startup scan, vault
-  events, file write-back and both modals have never run.
+- `typecheck`, `build:plugin`: pass.
+- `test:merge`, `test:load` (now runs onload, start and unload), `test:rooms`, and
+  against a scratch server on 1235: `ws-test`, `test:socket`, `test:history`,
+  `test:sync` (19), `test:vault` (55) — all pass, the timing-based ones repeatedly.
+- Mutation checks: reinstating each of the old bugs (merging a bound note's save,
+  the old delta mapping, binding before settling, remote changes in undo, no
+  wholesale diff, no echo filter) makes the matching check fail.
+- **On-device Obsidian test: outstanding.**
 
 ## Log
+
+### 2026-09-22
+- Diagnosed why vault sync never worked and live editing escalated; rebuilt the file
+  bridge, the editor binding and the socket's sync tracking; added sharing by link;
+  fixed server history; added `test:vault` and `test:rooms`.
 
 ### 2026-09-20
 - Renamed to Obsidian Connect; made document ids deterministic; fixed the index-sync hang;
@@ -88,13 +97,7 @@ edit the same note on both, bring the server back. Both texts must survive; back
 - Built Phase 1: vault-wide CRDT sync, multiplexed transport, local persistence, file bridge,
   three-way reconcile with backups, vault index, server history with rollback, history and
   backup UI. Added `test:merge`, `test:socket`, `test:history`, `test:load`.
-- `test:merge` immediately caught a real bug: the no-base union spliced local text into the
-  middle of a remote line because a minimal character replacement ignores line boundaries.
 
 ### 2026-09-18
 - Diagnosed "connected but no sync": the CodeMirror view plugin dispatched from its constructor,
   which CodeMirror answers by silently deactivating the plugin. Fixed and regression-tested.
-- Hardened seeding, editor targeting, server-side room loading and saving; added re-attach after
-  Obsidian rebuilds the editor state; added the build/release GitHub Action.
-- Fixed CI: the self-tests relied on a global `WebSocket` (Node 22+) and jsdom 30 does not support
-  the Node 20 the workflow pinned. Baseline is now Node 22+, CI builds on 24.

@@ -38,18 +38,34 @@ not preferences.
    CodeMirror catches the exception and silently deactivates the plugin forever,
    so the editor reports success and then ignores every keystroke. Defer with
    `queueMicrotask`.
-7. **Only one writer per file, and only one binding per editor.** While an
-   editor is bound, Obsidian saves that buffer — `DocStore.setEditorOwned`
-   suppresses our own write. Writing anyway made Obsidian reload the open
+7. **Only one writer per file, and only one binding per note.** While an
+   editor is bound, Obsidian saves that buffer and nothing else writes the file
+   — `DocStore.setEditorOwned`. Writing anyway made Obsidian reload the open
    buffer, which the binding read back as a user edit; two devices doing that
-   concurrently doubled the text on every round trip. Likewise, `bindEditor`
-   guards with a synchronous `binding` set: opening a note fires three workspace
-   events, and without the guard each one attached another binding to the same
-   editor, applying every keystroke several times.
-8. **A change whose result already equals the document is not an edit.**
+   concurrently doubled the text on every round trip. `EditorSync` binds only
+   the first editor showing a note: Obsidian mirrors a note between its panes
+   itself, and a second binding applies every remote change twice.
+8. **While an editor is bound, never reconcile its file against the
+   document.** Obsidian takes the text for a save before writing it, so the
+   save lags whatever was typed meanwhile. Merging that lagging copy back in
+   saw "both sides changed this line" on every save and kept both — the text
+   duplicated itself, travelled to the other device and came back. This was the
+   escalation that filled a note with `t`s. `reconcileFile` only records
+   agreement for an owned note.
+9. **A change whose result already equals the document is not an edit.**
    `applyLocalChanges` returns early in that case. Obsidian replaces the whole
    buffer on reload even when the text is identical, and taken literally that
-   becomes "delete everything, insert everything".
+   becomes "delete everything, insert everything". Larger replacements are
+   turned into a diff against the document for the same reason.
+10. **Bind an editor only to a settled note** — `DocStore.settle`, file and
+    document agreed with the server state known. Binding to an empty document
+    the server had not sent yet put keystrokes at positions that did not exist
+    and then seeded the room with a second copy of the note.
+11. **Map a Yjs delta onto CodeMirror in pre-change coordinates**
+    (`deltaToChanges`): advance over retained and deleted text, not over
+    inserted text. Getting this wrong shifts every later part of a multi-part
+    change, keeps the length right and so goes unnoticed while editor and
+    document drift apart.
 
 ## Architecture
 
@@ -81,9 +97,28 @@ The file on disk is a **projection** of the document, not the source of truth.
 Disagreement is detected by comparing the file text against the document text
 directly — no "who wrote last" bookkeeping, which also removes the echo problem
 (our own write-back reads back identical and is ignored). `StateStore` keeps
-`mtime`/`size` so startup can skip unchanged files without reading them, plus
-the **base text** per note: the last text where file and document agreed. The
-base is what lets `Reconciler` tell an addition from a deletion.
+`mtime`/`size` per note, plus the **base text**: the last text where file and
+document agreed. The base is what lets `Reconciler` tell an addition from a
+deletion.
+
+Every file operation on a note runs under a per-document lock in `DocStore`
+(scan, vault events, write-back, pull, deletes, editor settling). The index
+drives the vault: notes it knows but the vault lacks are **pulled** (created,
+folders included); remote renames are applied; a remote delete is applied only
+to a file this device agreed on and that is unchanged since — an edit here wins
+over a delete there and revives the note. Renames and deletes that happen before
+the index arrives are queued and replayed.
+
+### Editor
+
+One ViewPlugin (`editor/binding.ts`), installed through
+`registerEditorExtension`, so Obsidian itself carries it into every Markdown
+editor and across file switches and mode changes. It identifies its note through
+`editorInfoField` and gets the `Y.Text` from `EditorSync`, which settles the note
+first and claims the file for Obsidian as the only writer. Edits typed before
+the binding started are merged in (`resolveEditorEdits`, with backups), remote
+changes stay out of the undo history, and Obsidian reloading a file this device
+wrote just before is recognised and not taken as an edit (`recentWrite`).
 
 ### History
 
@@ -100,24 +135,37 @@ is itself recorded as a version. A restore can be undone.
 keeps newer ones. No content is lost; only the granularity of old states.
 Default 30 days, `OBSIDIAN_CONNECT_HISTORY_DAYS`.
 
+**The snapshot holds only what `prune` folded out of the log.** Replaying starts
+from it, so a snapshot of the current state — written on idle close until
+2026-09-22 — made every older version read as the latest and every restore a
+no-op.
+
 ## Testing
 
 Nothing that touches Obsidian's API can be tested headlessly. Everything else is
 covered, and all of it must stay green.
 
 ```bash
-npm run test:merge     # merge/reconcile/identity — no server, no DOM
-npm run test:load      # the built bundle imports with Obsidian stubbed
-npm run start:server   # needed for the three below
+npm run test:merge     # merge/reconcile/identity/share links — no server, no DOM
+npm run test:load      # the built bundle imports, onload/start/unload run, Obsidian stubbed
+npm run test:rooms     # server history across idle close and restart, in-process
+npm run start:server   # needed for the ones below
 npm run ws-test        # legacy relay
 npm run test:socket    # multiplexed transport
 npm run test:history   # versions, replay, rollback
-npm run test:sync      # the real editor binding in jsdom
+npm run test:sync      # the editor binding in real CodeMirror, jsdom
+npm run test:vault     # two devices + a collaborator: DocStore, EditorSync, binding
 ```
 
-**Untested, because it only runs inside Obsidian:** `DocStore`, `DocHandle`
-(y-indexeddb), the startup scan, vault events, file write-back, and both modals.
-Changes there need on-device verification.
+`test:vault` runs the real sync layer against `scripts/stubs/fake-vault.ts`: an
+in-memory vault and a Markdown view that save the way Obsidian does (text taken
+first, written a moment later, periodically while typing) and reload wholesale
+when something else writes the file. That model is what makes the doubling bug
+reproducible; a fake that saves instantly passes with the bug in place. `obsidian`
+is replaced through `paths` in `scripts/tsconfig.json`.
+
+**Still only verifiable on a device:** `editorInfoField` and the real timing of
+Obsidian's saves and reloads, IndexedDB, the modals, and the protocol handler.
 
 ## Gotchas
 
@@ -125,11 +173,13 @@ Changes there need on-device verification.
   CI builds on 24, which is also the development baseline.
 - **`y-websocket` falls back to a global `WebSocket`**, which Node only has from
   v22. The self-tests pass `WebSocketPolyfill` explicitly.
-- **Obsidian drops `StateEffect.appendConfig` extensions** whenever it rebuilds
-  the EditorState (file switch inside a leaf, edit/preview toggle). The adapter
-  re-attaches on `layout-change`, `active-leaf-change` and `file-open`, and the
-  binding refuses local edits while the view shows a different note — otherwise
-  a file switch pushes the next note's text into the shared room.
+- **Never add the editor extension with `StateEffect.appendConfig`.** Obsidian
+  drops such extensions whenever it rebuilds the EditorState (file switch inside
+  a leaf, edit/preview toggle), and re-attaching from workspace events while it
+  was still laying out crashed CodeMirror and opened fallback panes. Use
+  `registerEditorExtension`. The binding still compares the note on every update
+  and lets go when it changes — otherwise a file switch pushes the next note's
+  text into the shared room.
 - **`main.js` is CommonJS inside a `"type": "module"` package.** Obsidian
   evaluates it itself; Node needs a `.cjs` copy (see `load-selftest.mjs`).
 - **Never put raw control characters in source.** A NUL sentinel in the glob
@@ -196,15 +246,25 @@ participant cannot do is change how long the shared log lives.
 
 ### Sharing
 
-Granting account B access to `doc:<docId>` plus an entry in B's vault index.
+**Interim, built 2026-09-22 until accounts exist:** a share link
+(`obsidian://connect-share?id=<docId>&title=…`, `shareLink`/`parseShareLink`).
+"Share this note live" sets `shared` on the note's index entry and copies the
+link; "Open a shared note" or clicking the link adds the docId to the
+recipient's own index under the share folder, and the normal pull creates the
+file. Presence is exchanged exactly for index entries with `shared`. There is no
+access control — anyone with the link and the server can edit, as with every
+room in dev mode — and "Stop sharing" only turns presence off; it cannot revoke.
+
+The target design: granting account B access to `doc:<docId>` plus an entry in
+B's vault index.
 
 **Sharing is per document and lives in the UI, not in the settings.** The flow
 is: open a note, "Share this note", pick a person the server knows, done. There
 must be no global "collaboration on/off" switch — that was built once and was
-wrong. Presence (cursors, selections) follows from a document being shared:
-`DocStore.sharedDocs` is the seam, and `DocHandle` only registers awareness with
-the socket for documents in it. Syncing your own devices never broadcasts a
-caret.
+wrong. Presence (cursors, selections) follows from a document being shared: the
+`shared` flag on the index entry is the seam, and `DocHandle` only registers
+awareness with the socket while it is set (`setShared` switches it live). Syncing
+your own devices never broadcasts a caret.
 
 Agreed rules:
 
