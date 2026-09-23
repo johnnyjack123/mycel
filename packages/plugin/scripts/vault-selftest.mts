@@ -513,6 +513,22 @@ try {
       await eventually(() => aTogether.view.dom.querySelector('.connect-remote-caret-label')?.textContent === 'Carol'),
       "A sees Carol's cursor"
     )
+
+    // Typing exactly at someone's caret. On their own screen the caret stays
+    // in front of the new text, so that is where everyone else must see it.
+    {
+      const carolAt = 'and Carol'.length
+      const carolOnA = (): number => {
+        const caret = aTogether.view.dom.querySelector('.connect-remote-caret')
+        return caret ? aTogether.view.posAtDOM(caret) : -1
+      }
+      check(await eventually(() => carolOnA() === carolAt), "A sees Carol's caret where she stopped typing", carolOnA())
+      aTogether.view.dispatch({ changes: { from: carolAt, insert: 'XYZ' }, userEvent: 'input.type' })
+      check(await eventually(() => cTogether.text().startsWith('and CarolXYZ')), 'C gets what A typed at her caret')
+      check(cTogether.view.state.selection.main.head === carolAt, "Carol's own caret stays in front of it")
+      await delay(300)
+      check(carolOnA() === carolAt, 'and A sees it there too, not pushed past the new text', carolOnA())
+    }
     check(
       await eventually(() => B.store?.isShared(docId) === true),
       "A's other device learns the note is shared"

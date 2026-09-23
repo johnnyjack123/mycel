@@ -435,9 +435,15 @@ export class EditorBinding implements PluginValue {
     // The editor can be ahead of Y.Text while an update is still settling;
     // an out-of-range index would throw out of the update handler.
     const limit = session.ytext.length
-    const anchor = Y.createRelativePositionFromTypeIndex(session.ytext, Math.min(range.anchor, limit))
-    const head = Y.createRelativePositionFromTypeIndex(session.ytext, Math.min(range.head, limit))
-    awareness.setLocalStateField('cursor', { anchor, head })
+    // Anchored the way CodeMirror moves your own selection: a caret stays in
+    // front of text someone inserts exactly at it, and a selection does not
+    // grow at its edges. Tied to the character on its right instead, the
+    // caret the others saw ran ahead of whatever they typed at it - somewhere
+    // it never was on your own screen.
+    const assoc = (position: number): number => (!range.empty && position === range.from ? 0 : -1)
+    const relative = (position: number): Y.RelativePosition =>
+      Y.createRelativePositionFromTypeIndex(session.ytext, Math.min(position, limit), assoc(position))
+    awareness.setLocalStateField('cursor', { anchor: relative(range.anchor), head: relative(range.head) })
   }
 
   private buildCursors(session: EditorSession): DecorationSet {
