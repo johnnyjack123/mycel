@@ -151,6 +151,13 @@ export class EditorBinding implements PluginValue {
   private destroyed = false
   private applyingRemote = false
   private cooldown: ReturnType<typeof setTimeout> | null = null
+  /**
+   * The view names a note whose text has not reached the buffer yet. Obsidian
+   * reports the new file before it has read it, so for a moment the buffer
+   * still holds the previous note - and binding then took that text for
+   * edits to the new one.
+   */
+  private contentPending = false
 
   private readonly observer = (event: Y.YTextEvent, transaction: Y.Transaction): void => {
     if (transaction.origin === EDITOR_ORIGIN) return
@@ -209,6 +216,8 @@ export class EditorBinding implements PluginValue {
   }
 
   update(update: ViewUpdate): void {
+    const loaded =
+      update.docChanged && !update.transactions.some((transaction) => transaction.annotation(remoteUpdate))
     const note = this.noteOf(update.state)
     if (note !== this.note) {
       // Obsidian put another note into this editor without rebuilding its
@@ -216,8 +225,15 @@ export class EditorBinding implements PluginValue {
       // document this binding was carrying.
       this.unbind()
       this.note = note
+      this.contentPending = !loaded
       queueMicrotask(() => this.refresh())
       return
+    }
+    if (this.contentPending && loaded) {
+      // The new note's text has arrived.
+      this.contentPending = false
+      this.endCooldown()
+      queueMicrotask(() => this.refresh())
     }
 
     const session = this.session
@@ -242,10 +258,14 @@ export class EditorBinding implements PluginValue {
 
   destroy(): void {
     this.destroyed = true
-    if (this.cooldown !== null) clearTimeout(this.cooldown)
-    this.cooldown = null
+    this.endCooldown()
     this.unbind()
     this.host.detached(this)
+  }
+
+  private endCooldown(): void {
+    if (this.cooldown !== null) clearTimeout(this.cooldown)
+    this.cooldown = null
   }
 
   unbind(): void {
@@ -302,10 +322,11 @@ export class EditorBinding implements PluginValue {
     for (let attempt = 0; attempt < ALIGN_ATTEMPTS; attempt += 1) {
       const editorText = this.view.state.doc.toString()
       const sharedText = session.ytext.toString()
-      const target =
-        editorText === sharedText || session.isUnedited(editorText)
-          ? sharedText
-          : await session.resolve(editorText, sharedText)
+      const unedited = editorText === sharedText || session.isUnedited(editorText)
+      // Until the note's own text has arrived, whatever differs is the
+      // previous note's, not an edit to this one. Try again once it is in.
+      if (!unedited && this.contentPending) return false
+      const target = unedited ? sharedText : await session.resolve(editorText, sharedText)
       if (this.destroyed || this.noteOf(this.view.state) !== this.note) return false
       // Someone typed, or the document moved, while that was being worked
       // out. The result would be applied to texts it was not computed for.
@@ -316,6 +337,7 @@ export class EditorBinding implements PluginValue {
         doc?.transact(() => applyTextEdits(session.ytext, textEdits(sharedText, target)), EDITOR_ORIGIN)
       }
       if (target !== editorText) this.dispatchRemote(toChanges(textEdits(editorText, target)))
+      this.contentPending = false
       return true
     }
     console.warn('[obsidian-connect] the editor kept changing while it was being bound; retrying later')

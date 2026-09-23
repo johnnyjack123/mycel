@@ -182,6 +182,35 @@ check(
     'different paths give different ids'
   )
   check((await stableDocId('vault-2', 'Notes/Test.md')) !== a, 'different vaults give different ids')
+  check(
+    (await stableDocId('vault-1', 'Notes/Test.md', 0)) === a,
+    'generation 0 keeps the ids existing notes already have'
+  )
+  check(
+    (await stableDocId('vault-1', 'Notes/Test.md', 1)) !== a &&
+      (await stableDocId('vault-1', 'Notes/Test.md', 1)) === (await stableDocId('vault-1', 'Notes/Test.md', 1)),
+    'a later generation is a different id, and still derived'
+  )
+
+  // A new note at a path whose id is taken - by a renamed or a deleted note -
+  // gets a document of its own, the same one on every device.
+  {
+    const { VaultIndex } = await import('../src/sync/VaultIndex.js')
+    const index = new VaultIndex('vault-1')
+    const first = await index.ensure('Untitled.md')
+    index.rename(first, 'Renamed.md')
+    const second = await index.ensure('Untitled.md')
+    check(second !== first, 'a new note does not take the id of a renamed one')
+    index.markDeleted(second)
+    const third = await index.ensure('Untitled.md')
+    check(third !== first && third !== second, 'nor the id of a deleted one')
+    const other = new VaultIndex('vault-1')
+    other.adopt(first, 'Renamed.md')
+    other.markDeleted((await other.ensure('Untitled.md')) as string)
+    check((await other.ensure('Untitled.md')) === third, 'and another device with the same index derives the same id')
+    index.destroy()
+    other.destroy()
+  }
 
   check(matchesGlob('Private/Secret.md', 'Private/**'), 'glob: ** matches across segments')
   check(matchesGlob('Notes/a.md', 'Notes/*.md'), 'glob: * matches inside a segment')

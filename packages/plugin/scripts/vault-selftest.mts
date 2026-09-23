@@ -380,6 +380,80 @@ try {
   )
   check(await eventually(() => B.editors.boundCount() === 1), 'and the editor binds')
 
+  // --- deleting and re-creating ------------------------------------------------
+  // Obsidian names every new note "Untitled" and the user renames it, so a
+  // note's id usually comes from a path it no longer has.
+  await A.vault.userCreate('Untitled.md', 'doomed text\n')
+  await delay(300)
+  await A.vault.rename(A.vault.file('Untitled.md'), 'Doomed.md')
+  check(await eventually(() => B.vault.text('Doomed.md') === 'doomed text\n'), 'B has Doomed.md')
+
+  // Deleted on one device while it is open on the other. The open editor
+  // re-acquired the note from its now deleted file and registered it again,
+  // so it came back - empty - on both devices.
+  const doomedView = A.open('Doomed.md')
+  check(await eventually(() => A.editors.boundCount() === 1), 'A has Doomed.md open')
+  await B.vault.trash(B.vault.file('Doomed.md'))
+  check(await eventually(() => A.vault.text('Doomed.md') === undefined), 'the delete reaches the device showing the note')
+  await delay(1_500)
+  check(
+    A.vault.text('Doomed.md') === undefined && B.vault.text('Doomed.md') === undefined,
+    'and the note does not come back, on either device',
+    { a: A.vault.text('Doomed.md'), b: B.vault.text('Doomed.md') }
+  )
+  doomedView.close()
+  A.views.splice(A.views.indexOf(doomedView), 1)
+
+  // A new note at a path an earlier note was created under must be a new
+  // document, not that one.
+  await A.vault.userCreate('Untitled.md', 'first note\n')
+  await delay(300)
+  await A.vault.rename(A.vault.file('Untitled.md'), 'First.md')
+  await A.vault.userCreate('Untitled.md', '')
+  check(
+    await eventually(() => B.vault.text('Untitled.md') === '' && B.vault.text('First.md') === 'first note\n'),
+    'a second "Untitled" note syncs on its own, next to the renamed first one',
+    { untitled: B.vault.text('Untitled.md'), first: B.vault.text('First.md') }
+  )
+
+  await A.vault.userCreate('Gone.md', 'content of a note that was deleted\n')
+  check(await eventually(() => B.vault.text('Gone.md') !== undefined), 'B has Gone.md')
+  await A.vault.trash(A.vault.file('Gone.md'))
+  check(await eventually(() => B.vault.text('Gone.md') === undefined), 'Gone.md is deleted on B')
+  await A.vault.userCreate('Gone.md', 'a new note\n')
+  await delay(1_500)
+  check(
+    A.vault.text('Gone.md') === 'a new note\n' && B.vault.text('Gone.md') === 'a new note\n',
+    'a new note under a deleted name does not inherit the deleted text',
+    { a: A.vault.text('Gone.md'), b: B.vault.text('Gone.md') }
+  )
+
+  // Opening a new note in a leaf that showed another one. For a moment the
+  // view already names the new note while the buffer still holds the old
+  // text; binding then took that text for edits to the new note.
+  const leaf = A.open('First.md')
+  check(await eventually(() => A.editors.boundCount() === 1), 'A has First.md open')
+  for (const [name, rebuild] of [['Fresh.md', true], ['Fresher.md', false]] as const) {
+    await A.vault.userCreate(name, '')
+    await delay(300)
+    await leaf.showFileSlowly(A.vault.file(name), 400, rebuild)
+    await delay(1_000)
+    check(
+      A.vault.text(name) === '' && B.vault.text(name) === '' && leaf.text() === '',
+      `a new note opened in a used leaf stays empty (${rebuild ? 'fresh state' : 'same state'})`,
+      { editor: leaf.text(), a: A.vault.text(name), b: B.vault.text(name) }
+    )
+    check(A.vault.text('First.md') === 'first note\n', 'and the note that was open before is untouched')
+    leaf.showFile(A.vault.file('First.md'))
+    await delay(300)
+  }
+  leaf.showFile(A.vault.file('Fresh.md'))
+  check(await eventually(() => A.editors.boundCount() === 1), 'Fresh.md binds')
+  leaf.type('fresh text')
+  check(await eventually(() => B.vault.text('Fresh.md') === 'fresh text'), 'typing in it then reaches the other device')
+  leaf.close()
+  A.views.splice(A.views.indexOf(leaf), 1)
+
   // --- a new device whose vault is a copy, with a note open at startup ----------
   // Nothing stored locally yet, so the document is empty until the server
   // answers. Binding then seeded the room with the editor's copy of a note the

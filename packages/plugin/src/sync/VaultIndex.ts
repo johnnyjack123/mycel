@@ -10,10 +10,14 @@ import { INDEX_FIELD, type IndexEntry } from '@obsidian-connect/shared'
  * adopt the same note before either has seen the other's index arrive at the
  * same id. A random id per device produced two documents for one file, and
  * both sides then synced happily past each other.
+ *
+ * `generation` counts earlier documents that were created under the same
+ * path; generation 0 keeps the ids notes already have.
  */
-export async function stableDocId(vaultId: string, path: string): Promise<string> {
+export async function stableDocId(vaultId: string, path: string, generation = 0): Promise<string> {
   try {
-    const data = new TextEncoder().encode(`${vaultId}::${path}`)
+    const seed = generation === 0 ? `${vaultId}::${path}` : `${vaultId}::${path}::${generation}`
+    const data = new TextEncoder().encode(seed)
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', data))
     return Array.from(digest.slice(0, 16))
       .map((byte) => byte.toString(16).padStart(2, '0'))
@@ -88,19 +92,29 @@ export class VaultIndex {
     return result
   }
 
-  /** Returns the existing id for a path, or registers a new one. */
+  /**
+   * Returns the existing id for a path, or registers a new document for it.
+   *
+   * A new file never takes over an id the index already knows. Obsidian
+   * names every new note "Untitled" before it is renamed, so the id derived
+   * from a path usually belongs to a note that now lives elsewhere - or to one
+   * that was deleted. Reusing it handed the new, empty note that other note's
+   * text. The first unused generation is still derived, so devices adopting
+   * the same file arrive at the same id.
+   */
   async ensure(path: string): Promise<string> {
     const existing = this.docIdForPath(path)
     if (existing) return existing
-    const docId = await stableDocId(this.vaultId, path)
-    const known = this.files.get(docId)
-    // A tombstone at the same id means the note is being re-created.
-    if (known?.deletedAt) this.revive(docId, path)
-    else if (!known) {
-      this.doc.transact(() => {
-        this.files.set(docId, { path, updatedAt: Date.now() })
-      }, 'local')
+    let docId = await stableDocId(this.vaultId, path)
+    for (let generation = 1; this.files.has(docId); generation += 1) {
+      docId = await stableDocId(this.vaultId, path, generation)
     }
+    // Another caller may have registered this path while the id was hashed.
+    const raced = this.docIdForPath(path)
+    if (raced) return raced
+    this.doc.transact(() => {
+      this.files.set(docId, { path, updatedAt: Date.now() })
+    }, 'local')
     return docId
   }
 

@@ -107,7 +107,16 @@ export class DocStore {
   }
 
   private tracks(file: TFile): boolean {
-    return this.ready && file.extension === 'md' && !this.isExcluded(file.path)
+    return this.ready && file.extension === 'md' && !this.isExcluded(file.path) && this.exists(file)
+  }
+
+  /**
+   * Whether the file is still in the vault. An editor keeps its file object
+   * after the note was deleted underneath it; syncing that registered the
+   * note again, and it came back - empty - on every device.
+   */
+  private exists(file: TFile): boolean {
+    return this.app.vault.getAbstractFileByPath(file.path) === file
   }
 
   isShared(docId: string): boolean {
@@ -430,7 +439,16 @@ export class DocStore {
    */
   async syncFile(file: TFile): Promise<void> {
     if (!this.tracks(file)) return
-    const docId = await this.index.ensure(file.path)
+    const path = file.path
+    const known = this.index.docIdForPath(path)
+    const docId = known ?? (await this.index.ensure(path))
+    if (!known && (file.path !== path || !this.exists(file))) {
+      // Deleted or renamed while its id was being derived. An entry left at
+      // that path would be pulled straight back in as a note of its own.
+      if (this.index.pathFor(docId) === path) this.index.markDeleted(docId)
+      if (this.exists(file)) await this.syncFile(file)
+      return
+    }
     await this.withLock(docId, () => this.reconcileFile(docId, file))
   }
 
@@ -447,8 +465,9 @@ export class DocStore {
   }
 
   private async reconcileFile(docId: string, file: TFile): Promise<void> {
-    // The index may have moved the note on while this waited for the lock.
-    if (this.stopped || this.index.pathFor(docId) !== file.path) return
+    // The index may have moved the note on while this waited for the lock,
+    // or the file may be gone.
+    if (this.stopped || this.index.pathFor(docId) !== file.path || !this.exists(file)) return
     const handle = await this.handleFor(docId)
 
     if (this.editorOwned.has(docId)) {
@@ -589,7 +608,11 @@ export class DocStore {
     }
     // Not `tracks`: moving a note into an excluded folder still moves it. Left
     // at the old path in the index, it would be pulled back in right there.
-    const docId = this.index.docIdForPath(oldPath) ?? this.index.docIdForPath(file.path)
+    //
+    // The new path first. When the index already has a note there, this is a
+    // rename it asked for - from another device - and the old path may by now
+    // belong to a different note, which looking it up first used to move too.
+    const docId = this.index.docIdForPath(file.path) ?? this.index.docIdForPath(oldPath)
     if (!docId) {
       await this.syncFile(file)
       return

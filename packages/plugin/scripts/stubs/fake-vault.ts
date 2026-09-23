@@ -333,6 +333,22 @@ export class FakeMarkdownView {
     this.view.setState(this.createState(this.vault.text(file.path) ?? ''))
   }
 
+  /**
+   * Opening another note the slow way: the view already reports the new file
+   * while the buffer still holds the old one, until the read finishes and the
+   * content arrives - in a fresh state, as Obsidian loads a file, or swapped
+   * into the existing one.
+   */
+  async showFileSlowly(file: TFile, readMs: number, rebuild = true): Promise<void> {
+    this.flush()
+    this.file = file
+    this.view.dispatch({ effects: showNote.of(file) })
+    await new Promise((resolve) => setTimeout(resolve, readMs))
+    const text = this.vault.text(file.path) ?? ''
+    if (rebuild) this.view.setState(this.createState(text))
+    else this.view.dispatch({ changes: { from: 0, to: this.view.state.doc.length, insert: text } })
+  }
+
   private requestSave(): void {
     // Not a debounce: continuous typing still gets saved every so often.
     if (this.saveTimer) return
