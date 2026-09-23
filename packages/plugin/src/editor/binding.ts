@@ -2,18 +2,19 @@ import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 import {
   Annotation,
+  Compartment,
+  EditorState,
   StateEffect,
   Transaction,
-  type EditorState,
   type Extension,
   type Range
 } from '@codemirror/state'
 import {
   Decoration,
+  EditorView,
   ViewPlugin,
   WidgetType,
   type DecorationSet,
-  type EditorView,
   type PluginValue,
   type ViewUpdate
 } from '@codemirror/view'
@@ -31,6 +32,10 @@ export const remoteUpdate = Annotation.define<boolean>()
 
 const refreshCursors = StateEffect.define<null>()
 
+// One compartment for every editor: each state keeps its own content in it.
+const readOnlyCompartment = new Compartment()
+const READ_ONLY: Extension = [EditorState.readOnly.of(true), EditorView.editable.of(false)]
+
 /** The note an editor shows. Compared by identity: it survives a rename. */
 export interface NoteRef {
   readonly path: string
@@ -40,6 +45,8 @@ export interface EditorSession {
   readonly ytext: Y.Text
   /** Present only while the note is shared with other people. */
   readonly awareness: Awareness | null
+  /** Someone else's note, shared to read: the editor must not take edits. */
+  readonly readOnly: boolean
   /**
    * True when the editor could show `text` without anyone having typed in it:
    * it is what file and document last agreed on, or what this device wrote to
@@ -278,7 +285,16 @@ export class EditorBinding implements PluginValue {
       session.awareness.setLocalStateField('cursor', null)
     }
     this.decorations = Decoration.none
+    if (session.readOnly) this.setReadOnly(false)
     session.release()
+  }
+
+  /** Later, not now: unbinding happens inside updates too, where no dispatch may. */
+  private setReadOnly(readOnly: boolean): void {
+    queueMicrotask(() => {
+      if (this.destroyed || !this.view.dom.isConnected) return
+      this.view.dispatch({ effects: readOnlyCompartment.reconfigure(readOnly ? READ_ONLY : []) })
+    })
   }
 
   private async connect(): Promise<void> {
@@ -302,6 +318,7 @@ export class EditorBinding implements PluginValue {
       }
       this.session = session
       session.ytext.observe(this.observer)
+      if (session.readOnly) this.setReadOnly(true)
       if (session.awareness) {
         session.awareness.on('change', this.onAwarenessChange)
         this.publishSelection(session)
@@ -391,6 +408,13 @@ export class EditorBinding implements PluginValue {
     // text is identical. Only the length check runs on a normal keystroke; the
     // full compare happens exactly when the change might be a no-op.
     if (after.length === ytext.length && after.toString() === ytext.toString()) return
+
+    // A note shared to read: whatever changed the buffer - a plugin, a
+    // reload - does not get into a document the server would refuse it for.
+    if (session.readOnly) {
+      queueMicrotask(() => this.realign())
+      return
+    }
 
     // Obsidian reloading a file this device wrote shortly before the editor
     // was bound. The document has moved on since; taking the reload as an
@@ -484,7 +508,10 @@ export class EditorBinding implements PluginValue {
 
 /** The editor extension: one binding per Markdown editor Obsidian creates. */
 export function editorSyncExtension(host: EditorSyncHost, noteOf: NoteResolver): Extension {
-  return ViewPlugin.define((view) => new EditorBinding(view, host, noteOf), {
-    decorations: (binding) => binding.decorations
-  })
+  return [
+    readOnlyCompartment.of([]),
+    ViewPlugin.define((view) => new EditorBinding(view, host, noteOf), {
+      decorations: (binding) => binding.decorations
+    })
+  ]
 }

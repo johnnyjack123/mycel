@@ -1,10 +1,10 @@
 // The editor binding on its own, in real CodeMirror editors in jsdom, with
-// two documents kept in sync through a running server. `test:vault` covers
-// the binding together with the store; this one pins down the details of
-// keeping an editor and a Y.Text identical.
+// two documents kept in sync through a relay that delays every update a
+// little, like a network. `test:vault` covers the binding together with the
+// store and the real server; this one pins down the details of keeping an
+// editor and a Y.Text identical.
 //
-//   PORT=1235 OBSIDIAN_CONNECT_DATA_DIR=<scratch> npm run start:server
-//   npm run test:sync -- ws://localhost:1235
+//   npm run test:sync
 import { JSDOM } from 'jsdom'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true })
@@ -21,14 +21,16 @@ for (const key of [
   const value = (dom.window as unknown as Record<string, unknown>)[key]
   if (globals[key] === undefined && value !== undefined) globals[key] = value
 }
+// jsdom has no layout. CodeMirror measures text in an animation frame and
+// throws there without this - harmless, but it buries the test output.
+const rangeProto = dom.window.Range.prototype as unknown as { getClientRects?: () => unknown }
+rangeProto.getClientRects ??= () => []
 
 // Imported after the DOM globals exist; CodeMirror reads them at module scope.
 const { EditorState } = await import('@codemirror/state')
 const { EditorView } = await import('@codemirror/view')
 const { history, undo } = await import('@codemirror/commands')
 const Y = await import('yjs')
-const { WebsocketProvider } = await import('y-websocket')
-const { WebSocket } = await import('ws')
 const { deltaToChanges, editorSyncExtension } = await import('../src/editor/binding.js')
 const { reconcile } = await import('../src/sync/Reconciler.js')
 const { noteField, noteOf, showNote } = await import('./stubs/fake-vault.js')
@@ -36,10 +38,41 @@ const { noteField, noteOf, showNote } = await import('./stubs/fake-vault.js')
 type Binding = import('../src/editor/binding.js').EditorBinding
 type Session = import('../src/editor/binding.js').EditorSession
 type NoteRef = import('../src/editor/binding.js').NoteRef
+type YDoc = InstanceType<typeof Y.Doc>
 
-const serverUrl = process.argv[2] ?? process.env.OBSIDIAN_CONNECT_URL ?? 'ws://localhost:1234'
-const room = `binding-selftest-${Date.now().toString(36)}`
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Stands in for the server: every update reaches the others a few
+ * milliseconds later, so edits on both sides are truly concurrent.
+ */
+class Relay {
+  readonly state = new Y.Doc()
+  private readonly members = new Set<YDoc>()
+
+  join(doc: YDoc): Promise<void> {
+    this.members.add(doc)
+    doc.on('update', (update: Uint8Array, origin: unknown) => {
+      if (origin === this) return
+      setTimeout(() => {
+        Y.applyUpdate(this.state, update, this)
+        for (const other of this.members) if (other !== doc) Y.applyUpdate(other, update, this)
+      }, 5)
+    })
+    return new Promise((resolve) =>
+      setTimeout(() => {
+        Y.applyUpdate(doc, Y.encodeStateAsUpdate(this.state), this)
+        resolve()
+      }, 5)
+    )
+  }
+
+  leave(doc: YDoc): void {
+    this.members.delete(doc)
+  }
+}
+
+const relay = new Relay()
 
 const failures: string[] = []
 function check(ok: boolean, label: string, detail?: unknown): void {
@@ -83,12 +116,13 @@ async function eventually(predicate: () => boolean, timeoutMs = 5_000): Promise<
   )
 }
 
-// --- two editors through the server -------------------------------------------
+// --- two editors through the relay ---------------------------------------------
 
 class Host {
   releases = 0
   acquired = 0
   recent: string | null = null
+  readOnly = false
 
   constructor(
     readonly note: NoteRef,
@@ -109,6 +143,7 @@ class Host {
     return {
       ytext: this.ytext,
       awareness: null,
+      readOnly: this.readOnly,
       isUnedited: (text: string) => text === this.base || text === this.recent,
       recentWrite: () => this.recent,
       resolve: async (local: string, remote: string) => {
@@ -127,15 +162,9 @@ class Host {
 function client(label: string, editorText: string, base: string) {
   const doc = new Y.Doc()
   const ytext = doc.getText('content')
-  // BroadcastChannel would sync these clients inside this process and hide a
-  // broken server, so everything goes through the WebSocket.
-  const provider = new WebsocketProvider(serverUrl, room, doc, {
-    connect: true,
-    disableBc: true,
-    WebSocketPolyfill: WebSocket as never
-  })
+  const synced = relay.join(doc)
   const note: NoteRef = { path: `${label}.md` }
-  const host = new Host(note, ytext, base, whenSynced(provider))
+  const host = new Host(note, ytext, base, synced)
   const view = new EditorView({
     state: EditorState.create({
       doc: editorText,
@@ -147,7 +176,7 @@ function client(label: string, editorText: string, base: string) {
     label,
     doc,
     ytext,
-    provider,
+    synced,
     host,
     view,
     note,
@@ -158,31 +187,16 @@ function client(label: string, editorText: string, base: string) {
   }
 }
 
-function whenSynced(provider: InstanceType<typeof WebsocketProvider>): Promise<void> {
-  if (provider.synced) return Promise.resolve()
-  return new Promise((resolve) => provider.once('sync', () => resolve()))
-}
-
-console.log(`server=${serverUrl} room=${room}`)
-
-// The binding only ever starts on a settled note, so the room is filled
+// The binding only ever starts on a settled note, so the room holds the text
 // before either editor binds.
-const seed = new Y.Doc()
-const seedProvider = new WebsocketProvider(serverUrl, room, seed, {
-  disableBc: true,
-  WebSocketPolyfill: WebSocket as never
-})
-await Promise.race([whenSynced(seedProvider), delay(6_000)])
-seed.getText('content').insert(0, 'Hello world')
-await delay(500)
-seedProvider.destroy()
+relay.state.getText('content').insert(0, 'Hello world')
 
 // A shows what the file said at the last agreement; B shows a copy nobody
 // has typed in since an older agreement, which the document has moved past.
 const a = client('A', 'Hello world', 'Hello world')
 const b = client('B', 'Hello', 'Hello')
-await Promise.race([Promise.all([whenSynced(a.provider), whenSynced(b.provider)]), delay(6_000)])
-check(a.provider.synced && b.provider.synced, 'both clients synced')
+await Promise.all([a.synced, b.synced])
+check(a.ytext.toString() === 'Hello world' && b.ytext.toString() === 'Hello world', 'both clients synced')
 
 check(await eventually(() => a.host.acquired === 1 && b.host.acquired === 1), 'both editors bind on their own')
 check(await eventually(() => b.text() === 'Hello world'), 'an unedited editor takes on the document', b.text())
@@ -290,7 +304,7 @@ check(
 {
   const shared = b.ytext.toString()
   const c = client('C', `${shared}\nwritten before binding`, shared)
-  await Promise.race([whenSynced(c.provider), delay(6_000)])
+  await c.synced
   check(
     await eventually(() => b.text() === `${shared}\nwritten before binding` && c.text() === b.text()),
     'text typed before the binding started reaches the document once',
@@ -298,11 +312,25 @@ check(
   )
   c.view.destroy()
   check(c.host.releases === 1, 'destroying the editor releases the document')
-  c.provider.destroy()
+  relay.leave(c.doc)
 }
 
-a.provider.destroy()
-b.provider.destroy()
+// A note someone shared to read only.
+{
+  const shared = b.ytext.toString()
+  const reader = client('R', shared, shared)
+  reader.host.readOnly = true
+  await reader.synced
+  check(await eventually(() => reader.host.acquired === 1 && reader.view.state.readOnly), 'a read-only note binds, and the editor refuses input')
+  reader.view.dispatch({ changes: { from: 0, insert: 'slipped in ' } })
+  check(
+    await eventually(() => reader.text() === shared) && reader.ytext.toString() === shared && b.text() === shared,
+    'a change that gets into its buffer anyway is taken back, not sent'
+  )
+  b.type(' more')
+  check(await eventually(() => reader.text() === `${shared} more`), 'while what the others write still arrives')
+  relay.leave(reader.doc)
+}
 
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)
 process.exit(failures.length === 0 ? 0 : 1)

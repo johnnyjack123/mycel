@@ -238,6 +238,7 @@ export class FakeFileManager {
 /** A device's IndexedDB, kept across restarts of that device and nobody else's. */
 export class MemoryLocalStores {
   private readonly saved = new Map<string, Uint8Array>()
+  private readonly meta = new Map<string, Map<string, string>>()
 
   readonly open: OpenLocalStore = (name: string, doc: Y.Doc): LocalStore => {
     const stored = this.saved.get(name)
@@ -246,11 +247,21 @@ export class MemoryLocalStores {
       this.saved.set(name, Y.encodeStateAsUpdate(doc))
     }
     doc.on('update', save)
+    let values = this.meta.get(name)
+    if (!values) {
+      values = new Map()
+      this.meta.set(name, values)
+    }
+    const kept = values
     return {
       whenSynced: Promise.resolve(),
       destroy: () => {
         save()
         doc.off('update', save)
+      },
+      get: async (key) => kept.get(key) ?? null,
+      set: async (key, value) => {
+        kept.set(key, value)
       }
     }
   }

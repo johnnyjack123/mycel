@@ -84,13 +84,19 @@ export class EditorSync implements EditorSyncHost {
       const handle = await store.handleFor(docId)
       const base = await store.baseText(docId)
       const shared = handle.shared
+      const readOnly = handle.readOnly
       return {
         ytext: handle.ytext,
         awareness: shared ? handle.awareness : null,
+        readOnly,
         isUnedited: (text) => text === base || text === store.recentWrite(docId),
         recentWrite: () => store.recentWrite(docId),
         resolve: (editorText, sharedText) => store.resolveEditorEdits(docId, editorText, sharedText),
-        isStale: () => this.store() !== store || handle.isDestroyed || store.isShared(docId) !== shared,
+        isStale: () =>
+          this.store() !== store ||
+          handle.isDestroyed ||
+          store.isShared(docId) !== shared ||
+          store.isReadOnly(docId) !== readOnly,
         release
       }
     } catch (error) {

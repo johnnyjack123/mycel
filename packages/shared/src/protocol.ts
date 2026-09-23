@@ -1,4 +1,6 @@
-export const PROTOCOL_VERSION = 2
+// Version 3: the server stores an ordered log of encrypted frames and can no
+// longer read a document. Version 2 relayed plaintext Yjs sync messages.
+export const PROTOCOL_VERSION = 3
 export const DEFAULT_SERVER_PORT = 1234
 
 export type ShareRole = 'read' | 'write'
@@ -14,9 +16,12 @@ export interface CollabUser {
 export const CONTENT_FIELD = 'content'
 // The Y.Map in the vault index document, docId -> IndexEntry.
 export const INDEX_FIELD = 'files'
+// The Y.Map in the account settings document.
+export const SETTINGS_FIELD = 'settings'
 
 // Rooms are keyed by a stable id, never by a path, so renaming a note keeps
-// its history and its collaborators.
+// its history and its collaborators. Note rooms are global: two vaults hold the
+// same docId under paths of their own when a note is shared.
 export function docRoom(docId: string): string {
   return `doc:${docId}`
 }
@@ -25,119 +30,102 @@ export function indexRoom(vaultId: string): string {
   return `idx:${vaultId}`
 }
 
+export function settingsRoom(vaultId: string): string {
+  return `set:${vaultId}`
+}
+
+export type RoomKind = 'doc' | 'idx' | 'set'
+
+export function roomKind(room: string): RoomKind | null {
+  if (room.startsWith('doc:')) return 'doc'
+  if (room.startsWith('idx:')) return 'idx'
+  if (room.startsWith('set:')) return 'set'
+  return null
+}
+
 export function isDocRoom(room: string): boolean {
-  return room.startsWith('doc:')
+  return roomKind(room) === 'doc'
 }
 
-// A shared note is addressed by its document id alone. Rooms are global, so
-// the recipient keeps it under a path of their own choosing in their own vault.
-export const SHARE_ACTION = 'connect-share'
-
-export interface ShareLink {
-  docId: string
-  /** Suggested file name for the recipient; the id is what identifies the note. */
-  title: string
+/** The document or vault id a room is named after. */
+export function roomSubject(room: string): string {
+  return room.slice(room.indexOf(':') + 1)
 }
 
-// `stableDocId` yields 32 hex digits; its no-WebCrypto fallback is a UUID.
-const DOC_ID = /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/
+const HEX_ID = /^[0-9a-f]{32}$/
 
-export function isDocId(value: string): boolean {
-  return DOC_ID.test(value)
+/** Document and vault ids are 128 bits, hex. */
+export function isHexId(value: string): boolean {
+  return HEX_ID.test(value)
 }
 
-export function shareLink(link: ShareLink): string {
-  return `obsidian://${SHARE_ACTION}?id=${link.docId}&title=${encodeURIComponent(link.title)}`
-}
-
-/** Accepts a share link or a bare document id; anything else is null. */
-export function parseShareLink(input: string): ShareLink | null {
-  const trimmed = input.trim()
-  if (isDocId(trimmed)) return { docId: trimmed, title: '' }
-  const query = trimmed.split('?')[1]
-  if (!query) return null
-  const params = new Map<string, string>()
-  for (const pair of query.split('&')) {
-    const separator = pair.indexOf('=')
-    if (separator < 0) continue
-    try {
-      params.set(pair.slice(0, separator), decodeURIComponent(pair.slice(separator + 1).replace(/\+/g, ' ')))
-    } catch {
-      return null
-    }
-  }
-  const docId = params.get('id') ?? ''
-  if (!isDocId(docId)) return null
-  return { docId, title: params.get('title') ?? '' }
-}
-
-// Messages on the multiplexed vault socket. One connection carries every note
-// of a vault; opening a WebSocket per note does not scale past a few hundred.
+/**
+ * Messages on the multiplexed vault socket: `[varUint type][...]`. Room
+ * messages continue with `[varString room]`. One connection carries every
+ * note of a vault; a WebSocket per note does not survive a real vault.
+ */
 export const MUX = {
-  sync: 0,
-  awareness: 1,
-  subscribe: 2,
-  unsubscribe: 3,
-  error: 4
+  // client -> server
+  /** room, varUint afterSeq */
+  subscribe: 1,
+  /** room */
+  unsubscribe: 2,
+  /** room, varUint ref, varUint epoch, varUint8Array ciphertext */
+  push: 3,
+  /** room, varUint epoch, varUint8Array ciphertext - both directions */
+  awareness: 4,
+
+  // server -> client
+  /** room, varUint seq, varUint ts, varUint epoch, varUint8Array ciphertext */
+  frame: 10,
+  /** room, varUint uptoSeq, varUint epoch, varUint8Array ciphertext */
+  snapshot: 11,
+  /** room, varUint headSeq, varUint epoch - everything readable has been sent */
+  caughtUp: 12,
+  /** room, varUint ref, varUint seq */
+  ack: 13,
+  /** room, varUint epoch - a push used an old epoch, or the epoch moved */
+  rekey: 14,
+  /** room, varString reason - access was taken away */
+  revoked: 15,
+  /** room, varString reason - never had access */
+  denied: 16,
+  /** varString kind, varString json - addressed to the account, not a room */
+  notify: 17,
+  /** varString message */
+  error: 18
 } as const
 
 export type MuxMessage = (typeof MUX)[keyof typeof MUX]
 
 export const API = {
   health: '/health',
-  devToken: '/auth/dev-token',
+  config: '/auth/config',
+  prelogin: '/auth/prelogin',
+  register: '/auth/register',
   login: '/auth/login',
-  rooms: '/rooms',
-  history: '/history'
+  refresh: '/auth/refresh',
+  password: '/auth/password',
+  account: '/account',
+  vaults: '/vaults',
+  users: '/users',
+  shares: '/shares',
+  keys: '/keys',
+  log: '/log',
+  compactable: '/compactable'
 } as const
 
-export interface HistoryVersion {
-  ts: number
-  bytes: number
+/** Associated data for a frame: binds the ciphertext to its room and epoch. */
+export function frameAad(room: string, epoch: number): string {
+  return `${room}#${epoch}`
 }
 
-export interface HistoryListResponse {
-  room: string
-  versions: HistoryVersion[]
+/** Associated data for a snapshot, so one can never be replayed as a frame or the reverse. */
+export function snapshotAad(room: string, epoch: number): string {
+  return `${frameAad(room, epoch)}:snapshot`
 }
 
-export interface HistoryTextResponse {
-  room: string
-  ts: number
-  text: string
-}
-
-export interface HistoryRestoreRequest {
-  ts: number
-}
-
-export interface HistoryRestoreResponse {
-  room: string
-  ts: number
-  restored: boolean
-  chars: number
-}
-
-/** @deprecated Phase 0 path-keyed rooms. Kept so the relay self-test keeps working. */
-export interface RoomRef {
-  vaultId: string
-  path: string
-}
-
-const ROOM_SEPARATOR = '::'
-
-/** @deprecated Use {@link docRoom}. */
-export function toRoomName(ref: RoomRef): string {
-  return encodeURIComponent(`${ref.vaultId}${ROOM_SEPARATOR}${ref.path}`)
-}
-
-/** @deprecated Use {@link docRoom}. */
-export function fromRoomName(room: string): RoomRef | null {
-  const decoded = decodeURIComponent(room)
-  const index = decoded.indexOf(ROOM_SEPARATOR)
-  if (index < 0) return null
-  return {
-    vaultId: decoded.slice(0, index),
-    path: decoded.slice(index + ROOM_SEPARATOR.length)
-  }
+/** Associated data for presence. */
+export function awarenessAad(room: string, epoch: number): string {
+  return `${frameAad(room, epoch)}:awareness`
 }

@@ -4,16 +4,17 @@ import {
   indexRoom,
   textEdits,
   type CollabUser,
-  type IndexEntry
+  type IndexEntry,
+  type ShareRole
 } from '@obsidian-connect/shared'
 import { additiveEdits, reconcile, type ReconcileOutcome } from './Reconciler.js'
 import { matchesGlob } from './glob.js'
-import { SYNC_ORIGIN } from './origin.js'
+import { RESTORE_ORIGIN, SYNC_ORIGIN } from './origin.js'
 import type { BackupStore } from './BackupStore.js'
-import { DocHandle, openIndexedDb, type OpenLocalStore } from './DocHandle.js'
+import { DocHandle, LocalCursor, openIndexedDb, type LocalStore, type OpenLocalStore } from './DocHandle.js'
 import type { StateStore } from './StateStore.js'
 import type { VaultIndex } from './VaultIndex.js'
-import type { VaultSocket } from './VaultSocket.js'
+import type { RoomCrypto, VaultSocket } from './VaultSocket.js'
 
 export interface DocStoreOptions {
   vaultId: string
@@ -23,6 +24,21 @@ export interface DocStoreOptions {
   maxLoadedDocuments: number
   syncTimeoutMs: number
   writeDebounceMs: number
+}
+
+/** Where the store gets its keys; the account's key ring in the plugin. */
+export interface DocAccess {
+  indexCrypto: RoomCrypto
+  /** Derived for a note this vault owns, sealed for one someone else owns. */
+  docCrypto(docId: string, entry: IndexEntry | undefined): RoomCrypto
+}
+
+/** A note someone shared with this account. */
+export interface AcceptedShare {
+  docId: string
+  owner: string
+  role: ShareRole
+  title: string
 }
 
 // Enough to hide the round trip per note, few enough not to flood the socket
@@ -72,9 +88,12 @@ export class DocStore {
   /** Documents whose file and document have agreed at least once this session. */
   private readonly agreed = new Set<string>()
   private readonly readyListeners = new Set<() => void>()
+  private readonly leaveListeners = new Set<(docId: string) => void>()
   /** Renames and deletes that happened before the index arrived. */
   private readonly early: Array<() => Promise<void>> = []
   private indexWork: Promise<void> = Promise.resolve()
+  private indexStore: LocalStore | null = null
+  private indexCursor: LocalCursor | null = null
   private indexReady = false
   private stopped = false
 
@@ -85,6 +104,7 @@ export class DocStore {
     private readonly state: StateStore,
     private readonly backups: BackupStore,
     private options: DocStoreOptions,
+    private readonly access: DocAccess,
     private readonly openLocal: OpenLocalStore = openIndexedDb
   ) {}
 
@@ -121,6 +141,18 @@ export class DocStore {
 
   isShared(docId: string): boolean {
     return this.index.isShared(docId)
+  }
+
+  /** Someone else owns the note and shared it with this account to read only. */
+  isReadOnly(docId: string): boolean {
+    const entry = this.index.entry(docId)
+    return Boolean(entry?.owner) && entry?.role === 'read'
+  }
+
+  /** Fires when a note someone else owns is deleted here: that is leaving the share. */
+  onLeave(listener: (docId: string) => void): () => void {
+    this.leaveListeners.add(listener)
+    return () => this.leaveListeners.delete(listener)
   }
 
   /** Keeps a document loaded while it is open in an editor. */
@@ -194,13 +226,30 @@ export class DocStore {
 
   // --- lifecycle -------------------------------------------------------------
 
+  /**
+   * The index is kept on the device like every note, so a rename or delete
+   * made offline survives a restart and is sent once the server answers.
+   */
+  private async registerIndex(): Promise<void> {
+    if (this.indexStore) return
+    const store = this.openLocal(`obsidian-connect/${this.options.vaultId}/idx`, this.index.doc)
+    this.indexStore = store
+    await store.whenSynced
+    this.indexCursor = await LocalCursor.load(store)
+    this.socket.register(indexRoom(this.options.vaultId), this.index.doc, {
+      crypto: this.access.indexCrypto,
+      cursor: this.indexCursor
+    })
+  }
+
   async start(): Promise<boolean> {
     await this.state.load()
-    // Without the index we do not know which document a file belongs to.
-    // Minting ids anyway would create a second document per note, so a
+    await this.registerIndex()
+    // Without the server's index we do not know which document a file belongs
+    // to. Minting ids anyway would create a second document per note, so a
     // failure here has to stop the scan rather than guess.
     const indexSynced = await Promise.race([
-      this.socket.register(indexRoom(this.options.vaultId), this.index.doc, null).then(() => true),
+      this.socket.whenSynced(indexRoom(this.options.vaultId)).then(() => true),
       new Promise<boolean>((resolve) =>
         window.setTimeout(() => resolve(false), this.options.syncTimeoutMs)
       )
@@ -258,6 +307,14 @@ export class DocStore {
     for (const handle of this.handles.values()) await handle.destroy()
     this.handles.clear()
     this.readyListeners.clear()
+    this.leaveListeners.clear()
+    this.socket.unregister(indexRoom(this.options.vaultId))
+    try {
+      await this.indexCursor?.flush()
+      await this.indexStore?.destroy()
+    } catch (error) {
+      console.error('[obsidian-connect] closing the local index failed', error)
+    }
     await this.state.close()
   }
 
@@ -300,12 +357,16 @@ export class DocStore {
         this.options.vaultId,
         this.socket,
         this.options.user,
-        this.isShared(docId),
+        {
+          shared: this.isShared(docId),
+          readOnly: this.isReadOnly(docId),
+          crypto: this.access.docCrypto(docId, this.index.entry(docId))
+        },
         this.openLocal
       )
       this.handles.set(docId, handle)
       this.touch(docId)
-      await handle.whenLocalReady()
+      await handle.open()
       handle.ytext.observe((_event, transaction) => {
         if (transaction.origin === SYNC_ORIGIN) return
         this.scheduleWrite(docId)
@@ -499,6 +560,16 @@ export class DocStore {
       return
     }
 
+    if (this.isReadOnly(docId)) {
+      // Someone else's note, shared to read. The server refuses changes from
+      // here, so the file follows the document; what was edited locally is
+      // kept as a backup rather than silently diverging.
+      await this.backups.write(file.path, 'local', local)
+      await this.writeFile(docId, file, remote)
+      await this.recordAgreement(docId, file, remote)
+      return
+    }
+
     const base = await this.state.baseText(docId)
     const outcome = reconcile({ base, local, remote, markers: this.options.conflictMarkers })
     await this.applyOutcome(docId, file, handle, local, remote, base, outcome)
@@ -570,6 +641,10 @@ export class DocStore {
     const file = this.fileFor(docId)
     const path = file?.path ?? this.index.pathFor(docId) ?? docId
     const base = await this.state.baseText(docId)
+    if (this.isReadOnly(docId)) {
+      if (local !== base) await this.backups.write(path, 'local', local)
+      return remote
+    }
     const outcome = reconcile({ base, local, remote, markers: this.options.conflictMarkers })
     switch (outcome.kind) {
       case 'agree':
@@ -633,6 +708,7 @@ export class DocStore {
     }
     const docId = this.index.docIdForPath(path)
     if (!docId) return
+    const foreign = Boolean(this.index.entry(docId)?.owner)
     await this.withLock(docId, async () => {
       const handle = this.handles.get(docId)
       if (handle) {
@@ -644,6 +720,9 @@ export class DocStore {
       this.index.markDeleted(docId)
       this.forget(docId)
     })
+    // Deleting a note someone else owns only removes it from this vault. The
+    // document stays theirs; this account just leaves the share.
+    if (foreign) for (const listener of this.leaveListeners) listener(docId)
   }
 
   /**
@@ -814,9 +893,12 @@ export class DocStore {
     }
   }
 
-  /** Starts or stops presence for loaded notes whose shared flag changed. */
+  /** Presence and write access of loaded notes follow their index entries. */
   private applySharing(): void {
-    for (const [docId, handle] of this.handles) handle.setShared(this.isShared(docId))
+    for (const [docId, handle] of this.handles) {
+      handle.setShared(this.isShared(docId))
+      handle.setReadOnly(this.isReadOnly(docId))
+    }
   }
 
   // --- sharing ---------------------------------------------------------------
@@ -826,23 +908,78 @@ export class DocStore {
     this.applySharing()
   }
 
+  setShareRole(docId: string, role: ShareRole): void {
+    this.index.setRole(docId, role)
+    this.applySharing()
+  }
+
   /**
    * Adds a note someone shared into this vault, under `folder`, and resolves
    * to its file. An id the index already knows just resolves to that file.
    */
-  async join(docId: string, title: string, folder: string): Promise<TFile | null> {
+  async acceptShare(share: AcceptedShare, folder: string): Promise<TFile | null> {
     if (!this.ready) return null
-    let path = this.index.pathFor(docId)
-    if (path) {
-      this.index.setShared(docId, true)
-    } else {
-      path = this.freePath(folder, title)
-      this.index.adopt(docId, path, { shared: true })
+    let path = this.index.pathFor(share.docId)
+    if (!path) {
+      path = this.freePath(folder, share.title)
+      this.index.adopt(share.docId, path, { shared: true, owner: share.owner, role: share.role })
     }
     this.applySharing()
-    await this.withLock(docId, () => this.pull(docId))
+    await this.withLock(share.docId, () => this.pull(share.docId))
     const file = this.app.vault.getAbstractFileByPath(path)
     return file instanceof TFile ? file : null
+  }
+
+  /** The id a new note at `path` would get. */
+  nextDocId(path: string): Promise<string> {
+    return this.index.nextId(path)
+  }
+
+  /**
+   * A note someone else owned becomes this vault's own: the share was
+   * revoked, or this account detached it. The file stays where it is and gets
+   * a document of its own. Both index changes go out together, so another
+   * device sees the path taken by the new note in the same breath as the old
+   * one's tombstone - and does not trash the file in between.
+   */
+  async rekeyToOwn(docId: string, newDocId?: string): Promise<TFile | null> {
+    const path = await this.withLock(docId, async () => {
+      // Looked up under the lock: a revocation arrives as a message and as a
+      // notice, and a second call that read the path before the first one
+      // moved the note minted another id for the same file.
+      const current = this.index.pathFor(docId)
+      const replacement = current ? (newDocId ?? (await this.index.nextId(current))) : null
+      await this.dropHandle(docId)
+      this.forget(docId)
+      if (current && replacement) this.index.replace(docId, replacement, current)
+      else this.index.markDeleted(docId)
+      return current
+    })
+    if (!path) return null
+    const file = this.app.vault.getAbstractFileByPath(path)
+    if (!(file instanceof TFile)) return null
+    await this.syncFile(file)
+    return file
+  }
+
+  /** Rolls the live document back to `text`; it travels like any other edit. */
+  async restore(docId: string, text: string): Promise<void> {
+    const handle = await this.handleFor(docId)
+    const edits = textEdits(handle.text(), text)
+    if (edits.length > 0) handle.doc.transact(() => applyTextEdits(handle.ytext, edits), RESTORE_ORIGIN)
+  }
+
+  /** A loaded note's handle, for the history view and sharing. */
+  handle(docId: string): Promise<DocHandle> {
+    return this.handleFor(docId)
+  }
+
+  entry(docId: string): IndexEntry | undefined {
+    return this.index.entry(docId)
+  }
+
+  docIdForPath(path: string): string | undefined {
+    return this.index.docIdForPath(path)
   }
 
   private freePath(folder: string, title: string): string {

@@ -33,8 +33,9 @@ jobs:
       - run: npm run build:plugin
 
       # Pure logic, no server: the merge is the only code path able to delete a
-      # user's text, so it is checked before anything else runs.
-      - name: Merge self-test
+      # user's text, and the encryption the only thing between it and the
+      # server, so both are checked before anything else runs.
+      - name: Merge and crypto self-test
         run: npm run test:merge
 
       # Imports the built bundle with Obsidian stubbed. A plugin that throws at
@@ -42,14 +43,24 @@ jobs:
       - name: Bundle load self-test
         run: npm run test:load
 
-      # In-process, scratch directory: history must survive a room going idle
-      # and the server restarting, or restore silently does nothing.
-      - name: Room history self-test
+      # In-process, scratch directory: accounts, access, epochs, sharing,
+      # compaction, and all of it surviving a restart.
+      - name: Rooms and accounts self-test
         run: npm run test:rooms
 
-      # The sync self-tests need a live server, so start one and wait for it.
-      # Both survive the end of this step on the Linux runners.
+      # The editor binding on its own, through an in-process relay: a view
+      # plugin that throws while being constructed is silently deactivated,
+      # remote changes must stay out of undo, a wholesale reload must not
+      # become a rewrite.
+      - name: Editor binding self-test
+        run: npm run test:sync
+
+      # The end-to-end self-tests need a live server that lets them create
+      # accounts, so start one and wait for it.
       - name: Start the sync server
+        env:
+          OBSIDIAN_CONNECT_REGISTRATION: open
+          OBSIDIAN_CONNECT_JWT_SECRET: ci-only-secret
         run: |
           npm run start:server > server.log 2>&1 &
           for _ in $(seq 1 30); do
@@ -63,23 +74,12 @@ jobs:
           cat server.log
           exit 1
 
-      - name: Relay self-test
-        run: npm run ws-test -- ws://localhost:1234
-
-      - name: Multiplexed vault socket self-test
+      - name: Encrypted vault socket self-test
         run: npm run test:socket -- ws://localhost:1234
 
-      - name: Version history self-test
-        run: npm run test:history -- ws://localhost:1234
-
-      # The editor binding on its own: a CodeMirror view plugin that throws
-      # while being constructed is silently deactivated, remote changes must
-      # stay out of undo, and a wholesale reload must not become a rewrite.
-      - name: Live sync self-test
-        run: npm run test:sync -- ws://localhost:1234
-
-      # Two devices and a collaborator through the real store and binding, with
-      # Obsidian's save-and-reload modelled: that interplay doubled text.
+      # Three devices and a collaborator through the real store, keys and
+      # binding, with Obsidian's save-and-reload modelled: that interplay
+      # doubled text.
       - name: Vault sync self-test
         run: npm run test:vault -- ws://localhost:1234
 

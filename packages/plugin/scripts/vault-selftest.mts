@@ -1,10 +1,11 @@
-// Two devices of one person, and one other person, against a running server.
-// Everything real except Obsidian itself: the DocStore, the editor binding in
-// real CodeMirror editors, the socket, the server. The vault and the Markdown
-// view are fakes that save and reload the way Obsidian does, because that
-// interplay is what doubled text before.
+// Three devices of one person, and a second person, against a running server,
+// end-to-end encrypted. Everything real except Obsidian itself: accounts and
+// keys, the DocStore, the editor binding in real CodeMirror editors, the
+// socket, the server. The vault and the Markdown view are fakes that save and
+// reload the way Obsidian does, because that interplay is what doubled text
+// before.
 //
-//   PORT=1235 OBSIDIAN_CONNECT_DATA_DIR=<scratch> npm run start:server
+//   PORT=1235 OBSIDIAN_CONNECT_REGISTRATION=open OBSIDIAN_CONNECT_DATA_DIR=<scratch> npm run start:server
 //   npm run test:vault -- ws://localhost:1235
 import { JSDOM } from 'jsdom'
 
@@ -22,15 +23,27 @@ for (const key of [
   const value = (dom.window as unknown as Record<string, unknown>)[key]
   if (globals[key] === undefined && value !== undefined) globals[key] = value
 }
+// jsdom has no layout. CodeMirror measures text in an animation frame and
+// throws there without this - harmless, but it buries the test output.
+const rangeProto = dom.window.Range.prototype as unknown as { getClientRects?: () => unknown }
+rangeProto.getClientRects ??= () => []
 
 // Imported after the DOM globals exist; CodeMirror reads them at module scope.
 const { Notice } = await import('obsidian')
+const { docRoom, userColor } = await import('@obsidian-connect/shared')
+const { ConnectApi, fetchHttp } = await import('../src/account/api.js')
+const { Session } = await import('../src/account/Session.js')
+const { KeyRing } = await import('../src/account/KeyRing.js')
+const { hashWasmArgon2id } = await import('../src/account/argon2.js')
 const { DocStore } = await import('../src/sync/DocStore.js')
 const { StateStore } = await import('../src/sync/StateStore.js')
 const { BackupStore } = await import('../src/sync/BackupStore.js')
 const { VaultIndex } = await import('../src/sync/VaultIndex.js')
 const { VaultSocket } = await import('../src/sync/VaultSocket.js')
+const { Compactor } = await import('../src/sync/Compactor.js')
 const { EditorSync } = await import('../src/editor/EditorSync.js')
+const { NoteHistory } = await import('../src/history/NoteHistory.js')
+const { Sharing } = await import('../src/share/Sharing.js')
 const { FakeVault, FakeFileManager, FakeMarkdownView, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
 )
@@ -60,35 +73,64 @@ async function eventually(predicate: () => boolean | Promise<boolean>, timeoutMs
   return predicate()
 }
 
+const PASSWORD = 'correct horse battery staple'
+const VAULT = 'Test vault'
+
 class Device {
   readonly vault: InstanceType<typeof FakeVault>
   readonly locals = new MemoryLocalStores()
+  private readonly secretMap = new Map<string, string>()
+  private readonly secrets = {
+    load: (key: string): string | null => this.secretMap.get(key) ?? null,
+    save: (key: string, value: string | null): void => {
+      if (value === null) this.secretMap.delete(key)
+      else this.secretMap.set(key, value)
+    }
+  }
+  private token: string | null = null
+  readonly api = new ConnectApi(() => serverUrl, fetchHttp, () => this.token)
+  private readonly session = new Session(this.api, this.secrets, hashWasmArgon2id, async (token) => {
+    this.token = token
+  })
   // Outlives restarts, like the plugin's own: Obsidian keeps the extension in
   // its editors while sync is stopped and started again.
   readonly editors = new EditorSync(() => this.store, noteOf)
   store: DocStoreT | null = null
   index: InstanceType<typeof VaultIndex> | null = null
+  keys: InstanceType<typeof KeyRing> | null = null
+  sharing: InstanceType<typeof Sharing> | null = null
+  compactor: InstanceType<typeof Compactor> | null = null
+  retentionDays = 30
   private socket: InstanceType<typeof VaultSocket> | null = null
   private refs: Array<{ name: string; listener: (...args: unknown[]) => void }> = []
   private indexTimer: ReturnType<typeof setTimeout> | null = null
   readonly views: ViewT[] = []
 
   constructor(
-    readonly name: string,
-    readonly vaultId: string,
+    readonly username: string,
+    private readonly signUp: boolean,
     files: Record<string, string> = {}
   ) {
     this.vault = new FakeVault(files)
   }
 
   async boot(): Promise<boolean> {
+    // A restart unlocks with what the device kept; the first start signs in.
+    const unlocked =
+      (await this.session.unlock()) ??
+      (this.signUp ? await this.session.register(this.username, PASSWORD) : await this.session.login(this.username, PASSWORD))
+    const openVault = await this.session.openVault(unlocked, VAULT)
+    const keys = new KeyRing(openVault, unlocked, this.api, this.secrets)
     const vault = this.vault
     const app = { vault, fileManager: new FakeFileManager(vault) }
     const state = new StateStore(vault.adapter as never, 'plugin')
     const backups = new BackupStore(vault.adapter as never, 'plugin')
-    const index = new VaultIndex(this.vaultId)
-    const socket = new VaultSocket(serverUrl, this.vaultId, '')
-    const user = { id: this.name, name: this.name, color: '#30bced', colorLight: '#30bced33' }
+    const index = new VaultIndex(openVault.vaultId, (path, generation) => keys.docId(path, generation))
+    const socket = new VaultSocket(serverUrl, openVault.vaultId, () => this.token ?? '', {
+      notify: (kind, payload) => void this.sharing?.onNotify(kind, payload).then(() => this.editors.refresh()),
+      revoked: (room) => void this.sharing?.onRevoked(room).then(() => this.editors.refresh())
+    })
+    const user = { id: this.username, name: this.username, ...userColor(this.username) }
     const store = new DocStore(
       app as never,
       socket,
@@ -96,7 +138,7 @@ class Device {
       state,
       backups,
       {
-        vaultId: this.vaultId,
+        vaultId: openVault.vaultId,
         user,
         excludeGlobs: [],
         conflictMarkers: true,
@@ -104,14 +146,23 @@ class Device {
         syncTimeoutMs: 4_000,
         writeDebounceMs: 150
       },
+      {
+        indexCrypto: keys.indexCrypto(),
+        docCrypto: (docId, entry) => (entry?.owner ? keys.sharedDocCrypto(docId) : keys.ownDocCrypto(docId))
+      },
       this.locals.open
     )
+    const sharing = new Sharing(this.api, keys, store, { folder: () => 'Shared', syncTimeoutMs: 4_000, autoAccept: () => true })
     this.store = store
     this.index = index
     this.socket = socket
+    this.keys = keys
+    this.sharing = sharing
+    this.compactor = new Compactor(this.api, keys, () => this.retentionDays)
 
     // What main.ts wires up.
     store.onReady(() => this.editors.refresh())
+    store.onLeave((docId) => void sharing.leave(docId))
     index.onChange(() => {
       if (this.indexTimer) clearTimeout(this.indexTimer)
       this.indexTimer = setTimeout(() => {
@@ -133,6 +184,7 @@ class Device {
     ]
     socket.connect()
     started = await store.start()
+    if (started) await sharing.checkIncoming()
     this.editors.refresh()
     return started
   }
@@ -156,6 +208,11 @@ class Device {
     return view
   }
 
+  close(view: ViewT): void {
+    view.close()
+    this.views.splice(this.views.indexOf(view), 1)
+  }
+
   docText(path: string): string | undefined {
     const docId = this.index?.docIdForPath(path)
     return docId ? this.handleText(docId) : undefined
@@ -167,25 +224,33 @@ class Device {
   }
 }
 
-const vaultId = `vault-selftest-${run}`
-console.log(`server=${serverUrl} vault=${vaultId}`)
+const alice = `alice${run}`
+const carol = `carol${run}`
+console.log(`server=${serverUrl} accounts=${alice},${carol}`)
 
-const A = new Device('Alice', vaultId, {
+const A = new Device(alice, true, {
   'Welcome.md': 'Hello from A\n',
   'Projects/Plan.md': 'step 1\nstep 2\n'
 })
-const B = new Device('Alice-laptop', vaultId)
+const B = new Device(alice, false)
 
 try {
   // --- a second device pulls the vault ---------------------------------------
-  check(await A.boot(), 'A starts')
-  check(await B.boot(), 'B starts with an empty vault')
+  check(await A.boot(), 'A creates the account and starts')
+  check(await B.boot(), 'B signs in to the same account with an empty vault')
   check(
     await eventually(() => B.vault.paths().join(',') === 'Projects/Plan.md,Welcome.md'),
     'B creates every note it only knows from the index, folders included',
     B.vault.paths()
   )
   check(B.vault.text('Welcome.md') === 'Hello from A\n', 'with the right content', B.vault.text('Welcome.md'))
+
+  {
+    const docId = A.index?.docIdForPath('Welcome.md') as string
+    const log = await A.api.log(docRoom(docId))
+    const stored = log.frames.map((frame) => Buffer.from(frame.data, 'base64').toString('latin1')).join('')
+    check(log.frames.length > 0 && !stored.includes('Hello from A'), 'the server stores the note encrypted')
+  }
 
   // --- live, without editors -------------------------------------------------
   await A.vault.userCreate('Ideas.md', 'an idea\n')
@@ -279,8 +344,7 @@ try {
 
   // A save that lags the editor must not be merged back in: the editor is the
   // only writer, and merging its own older copy duplicated whatever was typed
-  // since.
-  // The dangerous shape: newer than the last agreement, older than the
+  // since. The dangerous shape: newer than the last agreement, older than the
   // document. A three-way merge sees both sides change the same line.
   check(await eventually(() => B.vault.text('Welcome.md') === bView.text()), 'B saved before the next edit')
   await delay(200)
@@ -298,12 +362,10 @@ try {
 
   // A change with several parts in one transaction. Mapping its delta onto
   // the editor used to shift every later part by the length of the earlier
-  // insertions.
-  aView.close()
-  A.views.splice(A.views.indexOf(aView), 1)
+  // insertions. At the start of lines, so a misplaced second part still lands
+  // inside the text - silently wrong instead of out of range and caught.
+  A.close(aView)
   await delay(300)
-  // At the start of lines, so a misplaced second part still lands inside the
-  // text - silently wrong instead of out of range and caught.
   const lines = bView.text().split('\n')
   const reshaped = [`>> ${lines[0]}`, lines[1], `>> ${lines[2]}`].join('\n')
   await A.vault.userWrite('Welcome.md', reshaped)
@@ -344,7 +406,7 @@ try {
   await B.shutdown()
   await A.vault.userCreate('Scratch.md', 'temporary\n')
   await delay(600)
-  check(await B.boot(), 'B restarts')
+  check(await B.boot(), 'B restarts, unlocking with what it kept')
   check(await eventually(() => B.vault.text('Scratch.md') === 'temporary\n'), 'B has Scratch.md')
   await B.shutdown()
   await A.vault.trash(A.vault.file('Scratch.md'))
@@ -401,8 +463,7 @@ try {
     'and the note does not come back, on either device',
     { a: A.vault.text('Doomed.md'), b: B.vault.text('Doomed.md') }
   )
-  doomedView.close()
-  A.views.splice(A.views.indexOf(doomedView), 1)
+  A.close(doomedView)
 
   // A new note at a path an earlier note was created under must be a new
   // document, not that one.
@@ -451,21 +512,20 @@ try {
   check(await eventually(() => A.editors.boundCount() === 1), 'Fresh.md binds')
   leaf.type('fresh text')
   check(await eventually(() => B.vault.text('Fresh.md') === 'fresh text'), 'typing in it then reaches the other device')
-  leaf.close()
-  A.views.splice(A.views.indexOf(leaf), 1)
+  A.close(leaf)
 
   // --- a new device whose vault is a copy, with a note open at startup ----------
   // Nothing stored locally yet, so the document is empty until the server
   // answers. Binding then seeded the room with the editor's copy of a note the
   // room already held - the note doubled on every device.
-  const D = new Device('Alice-phone', vaultId, {
+  const D = new Device(alice, false, {
     'Archive/Plan.md': A.vault.text('Archive/Plan.md') ?? '',
     'Welcome.md': A.vault.text('Welcome.md') ?? ''
   })
   try {
     const planBefore = A.vault.text('Archive/Plan.md')
     const dPlan = D.open('Archive/Plan.md')
-    check(await D.boot(), 'a new device with a copied vault starts')
+    check(await D.boot(), 'a new device with a copied vault signs in and starts')
     check(await eventually(() => D.editors.boundCount() === 1), 'its open editor binds')
     await delay(800)
     check(
@@ -477,19 +537,44 @@ try {
     await D.shutdown()
   }
 
-  // --- sharing one note with someone else --------------------------------------
-  const C = new Device('Carol', `vault-selftest-${run}-carol`)
+  // --- sharing one note with a person ------------------------------------------------
+  // The history view merges edits less than a minute apart into one version;
+  // here the draft lives for well under a second.
+  const HISTORY_GAP_MS = 150
+  const C = new Device(carol, true)
   try {
-    await A.vault.userCreate('Together.md', 'shared text\n')
-    check(await eventually(() => Boolean(A.index?.docIdForPath('Together.md'))), 'A tracks Together.md')
+    check(await C.boot(), 'C creates an account of her own')
+    await A.vault.userCreate('Together.md', 'a draft nobody else should see\n')
+    await delay(400)
+    await A.vault.userWrite('Together.md', 'shared text\n')
+    check(await eventually(() => A.docText('Together.md') === 'shared text\n'), 'A has Together.md')
     const docId = A.index?.docIdForPath('Together.md') as string
-    A.store?.share(docId, true)
+    const room = docRoom(docId)
 
-    check(await C.boot(), 'C starts with a vault of her own')
-    const joined = await C.store?.join(docId, 'Together', 'Shared')
-    check(joined?.path === 'Shared/Together.md', 'C joins by document id, into her share folder', joined?.path)
-    check(C.vault.text('Shared/Together.md') === 'shared text\n', 'with the shared content')
+    await A.sharing?.share(docId, carol, 'write', false)
+    check(
+      await eventually(() => C.vault.text('Shared/Together.md') === 'shared text\n'),
+      'C receives the note in her share folder, without being asked',
+      C.vault.paths()
+    )
     check(C.vault.paths().join(',') === 'Shared/Together.md', "and nothing else from A's vault", C.vault.paths())
+
+    {
+      const history = new NoteHistory(C.api, room, (C.keys as InstanceType<typeof KeyRing>).sharedDocCrypto(docId), HISTORY_GAP_MS)
+      await history.load()
+      const texts = history.versions().map((version) => history.textAt(version.seq))
+      check(
+        texts.length > 0 && texts.every((text) => !text.includes('draft')),
+        'shared without history, C cannot see what the note said before',
+        texts
+      )
+      const own = new NoteHistory(A.api, room, (A.keys as InstanceType<typeof KeyRing>).ownDocCrypto(docId), HISTORY_GAP_MS)
+      await own.load()
+      check(
+        own.versions().some((version) => own.textAt(version.seq).includes('draft')),
+        'while A still sees every version'
+      )
+    }
 
     const aTogether = A.open('Together.md')
     const cTogether = C.open('Shared/Together.md')
@@ -506,11 +591,11 @@ try {
       aTogether.text()
     )
     check(
-      await eventually(() => cTogether.view.dom.querySelector('.connect-remote-caret-label')?.textContent === 'Alice'),
+      await eventually(() => cTogether.view.dom.querySelector('.connect-remote-caret-label')?.textContent === alice),
       "C sees Alice's cursor"
     )
     check(
-      await eventually(() => aTogether.view.dom.querySelector('.connect-remote-caret-label')?.textContent === 'Carol'),
+      await eventually(() => aTogether.view.dom.querySelector('.connect-remote-caret-label')?.textContent === carol),
       "A sees Carol's cursor"
     )
 
@@ -529,26 +614,92 @@ try {
       await delay(300)
       check(carolOnA() === carolAt, 'and A sees it there too, not pushed past the new text', carolOnA())
     }
-    check(
-      await eventually(() => B.store?.isShared(docId) === true),
-      "A's other device learns the note is shared"
-    )
+    check(await eventually(() => B.store?.isShared(docId) === true), "A's other device learns the note is shared")
 
     // Syncing your own devices never shows a caret.
     const bWelcome = B.open('Welcome.md')
     const aWelcome = A.open('Welcome.md')
     check(
       await eventually(() => A.editors.boundCount() === 2 && B.editors.boundCount() === 2),
-      'an unshared note binds on both of A\'s devices'
+      "an unshared note binds on both of A's devices"
     )
     aWelcome.type(' caret?')
     await delay(600)
     check(bWelcome.view.dom.querySelector('.connect-remote-caret') === null, 'and shows no cursor between them')
+    {
+      const welcome = await B.store?.handle(A.index?.docIdForPath('Welcome.md') as string)
+      check(welcome?.awareness.getLocalState()?.user === undefined, 'nor announces anyone')
+    }
 
-    A.store?.share(docId, false)
+    // Read only.
+    await A.sharing?.setRole(docId, carol, 'read')
+    check(await eventually(() => C.store?.isReadOnly(docId) === true), 'C learns she may only read now')
+    check(await eventually(() => cTogether.view.state.readOnly), "and C's editor stops taking input")
+    const beforeReading = aTogether.text()
+    cTogether.view.dispatch({ changes: { from: 0, insert: 'NOT ALLOWED ' } })
+    await delay(600)
+    check(aTogether.text() === beforeReading && cTogether.text() === beforeReading, 'nothing C slips in reaches A')
+    aTogether.type(' for readers')
+    check(await eventually(() => cTogether.text() === `${beforeReading} for readers`), 'while what A writes still reaches C')
+
+    // Revoking: C keeps her copy, as a note of her own, and they part ways.
+    C.close(cTogether)
+    await A.sharing?.revoke(docId, carol)
+    const keptByCarol = `${beforeReading} for readers`
     check(
-      await eventually(() => cTogether.view.dom.querySelector('.connect-remote-caret') === null),
-      "stopping the share takes Alice's cursor away from C"
+      await eventually(() => C.store?.entry(C.index?.docIdForPath('Shared/Together.md') ?? '')?.owner === undefined && Boolean(C.index?.docIdForPath('Shared/Together.md'))),
+      'after the share is revoked, C has the note as one of her own',
+      C.index?.docIdForPath('Shared/Together.md')
+    )
+    check(C.vault.text('Shared/Together.md') === keptByCarol, 'with everything up to that point', C.vault.text('Shared/Together.md'))
+    {
+      // The revocation arrives as a message and as a notice. Handling both
+      // minted a second copy of the note, which the duplicate merge then
+      // folded back - harmless only while both copies are identical.
+      await delay(300)
+      const everIndexed = [...(C.index?.live() ?? []), ...(C.index?.deleted() ?? [])]
+        .filter(({ entry }) => entry.path === 'Shared/Together.md')
+        .map(({ docId }) => docId)
+      check(everIndexed.length === 2, 'the revoke moves the note once, not once per message', everIndexed)
+    }
+    aTogether.type(' after revoke')
+    await C.vault.userWrite('Shared/Together.md', `${keptByCarol}\nCarol's own line`)
+    await delay(1_200)
+    check(!C.vault.text('Shared/Together.md')?.includes('after revoke'), 'what A writes afterwards no longer reaches C')
+    check(!aTogether.text().includes("Carol's own line"), "and C's copy no longer reaches A")
+
+    // History, restored on the client.
+    A.close(aTogether)
+    await delay(300)
+    {
+      const history = new NoteHistory(A.api, room, (A.keys as InstanceType<typeof KeyRing>).ownDocCrypto(docId), HISTORY_GAP_MS)
+      await history.load()
+      const draft = history.versions().find((version) => history.textAt(version.seq).includes('draft'))
+      check(Boolean(draft), 'A finds the draft in the history')
+      if (draft) await A.store?.restore(docId, history.textAt(draft.seq))
+      check(
+        await eventually(() => A.vault.text('Together.md') === 'a draft nobody else should see\n' && B.vault.text('Together.md') === 'a draft nobody else should see\n'),
+        'restoring it reaches the file and the other device',
+        { a: A.vault.text('Together.md'), b: B.vault.text('Together.md') }
+      )
+    }
+
+    // Compaction: the owner folds old history into a snapshot, and the note
+    // still reads the same everywhere.
+    A.retentionDays = 1e-9
+    const compacted = (await A.compactor?.run()) ?? 0
+    check(compacted > 0, 'the owner compacts old history', compacted)
+    {
+      const history = new NoteHistory(A.api, room, (A.keys as InstanceType<typeof KeyRing>).ownDocCrypto(docId), HISTORY_GAP_MS)
+      await history.load()
+      const latest = history.versions()[0]
+      check(Boolean(latest) && history.textAt(latest?.seq ?? 0) === 'a draft nobody else should see\n', 'the history still ends in the current text')
+    }
+    await B.shutdown()
+    check(await B.boot(), 'B restarts after compaction')
+    check(
+      await eventually(() => B.vault.text('Together.md') === 'a draft nobody else should see\n' && B.vault.text('Archive/Plan.md') === A.vault.text('Archive/Plan.md')),
+      'and still has every note right'
     )
   } finally {
     await C.shutdown()

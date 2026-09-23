@@ -1,18 +1,13 @@
 import type { WebSocket } from 'ws'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { MUX, indexRoom, isDocRoom } from '@obsidian-connect/shared'
-import type { RoomManager, RoomSubscriber } from './rooms.js'
+import { MUX, type NotifyKind, type ShareNotice } from '@obsidian-connect/shared'
+import type { Frame } from './log.js'
+import type { RoomClient, RoomHub } from './rooms.js'
 
 const WS_OPEN = 1
 const WS_CONNECTING = 0
 const PING_INTERVAL_MS = 30_000
-
-// Legacy single-room wire format, as spoken by the `y-websocket` client that
-// the relay self-test uses. Note the asymmetry: a sync body is appended raw,
-// an awareness body is length-prefixed.
-const LEGACY_SYNC = 0
-const LEGACY_AWARENESS = 1
 
 function send(ws: WebSocket, data: Uint8Array): void {
   if (ws.readyState !== WS_OPEN && ws.readyState !== WS_CONNECTING) return
@@ -65,104 +60,93 @@ function heartbeat(ws: WebSocket, onDead: () => void): () => void {
   return () => clearInterval(timer)
 }
 
-class SingleRoomConnection implements RoomSubscriber {
+class VaultConnection implements RoomClient {
   constructor(
     private readonly ws: WebSocket,
-    private readonly room: string
+    readonly username: string,
+    readonly vaultId: string
   ) {}
 
-  sendSync(_room: string, payload: Uint8Array): void {
-    const encoder = encoding.createEncoder()
-    encoding.writeVarUint(encoder, LEGACY_SYNC)
-    encoding.writeUint8Array(encoder, payload)
-    send(this.ws, encoding.toUint8Array(encoder))
-  }
-
-  sendAwareness(_room: string, payload: Uint8Array): void {
-    const encoder = encoding.createEncoder()
-    encoding.writeVarUint(encoder, LEGACY_AWARENESS)
-    encoding.writeVarUint8Array(encoder, payload)
-    send(this.ws, encoding.toUint8Array(encoder))
-  }
-
-  get name(): string {
-    return this.room
-  }
-}
-
-export function setupSingleRoomConnection(
-  ws: WebSocket,
-  room: string,
-  rooms: RoomManager
-): void {
-  ws.binaryType = 'arraybuffer'
-  const connection = new SingleRoomConnection(ws, room)
-  const queue = serializer()
-  const stopHeartbeat = heartbeat(ws, () => rooms.unsubscribeAll(connection))
-
-  queue(() => rooms.subscribe(room, connection))
-
-  ws.on('message', (raw: unknown) => {
-    const message = toUint8Array(raw)
-    if (message.length === 0) return
-    queue(async () => {
-      const decoder = decoding.createDecoder(message)
-      const type = decoding.readVarUint(decoder)
-      if (type === LEGACY_SYNC) {
-        await rooms.handleSync(room, decoding.readTailAsUint8Array(decoder), connection)
-      } else if (type === LEGACY_AWARENESS) {
-        await rooms.handleAwareness(room, decoding.readVarUint8Array(decoder), connection)
-      }
-    })
-  })
-
-  ws.on('close', () => {
-    stopHeartbeat()
-    rooms.unsubscribe(room, connection)
-  })
-}
-
-class VaultConnection implements RoomSubscriber {
-  readonly subscribed = new Set<string>()
-
-  constructor(private readonly ws: WebSocket) {}
-
-  private frame(type: number, room: string, payload: Uint8Array): void {
+  private message(type: number, room: string | null, write: (encoder: encoding.Encoder) => void): void {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, type)
-    encoding.writeVarString(encoder, room)
-    encoding.writeVarUint8Array(encoder, payload)
+    if (room !== null) encoding.writeVarString(encoder, room)
+    write(encoder)
     send(this.ws, encoding.toUint8Array(encoder))
   }
 
-  sendSync(room: string, payload: Uint8Array): void {
-    this.frame(MUX.sync, room, payload)
+  sendFrame(room: string, frame: Frame): void {
+    this.message(MUX.frame, room, (encoder) => {
+      encoding.writeVarUint(encoder, frame.seq)
+      encoding.writeVarUint(encoder, frame.ts)
+      encoding.writeVarUint(encoder, frame.epoch)
+      encoding.writeVarUint8Array(encoder, frame.data)
+    })
   }
 
-  sendAwareness(room: string, payload: Uint8Array): void {
-    this.frame(MUX.awareness, room, payload)
+  sendSnapshot(room: string, uptoSeq: number, epoch: number, data: Uint8Array): void {
+    this.message(MUX.snapshot, room, (encoder) => {
+      encoding.writeVarUint(encoder, uptoSeq)
+      encoding.writeVarUint(encoder, epoch)
+      encoding.writeVarUint8Array(encoder, data)
+    })
+  }
+
+  sendCaughtUp(room: string, headSeq: number, epoch: number): void {
+    this.message(MUX.caughtUp, room, (encoder) => {
+      encoding.writeVarUint(encoder, headSeq)
+      encoding.writeVarUint(encoder, epoch)
+    })
+  }
+
+  sendAck(room: string, ref: number, seq: number): void {
+    this.message(MUX.ack, room, (encoder) => {
+      encoding.writeVarUint(encoder, ref)
+      encoding.writeVarUint(encoder, seq)
+    })
+  }
+
+  sendAwareness(room: string, epoch: number, data: Uint8Array): void {
+    this.message(MUX.awareness, room, (encoder) => {
+      encoding.writeVarUint(encoder, epoch)
+      encoding.writeVarUint8Array(encoder, data)
+    })
+  }
+
+  sendRekey(room: string, epoch: number): void {
+    this.message(MUX.rekey, room, (encoder) => encoding.writeVarUint(encoder, epoch))
+  }
+
+  sendRevoked(room: string, reason: string): void {
+    this.message(MUX.revoked, room, (encoder) => encoding.writeVarString(encoder, reason))
+  }
+
+  sendDenied(room: string, reason: string): void {
+    this.message(MUX.denied, room, (encoder) => encoding.writeVarString(encoder, reason))
+  }
+
+  sendNotify(kind: NotifyKind, payload: ShareNotice): void {
+    this.message(MUX.notify, null, (encoder) => {
+      encoding.writeVarString(encoder, kind)
+      encoding.writeVarString(encoder, JSON.stringify(payload))
+    })
   }
 
   sendError(message: string): void {
-    const encoder = encoding.createEncoder()
-    encoding.writeVarUint(encoder, MUX.error)
-    encoding.writeVarString(encoder, message)
-    send(this.ws, encoding.toUint8Array(encoder))
+    this.message(MUX.error, null, (encoder) => encoding.writeVarString(encoder, message))
   }
 }
 
 /**
- * One socket carries every note of a vault. A connection per note would mean
- * thousands of sockets for a normal vault, which neither the browser nor the
- * server survives.
+ * One socket carries every note of a vault. The upgrade already checked that
+ * the account owns the vault; each room is checked again on subscribe.
  */
-export function setupVaultConnection(ws: WebSocket, vaultId: string, rooms: RoomManager): void {
+export function setupVaultConnection(ws: WebSocket, username: string, vaultId: string, hub: RoomHub): void {
   ws.binaryType = 'arraybuffer'
-  const connection = new VaultConnection(ws)
+  const connection = new VaultConnection(ws, username, vaultId)
   const queue = serializer()
-  const stopHeartbeat = heartbeat(ws, () => rooms.unsubscribeAll(connection))
-
-  const allowed = (room: string): boolean => isDocRoom(room) || room === indexRoom(vaultId)
+  hub.attach(connection)
+  const stopHeartbeat = heartbeat(ws, () => hub.detach(connection))
 
   ws.on('message', (raw: unknown) => {
     const message = toUint8Array(raw)
@@ -170,39 +154,33 @@ export function setupVaultConnection(ws: WebSocket, vaultId: string, rooms: Room
     queue(async () => {
       const decoder = decoding.createDecoder(message)
       const type = decoding.readVarUint(decoder)
-      if (type === MUX.error) return
-
       const room = decoding.readVarString(decoder)
-      if (!allowed(room)) {
-        connection.sendError(`room "${room}" is not part of this vault`)
-        return
-      }
-
       switch (type) {
         case MUX.subscribe:
-          if (connection.subscribed.has(room)) return
-          connection.subscribed.add(room)
-          await rooms.subscribe(room, connection)
+          await hub.subscribe(connection, room, decoding.readVarUint(decoder))
           return
         case MUX.unsubscribe:
-          connection.subscribed.delete(room)
-          rooms.unsubscribe(room, connection)
+          hub.unsubscribe(connection, room)
           return
-        case MUX.sync:
-          await rooms.handleSync(room, decoding.readVarUint8Array(decoder), connection)
+        case MUX.push: {
+          const ref = decoding.readVarUint(decoder)
+          const epoch = decoding.readVarUint(decoder)
+          await hub.push(connection, room, ref, epoch, decoding.readVarUint8Array(decoder))
           return
-        case MUX.awareness:
-          await rooms.handleAwareness(room, decoding.readVarUint8Array(decoder), connection)
+        }
+        case MUX.awareness: {
+          const epoch = decoding.readVarUint(decoder)
+          hub.awareness(connection, room, epoch, decoding.readVarUint8Array(decoder))
           return
+        }
         default:
-          return
+          connection.sendError(`unknown message type ${type}`)
       }
     })
   })
 
   ws.on('close', () => {
     stopHeartbeat()
-    for (const room of connection.subscribed) rooms.unsubscribe(room, connection)
-    connection.subscribed.clear()
+    hub.detach(connection)
   })
 }

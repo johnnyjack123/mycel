@@ -1,83 +1,61 @@
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocketServer } from 'ws'
-import { loadConfig } from './config.js'
+import { isHexId } from '@obsidian-connect/shared'
+import { AccountStore } from './accounts.js'
 import { TokenService } from './auth.js'
+import { loadConfig } from './config.js'
 import { createHttpApp } from './http.js'
-import { authorizeRoom } from './authz.js'
-import { RoomManager } from './rooms.js'
-import { setupSingleRoomConnection, setupVaultConnection } from './wshub.js'
+import { RoomHub } from './rooms.js'
+import { setupVaultConnection } from './wshub.js'
 
 const config = loadConfig()
 const tokens = new TokenService(config.jwtSecret, config.accessTokenTtlSeconds)
-const rooms = new RoomManager({
-  dataDir: config.dataDir,
-  historyRetentionDays: config.historyRetentionDays,
-  logUpdates: config.logUpdates
-})
-const app = createHttpApp(config, tokens, rooms)
+const accounts = new AccountStore(config.dataDir, config.jwtSecret)
+const hub = new RoomHub({ dataDir: config.dataDir, logUpdates: config.logUpdates }, accounts)
+const app = createHttpApp(config, tokens, accounts, hub)
 
 const wss = new WebSocketServer({ noServer: true })
-
 const VAULT_PREFIX = '/vault/'
-const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000
+
+function reject(socket: Duplex, status: string): void {
+  socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`)
+  socket.destroy()
+}
 
 app.server.on('upgrade', (request, socket, head) => {
   void handleUpgrade(request, socket, head)
 })
 
-async function handleUpgrade(
-  request: IncomingMessage,
-  socket: Duplex,
-  head: Buffer
-): Promise<void> {
+async function handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
   try {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
-    const token = url.searchParams.get('token')
-
-    // One socket per vault carries every note; the single-room endpoint stays
-    // for the relay self-test and any plain y-websocket client.
-    const vaultId = url.pathname.startsWith(VAULT_PREFIX)
-      ? decodeURIComponent(url.pathname.slice(VAULT_PREFIX.length))
-      : null
-
-    const room = vaultId ? `vault:${vaultId}` : url.pathname.replace(/^\//, '')
-    if (!room || (vaultId !== null && vaultId.length === 0)) {
-      socket.destroy()
+    if (!url.pathname.startsWith(VAULT_PREFIX)) {
+      reject(socket, '404 Not Found')
       return
     }
-
-    const decision = await authorizeRoom(tokens, token, room, config.devAllowAnonymous)
-    if (!decision) {
-      app.log.warn({ room, remote: request.socket.remoteAddress }, 'ws upgrade rejected')
-      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
-      socket.destroy()
+    const vaultId = decodeURIComponent(url.pathname.slice(VAULT_PREFIX.length))
+    let username: string
+    try {
+      username = await tokens.verify(url.searchParams.get('token') ?? '')
+    } catch {
+      reject(socket, '401 Unauthorized')
       return
     }
-
-    app.log.info(
-      { room, vault: vaultId ?? undefined, remote: request.socket.remoteAddress },
-      'ws upgrade accepted'
-    )
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      if (vaultId) setupVaultConnection(ws, vaultId, rooms)
-      else setupSingleRoomConnection(ws, room, rooms)
-    })
+    const account = await accounts.get(username)
+    // A vault's connection carries its index; only its owner may open one.
+    if (!isHexId(vaultId) || account?.status !== 'active' || !account.vaults[vaultId]) {
+      app.log.warn({ vaultId, username, remote: request.socket.remoteAddress }, 'ws upgrade rejected')
+      reject(socket, '403 Forbidden')
+      return
+    }
+    app.log.info({ vaultId, username, remote: request.socket.remoteAddress }, 'ws upgrade accepted')
+    wss.handleUpgrade(request, socket, head, (ws) => setupVaultConnection(ws, username, vaultId, hub))
   } catch (error) {
     app.log.error(error)
     socket.destroy()
   }
 }
-
-const pruneTimer = setInterval(() => {
-  void rooms
-    .pruneAll()
-    .then((count) => {
-      if (count > 0) app.log.info({ rooms: count }, 'history pruned')
-    })
-    .catch((error) => app.log.error(error))
-}, PRUNE_INTERVAL_MS)
-pruneTimer.unref?.()
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
@@ -86,12 +64,14 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 async function shutdown(): Promise<void> {
-  clearInterval(pruneTimer)
   await app.close()
   wss.close()
-  await rooms.shutdown()
+  await hub.shutdown()
   process.exit(0)
 }
 
+if (config.insecureSecret) {
+  app.log.warn('OBSIDIAN_CONNECT_JWT_SECRET is not set; tokens use a built-in secret. Set it before exposing the server.')
+}
 await app.listen({ host: config.host, port: config.port })
-app.log.info(`Obsidian Connect server is listening on ${config.host}:${config.port}`)
+app.log.info(`Obsidian Connect server is listening on ${config.host}:${config.port} (registration: ${config.registration})`)

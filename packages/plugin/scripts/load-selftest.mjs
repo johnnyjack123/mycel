@@ -32,7 +32,8 @@ const chainable = () => {
 }
 
 // What onload registered, so the test can check it without Obsidian.
-const registered = { commands: [], editorExtensions: [], protocolHandlers: [], layoutReady: [] }
+const registered = { commands: [], editorExtensions: [], layoutReady: [] }
+const localStorageStub = new Map()
 
 const adapterFiles = new Map()
 const adapter = {
@@ -50,11 +51,16 @@ const obsidian = {
     constructor() {
       super()
       this.app = {
-        vault: { on: () => ({}), configDir: '.obsidian', adapter, getMarkdownFiles: () => [] },
+        vault: { on: () => ({}), configDir: '.obsidian', adapter, getMarkdownFiles: () => [], getName: () => 'Test vault' },
         workspace: {
           on: () => ({}),
           onLayoutReady: (callback) => registered.layoutReady.push(callback),
           getActiveFile: () => null
+        },
+        loadLocalStorage: (key) => localStorageStub.get(key) ?? null,
+        saveLocalStorage: (key, value) => {
+          if (value === null) localStorageStub.delete(key)
+          else localStorageStub.set(key, value)
         }
       }
       this.manifest = { id: 'obsidian-connect', dir: '.obsidian/plugins/obsidian-connect' }
@@ -69,9 +75,9 @@ const obsidian = {
     registerEvent = fn
     register = fn
     registerEditorExtension = (extension) => registered.editorExtensions.push(extension)
-    registerObsidianProtocolHandler = (action) => registered.protocolHandlers.push(action)
-    // A short timeout: the stub socket never connects, and the test waits for
-    // the start to give up.
+    registerInterval = (id) => id
+    // Signed out, the way a fresh install starts: the start must stop short
+    // without touching the network.
     loadData = async () => ({ serverUrl: 'ws://127.0.0.1:9', syncTimeoutMs: 200 })
     saveData = async () => undefined
   },
@@ -106,7 +112,7 @@ const obsidian = {
   editorInfoField: {},
   MarkdownView: Stub,
   normalizePath: (value) => value,
-  requestUrl: async () => ({ json: {} })
+  requestUrl: async () => ({ status: 503, json: {} })
 }
 
 /**
@@ -133,7 +139,7 @@ const cmState = permissive({
     of = (value) => value
     reconfigure = fn
   },
-  EditorState: { create: () => ({}) },
+  EditorState: { create: () => ({}), readOnly: { of: fn } },
   EditorSelection: {}
 })
 
@@ -192,7 +198,7 @@ Module._load = function (request, ...rest) {
 }
 
 // The bundle expects a browser-ish global surface.
-globalThis.window ??= { setTimeout, clearTimeout }
+globalThis.window ??= { setTimeout, clearTimeout, setInterval, clearInterval }
 globalThis.WebSocket ??= class {
   static OPEN = 1
   constructor() {
@@ -238,19 +244,17 @@ if (exported) {
     }
     check(registered.editorExtensions.length === 1, 'it registers exactly one editor extension', registered.editorExtensions.length)
     check(
-      ['share-note', 'stop-sharing-note', 'open-shared-note'].every((id) => registered.commands.includes(id)),
+      ['share-note', 'note-access', 'shared-with-me', 'detach-note'].every((id) => registered.commands.includes(id)),
       'it registers the sharing commands',
       registered.commands
     )
-    check(registered.protocolHandlers.includes('connect-share'), 'it handles share links', registered.protocolHandlers)
 
     try {
       for (const callback of registered.layoutReady) await callback()
-      // startSync gives up on the unreachable server after syncTimeoutMs.
-      await new Promise((resolve) => setTimeout(resolve, 600))
-      check(true, 'starting sync against an unreachable server does not throw')
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      check(true, 'starting while signed out does not throw')
     } catch (error) {
-      check(false, 'starting sync against an unreachable server does not throw', error?.stack ?? String(error))
+      check(false, 'starting while signed out does not throw', error?.stack ?? String(error))
     }
     try {
       await instance.onunload()

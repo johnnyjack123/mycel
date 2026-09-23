@@ -2,21 +2,111 @@ import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import { CONTENT_FIELD, docRoom, type CollabUser } from '@obsidian-connect/shared'
-import type { VaultSocket } from './VaultSocket.js'
+import { fromBase64, toBase64 } from '@obsidian-connect/shared/crypto'
+import type { RoomCrypto, RoomCursor, VaultSocket } from './VaultSocket.js'
 
 // One note. The document is persisted locally before anything touches the
-// network, so edits made offline survive closing Obsidian - previously they
-// lived only in RAM and were gone on restart.
+// network, so edits made offline survive closing Obsidian. Next to it lives
+// the note's place in the server's log and whatever the server has not yet
+// acknowledged - an edit made offline must still be sent after a restart.
 
 /** Where a device keeps its copy of a document between sessions. */
 export interface LocalStore {
   whenSynced: Promise<unknown>
   destroy(): Promise<unknown> | void
+  get(key: string): Promise<string | null>
+  set(key: string, value: string): Promise<void>
 }
 
 export type OpenLocalStore = (name: string, doc: Y.Doc) => LocalStore
 
-export const openIndexedDb: OpenLocalStore = (name, doc) => new IndexeddbPersistence(name, doc)
+export const openIndexedDb: OpenLocalStore = (name, doc) => {
+  const persistence = new IndexeddbPersistence(name, doc)
+  return {
+    whenSynced: persistence.whenSynced,
+    destroy: () => persistence.destroy(),
+    get: async (key) => {
+      const value: unknown = await persistence.get(key)
+      return typeof value === 'string' ? value : null
+    },
+    set: async (key, value) => {
+      await persistence.set(key, value)
+    }
+  }
+}
+
+const CURSOR_KEY = 'cursor'
+const PERSIST_DELAY_MS = 250
+
+interface SavedCursor {
+  lastSeq: number
+  epoch: number
+  sending: string | null
+  outbox: string | null
+}
+
+/** A room cursor kept next to the document it belongs to. */
+export class LocalCursor implements RoomCursor {
+  lastSeq = 0
+  epoch = 0
+  sending: Uint8Array | null = null
+  outbox: Uint8Array | null = null
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private writes: Promise<void> = Promise.resolve()
+
+  private constructor(private readonly store: LocalStore) {}
+
+  static async load(store: LocalStore): Promise<LocalCursor> {
+    const cursor = new LocalCursor(store)
+    try {
+      const raw = await store.get(CURSOR_KEY)
+      if (raw) {
+        const saved = JSON.parse(raw) as SavedCursor
+        cursor.lastSeq = saved.lastSeq ?? 0
+        cursor.epoch = saved.epoch ?? 0
+        cursor.sending = saved.sending ? fromBase64(saved.sending) : null
+        cursor.outbox = saved.outbox ? fromBase64(saved.outbox) : null
+      }
+    } catch (error) {
+      // Starting from zero only costs a full catch-up.
+      console.error('[obsidian-connect] the local log position is unreadable', error)
+    }
+    return cursor
+  }
+
+  persist(urgent = false): void {
+    if (urgent) {
+      void this.flush()
+      return
+    }
+    if (this.timer !== null) return
+    this.timer = setTimeout(() => {
+      this.timer = null
+      void this.flush()
+    }, PERSIST_DELAY_MS)
+  }
+
+  flush(): Promise<void> {
+    if (this.timer !== null) clearTimeout(this.timer)
+    this.timer = null
+    const saved: SavedCursor = {
+      lastSeq: this.lastSeq,
+      epoch: this.epoch,
+      sending: this.sending ? toBase64(this.sending) : null,
+      outbox: this.outbox ? toBase64(this.outbox) : null
+    }
+    this.writes = this.writes
+      .then(() => this.store.set(CURSOR_KEY, JSON.stringify(saved)))
+      .catch((error) => console.error('[obsidian-connect] saving the local log position failed', error))
+    return this.writes
+  }
+}
+
+export interface DocHandleOptions {
+  shared: boolean
+  readOnly: boolean
+  crypto: RoomCrypto
+}
 
 export class DocHandle {
   readonly doc = new Y.Doc()
@@ -29,28 +119,51 @@ export class DocHandle {
   readonly room: string
 
   private readonly persistence: LocalStore
+  private cursor: LocalCursor | null = null
   private destroyed = false
   private sharedNow: boolean
+  private readOnlyNow: boolean
 
   constructor(
     readonly docId: string,
     vaultId: string,
     private readonly socket: VaultSocket,
     private readonly user: CollabUser,
-    shared: boolean,
+    private readonly options: DocHandleOptions,
     openLocal: OpenLocalStore = openIndexedDb
   ) {
     this.ytext = this.doc.getText(CONTENT_FIELD)
     this.room = docRoom(docId)
     this.awareness = new Awareness(this.doc)
-    this.sharedNow = shared
-    if (shared) this.awareness.setLocalStateField('user', user)
+    this.sharedNow = options.shared
+    this.readOnlyNow = options.readOnly
+    if (options.shared) this.awareness.setLocalStateField('user', user)
     this.persistence = openLocal(`obsidian-connect/${vaultId}/${docId}`, this.doc)
-    socket.register(this.room, this.doc, shared ? this.awareness : null)
+  }
+
+  /**
+   * Loads the local copy and its log position, then joins the room. Nothing
+   * registers before the local state is in, or loading it would be taken for
+   * edits and sent again.
+   */
+  async open(): Promise<void> {
+    await this.persistence.whenSynced
+    this.cursor = await LocalCursor.load(this.persistence)
+    if (this.destroyed) return
+    this.socket.register(this.room, this.doc, {
+      crypto: this.options.crypto,
+      cursor: this.cursor,
+      awareness: this.sharedNow ? this.awareness : null,
+      readOnly: this.readOnlyNow
+    })
   }
 
   get shared(): boolean {
     return this.sharedNow
+  }
+
+  get readOnly(): boolean {
+    return this.readOnlyNow
   }
 
   setShared(shared: boolean): void {
@@ -60,9 +173,10 @@ export class DocHandle {
     this.socket.setAwareness(this.room, shared ? this.awareness : null)
   }
 
-  /** Resolves once the locally stored state is loaded. */
-  whenLocalReady(): Promise<unknown> {
-    return this.persistence.whenSynced
+  setReadOnly(readOnly: boolean): void {
+    if (this.destroyed || readOnly === this.readOnlyNow) return
+    this.readOnlyNow = readOnly
+    this.socket.setReadOnly(this.room, readOnly)
   }
 
   /**
@@ -85,6 +199,11 @@ export class DocHandle {
     }
   }
 
+  /** The last frame of the server's log this copy has applied. */
+  get lastSeq(): number {
+    return this.cursor?.lastSeq ?? 0
+  }
+
   text(): string {
     return this.ytext.toString()
   }
@@ -98,9 +217,10 @@ export class DocHandle {
     this.destroyed = true
     this.socket.unregister(this.room)
     this.awareness.destroy()
-    // Flush before tearing the document down, or the last edits never reach
-    // IndexedDB.
+    // Flush before tearing the document down, or the last edits and the
+    // unacknowledged ones never reach local storage.
     try {
+      await this.cursor?.flush()
       await this.persistence.destroy()
     } catch (error) {
       console.error(`[obsidian-connect] closing local storage for ${this.docId} failed`, error)

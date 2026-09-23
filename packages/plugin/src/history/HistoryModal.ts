@@ -1,16 +1,15 @@
-import { App, Modal, Notice, Setting, TFile, requestUrl } from 'obsidian'
-import { API, docRoom, type HistoryVersion } from '@obsidian-connect/shared'
+import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
+import type { NoteHistory, Version } from './NoteHistory.js'
 
-// Point-in-time rollback for a single note. The server replays its update log,
-// so this restores what the note actually said at that moment rather than what
-// some periodic file snapshot happened to catch.
+// Point-in-time rollback for a single note. The log is decrypted and replayed
+// on this device, so this shows what the note actually said at that moment.
 
 export interface HistoryModalOptions {
-  httpUrl: string
-  token: string
-  docId: string
+  history: NoteHistory
   file: TFile
-  onRestored: () => void
+  /** False for a note shared to read only. */
+  canRestore: boolean
+  restore: (text: string) => Promise<void>
 }
 
 function formatTimestamp(ts: number): string {
@@ -18,8 +17,8 @@ function formatTimestamp(ts: number): string {
 }
 
 export class HistoryModal extends Modal {
-  private versions: HistoryVersion[] = []
-  private selected: number | null = null
+  private versions: Version[] = []
+  private selected: Version | null = null
   private preview = ''
 
   constructor(
@@ -29,28 +28,12 @@ export class HistoryModal extends Modal {
     super(app)
   }
 
-  private endpoint(suffix: string): string {
-    const room = encodeURIComponent(docRoom(this.options.docId))
-    return `${this.options.httpUrl}${API.history}/${room}${suffix}`
-  }
-
-  private headers(): Record<string, string> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (this.options.token) headers.Authorization = `Bearer ${this.options.token}`
-    return headers
-  }
-
   async onOpen(): Promise<void> {
     this.titleEl.setText(`History: ${this.options.file.basename}`)
-    this.contentEl.createEl('p', { text: 'Loading versions…' })
+    this.contentEl.createEl('p', { text: 'Loading and decrypting versions…' })
     try {
-      const response = await requestUrl({
-        url: this.endpoint('/versions'),
-        headers: this.headers()
-      })
-      const body = response.json as { versions?: HistoryVersion[] }
-      // Newest first: that is the one people look for.
-      this.versions = (body.versions ?? []).slice().sort((a, b) => b.ts - a.ts)
+      await this.options.history.load()
+      this.versions = this.options.history.versions()
     } catch (error) {
       console.error('[obsidian-connect] loading history failed', error)
       this.contentEl.empty()
@@ -62,33 +45,19 @@ export class HistoryModal extends Modal {
     this.render()
   }
 
-  private async loadPreview(ts: number): Promise<void> {
-    try {
-      const response = await requestUrl({
-        url: this.endpoint(`/text?ts=${ts}`),
-        headers: this.headers()
-      })
-      this.preview = (response.json as { text?: string }).text ?? ''
-    } catch (error) {
-      console.error('[obsidian-connect] loading a previous version failed', error)
-      this.preview = ''
-    }
+  private select(version: Version): void {
+    this.selected = version
+    this.preview = this.options.history.textAt(version.seq)
     this.render()
   }
 
-  private async restore(ts: number): Promise<void> {
+  private async restore(version: Version): Promise<void> {
     try {
-      await requestUrl({
-        url: this.endpoint('/restore'),
-        method: 'POST',
-        headers: this.headers(),
-        body: JSON.stringify({ ts })
-      })
+      await this.options.restore(this.options.history.textAt(version.seq))
       new Notice(
-        `${this.options.file.basename} restored to ${formatTimestamp(ts)}. The rollback is itself a version, so it can be undone.`,
+        `${this.options.file.basename} restored to ${formatTimestamp(version.ts)}. The rollback is itself a version, so it can be undone.`,
         8_000
       )
-      this.options.onRestored()
       this.close()
     } catch (error) {
       console.error('[obsidian-connect] restoring failed', error)
@@ -105,37 +74,39 @@ export class HistoryModal extends Modal {
       return
     }
 
+    const skipped = this.options.history.unreadable
     contentEl.createEl('p', {
-      text: `${this.versions.length} version(s). Selecting one shows how the note read at that point.`
+      text: `${this.versions.length} version(s). Selecting one shows how the note read at that point.${
+        skipped > 0 ? ` ${skipped} change(s) from before you had access are not shown.` : ''
+      }`
     })
 
     const list = contentEl.createDiv({ cls: 'connect-history-list' })
     for (const version of this.versions.slice(0, 200)) {
       const row = list.createDiv({ cls: 'connect-history-row' })
-      if (this.selected === version.ts) row.addClass('is-selected')
+      if (this.selected?.seq === version.seq) row.addClass('is-selected')
       row.createSpan({ text: formatTimestamp(version.ts) })
-      row.createSpan({ cls: 'connect-history-size', text: `${version.bytes} B` })
-      row.onclick = () => {
-        this.selected = version.ts
-        void this.loadPreview(version.ts)
-      }
+      row.onclick = () => this.select(version)
     }
 
-    if (this.selected !== null) {
-      contentEl.createEl('h4', { text: `Preview — ${formatTimestamp(this.selected)}` })
-      const box = contentEl.createEl('pre', { cls: 'connect-history-preview' })
-      box.setText(this.preview.slice(0, 5_000))
+    const selected = this.selected
+    if (!selected) return
+    contentEl.createEl('h4', { text: `Preview — ${formatTimestamp(selected.ts)}` })
+    const box = contentEl.createEl('pre', { cls: 'connect-history-preview' })
+    box.setText(this.preview.slice(0, 5_000))
 
-      const selected = this.selected
-      new Setting(contentEl).addButton((button) =>
-        button
-          .setButtonText('Restore this version')
-          .setCta()
-          .onClick(() => {
-            void this.restore(selected)
-          })
-      )
+    if (!this.options.canRestore) {
+      contentEl.createEl('p', { text: 'This note is shared with you to read only, so it cannot be restored here.' })
+      return
     }
+    new Setting(contentEl).addButton((button) =>
+      button
+        .setButtonText('Restore this version')
+        .setCta()
+        .onClick(() => {
+          void this.restore(selected)
+        })
+    )
   }
 
   onClose(): void {
