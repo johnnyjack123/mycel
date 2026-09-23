@@ -31,9 +31,14 @@ not preferences.
    additive union, which can duplicate but cannot destroy.
 4. **Conflicts keep both sides.** Duplication is recoverable, deletion often is
    not. `threeWayMerge` never picks a winner.
-5. **Document ids are derived, never random.** `stableDocId(vaultId, path)`.
-   Random ids let two devices mint different ids for the same file and sync past
-   each other — the bug that looked exactly like "sync is broken".
+5. **Document ids are derived, never random — and never reused.**
+   `stableDocId(vaultId, path, generation)`. Random ids let two devices mint
+   different ids for the same file and sync past each other — the bug that
+   looked exactly like "sync is broken". But the id a path derives usually
+   belongs to an earlier note: Obsidian creates every note as "Untitled" and it
+   is renamed afterwards, and deleted notes leave tombstones. `ensure` takes the
+   first generation the index does not know; taking the known one handed a new
+   note the other note's text.
 6. **Never dispatch a CodeMirror transaction from a ViewPlugin constructor.**
    CodeMirror catches the exception and silently deactivates the plugin forever,
    so the editor reports success and then ignores every keystroke. Defer with
@@ -60,12 +65,21 @@ not preferences.
 10. **Bind an editor only to a settled note** — `DocStore.settle`, file and
     document agreed with the server state known. Binding to an empty document
     the server had not sent yet put keystrokes at positions that did not exist
-    and then seeded the room with a second copy of the note.
+    and then seeded the room with a second copy of the note. And only once the
+    buffer holds that note: Obsidian names the new file before it has read it,
+    and binding in between took the previous note's text for edits to the new
+    one (`contentPending`).
 11. **Map a Yjs delta onto CodeMirror in pre-change coordinates**
     (`deltaToChanges`): advance over retained and deleted text, not over
     inserted text. Getting this wrong shifts every later part of a multi-part
     change, keeps the length right and so goes unnoticed while editor and
     document drift apart.
+12. **Never sync a file object that has left the vault** (`DocStore.exists`).
+    An editor keeps its `TFile` after the note is deleted underneath it;
+    syncing it registered the note again and it came back, empty, everywhere.
+13. **A rename event looks up the new path first.** Applying another device's
+    rename fires one here too, and by then the old path may belong to a new
+    note — looking that up first moved the wrong one.
 
 ## Architecture
 
@@ -119,6 +133,9 @@ first and claims the file for Obsidian as the only writer. Edits typed before
 the binding started are merged in (`resolveEditorEdits`, with backups), remote
 changes stay out of the undo history, and Obsidian reloading a file this device
 wrote just before is recognised and not taken as an edit (`recentWrite`).
+Remote carets are anchored the way CodeMirror maps a selection — a caret stays
+in front of text inserted exactly at it — so everyone sees a caret where its
+owner has it. A caret moving along with text typed *before* it is correct.
 
 ### History
 

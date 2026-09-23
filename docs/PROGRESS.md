@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-09-22 · Vault sync and editor binding rebuilt, sharing by link added, history fixed. Everything headless is green, including a two-device end-to-end test; **the in-Obsidian run is still outstanding**._
+_Last updated: 2026-09-23 · First on-device run went well: device sync and sharing work. Three bugs it turned up are fixed. **Next: accounts (Phase 2).**_
 
 ## Where we are
 
@@ -11,21 +11,37 @@ Branch `fix/vault-sync`, not pushed.
 
 ## Next step
 
-**On-device test with two devices**, then with a second person. Server restart needed
-(history fix), plugin update on both devices.
+1. Re-test on device the three fixes below: delete a note on one device while it is
+   open on the other; create several new notes in a row (each starts as "Untitled");
+   open a new note in a tab that showed another one; type exactly at someone's caret.
+2. Then **accounts** — Phase 2 in `CLAUDE.md`: derived vault ids, per-person shares,
+   revoke as a protocol message, server-side access control. Open questions for the
+   user before building: how accounts come to exist (sign-up, admin, invite); whether
+   end-to-end encryption comes with them or after (it changes what the server
+   stores, so building accounts on plaintext first means migrating later); read-only
+   shares; starting fresh versus migrating existing vaults.
 
-1. Keep the Vault ID identical on both devices.
-2. Open the same note on both, type on both at once — nothing may double.
-3. Create, rename, delete a note on one device — the other follows.
-4. Close one device, edit the same note on both, reopen — both edits survive.
-5. "Share this note live", open the link on the other person's Obsidian — both see
-   each other's cursor; the note appears in their `Shared/` folder.
+The server data was wiped on 2026-09-23 at the user's request (test data only). Devices
+still hold their old documents in IndexedDB and push them back on connect; a fresh
+start needs a new Vault ID on every device.
 
-If the editor does not bind (status: *Editors bound: 0* while a note is open), the
-console will show why. The one assumption only a device can confirm: `editorInfoField`
-already reports the new file when Obsidian loads it into a leaf.
+## Fixed on 2026-09-23 (from the first on-device run)
 
-## Fixed in this session
+- **A note deleted while open on another device came back, empty, everywhere.** The
+  open editor re-acquired the note from its deleted `TFile`, which registered a new
+  index entry. Deleted file objects are never synced now (`DocStore.exists`).
+- **A new note could take on another note's text.** Two causes, both reproduced:
+  a new "Untitled" note derived the id of an earlier one that had been renamed or
+  deleted and inherited its document; and opening a new note in a used tab bound it
+  while the buffer still held the previous note. Ids now skip every generation the
+  index knows, and the binding waits for the note's text (`contentPending`).
+- **Applying a remote rename could move the wrong note**: the rename event here was
+  looked up by the old path, which a new note had taken meanwhile.
+- **Typing exactly at someone's caret pushed it along** on everyone else's screen but
+  not on theirs. Carets are anchored the way CodeMirror maps selections. A caret
+  moving with text typed before it is correct and unchanged.
+
+## Fixed on 2026-09-22
 
 What the user saw — nothing syncing, fallback panes, an error on load, a note filling
 itself with `t`s — came from these, all reproduced headlessly first:
@@ -74,13 +90,21 @@ itself with `t`s — came from these, all reproduced headlessly first:
 - `typecheck`, `build:plugin`: pass.
 - `test:merge`, `test:load` (now runs onload, start and unload), `test:rooms`, and
   against a scratch server on 1235: `ws-test`, `test:socket`, `test:history`,
-  `test:sync` (19), `test:vault` (55) — all pass, the timing-based ones repeatedly.
+  `test:sync` (19), `test:vault` (74), `test:merge` (48) — all pass, the timing-based
+  ones repeatedly.
 - Mutation checks: reinstating each of the old bugs (merging a bound note's save,
   the old delta mapping, binding before settling, remote changes in undo, no
-  wholesale diff, no echo filter) makes the matching check fail.
-- **On-device Obsidian test: outstanding.**
+  wholesale diff, no echo filter, reused ids, syncing a deleted file, binding before
+  the note loaded, old-path-first renames, right-anchored carets) makes the matching
+  check fail.
+- **On-device:** sync between two devices and sharing work (user, 2026-09-23). The
+  fixes of 2026-09-23 are verified headlessly only.
 
 ## Log
+
+### 2026-09-23
+- First on-device run: sync and sharing work. Fixed the four bugs it surfaced, each
+  reproduced in `test:vault` first. Wiped the server's test data on request.
 
 ### 2026-09-22
 - Diagnosed why vault sync never worked and live editing escalated; rebuilt the file
