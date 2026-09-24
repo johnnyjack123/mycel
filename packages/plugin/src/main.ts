@@ -1,5 +1,5 @@
 import { Notice, Plugin, TFile, TFolder, editorInfoField, requestUrl, type TAbstractFile } from 'obsidian'
-import { docRoom, settingsRoom, userColor, type CollabUser } from '@obsidian-connect/shared'
+import { docRoom, settingsRoom, userColor, type CollabUser, type RegistrationMode } from '@obsidian-connect/shared'
 import { ConnectApi, type HttpClient } from './account/api'
 import { hashWasmArgon2id } from './account/argon2'
 import { KeyRing } from './account/KeyRing'
@@ -224,9 +224,20 @@ export default class ObsidianConnectPlugin extends Plugin {
     await this.startSync()
   }
 
-  async createAccount(username: string, password: string, invite: string): Promise<void> {
+  /** Whether the server lets anyone create an account; null while it cannot be reached. */
+  async registration(): Promise<RegistrationMode | null> {
+    try {
+      return (await this.api.config()).registration
+    } catch {
+      return null
+    }
+  }
+
+  async createAccount(username: string, password: string, repeat: string, invite: string): Promise<void> {
     if (!username) throw new Error('Choose a name.')
     if (password.length < 8) throw new Error('Use a password of at least 8 characters.')
+    // There is no reset: a typo here locks the account's notes for good.
+    if (password !== repeat) throw new Error('The passwords differ.')
     await this.stopSync()
     await this.session.register(username, password, invite)
     new Notice(

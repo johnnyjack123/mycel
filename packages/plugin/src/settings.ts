@@ -1,4 +1,5 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian'
+import type { RegistrationMode } from '@obsidian-connect/shared'
 import type ObsidianConnectPlugin from './main'
 import type { SharedSettings } from './sync/AccountSettings'
 
@@ -31,9 +32,13 @@ export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
 }
 
 export class ObsidianConnectSettingTab extends PluginSettingTab {
+  private mode: 'sign-in' | 'create' = 'sign-in'
   private username = ''
   private password = ''
+  private repeat = ''
   private invite = ''
+  /** What the server said about registering; undefined until asked, null if unreachable. */
+  private registration: RegistrationMode | null | undefined = undefined
   private busy = false
 
   constructor(
@@ -78,6 +83,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           .setDisabled(Boolean(settings.username))
           .onChange(async (value) => {
             settings.serverUrl = value.trim()
+            this.registration = undefined
             await this.plugin.saveSettings()
           })
       )
@@ -118,39 +124,115 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       return
     }
 
+    if (this.mode === 'create') this.createForm(containerEl)
+    else this.signInForm(containerEl)
+  }
+
+  private passwordField(containerEl: HTMLElement, name: string, desc: string, value: string, set: (value: string) => void): void {
+    const setting = new Setting(containerEl).setName(name).addText((text) => {
+      text.inputEl.type = 'password'
+      text.setValue(value).onChange(set)
+    })
+    if (desc) setting.setDesc(desc)
+  }
+
+  private nameField(containerEl: HTMLElement): void {
     new Setting(containerEl).setName('Name').addText((text) =>
       text.setValue(this.username).onChange((value) => {
         this.username = value.trim()
       })
     )
-    new Setting(containerEl)
-      .setName('Password')
-      .setDesc('Never leaves this device. Without it your notes cannot be decrypted - there is no reset.')
-      .addText((text) => {
-        text.inputEl.type = 'password'
-        text.setValue(this.password).onChange((value) => {
-          this.password = value
-        })
-      })
-    new Setting(containerEl)
-      .setName('Invite code')
-      .setDesc('Only for creating an account, and only if the server asks for one.')
-      .addText((text) =>
-        text.setValue(this.invite).onChange((value) => {
-          this.invite = value.trim()
-        })
-      )
+  }
+
+  private forgetPasswords(): void {
+    this.password = ''
+    this.repeat = ''
+  }
+
+  private signInForm(containerEl: HTMLElement): void {
+    this.nameField(containerEl)
+    this.passwordField(containerEl, 'Password', 'Never leaves this device.', this.password, (value) => {
+      this.password = value
+    })
     new Setting(containerEl)
       .addButton((button) =>
         button
           .setButtonText('Sign in')
           .setCta()
-          .onClick(() => void this.run(() => this.plugin.signIn(this.username, this.password)))
+          .onClick(
+            () =>
+              void this.run(async () => {
+                await this.plugin.signIn(this.username, this.password)
+                this.forgetPasswords()
+              })
+          )
       )
+      .addButton((button) =>
+        button.setButtonText('Create a new account…').onClick(() => {
+          this.mode = 'create'
+          this.forgetPasswords()
+          this.display()
+        })
+      )
+  }
+
+  private createForm(containerEl: HTMLElement): void {
+    if (this.registration === undefined) {
+      void this.plugin.registration().then((mode) => {
+        this.registration = mode
+        if (this.mode === 'create') this.display()
+      })
+    }
+
+    this.nameField(containerEl)
+    this.passwordField(
+      containerEl,
+      'Password',
+      'Never leaves this device. Without it your notes cannot be decrypted - there is no reset.',
+      this.password,
+      (value) => {
+        this.password = value
+      }
+    )
+    this.passwordField(containerEl, 'Password again', '', this.repeat, (value) => {
+      this.repeat = value
+    })
+
+    if (this.registration !== 'open') {
+      new Setting(containerEl)
+        .setName('Invite code')
+        .setDesc(
+          this.registration === 'invite'
+            ? 'This server creates accounts only with a code from its admin (obsidian-connect user add <name>).'
+            : 'Only if the server asks for one.'
+        )
+        .addText((text) =>
+          text.setValue(this.invite).onChange((value) => {
+            this.invite = value.trim()
+          })
+        )
+    }
+
+    new Setting(containerEl)
       .addButton((button) =>
         button
           .setButtonText('Create account')
-          .onClick(() => void this.run(() => this.plugin.createAccount(this.username, this.password, this.invite)))
+          .setCta()
+          .onClick(
+            () =>
+              void this.run(async () => {
+                await this.plugin.createAccount(this.username, this.password, this.repeat, this.invite)
+                this.forgetPasswords()
+                this.mode = 'sign-in'
+              })
+          )
+      )
+      .addButton((button) =>
+        button.setButtonText('I already have an account').onClick(() => {
+          this.mode = 'sign-in'
+          this.forgetPasswords()
+          this.display()
+        })
       )
   }
 
