@@ -576,6 +576,16 @@ try {
       )
     }
 
+    // A shared note is a note of her vault like any other: her other devices
+    // get it from her index, with the keys sealed to her account.
+    const C2 = new Device(carol, false)
+    check(await C2.boot(), "C's second device signs in")
+    check(
+      await eventually(() => C2.vault.text('Shared/Together.md') === 'shared text\n'),
+      'and has the shared note too',
+      C2.vault.paths()
+    )
+
     const aTogether = A.open('Together.md')
     const cTogether = C.open('Shared/Together.md')
     check(
@@ -584,6 +594,12 @@ try {
     )
     aTogether.type('from Alice ')
     check(await eventually(() => cTogether.text() === 'shared text\nfrom Alice '), 'A types, C sees it live')
+    check(
+      await eventually(() => C2.vault.text('Shared/Together.md') === 'shared text\nfrom Alice '),
+      'and so does her second device',
+      C2.vault.text('Shared/Together.md')
+    )
+    await C2.shutdown()
     cTogether.type('and Carol', 0)
     check(
       await eventually(() => aTogether.text() === 'and Carolshared text\nfrom Alice '),
