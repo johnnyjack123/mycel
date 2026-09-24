@@ -1,5 +1,5 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian'
-import type { RegistrationMode } from '@obsidian-connect/shared'
+import type { ServerProbe } from './account/probe'
 import type ObsidianConnectPlugin from './main'
 import type { SharedSettings } from './sync/AccountSettings'
 
@@ -37,9 +37,15 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private password = ''
   private repeat = ''
   private invite = ''
-  /** What the server said about registering; undefined until asked, null if unreachable. */
-  private registration: RegistrationMode | null | undefined = undefined
   private busy = false
+
+  /** What the configured server answered; undefined while asking. */
+  private probe: ServerProbe | undefined = undefined
+  private probing = 0
+  private probeTimer: number | null = null
+  private serverStatus: Setting | null = null
+  /** Signing in and creating an account: usable only once the server answered properly. */
+  private gated: Array<{ setDisabled(disabled: boolean): unknown }> = []
 
   constructor(
     app: App,
@@ -51,9 +57,71 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this
     containerEl.empty()
+    this.gated = []
+    this.serverStatus = null
     this.account(containerEl)
     this.device(containerEl)
     this.shared(containerEl)
+    if (!this.plugin.settings.username) {
+      if (this.probe === undefined && this.probing === 0) void this.checkServer()
+      else this.showProbe()
+    }
+  }
+
+  /** Asked again every time the settings open: the server may have come up meanwhile. */
+  hide(): void {
+    if (this.probeTimer !== null) window.clearTimeout(this.probeTimer)
+    this.probeTimer = null
+    this.probing = 0
+    this.probe = undefined
+  }
+
+  private async checkServer(): Promise<void> {
+    const run = ++this.probing
+    this.probe = undefined
+    this.showProbe()
+    const probe = await this.plugin.probeServer()
+    if (run !== this.probing) return
+    this.probing = 0
+    const inviteFieldChanges =
+      this.mode === 'create' && (probe.state === 'ok' && probe.registration === 'open') !== this.inviteHidden()
+    this.probe = probe
+    // Rebuilding would take the focus from whatever is being typed; only the
+    // invite field appearing or going away needs it.
+    if (inviteFieldChanges) this.display()
+    else this.showProbe()
+  }
+
+  private scheduleCheck(): void {
+    if (this.probeTimer !== null) window.clearTimeout(this.probeTimer)
+    this.probe = undefined
+    this.probing += 1
+    this.showProbe()
+    this.probeTimer = window.setTimeout(() => {
+      this.probeTimer = null
+      void this.checkServer()
+    }, 700)
+  }
+
+  private inviteHidden(): boolean {
+    return this.probe?.state === 'ok' && this.probe.registration === 'open'
+  }
+
+  private showProbe(): void {
+    const probe = this.probe
+    for (const control of this.gated) control.setDisabled(this.busy || probe?.state !== 'ok')
+    if (!this.serverStatus) return
+    if (!probe) {
+      this.serverStatus.setDesc('Checking the server…')
+    } else if (probe.state === 'ok') {
+      this.serverStatus.setDesc(
+        `Reachable. ${probe.registration === 'open' ? 'Anyone can create an account here.' : 'New accounts need an invite code.'}`
+      )
+    } else if (probe.state === 'unreachable') {
+      this.serverStatus.setDesc(`Not reachable: ${probe.reason}`)
+    } else {
+      this.serverStatus.setDesc(probe.reason)
+    }
   }
 
   private async run(task: () => Promise<void>): Promise<void> {
@@ -83,8 +151,8 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           .setDisabled(Boolean(settings.username))
           .onChange(async (value) => {
             settings.serverUrl = value.trim()
-            this.registration = undefined
             await this.plugin.saveSettings()
+            this.scheduleCheck()
           })
       )
 
@@ -124,6 +192,10 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       return
     }
 
+    this.serverStatus = new Setting(containerEl)
+      .setName('Server')
+      .addButton((button) => button.setButtonText('Check again').onClick(() => void this.checkServer()))
+
     if (this.mode === 'create') this.createForm(containerEl)
     else this.signInForm(containerEl)
   }
@@ -132,16 +204,18 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     const setting = new Setting(containerEl).setName(name).addText((text) => {
       text.inputEl.type = 'password'
       text.setValue(value).onChange(set)
+      this.gated.push(text)
     })
     if (desc) setting.setDesc(desc)
   }
 
   private nameField(containerEl: HTMLElement): void {
-    new Setting(containerEl).setName('Name').addText((text) =>
+    new Setting(containerEl).setName('Name').addText((text) => {
       text.setValue(this.username).onChange((value) => {
         this.username = value.trim()
       })
-    )
+      this.gated.push(text)
+    })
   }
 
   private forgetPasswords(): void {
@@ -155,7 +229,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       this.password = value
     })
     new Setting(containerEl)
-      .addButton((button) =>
+      .addButton((button) => {
         button
           .setButtonText('Sign in')
           .setCta()
@@ -166,7 +240,8 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
                 this.forgetPasswords()
               })
           )
-      )
+        this.gated.push(button)
+      })
       .addButton((button) =>
         button.setButtonText('Create a new account…').onClick(() => {
           this.mode = 'create'
@@ -177,13 +252,6 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   }
 
   private createForm(containerEl: HTMLElement): void {
-    if (this.registration === undefined) {
-      void this.plugin.registration().then((mode) => {
-        this.registration = mode
-        if (this.mode === 'create') this.display()
-      })
-    }
-
     this.nameField(containerEl)
     this.passwordField(
       containerEl,
@@ -198,23 +266,24 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       this.repeat = value
     })
 
-    if (this.registration !== 'open') {
+    if (!this.inviteHidden()) {
       new Setting(containerEl)
         .setName('Invite code')
         .setDesc(
-          this.registration === 'invite'
+          this.probe?.state === 'ok'
             ? 'This server creates accounts only with a code from its admin (obsidian-connect user add <name>).'
             : 'Only if the server asks for one.'
         )
-        .addText((text) =>
+        .addText((text) => {
           text.setValue(this.invite).onChange((value) => {
             this.invite = value.trim()
           })
-        )
+          this.gated.push(text)
+        })
     }
 
     new Setting(containerEl)
-      .addButton((button) =>
+      .addButton((button) => {
         button
           .setButtonText('Create account')
           .setCta()
@@ -226,7 +295,8 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
                 this.mode = 'sign-in'
               })
           )
-      )
+        this.gated.push(button)
+      })
       .addButton((button) =>
         button.setButtonText('I already have an account').onClick(() => {
           this.mode = 'sign-in'

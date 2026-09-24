@@ -1,10 +1,13 @@
 // Unit checks for the code paths that can lose a user's text or expose it: the
-// merge logic and the encryption. No server, no DOM, no Obsidian.
+// merge logic and the encryption; and asking a server whether it can be used.
+// No server, no DOM, no Obsidian.
 //
 //   npm run test:merge -w @obsidian-connect/plugin
 import * as Y from 'yjs'
 import {
+  API,
   CONTENT_FIELD,
+  PROTOCOL_VERSION,
   applyTextEdits,
   splitLines,
   textEdits,
@@ -298,6 +301,44 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(e2e.toHex(first.masterKey) === e2e.toHex(again.masterKey), 'a password gives the same keys every time')
   check(e2e.toHex(first.authKey) !== e2e.toHex(first.masterKey), 'what logs in is not what decrypts')
   check(e2e.toHex(first.masterKey) !== e2e.toHex(other.masterKey), 'and a different password gives different keys')
+}
+
+// --- asking the server before signing in -----------------------------------------------
+{
+  const { ConnectApi } = await import('../src/account/api.js')
+  const { probeServer } = await import('../src/account/probe.js')
+  type Answer = { status: number; json: unknown } | 'unreachable'
+  const probeWith = (answers: Record<string, Answer>) =>
+    probeServer(
+      new ConnectApi(
+        () => 'ws://server.test',
+        async (request) => {
+          const answer = answers[new URL(request.url).pathname] ?? { status: 404, json: null }
+          if (answer === 'unreachable') throw new Error('connection refused')
+          return answer
+        },
+        () => null
+      )
+    )
+  const ok = (json: unknown): Answer => ({ status: 200, json })
+  const current = { ok: true, service: 'obsidian-connect-server', protocol: PROTOCOL_VERSION }
+
+  check((await probeWith({ [API.health]: 'unreachable' })).state === 'unreachable', 'a server that does not answer is unreachable')
+  check((await probeWith({})).state === 'incompatible', 'something answering 404 is not taken for a server')
+  check(
+    (await probeWith({ [API.health]: ok({ ok: true, service: 'something-else' }) })).state === 'incompatible',
+    'nor is another service answering 200'
+  )
+  const older = await probeWith({ [API.health]: ok({ ...current, protocol: PROTOCOL_VERSION - 1 }) })
+  check(older.state === 'incompatible' && older.reason.includes('Update the server'), 'an older server is told apart', older)
+  const newer = await probeWith({ [API.health]: ok({ ...current, protocol: PROTOCOL_VERSION + 1 }) })
+  check(newer.state === 'incompatible' && newer.reason.includes('Update the plugin'), 'and so is a newer one', newer)
+  const open = await probeWith({ [API.health]: ok(current), [API.config]: ok({ registration: 'open', protocol: PROTOCOL_VERSION }) })
+  check(open.state === 'ok' && open.registration === 'open', 'a current server says whether anyone may register', open)
+  const invite = await probeWith({ [API.health]: ok(current), [API.config]: ok({ registration: 'invite', protocol: PROTOCOL_VERSION }) })
+  check(invite.state === 'ok' && invite.registration === 'invite', 'or only with an invite', invite)
+  const broken = await probeWith({ [API.health]: ok(current) })
+  check(broken.state === 'incompatible', 'a server that answers but refuses its own settings is not called unreachable', broken)
 }
 
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)

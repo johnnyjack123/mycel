@@ -1,6 +1,7 @@
 import { Notice, Plugin, TFile, TFolder, editorInfoField, requestUrl, type TAbstractFile } from 'obsidian'
-import { docRoom, settingsRoom, userColor, type CollabUser, type RegistrationMode } from '@obsidian-connect/shared'
+import { docRoom, settingsRoom, userColor, type CollabUser } from '@obsidian-connect/shared'
 import { ConnectApi, type HttpClient } from './account/api'
+import { probeServer, type ServerProbe } from './account/probe'
 import { hashWasmArgon2id } from './account/argon2'
 import { KeyRing } from './account/KeyRing'
 import { PasswordModal } from './account/PasswordModal'
@@ -224,13 +225,9 @@ export default class ObsidianConnectPlugin extends Plugin {
     await this.startSync()
   }
 
-  /** Whether the server lets anyone create an account; null while it cannot be reached. */
-  async registration(): Promise<RegistrationMode | null> {
-    try {
-      return (await this.api.config()).registration
-    } catch {
-      return null
-    }
+  /** Whether the configured server can be signed in to, and how it takes new accounts. */
+  probeServer(): Promise<ServerProbe> {
+    return probeServer(this.api)
   }
 
   async createAccount(username: string, password: string, repeat: string, invite: string): Promise<void> {

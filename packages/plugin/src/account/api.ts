@@ -86,6 +86,11 @@ export class ConnectApi {
     throw new ApiError(response.status, message)
   }
 
+  /** Answered by every server version, so an old one can be told apart from none. */
+  health(): Promise<unknown> {
+    return this.call('GET', API.health, undefined, false)
+  }
+
   config(): Promise<AuthConfigResponse> {
     return this.call('GET', API.config, undefined, false)
   }

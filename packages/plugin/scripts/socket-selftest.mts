@@ -61,6 +61,15 @@ async function device(username: string, password: string, create: boolean) {
   return { api, session, unlocked, vault, keys, socket, token: () => token }
 }
 
+// What the settings ask before anyone signs in.
+{
+  const { probeServer } = await import('../src/account/probe.js')
+  const live = await probeServer(new ConnectApi(() => serverUrl, fetchHttp, () => null))
+  check(live.state === 'ok' && live.registration === 'open', 'the running server can be signed in to, and takes new accounts', live)
+  const nobody = await probeServer(new ConnectApi(() => 'ws://127.0.0.1:9', fetchHttp, () => null))
+  check(nobody.state === 'unreachable', 'a port nobody listens on is unreachable', nobody)
+}
+
 const username = `socket-${run}`
 const one = await device(username, 'a long enough password', true)
 const two = await device(username, 'a long enough password', false)
