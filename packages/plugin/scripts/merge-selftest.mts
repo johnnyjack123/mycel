@@ -303,6 +303,25 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(e2e.toHex(first.masterKey) !== e2e.toHex(other.masterKey), 'and a different password gives different keys')
 }
 
+// --- seeding an empty document from its file ------------------------------------------
+{
+  const { seedUpdate } = await import('../src/sync/seed.js')
+  const textOf = (...updates: Uint8Array[]): Y.Doc => {
+    const doc = new Y.Doc()
+    for (const update of updates) Y.applyUpdate(doc, update)
+    return doc
+  }
+  const note = 'a note from before the plugin\n'
+  const one = textOf(seedUpdate('doc-1', note), seedUpdate('doc-1', note))
+  check(one.getText(CONTENT_FIELD).toString() === note, 'two devices seeding the same text leave it there once')
+  const both = textOf(seedUpdate('doc-1', note), seedUpdate('doc-1', 'another text\n')).getText(CONTENT_FIELD).toString()
+  check(both.includes(note) && both.includes('another text\n'), 'different texts are both kept', both)
+  const again = textOf(seedUpdate('doc-1', note))
+  again.getText(CONTENT_FIELD).delete(0, note.length)
+  Y.applyUpdate(again, seedUpdate('doc-1', note))
+  check(again.getText(CONTENT_FIELD).length === 0, 'a seed deleted since does nothing when applied again - hence the fallback in DocStore')
+}
+
 // --- asking the server before signing in -----------------------------------------------
 {
   const { ConnectApi } = await import('../src/account/api.js')

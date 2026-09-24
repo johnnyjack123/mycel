@@ -1,4 +1,5 @@
 import { Notice, TFile, type App } from 'obsidian'
+import * as Y from 'yjs'
 import {
   applyTextEdits,
   indexRoom,
@@ -10,6 +11,7 @@ import {
 import { additiveEdits, reconcile, type ReconcileOutcome } from './Reconciler.js'
 import { matchesGlob } from './glob.js'
 import { RESTORE_ORIGIN, SYNC_ORIGIN } from './origin.js'
+import { seedUpdate } from './seed.js'
 import type { BackupStore } from './BackupStore.js'
 import { DocHandle, LocalCursor, openIndexedDb, type LocalStore, type OpenLocalStore } from './DocHandle.js'
 import type { StateStore } from './StateStore.js'
@@ -495,6 +497,26 @@ export class DocStore {
   }
 
   /**
+   * Fills an empty document from its file with the insertion every device
+   * derives alike (`seed.ts`), and returns what the document says afterwards.
+   * Whatever arrived while this waited stays: with no base to tell additions
+   * from deletions, only a union is safe - replacing it, as before, deleted it.
+   */
+  private seedDocument(handle: DocHandle, text: string): string {
+    const current = handle.text()
+    if (current === text) return text
+    if (current.length > 0) {
+      this.applyToDocument(handle, mergeAdditively(current, text))
+      return handle.text()
+    }
+    Y.applyUpdate(handle.doc, seedUpdate(handle.docId, text), SYNC_ORIGIN)
+    // The same seed may have been applied and deleted long ago; the update is
+    // a no-op then, and the file's text still has to get in.
+    if (handle.text() !== text) this.applyToDocument(handle, text)
+    return handle.text()
+  }
+
+  /**
    * Brings one note into agreement. Everything that can lose text funnels
    * through here, and every branch that can delete takes a backup first.
    */
@@ -589,7 +611,13 @@ export class DocStore {
         await this.recordAgreement(docId, file, local)
         return
 
-      case 'seed':
+      case 'seed': {
+        const text = this.seedDocument(handle, local)
+        if (text !== local) await this.writeFile(docId, file, text)
+        await this.recordAgreement(docId, file, text)
+        return
+      }
+
       case 'adopt-local':
         this.applyToDocument(handle, local)
         await this.recordAgreement(docId, file, local)

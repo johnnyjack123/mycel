@@ -103,6 +103,14 @@ someone's notes. Treat them as rules, not preferences.
 17. **Only the owner compacts, and the server drops no frame before a snapshot
     supersedes it.** A participant with a shorter retention would otherwise
     shorten everyone's history, silently.
+18. **Seeding a note from its file is the same insertion on every device**
+    (`sync/seed.ts`: client id from docId and text). Two devices starting at
+    once with the same existing notes both saw empty documents and both
+    inserted the file under their own client ids — every note came out twice.
+    If the same seed was applied and deleted before, Yjs ignores it, so
+    `seedDocument` inserts the text itself then; without that a device with an
+    old copy emptied its file, with no backup. And whatever arrived while the
+    seed waited is kept as a union, never replaced.
 
 ## Architecture
 

@@ -87,6 +87,17 @@ to `main`; merging to `main` is what builds and publishes the Docker image.
   (as a message and as a notice) that minted a second copy of the note; fixed, with a
   check.
 
+### 2026-09-24
+- Creating an account asks for the password twice; signing in and creating an account
+  are separate forms.
+- The settings ask the server before anyone signs in (reachable, an Obsidian Connect
+  server, the same protocol, open or invite-only) and grey out the forms until it fits.
+- The server and the CLI read the `.env` in the repository root when run with npm; a
+  byte order mark no longer swallows its first line.
+- **Fixed: two devices starting at once with the same existing notes doubled every
+  note.** Reproduced in `test:vault` first. Seeding is now the same insertion on every
+  device; found alongside: a seed that raced an arriving update replaced it.
+
 ### 2026-09-22
 - Diagnosed why vault sync never worked and live editing escalated; rebuilt the file
   bridge, the editor binding and the socket's sync tracking; added sharing by link;

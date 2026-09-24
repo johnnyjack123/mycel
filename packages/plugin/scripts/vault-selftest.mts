@@ -704,6 +704,50 @@ try {
   } finally {
     await C.shutdown()
   }
+
+  // --- the same existing vault on two devices, both starting at once ----------------
+  // Notes that were there before the plugin: each device seeds the note's
+  // document from its file. Started at the same moment, both see an empty
+  // document and both seed it.
+  {
+    const erin = `erin${run}`
+    const files = { 'Existing/One.md': 'a note from before the plugin\n', 'Existing/Two.md': 'another\none\n' }
+    const E0 = new Device(erin, true)
+    check(await E0.boot(), 'E0 creates the account')
+    await E0.shutdown()
+    const E1 = new Device(erin, false, files)
+    const E2 = new Device(erin, false, files)
+    try {
+      const started = await Promise.all([E1.boot(), E2.boot()])
+      check(started.every(Boolean), 'two devices with the same notes start at the same moment')
+      await delay(1_500)
+      const texts = Object.keys(files).map((path) => ({ path, e1: E1.vault.text(path), e2: E2.vault.text(path), doc: E1.docText(path) }))
+      check(
+        texts.every(({ path, e1, e2, doc }) => e1 === files[path as keyof typeof files] && e2 === e1 && doc === e1),
+        'and every note is there once, on both',
+        texts
+      )
+
+      // The same seed again, into a document that held it and was emptied
+      // since: Yjs takes it for known and does nothing, so the device has to
+      // insert its text itself - or its file was emptied, without a backup.
+      const note = files['Existing/One.md']
+      await E1.vault.userWrite('Existing/One.md', '')
+      check(await eventually(() => E2.vault.text('Existing/One.md') === ''), 'E1 empties a note, E2 follows')
+      const E3 = new Device(erin, false, { 'Existing/One.md': note })
+      try {
+        check(await E3.boot(), 'a device with an old copy of it starts')
+        await delay(800)
+        check(E3.vault.text('Existing/One.md') === note, 'and keeps its text', E3.vault.text('Existing/One.md'))
+        check(await eventually(() => E1.vault.text('Existing/One.md') === note), 'which comes back everywhere, as without a base it must')
+      } finally {
+        await E3.shutdown()
+      }
+    } finally {
+      await E1.shutdown()
+      await E2.shutdown()
+    }
+  }
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {
