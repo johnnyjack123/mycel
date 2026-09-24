@@ -6,7 +6,7 @@
 //   obsidian-connect user list
 //   obsidian-connect user remove <name>
 import { AccountError, AccountStore } from './accounts.js'
-import { loadConfig } from './config.js'
+import { loadConfig, loadEnvFile } from './config.js'
 
 const USAGE = `usage:
   obsidian-connect user add <name>      create an account; prints the invite code
@@ -20,6 +20,8 @@ async function main(argv: string[]): Promise<number> {
     console.log(USAGE)
     return scope === undefined || scope === 'help' || scope === '--help' ? 0 : 1
   }
+  // The same settings as the server, or it would write to another data directory.
+  loadEnvFile()
   const config = loadConfig()
   const accounts = new AccountStore(config.dataDir, config.jwtSecret)
 

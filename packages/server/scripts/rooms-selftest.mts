@@ -4,11 +4,12 @@
 //
 //   npm run test:rooms
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { NotifyKind, ShareNotice } from '@obsidian-connect/shared'
 import { AccountStore } from '../src/accounts.js'
+import { loadEnvFile } from '../src/config.js'
 import type { Frame } from '../src/log.js'
 import { HubError, RoomHub, type RoomClient } from '../src/rooms.js'
 
@@ -95,6 +96,18 @@ class Client implements RoomClient {
 const dataDir = mkdtempSync(join(tmpdir(), 'oc-rooms-selftest-'))
 
 try {
+  // --- .env ------------------------------------------------------------------
+  // Written the way Windows PowerShell 5.1 writes UTF-8: byte order mark, CRLF.
+  {
+    const envFile = join(dataDir, 'probe.env')
+    writeFileSync(envFile, `${String.fromCharCode(0xfeff)}OC_PROBE_FIRST=open\r\nOC_PROBE_SET=from-file\r\n`)
+    process.env.OC_PROBE_SET = 'from-shell'
+    check(loadEnvFile(envFile) === envFile, 'the .env is read')
+    check(process.env.OC_PROBE_FIRST === 'open', 'including its first line, behind a byte order mark', process.env.OC_PROBE_FIRST)
+    check(process.env.OC_PROBE_SET === 'from-shell', 'and what the shell set wins over it', process.env.OC_PROBE_SET)
+    check(loadEnvFile(join(dataDir, 'missing.env')) === null, 'no .env is no error')
+  }
+
   // --- accounts --------------------------------------------------------------
   const accounts = new AccountStore(dataDir, 'test-secret')
   const kdf = { algorithm: 'argon2id' as const, salt: b64(16), memoryKiB: 19_456, iterations: 2, parallelism: 1 }

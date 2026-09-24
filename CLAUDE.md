@@ -263,7 +263,15 @@ modals and the settings tab.
 - **`main.js` is CommonJS inside a `"type": "module"` package.** Obsidian
   evaluates it itself; Node needs a `.cjs` copy (see `load-selftest.mjs`).
 - **Never put raw control characters in source.** A NUL sentinel in the glob
-  matcher survived two rewrites unnoticed.
+  matcher survived two rewrites unnoticed, and a byte order mark written as its
+  `\u` escape in an edit landed as the invisible character itself. Write such characters by code
+  (`0xfeff`, `String.fromCharCode`). To look for them, read the files with Node:
+  `grep -P` in Git Bash has no UTF-8 locale and fails, which with `2>/dev/null`
+  looks exactly like "nothing found".
+- **The server reads the `.env` in the repository root** (`loadEnvFile`), for
+  npm and the CLI alike; compose reads the same file. Shell variables win, so a
+  local `.env` cannot redirect the self-tests. Writing `.env*` is blocked by a
+  permission rule — the user creates it.
 - **Never test on port 1234 and never delete `packages/server/data/`.** That is
   the user's server and the user's data. Assuming otherwise has, three times,
   meant killing their server, wiping its data while it ran, and writing test

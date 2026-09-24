@@ -1,5 +1,34 @@
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { parseEnv } from 'node:util'
 import type { RegistrationMode } from '@obsidian-connect/shared'
+
+const BYTE_ORDER_MARK = 0xfeff
+
+/**
+ * The `.env` next to `docker-compose.yml`, so running the server with npm
+ * reads the same settings the container gets. Variables already set win,
+ * which keeps the self-tests' `PORT=1235 …` from being overridden by it. The
+ * image has no such file; compose hands the container its variables itself.
+ */
+export function loadEnvFile(path = fileURLToPath(new URL('../../../.env', import.meta.url))): string | null {
+  let raw: string
+  try {
+    raw = readFileSync(path, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  // Windows PowerShell 5.1 writes UTF-8 with a byte order mark, and Node's
+  // parser keeps it as part of the first name: that setting silently vanished.
+  // Compared by code: written as a character it is invisible in the source.
+  const parsed = parseEnv(raw.charCodeAt(0) === BYTE_ORDER_MARK ? raw.slice(1) : raw)
+  for (const [key, value] of Object.entries(parsed)) {
+    if (process.env[key] === undefined && typeof value === 'string') process.env[key] = value
+  }
+  return path
+}
 
 export interface ServerConfig {
   host: string

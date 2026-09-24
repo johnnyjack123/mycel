@@ -40,7 +40,7 @@ A template sits in `docs/server.env`:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OBSIDIAN_CONNECT_JWT_SECRET` | — (required) | Signs access tokens. `openssl rand -base64 48`. |
+| `OBSIDIAN_CONNECT_JWT_SECRET` | — (required with Docker) | Signs access tokens. `openssl rand -base64 48`. |
 | `OBSIDIAN_CONNECT_REGISTRATION` | `invite` | `invite`: accounts only from `user add`. `open`: anyone who reaches the server can create one. |
 | `OBSIDIAN_CONNECT_TOKEN_TTL` | `2592000` | Seconds a device stays signed in without being used. |
 | `OBSIDIAN_CONNECT_LOG_UPDATES` | `false` | A log line per document frame. |
@@ -60,14 +60,19 @@ An invited name needs its code even when registration is open.
 ## Without Docker
 
 ```bash
+copy docs\server.env .env      # Windows; cp on Linux/macOS. Then edit it.
 npm install
-OBSIDIAN_CONNECT_JWT_SECRET=… npm run start:server
+npm run start:server
 npm run cli -- user add <name>
 ```
 
-Data goes to `./data` next to the server package, or `OBSIDIAN_CONNECT_DATA_DIR`.
-Without `OBSIDIAN_CONNECT_JWT_SECRET` the server uses a built-in secret and says
-so at startup — fine on a laptop, never on a reachable server. `HOST` defaults to
+Both read the `.env` in the repository root, so the CLI writes to the same data
+directory the server uses. Variables set in the shell win over the file, and a byte
+order mark at its start (Windows PowerShell 5.1 writes one) is ignored.
+
+Data goes to `packages/server/data`, or `OBSIDIAN_CONNECT_DATA_DIR`. Without
+`OBSIDIAN_CONNECT_JWT_SECRET` the server uses a built-in secret and says so at
+startup — fine on a laptop, never on a reachable server. `HOST` defaults to
 `0.0.0.0`.
 
 Put TLS in front of it (a reverse proxy) as soon as it leaves your own network:

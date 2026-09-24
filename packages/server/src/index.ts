@@ -4,11 +4,12 @@ import { WebSocketServer } from 'ws'
 import { isHexId } from '@obsidian-connect/shared'
 import { AccountStore } from './accounts.js'
 import { TokenService } from './auth.js'
-import { loadConfig } from './config.js'
+import { loadConfig, loadEnvFile } from './config.js'
 import { createHttpApp } from './http.js'
 import { RoomHub } from './rooms.js'
 import { setupVaultConnection } from './wshub.js'
 
+const envFile = loadEnvFile()
 const config = loadConfig()
 const tokens = new TokenService(config.jwtSecret, config.accessTokenTtlSeconds)
 const accounts = new AccountStore(config.dataDir, config.jwtSecret)
@@ -70,6 +71,7 @@ async function shutdown(): Promise<void> {
   process.exit(0)
 }
 
+if (envFile) app.log.info(`settings from ${envFile}`)
 if (config.insecureSecret) {
   app.log.warn('OBSIDIAN_CONNECT_JWT_SECRET is not set; tokens use a built-in secret. Set it before exposing the server.')
 }
