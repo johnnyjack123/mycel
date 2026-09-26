@@ -429,6 +429,13 @@ export default class ObsidianConnectPlugin extends Plugin {
       } else {
         // Contacts first: a share may come from someone who became a contact while this device was away.
         await this.processContacts()
+        void this.sharing?.checkEnded().then(
+          (forked) => {
+            if (forked > 0) new Notice(`${forked} shared note(s) ended while this device was away. Your copies are kept as notes of your own.`, 10_000)
+            this.editors.refresh()
+          },
+          (error: unknown) => console.warn('[obsidian-connect] checking for ended shares failed', error)
+        )
         void this.sharing?.checkIncoming().then(
           (waiting) => {
             if (waiting > 0) new Notice(`${waiting} note(s) were shared with you. Run "Notes shared with me".`, 10_000)

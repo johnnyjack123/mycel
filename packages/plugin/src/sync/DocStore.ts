@@ -11,9 +11,9 @@ import {
 } from '@obsidian-connect/shared'
 import { additiveEdits, reconcile, type ReconcileOutcome } from './Reconciler.js'
 import { matchesGlob } from './glob.js'
-import { RESTORE_ORIGIN, SYNC_ORIGIN } from './origin.js'
+import { FORK_ORIGIN, RESTORE_ORIGIN, SYNC_ORIGIN } from './origin.js'
 import { seedUpdate } from './seed.js'
-import { memoryHistory, type HistoryStore } from './History.js'
+import { memoryHistory, type HistoryEntry, type HistoryStore } from './History.js'
 import type { BackupStore } from './BackupStore.js'
 import { DocHandle, LocalCursor, openIndexedDb, type LocalStore, type OpenLocalStore } from './DocHandle.js'
 import type { StateStore } from './StateStore.js'
@@ -864,6 +864,12 @@ export class DocStore {
     for (const { docId, entry } of this.index.deleted()) {
       if (this.stopped) return
       if (!this.state.get(docId)) continue
+      if (entry.forkedTo) {
+        // Another device ended the share and carries the note on; what this
+        // one held goes into it instead of away.
+        await this.forkInto(docId, entry.forkedTo)
+        continue
+      }
       await this.withLock(docId, () => this.applyRemoteDelete(docId, entry))
     }
   }
@@ -1001,28 +1007,82 @@ export class DocStore {
     return this.index.nextId(path)
   }
 
+  private localName(docId: string): string {
+    return `obsidian-connect/${this.options.vaultId}/${docId}`
+  }
+
   /**
-   * A note someone else owned becomes this vault's own: the share was
-   * revoked, or this account detached it. The file stays where it is and gets
-   * a document of its own. Both index changes go out together, so another
-   * device sees the path taken by the new note in the same breath as the old
-   * one's tombstone - and does not trash the file in between.
+   * Everything this device holds of a note as Yjs state - unsent edits
+   * included - from the loaded document or the one stored on the device.
+   * Never the server's: this is for a share that ended, where the server no
+   * longer answers. Null when the device holds nothing.
    */
-  async rekeyToOwn(docId: string, newDocId?: string): Promise<TFile | null> {
-    const path = await this.withLock(docId, async () => {
-      // Looked up under the lock: a revocation arrives as a message and as a
-      // notice, and a second call that read the path before the first one
-      // moved the note minted another id for the same file.
+  async localState(docId: string, clear = false): Promise<Uint8Array | null> {
+    const handle = this.handles.get(docId)
+    if (handle && !handle.isDestroyed) {
+      const state = handle.pristine ? null : Y.encodeStateAsUpdate(handle.doc)
+      if (clear) await this.dropHandle(docId, true)
+      return state
+    }
+    const doc = new Y.Doc()
+    const store = this.openLocal(this.localName(docId), doc)
+    try {
+      await store.whenSynced
+      return doc.store.clients.size === 0 ? null : Y.encodeStateAsUpdate(doc)
+    } finally {
+      await (clear ? store.clear() : store.destroy())
+      doc.destroy()
+    }
+  }
+
+  /** The changes of a note this device kept, decrypted, oldest first. */
+  historyOf(docId: string): Promise<HistoryEntry[]> {
+    return this.history.entries(docRoom(docId))
+  }
+
+  /**
+   * A note someone else owned carries on as this vault's own under
+   * `newDocId`, because its share ended. The file stays where it is. What this
+   * device holds of the old note goes in as the Yjs state it is - the new note
+   * was built from the same changes, so a second device doing this after the
+   * first adds its unsent edits and duplicates nothing. Both index changes go
+   * out together, so another device sees the path taken by the new note in the
+   * same breath as the old one's tombstone, and does not trash the file.
+   */
+  async forkInto(docId: string, newDocId: string): Promise<TFile | null> {
+    const moved = await this.withLock(docId, async () => {
+      // Looked up under the lock: the end of a share arrives as a message, a
+      // notice and an index change, and whichever comes second finds it done.
       const current = this.index.pathFor(docId)
-      const replacement = current ? (newDocId ?? (await this.index.nextId(current))) : null
-      await this.dropHandle(docId)
+      const path = current ?? this.index.pathFor(newDocId)
+      const known = this.state.get(docId)
+      if (!current && !known) return null
+      const file = path ? this.app.vault.getAbstractFileByPath(path) : null
+      // Bound to an editor, the note runs ahead of its file: Obsidian saves
+      // what was typed a moment later. The file is then an older version of
+      // the note, not a second side to merge with it - which duplicated text.
+      const base =
+        this.editorOwned.has(docId) && file instanceof TFile ? await this.app.vault.read(file) : await this.state.baseText(docId)
+      const state = await this.localState(docId, true)
       this.forget(docId)
-      if (current && replacement) this.index.replace(docId, replacement, current)
-      else this.index.markDeleted(docId)
-      return current
+      await this.history.clear(docRoom(docId))
+      if (current) this.index.replace(docId, newDocId, current)
+      // The last text file and note agreed on stays the base: a file that
+      // lags the note, or was edited meanwhile, still merges three ways.
+      if (path && base !== null && (await this.state.baseText(newDocId)) === null) await this.state.setBaseText(newDocId, base)
+      return { path, state }
     })
-    if (!path) return null
+    if (!moved?.path) return null
+    const { path, state } = moved
+    if (state) {
+      await this.withLock(newDocId, async () => {
+        const handle = await this.handleFor(newDocId)
+        await handle.whenRemoteReady(this.options.syncTimeoutMs)
+        Y.applyUpdate(handle.doc, state, FORK_ORIGIN)
+      })
+    }
     const file = this.app.vault.getAbstractFileByPath(path)
+    // A note this device never pulled comes in with the index like any other.
     if (!(file instanceof TFile)) return null
     await this.syncFile(file)
     return file

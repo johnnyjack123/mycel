@@ -6,6 +6,7 @@ import { isHexId } from '@obsidian-connect/shared'
 import { AccountStore } from './accounts.js'
 import { TokenService } from './auth.js'
 import { ContactStore } from './contacts.js'
+import { ForkStore } from './forks.js'
 import type { ServerConfig } from './config.js'
 import { createHttpApp } from './http.js'
 import { RoomHub } from './rooms.js'
@@ -25,9 +26,12 @@ export interface StartOptions {
   logger?: boolean
   /** How long every sign-in and registration takes. */
   paceMs?: number
+  /** How often removed accounts are cleared. */
+  sweepMs?: number
 }
 
 const VAULT_PREFIX = '/vault/'
+const SWEEP_MS = 5 * 60 * 1000
 
 function reject(socket: Duplex, status: string): void {
   socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`)
@@ -38,8 +42,16 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
   const tokens = new TokenService(config.jwtSecret, config.accessTokenTtlSeconds)
   const accounts = new AccountStore(config.dataDir)
   const contacts = new ContactStore(config.dataDir)
-  const hub = new RoomHub({ dataDir: config.dataDir, logUpdates: config.logUpdates }, accounts, contacts)
+  const forks = new ForkStore(config.dataDir)
+  const hub = new RoomHub({ dataDir: config.dataDir, logUpdates: config.logUpdates }, accounts, contacts, forks)
   const app = createHttpApp(config, tokens, accounts, hub, contacts, { logger: options.logger ?? true, paceMs: options.paceMs })
+  // The CLI only marks an account as removed; its shares end and its folder
+  // goes here, where the rooms are.
+  const sweep = (): void => {
+    void hub.sweep().catch((error: unknown) => app.log.error(error))
+  }
+  const sweeper = setInterval(sweep, options.sweepMs ?? SWEEP_MS)
+  sweeper.unref()
   const wss = new WebSocketServer({ noServer: true })
 
   async function handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
@@ -82,10 +94,12 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
   await app.listen({ host: config.host, port: config.port })
   const port = (app.server.address() as AddressInfo).port
   app.log.info(`Obsidian Connect server is listening on ${config.host}:${port} (registration: ${config.registration})`)
+  sweep()
 
   return {
     port,
     async close() {
+      clearInterval(sweeper)
       // Upgraded sockets are no longer the HTTP server's to wait for.
       for (const client of wss.clients) client.terminate()
       wss.close()

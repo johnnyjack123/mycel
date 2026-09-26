@@ -27,6 +27,12 @@ export interface IndexEntry {
   owner?: string
   /** What this account may do with a note someone else owns. */
   role?: ShareRole
+  /**
+   * On the tombstone of a note someone else owned: the share ended and this
+   * vault's own note carries on under that id. Another device of the account
+   * merges what it still holds of the old note into it instead of dropping it.
+   */
+  forkedTo?: string
 }
 
 // --- accounts ------------------------------------------------------------------
@@ -197,6 +203,43 @@ export interface ContactNotice {
 }
 
 export type Notice = ShareNotice | ContactNotice
+
+// --- the end of a share ------------------------------------------------------------
+
+/**
+ * `revoked`: the owner took access away. `detached`: the participant kept a
+ * copy of their own. `owner-removed`: the owner's account was deleted.
+ */
+export type ForkReason = 'revoked' | 'detached' | 'owner-removed'
+
+export interface ForkSummary {
+  docId: string
+  owner: string
+  reason: ForkReason
+  endedAt: number
+}
+
+export interface ForksResponse {
+  /** Shares that ended and that none of the caller's devices has forked yet. */
+  forks: ForkSummary[]
+}
+
+/**
+ * What the server kept for a participant when a share ended: everything they
+ * could read then, with their keys, until one of their devices has forked.
+ */
+export interface ForkResponse extends ForkSummary {
+  /** epoch -> that epoch's key sealed to the participant. */
+  keys: Record<string, string>
+  /** Null once forked, or when the owner's account has been gone for 90 days. */
+  log: LogResponse | null
+  /** The participant's own note the share carries on in, once a device has forked. */
+  forkedTo?: string
+}
+
+export interface ForkDoneRequest {
+  forkedTo: string
+}
 
 // --- contacts --------------------------------------------------------------------
 

@@ -15,6 +15,8 @@ import {
   type InboxResponse,
   type RedeemRequest,
   type DocRequest,
+  type ForkDoneRequest,
+  type ForksResponse,
   type ImportRequest,
   type IncomingSharesResponse,
   type LoginRequest,
@@ -286,6 +288,34 @@ export function createHttpApp(
     if (!accountId) return undefined
     await hub.leave(accountId, ((request.body ?? {}) as Partial<DocRequest>).docId)
     return { ok: true }
+  })
+
+  app.post(`${API.shares}/detach`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    await hub.detachShare(accountId, ((request.body ?? {}) as Partial<DocRequest>).docId)
+    return { ok: true }
+  })
+
+  // --- shares that ended -----------------------------------------------------------
+
+  app.get(API.forks, async (request, reply): Promise<ForksResponse | undefined> => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return { forks: await hub.forksOf(accountId) }
+  })
+
+  app.get<{ Params: DocParams }>(`${API.forks}/:docId`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return hub.fork(accountId, request.params.docId)
+  })
+
+  app.post<{ Params: DocParams }>(`${API.forks}/:docId/done`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    const body = (request.body ?? {}) as Partial<ForkDoneRequest>
+    return { forkedTo: await hub.forkDone(accountId, request.params.docId, body.forkedTo) }
   })
 
   app.post(`${API.shares}/role`, async (request, reply) => {

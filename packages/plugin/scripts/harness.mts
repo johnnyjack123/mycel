@@ -241,6 +241,7 @@ export class Device {
     started = await store.start()
     if (started) {
       await contacts.processInbox()
+      await sharing.checkEnded()
       await sharing.checkIncoming()
     }
     this.editors.refresh()

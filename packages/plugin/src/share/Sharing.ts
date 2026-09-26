@@ -5,6 +5,7 @@ import {
   frameAad,
   roomSubject,
   snapshotAad,
+  type ForkResponse,
   type IncomingShare,
   type NotifyKind,
   type ShareMembersResponse,
@@ -18,11 +19,13 @@ import {
   fromBase64,
   packFrame,
   toBase64,
+  unpackFrame,
   type Bytes
 } from '@obsidian-connect/shared/crypto'
 import { ApiError, type ConnectApi } from '../account/api.js'
 import type { KeyRing } from '../account/KeyRing.js'
 import type { DocStore } from '../sync/DocStore.js'
+import { entryKey, type HistoryEntry } from '../sync/History.js'
 import type { Contacts } from './Contacts.js'
 
 // Sharing a note with a person, and everything that follows from it: the
@@ -49,8 +52,8 @@ function titleOf(path: string): string {
 }
 
 export class Sharing {
-  /** A revocation arrives as a message and as a notice; one of them handles it. */
-  private readonly revoking = new Set<string>()
+  /** The end of a share arrives as a message, a notice and a detach; one of them carries it out. */
+  private readonly ending = new Map<string, Promise<TFile | null>>()
 
   constructor(
     private readonly api: ConnectApi,
@@ -246,22 +249,16 @@ export class Sharing {
     }
   }
 
-  /** The owner took access away. The copy stays, as a note of this vault's own. */
+  /** The server says a share ended - revoked, detached on another device, or its owner's account removed. */
   async onRevoked(room: string): Promise<void> {
     const docId = roomSubject(room)
     const entry = this.store.entry(docId)
-    if (!entry?.owner || entry.deletedAt || this.revoking.has(docId)) return
-    this.revoking.add(docId)
-    try {
-      this.keys.forgetShared(docId)
-      const file = await this.store.rekeyToOwn(docId)
-      new Notice(
-        `${this.nameOf(entry.owner)} stopped sharing "${titleOf(entry.path)}" with you.${file ? ' Your copy is kept as a note of your own.' : ''}`,
-        12_000
-      )
-    } finally {
-      this.revoking.delete(docId)
-    }
+    if (!entry?.owner || entry.deletedAt) return
+    const file = await this.endShare(docId)
+    new Notice(
+      `The share of "${titleOf(entry.path)}" with ${this.nameOf(entry.owner)} ended.${file ? ' Your copy is kept as a note of your own, with its history.' : ''}`,
+      12_000
+    )
   }
 
   /** This account leaves a share by deleting its copy. */
@@ -274,45 +271,140 @@ export class Sharing {
     }
   }
 
-  /**
-   * Turns a note someone shared into one of this vault's own, with a new id
-   * and everything of its history this account may read.
-   */
+  /** Leaves a share but keeps the note, as one of this vault's own with the history this account could read. */
   async detach(docId: string): Promise<TFile | null> {
     const entry = this.store.entry(docId)
     if (!entry?.owner) throw new Error('This note is already yours.')
-    const newDocId = await this.store.nextDocId(entry.path)
-    try {
-      await this.copyHistory(docId, newDocId)
-    } catch (error) {
-      // A copy without its history is still a copy.
-      console.warn(`[obsidian-connect] the history of ${entry.path} could not be copied`, error)
+    await this.api.detach(docId)
+    return this.endShare(docId)
+  }
+
+  /**
+   * Shares that ended while this device was away. A fork another device of
+   * this account made but could not report is reported here.
+   */
+  async checkEnded(): Promise<number> {
+    const { forks } = await this.api.forks()
+    let forked = 0
+    for (const fork of forks) {
+      const entry = this.store.entry(fork.docId)
+      try {
+        if (entry?.deletedAt && entry.forkedTo) await this.api.forkDone(fork.docId, entry.forkedTo)
+        else if (entry?.owner && (await this.endShare(fork.docId))) forked += 1
+      } catch (error) {
+        console.error(`[obsidian-connect] carrying on the ended share of ${fork.docId} failed`, error)
+      }
     }
-    const file = await this.store.rekeyToOwn(docId, newDocId)
-    await this.leave(docId)
+    return forked
+  }
+
+  /**
+   * The share of a note someone else owns ended. The note carries on as one
+   * of this vault's own, at the same path: with every change this account
+   * could read - what the server kept, and what this device kept itself - and
+   * whatever this device had not sent yet. A second device of the account
+   * finds the first one's note and adds what it held to it.
+   */
+  endShare(docId: string): Promise<TFile | null> {
+    const running = this.ending.get(docId)
+    if (running) return running
+    const ending = this.carryOn(docId).finally(() => this.ending.delete(docId))
+    this.ending.set(docId, ending)
+    return ending
+  }
+
+  private async carryOn(docId: string): Promise<TFile | null> {
+    const entry = this.store.entry(docId)
+    if (!entry?.owner || entry.deletedAt) return null
+    let kept: ForkResponse | null = null
+    try {
+      kept = await this.api.fork(docId)
+    } catch (error) {
+      // Nothing kept - the note was never accepted, or the server predates
+      // this. What this device holds is all there is. Unreachable is another
+      // matter: the kept history may still come, so the fork waits for it.
+      if (!(error instanceof ApiError) || error.status !== 404) throw error
+    }
+    const target = kept?.forkedTo ?? (await this.store.nextDocId(entry.path))
+    if (!kept?.forkedTo) await this.importHistory(docId, target, kept)
+    const file = await this.store.forkInto(docId, target)
+    if (kept && !kept.forkedTo) {
+      await this.api.forkDone(docId, target).catch((error: unknown) => {
+        console.warn(`[obsidian-connect] reporting the fork of ${docId} failed; it is reported on the next start`, error)
+      })
+    }
+    this.keys.forgetShared(docId)
     return file
   }
 
-  private async copyHistory(fromDocId: string, toDocId: string): Promise<void> {
-    const fromRoom = docRoom(fromDocId)
-    const toRoom = docRoom(toDocId)
-    const log = await this.api.log(fromRoom)
-    const source = this.keys.sharedDocCrypto(fromDocId)
-    const target = await aesKey(await this.keys.ownDocKey(toDocId, 0))
+  /** Fills the new note with the old one's history, each change under its author's time. */
+  private async importHistory(docId: string, target: string, kept: ForkResponse | null): Promise<void> {
+    const changes = new Map<string, HistoryEntry>()
+    for (const change of kept?.log ? await this.readKept(docId, kept) : []) changes.set(entryKey(change), change)
+    for (const change of await this.store.historyOf(docId)) changes.set(entryKey(change), change)
+    const ordered = Array.from(changes.values()).sort((a, b) => a.authorTs - b.authorTs)
+    // Unsent edits, and anything else the history lacks, as one last change.
+    const local = await this.store.localState(docId)
+    const rest = local ? missingFrom(ordered, local) : null
+    if (rest) ordered.push({ authorTs: Date.now(), update: rest })
+    if (ordered.length === 0) return
+
+    const room = docRoom(target)
+    const key = await aesKey(await this.keys.ownDocKey(target, 0))
     const frames: Array<{ epoch: number; data: string }> = []
-    if (log.snapshot) {
-      const key = await source.key(log.snapshot.epoch)
-      if (key) {
-        const plaintext = await decrypt(key, fromBase64(log.snapshot.data), snapshotAad(fromRoom, log.snapshot.epoch))
-        frames.push({ epoch: 0, data: toBase64(await encrypt(target, plaintext, frameAad(toRoom, 0))) })
+    for (const change of ordered) {
+      frames.push({ epoch: 0, data: toBase64(await encrypt(key, packFrame(change.authorTs, change.update), frameAad(room, 0))) })
+    }
+    try {
+      await this.api.importFrames(room, this.keys.vaultId, { frames })
+    } catch (error) {
+      // Another device of this account forked into the same note a moment
+      // earlier. `forkInto` adds what this one holds.
+      if (!(error instanceof ApiError) || error.status !== 409) throw error
+    }
+  }
+
+  /** What the server kept, decrypted with the keys it kept alongside. */
+  private async readKept(docId: string, kept: ForkResponse): Promise<HistoryEntry[]> {
+    const room = docRoom(docId)
+    const crypto = this.keys.endedDocCrypto(docId, kept.keys)
+    const open = async (epoch: number, data: string, aad: string): Promise<HistoryEntry | null> => {
+      try {
+        const key = await crypto.key(epoch)
+        return key ? unpackFrame(await decrypt(key, fromBase64(data), aad)) : null
+      } catch (error) {
+        console.warn(`[obsidian-connect] a kept change of ${docId} could not be read`, error)
+        return null
       }
     }
-    for (const frame of log.frames) {
-      const key = await source.key(frame.epoch)
-      if (!key) continue
-      const plaintext = await decrypt(key, fromBase64(frame.data), frameAad(fromRoom, frame.epoch))
-      frames.push({ epoch: 0, data: toBase64(await encrypt(target, plaintext, frameAad(toRoom, 0))) })
+    const changes: HistoryEntry[] = []
+    const snapshot = kept.log?.snapshot
+    if (snapshot) {
+      const change = await open(snapshot.epoch, snapshot.data, snapshotAad(room, snapshot.epoch))
+      if (change) changes.push(change)
     }
-    if (frames.length > 0) await this.api.importFrames(toRoom, this.keys.vaultId, { frames })
+    for (const frame of kept.log?.frames ?? []) {
+      const change = await open(frame.epoch, frame.data, frameAad(room, frame.epoch))
+      if (change) changes.push(change)
+    }
+    return changes
+  }
+}
+
+/** What `state` holds beyond the changes, or null if nothing. */
+function missingFrom(changes: HistoryEntry[], state: Uint8Array): Uint8Array | null {
+  const replayed = new Y.Doc()
+  const local = new Y.Doc()
+  try {
+    for (const change of changes) Y.applyUpdate(replayed, change.update)
+    Y.applyUpdate(local, state)
+    const before = Y.encodeStateAsUpdate(replayed)
+    const rest = Y.encodeStateAsUpdate(local, Y.encodeStateVector(replayed))
+    Y.applyUpdate(replayed, rest)
+    const after = Y.encodeStateAsUpdate(replayed)
+    return before.length === after.length && before.every((byte, index) => byte === after[index]) ? null : rest
+  } finally {
+    replayed.destroy()
+    local.destroy()
   }
 }

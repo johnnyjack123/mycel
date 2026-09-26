@@ -11,6 +11,7 @@ import type { Notice, NotifyKind } from '@obsidian-connect/shared'
 import { AccountStore } from '../src/accounts.js'
 import { ContactStore } from '../src/contacts.js'
 import { loadEnvFile } from '../src/config.js'
+import { ForkStore } from '../src/forks.js'
 import { AddressGuard, paced } from '../src/throttle.js'
 import type { Frame } from '../src/log.js'
 import { HubError, RoomHub, type RoomClient } from '../src/rooms.js'
@@ -231,7 +232,7 @@ try {
   await contacts.pair(alice, carol)
 
   // --- rooms -------------------------------------------------------------------
-  let hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts, contacts)
+  let hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts, contacts, new ForkStore(dataDir))
   const a1 = new Client(alice, aliceVault.vaultId)
   const a2 = new Client(alice, aliceVault.vaultId)
   const bobDevice = new Client(bob, bobVault.vaultId)
@@ -365,6 +366,7 @@ try {
     (await status(() => hub.revoke(alice, { docId, account: bob, rotation: { epoch: 2, keys: {} } }))) === 400,
     'a revoke must seal the new epoch for everyone who stays'
   )
+  await hub.accept(bob, docId, bobVault.vaultId)
   bobDevice.take()
   await hub.revoke(alice, { docId, account: bob, rotation: { epoch: 2, keys: { [carol]: 'c2' } } })
   check(bobDevice.take().some((m) => m.type === 'revoked'), 'the revoked member is told')
@@ -376,6 +378,28 @@ try {
 
   await hub.push(a1, room, 5, 2, bytes('f4'))
   a1.take()
+
+  // --- what a revoked member keeps ----------------------------------------------------
+  {
+    const pending = await hub.forksOf(bob)
+    check(pending.length === 1 && pending[0]?.docId === docId && pending[0].reason === 'revoked', 'the revoked member has a fork waiting', pending)
+    const kept = await hub.fork(bob, docId)
+    check(
+      kept.log?.frames.map((frame) => `${frame.seq}:${text(Buffer.from(frame.data, 'base64'))}`).join() === '1:f1,2:from bob,3:f3',
+      'with every frame they could read, and nothing written after the revocation',
+      kept.log?.frames.map((frame) => frame.seq)
+    )
+    check(kept.keys['0'] === 'k0' && kept.keys['1'] === 'b1' && !kept.keys['2'], 'and the keys they held')
+    check((await status(() => hub.fork(carol, docId))) === 404, 'nobody else gets it')
+    const target = hexId()
+    check((await hub.forkDone(bob, docId, target)) === target, 'a device says where the note carries on')
+    check((await hub.forkDone(bob, docId, hexId())) === target, 'and a second device is told the first one')
+    const done = await hub.fork(bob, docId)
+    check(done.log === null && done.forkedTo === target && Object.keys(done.keys).length === 0, 'afterwards the history is gone', done)
+    check((await hub.forksOf(bob)).length === 0, 'and nothing waits any more')
+    await hub.subscribe(bobDevice, room, 0, true)
+    check(bobDevice.take()[0]?.type === 'revoked', 'the ended share still answers as ended')
+  }
   const carolLog = await hub.log(carol, room)
   check(
     carolLog.snapshot?.uptoSeq === 2 && carolLog.frames.every((frame) => frame.seq >= 3),
@@ -414,7 +438,7 @@ try {
 
   // --- restart ---------------------------------------------------------------------------
   await hub.shutdown()
-  hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts, contacts)
+  hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts, contacts, new ForkStore(dataDir))
   const afterRestart = new Client(alice, aliceVault.vaultId)
   hub.attach(afterRestart)
   await hub.subscribe(afterRestart, room, 0)
@@ -437,6 +461,94 @@ try {
     (await status(() => hub.importFrames(carol, copy, carolVault.vaultId, [{ epoch: 0, data: 'eA==' }]))) === 409,
     'but only once'
   )
+
+  // --- a participant detaching ------------------------------------------------------------
+  {
+    const carolAgain = new Client(carol, carolVault.vaultId)
+    hub.attach(carolAgain)
+    await hub.subscribe(carolAgain, room, 0)
+    carolAgain.take()
+    await hub.detachShare(carol, docId)
+    const told = carolAgain.take()
+    check(
+      told.some((m) => m.type === 'revoked') && told.some((m) => m.type === 'notify' && m.kind === 'share-removed'),
+      "a participant detaching ends the share on all of their devices",
+      told
+    )
+    const kept = await hub.fork(carol, docId)
+    check(
+      kept.reason === 'detached' && text(Buffer.from(kept.log?.snapshot?.data ?? '', 'base64')) === 'compact' && kept.log?.frames.map((f) => f.seq).join() === '4',
+      'and keeps what they read: from the compaction on, since that is where their history starts',
+      kept
+    )
+    check((await hub.members(alice, docId)).members.length === 0, 'the owner sees them gone')
+    check((await status(() => hub.detachShare(carol, docId))) === 200, 'a second device detaching too is no error')
+  }
+
+  // --- removed accounts ----------------------------------------------------------------------
+  {
+    const ownerDevice = new Client(alice, aliceVault.vaultId)
+    const bobAgain = new Client(bob, bobVault.vaultId)
+    for (const client of [ownerDevice, bobAgain]) hub.attach(client)
+    const doc2 = hexId()
+    const room2 = `doc:${doc2}`
+    await hub.subscribe(ownerDevice, room2, 0)
+    await hub.push(ownerDevice, room2, 1, 0, bytes('shared text'))
+    for (const account of [bob, carol]) {
+      await hub.share(alice, { docId: doc2, account, role: 'write', withHistory: true, keys: { '0': `${account}-k0` }, title: 't' })
+    }
+    await hub.accept(bob, doc2, bobVault.vaultId)
+    await hub.accept(carol, doc2, carolVault.vaultId)
+    await hub.subscribe(bobAgain, room2, 0, false)
+    ownerDevice.take()
+    bobAgain.take()
+
+    await accounts.remove(carol)
+    check(existsSync(join(dataDir, 'users', carol)), 'removing an account only marks it: the server clears it')
+    await hub.sweep()
+    check(
+      (await hub.members(alice, doc2)).members.map((member) => member.account).join() === bob,
+      'a removed member leaves the notes shared with them'
+    )
+    check(!existsSync(join(dataDir, 'users', carol)), 'and their folder goes')
+    check(!(await contacts.connected(alice, carol)), 'as do their contacts')
+
+    const before = Date.now()
+    await accounts.remove(alice)
+    await hub.sweep(before)
+    const told = bobAgain.take()
+    check(told.some((m) => m.type === 'revoked') && told.some((m) => m.kind === 'share-removed'), "the owner's account going ends the share", told)
+    const kept = await hub.fork(bob, doc2)
+    check(
+      kept.reason === 'owner-removed' && kept.log?.frames.map((frame) => text(Buffer.from(frame.data, 'base64'))).join() === 'shared text',
+      'and the participant keeps what they could read',
+      kept
+    )
+    check(!existsSync(join(dataDir, 'users', alice)), "the owner's folder goes at once, since nothing waits in it")
+    check(Object.keys(await accounts.removed()).length === 0, 'the removal is settled')
+    await hub.subscribe(bobAgain, room2, 0, true)
+    check(bobAgain.take()[0]?.type === 'revoked', 'a participant subscribing later hears it ended, and claims nothing')
+    ownerDevice.take()
+    await hub.subscribe(ownerDevice, `doc:${hexId()}`, 0, true)
+    check(ownerDevice.take()[0]?.type === 'denied', 'a connection of the removed account creates nothing any more')
+
+    await hub.shutdown()
+    hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts, contacts, new ForkStore(dataDir))
+    const afterRestart = new Client(bob, bobVault.vaultId)
+    hub.attach(afterRestart)
+    await hub.subscribe(afterRestart, room2, 0, false)
+    check(afterRestart.take()[0]?.type === 'revoked', 'after a restart too')
+    check((await hub.forksOf(bob)).some((fork) => fork.docId === doc2), 'and the fork still waits')
+
+    const day = 24 * 60 * 60 * 1000
+    await hub.sweep(before + 89 * day)
+    check((await hub.fork(bob, doc2)).log !== null, 'the history waits 90 days for the participant')
+    await hub.sweep(before + 91 * day)
+    const expired = await hub.fork(bob, doc2)
+    check(expired.log === null && expired.reason === 'owner-removed', 'then it goes, and the tombstone stays', expired)
+    await hub.subscribe(afterRestart, room2, 0, true)
+    check(afterRestart.take()[0]?.type === 'revoked', 'still answering the share as ended')
+  }
   await hub.shutdown()
   await delay(10)
 } catch (error) {

@@ -1,8 +1,13 @@
+import { rm } from 'node:fs/promises'
+import { join } from 'node:path'
 import {
   docRoom,
   isHexId,
   roomKind,
   roomSubject,
+  type ForkReason,
+  type ForkResponse,
+  type ForkSummary,
   type IncomingShare,
   type KeysResponse,
   type LogResponse,
@@ -17,6 +22,7 @@ import {
 } from '@obsidian-connect/shared'
 import { isAccountId, type AccountStore } from './accounts.js'
 import type { ContactStore } from './contacts.js'
+import type { ForkStore } from './forks.js'
 import { RoomLog, loadAllMeta, type Frame, type RoomMeta, type SnapshotInfo } from './log.js'
 
 // The server's side of an end-to-end encrypted vault: it keeps every room's
@@ -89,12 +95,16 @@ export class RoomHub {
   private readonly rooms = new Map<string, OpenRoom>()
   private readonly opening = new Map<string, Promise<OpenRoom | null>>()
   private readonly clients = new Set<RoomClient>()
+  /** Accounts removed while connections of theirs may still be open; they create nothing any more. */
+  private readonly gone = new Set<string>()
+  private sweeping: Promise<void> | null = null
   private readonly ready: Promise<void>
 
   constructor(
     private readonly options: RoomHubOptions,
     private readonly accounts: AccountStore,
-    private readonly contacts: ContactStore
+    private readonly contacts: ContactStore,
+    private readonly forks: ForkStore
   ) {
     this.ready = loadAllMeta(options.dataDir).then((metas) => {
       for (const meta of metas) this.metas.set(meta.room, meta)
@@ -224,13 +234,21 @@ export class RoomHub {
       return
     }
     const loaded = await this.load(room)
-    if (!loaded && !create) {
+    // A share that ended - even with its room gone along with the owner's
+    // account - is answered as ended, so the device forks instead of waiting
+    // for the room, or claiming it.
+    const ended = kind === 'doc' && (await this.forks.has(client.account, subject))
+    if (!loaded && ended) {
+      client.sendRevoked(room, 'the share ended')
+      return
+    }
+    if (!loaded && (!create || this.gone.has(client.account))) {
       client.sendDenied(room, 'missing')
       return
     }
     const open = loaded ?? (await this.claim(room, client.account, client.vaultId))
     const access = this.access(open.log.meta, client.account)
-    if (access === 'revoked') {
+    if (access === 'revoked' || (!access && ended)) {
       client.sendRevoked(room, 'access was revoked')
       return
     }
@@ -373,6 +391,40 @@ export class RoomHub {
     this.notify(account, existing ? 'share-changed' : 'share-added', { docId: roomSubject(meta.room), owner, role: request.role })
   }
 
+  /**
+   * Takes what a member can read right now, for the fork their devices make
+   * once the share ended. Everything up to the returned function runs without
+   * an await, so it can sit between an epoch moving and the first wait: no
+   * frame the member could read lands after it.
+   */
+  private keepForFork(open: OpenRoom, account: string, reason: ForkReason, now: number): () => Promise<void> {
+    const meta = open.log.meta
+    const member = meta.members[account]
+    // Never added to a vault, so no device has anything to carry on.
+    if (!member?.acceptedInto) return async () => undefined
+    const keys = { ...meta.sealedKeys[account] }
+    const readable = (epoch: number): boolean => typeof keys[String(epoch)] === 'string'
+    const part = this.readablePart(open, { owner: false, write: false, fromSeq: member.fromSeq })
+    const frames = part.frames.filter((frame) => readable(frame.epoch))
+    const snapshot = part.snapshot && readable(part.snapshot.epoch) ? part.snapshot : null
+    const epoch = meta.epoch
+    const headSeq = open.log.headSeq
+    const summary: ForkSummary = { docId: roomSubject(meta.room), owner: meta.owner, reason, endedAt: now }
+    return async () => {
+      const log = await this.logResponse(open, { snapshot, frames }, epoch, headSeq)
+      await this.forks.put(account, summary, keys, log)
+    }
+  }
+
+  /** Ending a share never fails over its copy: the devices still hold theirs. */
+  private async keepSafely(keep: () => Promise<void>, room: string, account: string): Promise<void> {
+    try {
+      await keep()
+    } catch (error) {
+      console.error(`[obsidian-connect] keeping ${room} for ${account} failed; their devices fork from what they hold`, error)
+    }
+  }
+
   async revoke(owner: string, request: RevokeRequest): Promise<void> {
     const open = await this.owned(owner, request.docId)
     const meta = open.log.meta
@@ -385,13 +437,18 @@ export class RoomHub {
       if (typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
     }
 
+    const now = Date.now()
+    const keep = this.keepForFork(open, account, 'revoked', now)
     meta.epoch = rotation.epoch
     delete meta.members[account]
     delete meta.sealedKeys[account]
-    meta.revoked[account] = Date.now()
+    meta.revoked[account] = now
     for (const member of remaining) {
       meta.sealedKeys[member] = { ...meta.sealedKeys[member], [String(rotation.epoch)]: rotation.keys[member] as string }
     }
+    // What the member could read goes to disk before the revocation does: a
+    // crash in between leaves them a member, never without their copy.
+    await this.keepSafely(keep, meta.room, account)
     await open.log.saveMeta()
 
     for (const subscriber of Array.from(open.subscribers)) {
@@ -403,6 +460,54 @@ export class RoomHub {
       }
     }
     this.notify(account, 'share-removed', { docId: roomSubject(meta.room), owner })
+  }
+
+  /**
+   * A participant ends the share and keeps the note as one of their own. The
+   * server keeps what they could read, as it would on a revocation, and tells
+   * their other devices, which fold what they hold into the same new note.
+   */
+  async detachShare(account: string, docId: unknown): Promise<void> {
+    const room = docRoomOf(docId)
+    const subject = roomSubject(room)
+    const open = await this.load(room)
+    if (!open || !open.log.meta.members[account]) {
+      // Ended already - by another device of theirs, or by the owner.
+      if (await this.forks.has(account, subject)) return
+      throw new HubError(404, 'not shared with you')
+    }
+    const meta = open.log.meta
+    const keep = this.keepForFork(open, account, 'detached', Date.now())
+    delete meta.members[account]
+    delete meta.sealedKeys[account]
+    await this.keepSafely(keep, room, account)
+    await open.log.saveMeta()
+    for (const subscriber of Array.from(open.subscribers)) {
+      if (subscriber.account !== account) continue
+      subscriber.sendRevoked(room, 'the share ended')
+      open.subscribers.delete(subscriber)
+    }
+    this.notify(account, 'share-removed', { docId: subject, owner: meta.owner })
+  }
+
+  async forksOf(account: string): Promise<ForkSummary[]> {
+    return this.forks.pending(account)
+  }
+
+  async fork(account: string, docId: unknown): Promise<ForkResponse> {
+    if (typeof docId !== 'string' || !isHexId(docId)) throw new HubError(400, 'not a document id')
+    const fork = await this.forks.get(account, docId)
+    if (!fork) throw new HubError(404, 'no share of this note ended for you')
+    return fork
+  }
+
+  /** Returns where the note carries on - the first device's answer, if another one forked first. */
+  async forkDone(account: string, docId: unknown, forkedTo: unknown): Promise<string> {
+    if (typeof docId !== 'string' || !isHexId(docId)) throw new HubError(400, 'not a document id')
+    if (typeof forkedTo !== 'string' || !isHexId(forkedTo)) throw new HubError(400, 'not a document id')
+    const kept = await this.forks.done(account, docId, forkedTo)
+    if (!kept) throw new HubError(404, 'no share of this note ended for you')
+    return kept
   }
 
   async leave(account: string, docId: unknown): Promise<void> {
@@ -486,33 +591,46 @@ export class RoomHub {
     return { room, epoch: meta.epoch, keys: access.owner ? {} : { ...meta.sealedKeys[account] } }
   }
 
-  /** Everything the caller may read, for the history view: a starting snapshot and the frames after it. */
-  async log(account: string, room: string): Promise<LogResponse> {
-    const { open, access } = await this.readable(account, room)
+  /** What someone with `access` may read: a starting snapshot and the frames after it. */
+  private readablePart(open: OpenRoom, access: Access): { snapshot: SnapshotInfo | null; frames: Frame[] } {
     const meta = open.log.meta
-    let snapshot: SnapshotInfo | null = null
-    let frames: Frame[]
     if (access.fromSeq - 1 > meta.compactedUpTo) {
-      snapshot = meta.snapshots.find((candidate) => candidate.uptoSeq === access.fromSeq - 1) ?? null
-      frames = open.log.frames.filter((frame) => frame.seq >= access.fromSeq)
-    } else {
-      snapshot =
-        meta.compactedUpTo > 0
-          ? (meta.snapshots.find((candidate) => candidate.uptoSeq === meta.compactedUpTo) ?? null)
-          : null
-      frames = open.log.frames.slice()
+      return {
+        snapshot: meta.snapshots.find((candidate) => candidate.uptoSeq === access.fromSeq - 1) ?? null,
+        frames: open.log.frames.filter((frame) => frame.seq >= access.fromSeq)
+      }
     }
+    return {
+      snapshot:
+        meta.compactedUpTo > 0 ? (meta.snapshots.find((candidate) => candidate.uptoSeq === meta.compactedUpTo) ?? null) : null,
+      frames: open.log.frames.slice()
+    }
+  }
+
+  private async logResponse(
+    open: OpenRoom,
+    part: { snapshot: SnapshotInfo | null; frames: Frame[] },
+    epoch: number,
+    headSeq: number
+  ): Promise<LogResponse> {
+    const snapshot = part.snapshot
     const snapshotData = snapshot ? await open.log.readSnapshot(snapshot) : null
     return {
-      room,
-      epoch: meta.epoch,
-      headSeq: open.log.headSeq,
+      room: open.log.meta.room,
+      epoch,
+      headSeq,
       snapshot:
         snapshot && snapshotData
           ? { uptoSeq: snapshot.uptoSeq, ts: snapshot.ts, epoch: snapshot.epoch, data: toBase64(snapshotData) }
           : null,
-      frames: frames.map((frame) => ({ seq: frame.seq, ts: frame.ts, epoch: frame.epoch, data: toBase64(frame.data) }))
+      frames: part.frames.map((frame) => ({ seq: frame.seq, ts: frame.ts, epoch: frame.epoch, data: toBase64(frame.data) }))
     }
+  }
+
+  /** Everything the caller may read, for the history view: a starting snapshot and the frames after it. */
+  async log(account: string, room: string): Promise<LogResponse> {
+    const { open, access } = await this.readable(account, room)
+    return this.logResponse(open, this.readablePart(open, access), open.log.meta.epoch, open.log.headSeq)
   }
 
   /** The owner's compaction: frames up to `uptoSeq` are replaced by the uploaded state. */
@@ -560,6 +678,74 @@ export class RoomHub {
       if (meta.oldestFrameTs !== null && meta.oldestFrameTs < before) rooms.push(meta.room)
     }
     return rooms
+  }
+
+  // --- removed accounts ------------------------------------------------------------
+
+  /**
+   * Clears what removed accounts left behind: every note they shared ends as
+   * if revoked, each participant keeping what they could read; their
+   * memberships end; their folder goes. Then lets go of histories whose owner
+   * has been gone for 90 days. Runs on start and every few minutes, so the
+   * CLI only has to mark an account as removed.
+   */
+  sweep(now = Date.now()): Promise<void> {
+    this.sweeping ??= this.runSweep(now).finally(() => {
+      this.sweeping = null
+    })
+    return this.sweeping
+  }
+
+  private async runSweep(now: number): Promise<void> {
+    await this.ready
+    for (const account of Object.keys(await this.accounts.removed())) {
+      try {
+        await this.clearAccount(account, now)
+        await this.accounts.settleRemoval(account)
+      } catch (error) {
+        console.error(`[obsidian-connect] clearing the removed account ${account} failed; trying again later`, error)
+      }
+    }
+    await this.forks.expire(now)
+  }
+
+  private async clearAccount(account: string, now: number): Promise<void> {
+    if (!isAccountId(account)) return
+    this.gone.add(account)
+    for (const meta of Array.from(this.metas.values())) {
+      if (meta.owner === account) {
+        await this.closeOwnerless(meta, now)
+      } else if (meta.members[account] || meta.sealedKeys[account]) {
+        const open = await this.load(meta.room)
+        delete meta.members[account]
+        delete meta.sealedKeys[account]
+        await open?.log.saveMeta()
+      }
+    }
+    await this.forks.ownerRemoved(account, now)
+    await this.contacts.forget(account)
+    await this.forks.flush()
+    this.forks.forget(account)
+    await rm(join(this.options.dataDir, 'users', account), { recursive: true, force: true })
+  }
+
+  /** A room whose owner's account was removed: its participants keep their part, then it goes. */
+  private async closeOwnerless(meta: RoomMeta, now: number): Promise<void> {
+    const open = await this.load(meta.room)
+    if (open) {
+      for (const member of Object.keys(meta.members)) {
+        await this.keepSafely(this.keepForFork(open, member, 'owner-removed', now), meta.room, member)
+      }
+      for (const subscriber of open.subscribers) subscriber.sendRevoked(meta.room, "the owner's account was removed")
+      open.subscribers.clear()
+      if (open.idleTimer) clearTimeout(open.idleTimer)
+      await open.log.flush()
+    }
+    this.rooms.delete(meta.room)
+    this.metas.delete(meta.room)
+    for (const member of Object.keys(meta.members)) {
+      this.notify(member, 'share-removed', { docId: roomSubject(meta.room), owner: meta.owner })
+    }
   }
 
   async shutdown(): Promise<void> {

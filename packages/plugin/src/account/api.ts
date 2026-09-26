@@ -12,6 +12,9 @@ import {
   type InboxResponse,
   type RedeemRequest,
   type CreateVaultRequest,
+  type ForkDoneRequest,
+  type ForkResponse,
+  type ForksResponse,
   type ImportRequest,
   type IncomingSharesResponse,
   type KeysResponse,
@@ -178,6 +181,25 @@ export class ConnectApi {
 
   leave(docId: string): Promise<unknown> {
     return this.call('POST', `${API.shares}/leave`, { docId })
+  }
+
+  /** Ends this account's share of a note it keeps; the server holds what it could read for the fork. */
+  detach(docId: string): Promise<unknown> {
+    return this.call('POST', `${API.shares}/detach`, { docId })
+  }
+
+  forks(): Promise<ForksResponse> {
+    return this.call('GET', API.forks)
+  }
+
+  fork(docId: string): Promise<ForkResponse> {
+    return this.call('GET', `${API.forks}/${docId}`)
+  }
+
+  /** Resolves to where the note carries on: this device's answer, or an earlier device's. */
+  forkDone(docId: string, forkedTo: string): Promise<{ forkedTo: string }> {
+    const request: ForkDoneRequest = { forkedTo }
+    return this.call('POST', `${API.forks}/${docId}/done`, request)
   }
 
   setRole(request: RoleRequest): Promise<unknown> {

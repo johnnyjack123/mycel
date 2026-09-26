@@ -1,6 +1,6 @@
-import { appendFile, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { roomKind, roomSubject, type ShareRole } from '@obsidian-connect/shared'
+import { isHexId, roomKind, roomSubject, type ShareRole } from '@obsidian-connect/shared'
 
 // One room on disk: `meta.json` with who may do what, `log.bin` with the
 // frames, and `snap-<uptoSeq>.bin` for each snapshot still needed. The server
@@ -132,7 +132,10 @@ export async function loadAllMeta(dataDir: string): Promise<RoomMeta[]> {
     if (raw) metas.push(JSON.parse(raw.toString('utf8')) as RoomMeta)
   }
   for (const owner of await list(join(dataDir, USERS))) {
+    if (!isHexId(owner)) continue
+    // Next to the vaults sits `forks/`, which holds no rooms.
     for (const vault of await list(join(dataDir, USERS, owner))) {
+      if (!isHexId(vault)) continue
       const base = join(dataDir, USERS, owner, vault)
       await read(join(base, 'index'))
       await read(join(base, 'settings'))
@@ -267,5 +270,10 @@ export class RoomLog {
 
   flush(): Promise<unknown> {
     return this.writes
+  }
+
+  /** Deletes the room from disk, once everything queued has been written. */
+  remove(): Promise<void> {
+    return this.queue(() => rm(this.dir, { recursive: true, force: true }))
   }
 }

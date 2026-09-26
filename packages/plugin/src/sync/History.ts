@@ -33,7 +33,8 @@ function fingerprint(update: Uint8Array): string {
   return `${update.length.toString(36)}.${hash.toString(36)}`
 }
 
-function entryKey(entry: HistoryEntry): string {
+/** The same change seen twice - from the server and from this device - has the same key. */
+export function entryKey(entry: HistoryEntry): string {
   return `${entry.authorTs}:${fingerprint(entry.update)}`
 }
 

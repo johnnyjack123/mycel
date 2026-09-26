@@ -52,7 +52,11 @@ async function main(argv: string[]): Promise<number> {
         return 1
       }
       const removed = await accounts.remove(id)
-      console.log(removed ? `${id} removed. Its notes stay on the server, encrypted and unreadable.` : `no account ${id}`)
+      console.log(
+        removed
+          ? `${id} can no longer sign in. Within a few minutes the running server ends its shares - everyone keeps a copy of what was shared with them - and deletes its data.`
+          : `no account ${id}`
+      )
       return removed ? 0 : 1
     }
     default:

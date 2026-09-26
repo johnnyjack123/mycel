@@ -30,7 +30,7 @@ export async function stableDocId(vaultId: string, path: string, generation = 0)
 
 /** The entry without its tombstone, keeping everything else - notably `shared`. */
 function live(entry: IndexEntry): IndexEntry {
-  const { deletedAt: _deletedAt, ...rest } = entry
+  const { deletedAt: _deletedAt, forkedTo: _forkedTo, ...rest } = entry
   return rest
 }
 
@@ -210,11 +210,17 @@ export class VaultIndex {
     }, 'local')
   }
 
-  /** One note's file handed to a new document, in a single change. */
+  /**
+   * One note's file handed to a new document of this vault's own, in a single
+   * change. The tombstone names the new document, so another device folds
+   * what it still holds of the old one into it rather than dropping it.
+   */
   replace(oldDocId: string, newDocId: string, path: string): void {
     const old = this.files.get(oldDocId)
     this.doc.transact(() => {
-      if (old && !old.deletedAt) this.files.set(oldDocId, { ...old, deletedAt: Date.now(), updatedAt: Date.now() })
+      if (old && !old.deletedAt) {
+        this.files.set(oldDocId, { ...old, deletedAt: Date.now(), updatedAt: Date.now(), forkedTo: newDocId })
+      }
       this.files.set(newDocId, { path, updatedAt: Date.now() })
     }, 'local')
   }

@@ -96,6 +96,21 @@ export class KeyRing {
     }
   }
 
+  /**
+   * Keys of a share that ended, from what the server kept for this account.
+   * Nothing is fetched or stored: the room is no longer this account's to read.
+   */
+  endedDocCrypto(docId: string, sealed: Record<string, string>): RoomCrypto {
+    const room = docRoom(docId)
+    return {
+      key: async (epoch) => {
+        const known = sealed[String(epoch)] ?? this.sealed(room)[String(epoch)]
+        if (!known) return null
+        return aesKey(await unseal(this.account.privateKey, this.account.publicKey, known, epochKeyContext(room, epoch)))
+      }
+    }
+  }
+
   private sealed(room: string): Record<string, string> {
     let known = this.sealedByRoom.get(room)
     if (!known) {

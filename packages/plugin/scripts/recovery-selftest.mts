@@ -1,10 +1,10 @@
-// A server that lost its data, and one that was restored from a backup, with
-// real devices. The server runs in this process on a port and in a directory
-// of its own, so the test can stop it, change its data and start it again -
-// which no other test can.
+// A server that lost its data, one that was restored from a backup, and an
+// account the admin removed, with real devices. The server runs in this
+// process on a port and in a directory of its own, so the test can stop it,
+// change its data and start it again - which no other test can.
 //
 //   npm run test:recovery
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { check, delay, Device, eventually, finish, useServer, VAULT } from './harness.mjs'
@@ -12,6 +12,7 @@ import { check, delay, Device, eventually, finish, useServer, VAULT } from './ha
 const { docRoom } = await import('@obsidian-connect/shared')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
+const { AccountStore } = await import('../../server/src/accounts.js')
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
 
@@ -27,7 +28,8 @@ async function serve(dataDir: string) {
       OBSIDIAN_CONNECT_REGISTRATION: 'open',
       OBSIDIAN_CONNECT_JWT_SECRET: 'recovery-selftest'
     }),
-    { logger: false }
+    // Removed accounts are cleared within moments, not minutes.
+    { logger: false, sweepMs: 200 }
   )
   port = server.port
   useServer(`ws://127.0.0.1:${port}`)
@@ -194,6 +196,73 @@ try {
   check(await eventually(() => A2.vault.text('One.md') === latest), 'and rolls back', A2.vault.text('One.md'))
   const kept = await Promise.all(A2.vault.adapter.backups().map((path) => A2.vault.adapter.read(path)))
   check(kept.some((text) => text.includes('written just before the restore')), 'keeping the text it had just written itself in a backup')
+
+  // --- the admin removes the account of someone who shared a note -------------------------
+  // One device of the participant is there when it happens, the other away,
+  // with an edit made meanwhile.
+  const P1 = new Device(`piet${run}`, true)
+  const P2 = new Device(`piet${run}`, false)
+  try {
+    check(await P1.boot(), 'someone else creates an account')
+    check(await P2.boot(), 'with a second device')
+    const code = await (A1.contacts as NonNullable<typeof A1.contacts>).createCode()
+    await P1.contacts?.redeem(code)
+    check(
+      await eventually(() => A1.contacts?.isContact(P1.accountId) === true && P1.contacts?.isContact(A1.accountId) === true),
+      'and becomes a contact of A'
+    )
+    await A1.vault.userCreate('Shared.md', 'from anna\n')
+    check(await eventually(() => A1.docText('Shared.md') === 'from anna\n'), 'A writes a note')
+    await delay(250)
+    await A1.vault.userWrite('Shared.md', 'from anna\nand more\n')
+    const sharedId = A1.index?.docIdForPath('Shared.md') as string
+    check(await eventually(() => A1.socket?.isSettled(docRoom(sharedId)) === true), 'in two steps')
+    await A1.sharing?.share(sharedId, P1.accountId, 'write', true)
+    check(
+      await eventually(() => P1.vault.text('Shared/Shared.md') === 'from anna\nand more\n' && P2.vault.text('Shared/Shared.md') === 'from anna\nand more\n'),
+      'and shares it with both of P\'s devices'
+    )
+    await P2.shutdown()
+    // Text replaced, not only added: without the last agreed text the two
+    // versions could only be unioned, and the old words would stay in.
+    const together = 'from anna\nand less, as P2 changed it while away\n'
+    P2.vault.offlineWrite('Shared/Shared.md', together)
+    // P1's own copy of the history is gone - pruned, say - so what the
+    // server kept is all the history there is.
+    await P1.locals.history.clear(docRoom(sharedId))
+
+    await new AccountStore(empty).remove(A1.accountId)
+    const carriedOn = (): string | undefined => {
+      const id = P1.index?.docIdForPath('Shared/Shared.md')
+      return id && id !== sharedId && P1.store?.entry(id)?.owner === undefined ? id : undefined
+    }
+    check(await eventually(() => Boolean(carriedOn()), 20_000), "when A's account is removed, P keeps the note as one of her own")
+    check(P1.vault.text('Shared/Shared.md') === 'from anna\nand more\n', 'text and all')
+    {
+      const id = carriedOn() as string
+      const history = new NoteHistory(P1.api, docRoom(id), (P1.keys as InstanceType<typeof KeyRing>).ownDocCrypto(id), 100)
+      await history.load()
+      const texts = history.versions().map((version) => history.textAt(version.seq))
+      check(texts.includes('from anna\n') && texts[0] === 'from anna\nand more\n', 'with its whole history', texts)
+    }
+    check(!existsSync(join(empty, 'users', A1.accountId)), "and A's data is gone from the server")
+
+    check(await P2.boot(), 'P2 comes back')
+    check(
+      await eventually(
+        () =>
+          P2.index?.docIdForPath('Shared/Shared.md') === carriedOn() &&
+          P2.vault.text('Shared/Shared.md') === together &&
+          P1.vault.text('Shared/Shared.md') === together,
+        15_000
+      ),
+      'carries on in the same note, and what it wrote while away reaches P1',
+      { p1: P1.vault.text('Shared/Shared.md'), p2: P2.vault.text('Shared/Shared.md') }
+    )
+  } finally {
+    await P1.shutdown()
+    await P2.shutdown()
+  }
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {

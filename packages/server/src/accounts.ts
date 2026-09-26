@@ -47,6 +47,13 @@ interface AccountFile {
   logins: Record<string, string>
   /** sha256 of an invite code -> the invite. Consumed by registering. */
   invites: Record<string, StoredInvite>
+  /**
+   * Account id -> when it was removed, until the server has ended its shares
+   * and deleted its folder. Only what is listed here is ever deleted: an
+   * account merely missing - a damaged or half-restored file - takes nothing
+   * with it.
+   */
+  removed: Record<string, number>
 }
 
 export class AccountError extends Error {
@@ -84,7 +91,7 @@ function newInviteCode(): string {
 }
 
 function empty(): AccountFile {
-  return { accounts: {}, logins: {}, invites: {} }
+  return { accounts: {}, logins: {}, invites: {}, removed: {} }
 }
 
 export class AccountStore {
@@ -271,13 +278,27 @@ export class AccountStore {
     })
   }
 
-  remove(accountId: string): Promise<boolean> {
+  /** The account can no longer sign in at once; its data goes with the server's next sweep. */
+  remove(accountId: string, now = Date.now()): Promise<boolean> {
     return this.update((data) => {
       const account = data.accounts[accountId]
       if (!account) return false
       delete data.logins[account.loginHash]
       delete data.accounts[accountId]
+      data.removed[accountId] = now
       return true
+    })
+  }
+
+  /** Accounts removed whose data the server has not cleared yet, with when. */
+  async removed(): Promise<Record<string, number>> {
+    return { ...(await this.load()).removed }
+  }
+
+  /** The server has cleared everything of a removed account. */
+  settleRemoval(accountId: string): Promise<void> {
+    return this.update((data) => {
+      delete data.removed[accountId]
     })
   }
 

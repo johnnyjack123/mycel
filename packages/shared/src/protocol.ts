@@ -116,6 +116,8 @@ export const API = {
   accounts: '/accounts',
   contacts: '/contacts',
   shares: '/shares',
+  /** Shares that ended, kept for the participant until one of their devices forked. */
+  forks: '/forks',
   keys: '/keys',
   log: '/log',
   compactable: '/compactable'

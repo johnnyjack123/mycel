@@ -495,11 +495,38 @@ try {
         .map(({ docId }) => docId)
       check(everIndexed.length === 2, 'the revoke moves the note once, not once per message', everIndexed)
     }
+    {
+      // The copy carries the history C could read - from the share on, never before it.
+      const ownId = C.index?.docIdForPath('Shared/Together.md') as string
+      const history = new NoteHistory(C.api, docRoom(ownId), (C.keys as InstanceType<typeof KeyRing>).ownDocCrypto(ownId), HISTORY_GAP_MS)
+      await history.load()
+      const texts = history.versions().map((version) => history.textAt(version.seq))
+      check(
+        texts.length > 1 && texts.includes('shared text\n') && texts.some((text) => text.includes('from Alice')),
+        "C's own copy keeps the history she could read",
+        texts
+      )
+      check(texts.every((text) => !text.includes('draft')), 'and nothing from before the share', texts)
+      check((await C.api.forks()).forks.length === 0, 'the server lets go of what it kept for her')
+    }
     aTogether.type(' after revoke')
     await C.vault.userWrite('Shared/Together.md', `${keptByCarol}\nCarol's own line`)
     await delay(1_200)
     check(!C.vault.text('Shared/Together.md')?.includes('after revoke'), 'what A writes afterwards no longer reaches C')
     check(!aTogether.text().includes("Carol's own line"), "and C's copy no longer reaches A")
+
+    // C's second device was away through all of it.
+    check(await C2.boot(), "C's second device comes back")
+    check(
+      await eventually(
+        () =>
+          C2.index?.docIdForPath('Shared/Together.md') === C.index?.docIdForPath('Shared/Together.md') &&
+          C2.vault.text('Shared/Together.md') === `${keptByCarol}\nCarol's own line`
+      ),
+      'and carries on in the same note of her own, with what she wrote since',
+      { c2: C2.vault.text('Shared/Together.md'), c: C.vault.text('Shared/Together.md') }
+    )
+    await C2.shutdown()
 
     // History, restored on the client.
     A.close(aTogether)
@@ -535,12 +562,50 @@ try {
       'and still has every note right'
     )
 
+    // Detaching: C keeps a note A shares with her, as her own, and leaves the share.
+    await A.vault.userCreate('Handout.md', 'handout v1\n')
+    check(await eventually(() => A.docText('Handout.md') === 'handout v1\n'), 'A writes a handout')
+    const handoutId = A.index?.docIdForPath('Handout.md') as string
+    await A.sharing?.share(handoutId, C.accountId, 'read', true)
+    check(await eventually(() => C.vault.text('Shared/Handout.md') === 'handout v1\n'), 'and shares it with C to read')
+    await C.sharing?.detach(handoutId)
+    {
+      const own = C.index?.docIdForPath('Shared/Handout.md') as string
+      check(
+        Boolean(own) && own !== handoutId && C.store?.entry(own)?.owner === undefined && C.store?.isReadOnly(own) === false,
+        'C detaches it: a note of her own, which she may edit',
+        C.store?.entry(own)
+      )
+    }
+    check((await A.sharing?.members(handoutId))?.members.length === 0, 'and A sees her gone')
+    await C.vault.userWrite('Shared/Handout.md', "handout v1\nCarol's notes\n")
+    await A.vault.userWrite('Handout.md', 'handout v2\n')
+    await delay(1_000)
+    check(
+      A.vault.text('Handout.md') === 'handout v2\n' && C.vault.text('Shared/Handout.md') === "handout v1\nCarol's notes\n",
+      'and the two go their own ways',
+      { a: A.vault.text('Handout.md'), c: C.vault.text('Shared/Handout.md') }
+    )
+
     // Removing a contact ends what the two share; each keeps what they have.
     await A.vault.userCreate('Parting.md', 'shared before parting\n')
     check(await eventually(() => A.docText('Parting.md') === 'shared before parting\n'), 'A writes one more note')
     const partingId = A.index?.docIdForPath('Parting.md') as string
     await A.sharing?.share(partingId, C.accountId, 'write', true)
     check(await eventually(() => C.vault.text('Shared/Parting.md') === 'shared before parting\n'), 'and shares it with C')
+    // C's next edit never reaches the server: it is still waiting to be sent
+    // when the share ends.
+    const socket = (C.socket as unknown as { ws: { send(data: Uint8Array): void; close(): void } }).ws
+    const send = socket.send.bind(socket)
+    const PUSH = 3
+    socket.send = (data: Uint8Array) => {
+      if (data[0] !== PUSH) send(data)
+    }
+    const unsent = 'shared before parting\nnever sent by Carol\n'
+    // Apart from A's text by more than the history's gap, so it is a version of its own.
+    await delay(HISTORY_GAP_MS * 2)
+    await C.vault.userWrite('Shared/Parting.md', unsent)
+    check(await eventually(() => C.docText('Shared/Parting.md') === unsent), 'C edits it, and the edit waits to be sent')
     await A.sharing?.endWith(C.accountId)
     await A.contacts?.remove(C.accountId)
     check(await eventually(() => C.contacts?.isContact(A.accountId) === false), 'removing a contact reaches the other side')
@@ -551,7 +616,21 @@ try {
       }),
       'and ends the share, C keeping her copy as a note of her own'
     )
-    check(C.vault.text('Shared/Parting.md') === 'shared before parting\n', 'text and all')
+    socket.send = send
+    socket.close()
+    check(await eventually(() => C.vault.text('Shared/Parting.md') === unsent), 'with the edit that never reached A', C.vault.text('Shared/Parting.md'))
+    {
+      const id = C.index?.docIdForPath('Shared/Parting.md') as string
+      const history = new NoteHistory(C.api, docRoom(id), (C.keys as InstanceType<typeof KeyRing>).ownDocCrypto(id), HISTORY_GAP_MS)
+      await history.load()
+      const latest = history.versions()[0]
+      check(
+        Boolean(latest) && history.textAt(latest?.seq ?? 0) === unsent && history.versions().some((version) => history.textAt(version.seq) === 'shared before parting\n'),
+        'which her own note on the server holds, after the history she could read',
+        history.versions().map((version) => history.textAt(version.seq))
+      )
+    }
+    check(A.vault.text('Parting.md') === 'shared before parting\n', 'while A never sees it')
     const again = await A.sharing?.share(partingId, C.accountId, 'write', true).then(
       () => 'shared',
       () => 'refused'

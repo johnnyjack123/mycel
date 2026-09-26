@@ -19,3 +19,9 @@ export const SYNC_ORIGIN = 'obsidian-connect-sync'
  * the file, so the file has to follow.
  */
 export const RESTORE_ORIGIN = 'obsidian-connect-restore'
+
+/**
+ * What a device still held of a share that ended, merged into the note it
+ * carries on in. Not from the file either, so the file follows.
+ */
+export const FORK_ORIGIN = 'obsidian-connect-fork'
