@@ -14,6 +14,12 @@ to `main`; merging to `main` is what builds and publishes the Docker image.
 
 ## Next step
 
+**Phase 3, in progress** — specified in `docs/PHASE3.md`, built in its order:
+surviving the server, accounts without names, contacts, ending a share, trash. Each
+step lands as its own commits on `feat/accounts`; everything is pushed at the end.
+
+Still open from Phase 2, for when the user tests on devices:
+
 1. **On-device run of Phase 2.** Start fresh: the server from `docker compose`, a new
    data volume, and on every device the plugin's old state is obsolete (old vault ids,
    old document ids, plaintext). Sign in on each device with the same account and

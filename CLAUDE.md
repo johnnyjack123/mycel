@@ -305,11 +305,27 @@ modals and the settings tab.
     ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
   ```
 
+## Next: Phase 3
+
+Agreed, not built: accounts without names, contacts by one-time friend code,
+forking a share with its history, surviving a server that lost or rolled back
+data, trash. Specified in **`docs/PHASE3.md`**.
+
 ## Not built yet
 
-Recovery codes, 2FA, password strength estimation, verifying a recipient's key
-fingerprint, rate limiting, deleting rooms nobody references any more,
-notes beyond `maxLoadedDocuments` staying live, attachments.
+Recovery codes, 2FA, notes beyond `maxLoadedDocuments` staying live,
+attachments (they need an encrypted blob store of their own; today the plugin
+ignores every non-Markdown file, it does not break on them).
+
+**Backup API (wanted).** A secured endpoint a backup tool such as restic can
+pull snapshots from on a schedule, in two forms:
+
+- *Encrypted:* the data directory as it is — ciphertext only — authenticated with
+  a dedicated, revocable backup token rather than an account.
+- *Decrypted:* the notes as Markdown. Decryption must happen outside the server,
+  or the server would hold the keys: a small command-line client on the backup
+  machine signs in with the account's credentials, pulls the ciphertext through
+  the API, decrypts locally and writes the files restic then snapshots.
 
 ## Conventions
 
