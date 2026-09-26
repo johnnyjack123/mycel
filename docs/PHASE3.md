@@ -1,8 +1,8 @@
 # Phase 3 — accounts without names, contacts, surviving the server
 
-Agreed with the user between 2026-09-24 and 2026-09-26. Not built yet; this is the
-specification the implementation follows. Order of work: surviving the server,
-accounts without names, contacts, ending a share, trash.
+Agreed with the user between 2026-09-24 and 2026-09-26; the specification the
+implementation follows. Order of work: surviving the server, accounts without names,
+contacts, ending a share, trash. Sections marked *(built)* are done.
 
 The rule behind all of it: the server is assumed compromisable. Nothing it stores or
 sees may reveal names, content, or credentials, and nothing it does may destroy text
@@ -49,9 +49,6 @@ on a device.
   with a base the file follows, backed up; a document without any history is seeded.
 
 ## Accounts without names (built)
-
-Until contacts exist, a note is shared by typing the other person's account id,
-which the plugin shows in its settings.
 
 - `salt = H("obsidian-connect" ‖ serverId ‖ username)`. `serverId` is 128 random
   bits the server draws on its very first start and keeps in its data directory —
@@ -101,7 +98,11 @@ data/
 A note lives in its owner's folder. A recipient's index only references it; the
 recipient's own copy exists only after a fork.
 
-## Contacts
+## Contacts (built)
+
+`share/Contacts.ts`, `server/src/contacts.ts`. The server keeps codes (only the hash
+of the redeem key), pairs and an inbox per account in `contacts.json`. The code is 28
+bytes - 16 of secret, 12 of fingerprint - in Crockford base32, groups of five.
 
 - A **one-time friend code**, valid 7 days: code id, a random secret, the creator's
   account id, and the fingerprint of the creator's public key. It travels outside the

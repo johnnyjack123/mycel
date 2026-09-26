@@ -209,9 +209,19 @@ note shared to read only gets a read-only editor.
 
 ### Sharing
 
-Per note, in the UI: "Share this note…" picks a person the server knows, read or
-write, with or without history (`share/Sharing.ts`, `docs/PHASE2.md`). The
-recipient's plugin adds the note to its own index under the share folder.
+Per note, in the UI: "Share this note…" picks a contact, read or write, with or
+without history (`share/Sharing.ts`, `docs/PHASE2.md`). The recipient's plugin
+adds the note to its own index under the share folder.
+
+- **Only contacts, and their keys are pinned.** Two accounts become contacts
+  when one redeems the other's one-time friend code (`share/Contacts.ts`,
+  `server/src/contacts.ts`), which travels outside the server and carries the
+  fingerprint of its creator's key. The code yields a redeem key (the server
+  keeps its hash) and a MAC key that never leaves a device, so the server can
+  pass the sealed names back and forth but not forge them. Keys are taken from
+  the contact list, never fetched again from the server when sealing. The
+  server refuses a share with anyone else. Removing a contact ends every share
+  between the two.
 Presence (cursors, selections) follows from a note being shared: the `shared`
 flag on the index entry, and `DocHandle` only registers awareness while it is
 set. Syncing your own devices never broadcasts a caret. There is no global

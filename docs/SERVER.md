@@ -32,8 +32,10 @@ key derived from both together, and knows accounts only by random ids. Losing th
 password means losing access to the encrypted notes (the devices keep their files).
 
 Data lives in the `obsidian-connect-data` volume. Everything in it is ciphertext or a
-random id. What the server can tell: which account ids exist, which note ids, who
-shares with whom by id, and when and how much was written.
+random id. What the server can tell: which account ids exist, which note ids, who is
+whose contact and who shares with whom by id, and when and how much was written.
+`contacts.json` holds the contact pairs, open friend codes (as a hash) and messages
+waiting for a device; without it, contacts would have to exchange codes again.
 
 **Back up the whole volume, and keep `server.json` with `accounts.json`.** It holds
 the server's id, which is part of every account's salt: a server with another id opens
