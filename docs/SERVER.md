@@ -65,6 +65,12 @@ There are no names to list: everyone finds their account id in the plugin's sett
 under *Signed in as*. A code works once. Sign-in and registration always answer after
 one second, and an address that keeps failing is turned away for 15 minutes.
 
+`user remove` stops the account from signing in at once. The running server then ends
+everything it shared, within a few minutes: everyone a note was shared with keeps it
+as a note of their own, with the history they could read. The server holds that part
+for them for 90 days if none of their devices is online meanwhile. Then it deletes the
+account's data. Only accounts removed this way are ever deleted.
+
 ## Without Docker
 
 ```bash

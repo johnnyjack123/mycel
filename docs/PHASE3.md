@@ -89,10 +89,12 @@ on a device.
 data/
   server.json                   the server's id - part of every salt, never to be lost
   accounts.json                 keyed by account id, plus the login-key hash index
+  contacts.json                 contact pairs, open friend codes (hashed), inboxes
   users/<accountId>/<vaultId>/
     index/                      vault index room
     settings/                   account settings room
     notes/<docId>/              meta.json, log.bin, snap-*.bin
+  users/<accountId>/forks/      what the account could read of shares that ended
 ```
 
 A note lives in its owner's folder. A recipient's index only references it; the
@@ -119,7 +121,7 @@ bytes - 16 of secret, 12 of fingerprint - in Crockford base32, groups of five.
   can be renamed locally. Sharing is only possible with contacts; the server enforces
   it too. Removing a contact ends every share between the two, each keeping a copy.
 
-## Ending a share
+## Ending a share (built)
 
 - Revoking, the owner deleting their account, and a participant leaving but keeping
   the note all end the same way: the participant's device **forks** — a new note in
@@ -129,6 +131,19 @@ bytes - 16 of secret, 12 of fingerprint - in Crockford base32, groups of five.
   devices has forked: without a limit while the owner's account exists, 90 days after
   the owner deleted it. The 90 days bound only this pickup; a fork keeps its history.
 - With every device keeping its frames, a fork mostly works from the local copy.
+- As built: the kept part lives in the **participant's** folder
+  (`users/<account>/forks/<docId>.json` and `.log.json`), not the owner's, so the
+  owner's folder goes the moment their account does. The record stays as a tombstone
+  once the history is picked up or has expired: a later subscribe to the old room is
+  answered with `revoked`, never with a missing room the device would wait for or
+  claim.
+- The first device that forks decides the new note (`POST /forks/:docId/done`); the
+  old index entry's tombstone names it (`forkedTo`), and every other device of the
+  account merges what it holds into it as Yjs state — same changes, so nothing
+  doubles.
+- `user remove` marks the account as removed; the server's sweep ends its shares,
+  its memberships and its contacts and deletes its folder. Only marked accounts are
+  ever deleted.
 
 ## Known limit, for later
 
@@ -143,5 +158,4 @@ members and roles the owner signed.
 
 - A deleted note stays restorable for the history retention. Then the owner's device
   asks the server to delete its room; refused while it is shared or a fork is pending.
-- Deleting an account ends every share as above; the owner's folder goes once no fork
-  is pending.
+- Deleting an account ends every share as above (built, see *Ending a share*).

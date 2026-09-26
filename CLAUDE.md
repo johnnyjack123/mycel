@@ -123,6 +123,17 @@ someone's notes. Treat them as rules, not preferences.
     would undo a restore made on purpose and taking the server's state would
     drop what the devices wrote since. Index and settings always keep the
     union; only note contents can be rolled back, and only with a backup.
+20. **A share that ends is forked, never dropped** — revoked, detached, a
+    contact removed, the owner's account removed. The participant's note
+    carries on as their own, with the history they could read and what they
+    had not sent yet. The server keeps that history for them until one of
+    their devices forked, and keeps the record after that as a tombstone, so
+    a device returning later hears "ended" instead of finding a missing room
+    to wait for or to claim.
+21. **The server deletes only accounts marked as removed.** `user remove`
+    lists the account under `removed` in `accounts.json`; the sweep clears
+    exactly those. An account that is merely missing — a damaged or
+    half-restored file — must never take its folder with it.
 
 ## Architecture
 
@@ -230,10 +241,24 @@ set. Syncing your own devices never broadcasts a caret. There is no global
 - A share folder is only a **default landing spot**. Moving a note out keeps it
   shared; the link lives in the index.
 - **Revoke is a protocol message** (`revoked`), also answered to a later
-  subscribe, and moves the note to a new epoch. The revoked copy stays, re-keyed
-  into the other person's own vault.
-- **Detaching re-keys the document** into the participant's namespace and copies
-  the history they can read.
+  subscribe, and moves the note to a new epoch.
+- **Every end of a share is a fork** (invariant 20). The server writes what the
+  participant could read — frames, their starting snapshot, their sealed keys —
+  into *their* folder (`server/src/forks.ts`), so the owner's folder can go at
+  once: without a limit while the owner exists, 90 days after the owner's
+  account was removed. The device (`Sharing.endShare`) imports that plus its
+  own history (`sync/History.ts`) into a new note of its own at the same path,
+  the rest of its local Yjs state last — unsent edits included —, and
+  `DocStore.forkInto` hands the file over. The old index entry's tombstone
+  names the new note (`forkedTo`); every other device of the account folds
+  what it holds of the old note into it as Yjs state. The new note was built
+  from the same changes, so that adds only what is missing and duplicates
+  nothing. The base text moves along, so a file edited offline merges three
+  ways.
+- **Removing an account** (`user remove`) only marks it (invariant 21). The
+  running server's sweep (`RoomHub.sweep`, on start and every few minutes)
+  ends its shares as above, ends its memberships, forgets its contacts and
+  deletes its folder.
 - **Deleting is asymmetric.** A participant deleting leaves the share. The owner
   deleting removes the note from the owner's vault only.
 - **No remote delete.** Participants already hold the content, and destroying
