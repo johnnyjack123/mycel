@@ -510,8 +510,9 @@ export class DocStore {
       return handle.text()
     }
     Y.applyUpdate(handle.doc, seedUpdate(handle.docId, text), SYNC_ORIGIN)
-    // The same seed may have been applied and deleted long ago; the update is
-    // a no-op then, and the file's text still has to get in.
+    // A seed applied and deleted before is a no-op in Yjs. `reconcile` seeds
+    // only documents that never carried anything, so that should not happen -
+    // but if it did, the file's text would silently not get in.
     if (handle.text() !== text) this.applyToDocument(handle, text)
     return handle.text()
   }
@@ -593,7 +594,7 @@ export class DocStore {
     }
 
     const base = await this.state.baseText(docId)
-    const outcome = reconcile({ base, local, remote, markers: this.options.conflictMarkers })
+    const outcome = reconcile({ base, local, remote, pristine: handle.pristine, markers: this.options.conflictMarkers })
     await this.applyOutcome(docId, file, handle, local, remote, base, outcome)
   }
 
@@ -673,7 +674,8 @@ export class DocStore {
       if (local !== base) await this.backups.write(path, 'local', local)
       return remote
     }
-    const outcome = reconcile({ base, local, remote, markers: this.options.conflictMarkers })
+    const pristine = this.handles.get(docId)?.pristine ?? false
+    const outcome = reconcile({ base, local, remote, pristine, markers: this.options.conflictMarkers })
     switch (outcome.kind) {
       case 'agree':
         return remote

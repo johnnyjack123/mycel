@@ -11,6 +11,12 @@ export interface ReconcileInput {
   local: string
   /** The shared document. */
   remote: string
+  /**
+   * The document has never carried anything, here or anywhere: no change was
+   * ever applied to it. Empty text alone does not say that - a note emptied
+   * on purpose is empty too.
+   */
+  pristine: boolean
   markers: boolean
 }
 
@@ -19,7 +25,7 @@ export type ReconcileOutcome =
   | { kind: 'agree' }
   /** Nothing changed locally; the document is simply newer. */
   | { kind: 'adopt-remote' }
-  /** The document is empty and has never held this note. */
+  /** The document has never carried anything; the file fills it. */
   | { kind: 'seed' }
   /** The document changed, the file did not. */
   | { kind: 'adopt-local' }
@@ -73,9 +79,11 @@ export function reconcile(input: ReconcileInput): ReconcileOutcome {
 
   if (local === remote) return { kind: 'agree' }
 
-  // An empty document means the room has never carried this note. Seeding is
-  // the one moment where taking the file wholesale is correct.
-  if (remote.length === 0) return { kind: 'seed' }
+  // A document that never carried anything is the one moment where taking the
+  // file wholesale is correct. One that is merely empty was emptied: with a
+  // base the file follows, without one the text is added back, since then
+  // "emptied there" and "written here" cannot be told apart.
+  if (remote.length === 0 && input.pristine) return { kind: 'seed' }
 
   if (base !== null) {
     if (base === local) return { kind: 'adopt-remote' }

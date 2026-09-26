@@ -129,17 +129,33 @@ check(applyToText('a\nb\nc\n', 'a\nc\n') === 'a\nc\n', 'deleting a line in the m
 
 // --- reconcile ---------------------------------------------------------------
 
-check(reconcile({ base: 'x', local: 'x', remote: 'x', markers: true }).kind === 'agree', 'agree')
+check(reconcile({ base: 'x', local: 'x', remote: 'x', pristine: false, markers: true }).kind === 'agree', 'agree')
 check(
-  reconcile({ base: null, local: 'note', remote: '', markers: true }).kind === 'seed',
-  'an empty document is seeded'
+  reconcile({ base: null, local: 'note', remote: '', pristine: true, markers: true }).kind === 'seed',
+  'a document that never carried anything is seeded'
 )
 check(
-  reconcile({ base: 'x', local: 'x', remote: 'y', markers: true }).kind === 'adopt-remote',
+  reconcile({ base: 'note', local: 'note', remote: '', pristine: true, markers: true }).kind === 'seed',
+  'also where the device knew the note: a server and a local store both lost do not empty the file'
+)
+check(
+  reconcile({ base: 'note', local: 'note', remote: '', pristine: false, markers: true }).kind === 'adopt-remote',
+  'a note emptied elsewhere empties the untouched file'
+)
+{
+  const emptied = reconcile({ base: null, local: 'note', remote: '', pristine: false, markers: true })
+  check(
+    emptied.kind === 'merge' && emptied.additiveOnly && emptied.text === 'note',
+    'without a base an emptied note gets the text back, never an empty file',
+    emptied
+  )
+}
+check(
+  reconcile({ base: 'x', local: 'x', remote: 'y', pristine: false, markers: true }).kind === 'adopt-remote',
   'an untouched file adopts the document'
 )
 check(
-  reconcile({ base: 'x', local: 'y', remote: 'x', markers: true }).kind === 'adopt-local',
+  reconcile({ base: 'x', local: 'y', remote: 'x', pristine: false, markers: true }).kind === 'adopt-local',
   'an untouched document adopts the file'
 )
 
@@ -150,6 +166,7 @@ check(
     base: null,
     local: 'kept\nlocal only\n',
     remote: 'kept\nremote only\n',
+    pristine: false,
     markers: true
   })
   check(outcome.kind === 'merge', 'no base still merges')

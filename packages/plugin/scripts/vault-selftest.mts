@@ -243,7 +243,9 @@ try {
     'B creates every note it only knows from the index, folders included',
     B.vault.paths()
   )
-  check(B.vault.text('Welcome.md') === 'Hello from A\n', 'with the right content', B.vault.text('Welcome.md'))
+  // A's own start may still be sending when B asks: the file can appear a
+  // moment before its text does.
+  check(await eventually(() => B.vault.text('Welcome.md') === 'Hello from A\n'), 'with the right content', B.vault.text('Welcome.md'))
 
   {
     const docId = A.index?.docIdForPath('Welcome.md') as string
@@ -759,6 +761,23 @@ try {
       } finally {
         await E3.shutdown()
       }
+
+      // The other way round: a device that had agreed on a note's text, while
+      // it was emptied on purpose elsewhere. An empty document with history is
+      // not a new note - seeding it again brought the text back.
+      await E2.shutdown()
+      await E1.vault.userWrite('Existing/Two.md', '')
+      check(await eventually(() => E1.docText('Existing/Two.md') === ''), 'E1 empties a note while E2 is away')
+      const backupsBefore = E2.vault.adapter.backups().length
+      check(await E2.boot(), 'E2 comes back')
+      check(
+        await eventually(() => E2.vault.text('Existing/Two.md') === ''),
+        'and its copy follows the emptied note',
+        E2.vault.text('Existing/Two.md')
+      )
+      check(E2.vault.adapter.backups().length > backupsBefore, 'keeping a backup of the text it had')
+      await delay(600)
+      check(E1.vault.text('Existing/Two.md') === '', 'and the text does not come back to E1', E1.vault.text('Existing/Two.md'))
     } finally {
       await E1.shutdown()
       await E2.shutdown()

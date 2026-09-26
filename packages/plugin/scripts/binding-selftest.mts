@@ -147,7 +147,8 @@ class Host {
       isUnedited: (text: string) => text === this.base || text === this.recent,
       recentWrite: () => this.recent,
       resolve: async (local: string, remote: string) => {
-        const outcome = reconcile({ base: this.base, local, remote, markers: false })
+        const pristine = (this.ytext.doc?.store.clients.size ?? 0) === 0
+        const outcome = reconcile({ base: this.base, local, remote, pristine, markers: false })
         if (outcome.kind === 'merge') return outcome.text
         return outcome.kind === 'seed' || outcome.kind === 'adopt-local' ? local : remote
       },

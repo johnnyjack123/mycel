@@ -208,6 +208,15 @@ export class DocHandle {
     return this.ytext.toString()
   }
 
+  /**
+   * No change was ever applied to this document, here or on the server. Every
+   * insertion leaves a trace in the store, deleted or not, so an emptied note
+   * is not pristine.
+   */
+  get pristine(): boolean {
+    return this.doc.store.clients.size === 0
+  }
+
   get isDestroyed(): boolean {
     return this.destroyed
   }
