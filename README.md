@@ -24,10 +24,10 @@ every push to `main`. On the server, next to `docker-compose.yml`:
 ```bash
 cp server.env .env           # from docs/; set OBSIDIAN_CONNECT_JWT_SECRET
 docker compose up -d
-docker compose exec obsidian-connect obsidian-connect user add alice
+docker compose exec obsidian-connect obsidian-connect invite
 ```
 
-`user add` prints an invite code for that name. With
+`invite` prints a code that lets one person create one account. With
 `OBSIDIAN_CONNECT_REGISTRATION=open` in `.env`, people can create accounts
 themselves instead. Everything else — without Docker, the other account
 commands, what the server can and cannot see — is in `docs/SERVER.md`.

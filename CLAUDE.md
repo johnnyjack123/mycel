@@ -128,14 +128,22 @@ someone's notes. Treat them as rules, not preferences.
 
 ### Accounts and keys
 
-- Accounts live on the server (`accounts.json`), created by
-  `obsidian-connect user add <name>` (an invite code) or, with
-  `OBSIDIAN_CONNECT_REGISTRATION=open`, by anyone.
-- Password → Argon2id (hash-wasm) → HKDF into an **auth key** (sent; the server
-  keeps an HMAC of it) and a **master key** (never sent). The master key wraps
-  the account's ECDH P-256 private key and each vault key.
-- `vaultId` is derived by the server from `username + vault name`; a new device
-  pairs by signing in and naming the same vault.
+- **The server knows no names.** An account is a random id; `accounts.json`
+  finds it by the hash of a **login key**. Accounts come from an invite code
+  (`obsidian-connect invite`, naming nobody) or, with
+  `OBSIDIAN_CONNECT_REGISTRATION=open`, from anyone.
+- Salt = hash of the server's random id (`server.json`, public, pinned by the
+  plugin per address) and the name — derived, never stored or secret. Password
+  → Argon2id with parameters pinned in the code (`KDF_VERSIONS`, not taken from
+  the server) → HKDF into the login key (sent) and the **master key** (never
+  sent). Names are therefore not unique; name *and* password find an account.
+- The master key wraps the ECDH P-256 private key and a random **account
+  secret**. Vault ids (HMAC of the name), vault names (encrypted) and vault keys
+  hang off the account secret, so a password change re-wraps two things.
+- Passwords need 12 characters and 10¹² estimated guesses (zxcvbn, checked in
+  the plugin only); sign-in answers after a fixed second, and an address that
+  keeps failing is blocked (`server/src/throttle.ts`). There is no per-account
+  limit, by design: a wrong password is another login key.
 - The owner derives every room key from the vault key — index, settings, and
   each note per epoch — so nothing needs storing. People a note is shared with
   receive epoch keys **sealed** to their public key.
@@ -287,7 +295,7 @@ modals and the settings tab.
   text into the shared room.
 - **There is no Docker on the development machine.** The image is only ever
   built in CI: the `docker` job in `build.yml` runs after the tests, on `main`
-  only, starts the image once (health check, `user add` through the CLI) and
+  only, starts the image once (health check, `invite` through the CLI) and
   publishes it to `ghcr.io/johnnyjack123/obsidian-connect-server`. A broken
   `Dockerfile` shows up there and nowhere earlier.
 - **`main.js` is CommonJS inside a `"type": "module"` package.** Obsidian

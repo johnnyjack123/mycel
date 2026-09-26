@@ -8,7 +8,7 @@ The rule behind all of it: the server is assumed compromisable. Nothing it store
 sees may reveal names, content, or credentials, and nothing it does may destroy text
 on a device.
 
-## Surviving a server that lost or rolled back data
+## Surviving a server that lost or rolled back data (built)
 
 - **Deleting ciphertext cannot delete notes.** A deletion is itself an encrypted
   update, which the server cannot produce. Frames that are missing are never read as
@@ -48,7 +48,10 @@ on a device.
   anything (its state vector): empty text with history was emptied on purpose, and
   with a base the file follows, backed up; a document without any history is seeded.
 
-## Accounts without names
+## Accounts without names (built)
+
+Until contacts exist, a note is shared by typing the other person's account id,
+which the plugin shows in its settings.
 
 - `salt = H("obsidian-connect" ‖ serverId ‖ username)`. `serverId` is 128 random
   bits the server draws on its very first start and keeps in its data directory —
@@ -87,6 +90,7 @@ on a device.
 
 ```
 data/
+  server.json                   the server's id - part of every salt, never to be lost
   accounts.json                 keyed by account id, plus the login-key hash index
   users/<accountId>/<vaultId>/
     index/                      vault index room

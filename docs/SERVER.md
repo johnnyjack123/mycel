@@ -12,7 +12,7 @@ On the server you only need two files from this repository, `docker-compose.yml`
 ```bash
 cp server.env .env           # then edit it
 docker compose up -d
-docker compose exec obsidian-connect obsidian-connect user add alice
+docker compose exec obsidian-connect obsidian-connect invite
 ```
 
 Updating: `docker compose pull && docker compose up -d`. The data volume stays.
@@ -25,14 +25,19 @@ the server in once with a token that may read packages:
 To build the image yourself instead: `docker build -t obsidian-connect-server .` in the
 repository root, and point `image:` in `docker-compose.yml` at that name.
 
-`user add` prints an invite code. In Obsidian: *Settings → Obsidian Connect → Create
-account*, with the same name, the code and a password of your choice. The password
-never reaches the server; losing it means losing access to your encrypted notes (your
-devices keep their files).
+`invite` prints a code that lets one person create one account. In Obsidian:
+*Settings → Obsidian Connect → Create a new account*, with a name, the code and a
+password. The server never learns the name or the password: it finds an account by a
+key derived from both together, and knows accounts only by random ids. Losing the
+password means losing access to the encrypted notes (the devices keep their files).
 
-Data lives in the `obsidian-connect-data` volume. Everything in it is ciphertext
-except the metadata: account names, vault names, which note ids exist, who shares
-with whom, and when and how much was written.
+Data lives in the `obsidian-connect-data` volume. Everything in it is ciphertext or a
+random id. What the server can tell: which account ids exist, which note ids, who
+shares with whom by id, and when and how much was written.
+
+**Back up the whole volume, and keep `server.json` with `accounts.json`.** It holds
+the server's id, which is part of every account's salt: a server with another id opens
+no account, even with the right name and password.
 
 ## `.env`
 
@@ -41,7 +46,7 @@ A template sits in `docs/server.env`:
 | Variable | Default | Meaning |
 |---|---|---|
 | `OBSIDIAN_CONNECT_JWT_SECRET` | — (required with Docker) | Signs access tokens. `openssl rand -base64 48`. |
-| `OBSIDIAN_CONNECT_REGISTRATION` | `invite` | `invite`: accounts only from `user add`. `open`: anyone who reaches the server can create one. |
+| `OBSIDIAN_CONNECT_REGISTRATION` | `invite` | `invite`: accounts only with a code from `invite`. `open`: anyone who reaches the server can create one. |
 | `OBSIDIAN_CONNECT_TOKEN_TTL` | `2592000` | Seconds a device stays signed in without being used. |
 | `OBSIDIAN_CONNECT_LOG_UPDATES` | `false` | A log line per document frame. |
 | `PORT` | `1234` | Published port. |
@@ -49,13 +54,14 @@ A template sits in `docs/server.env`:
 ## Accounts
 
 ```bash
-docker compose exec obsidian-connect obsidian-connect user add <name>      # prints an invite code
-docker compose exec obsidian-connect obsidian-connect user invite <name>   # new code, account not yet claimed
-docker compose exec obsidian-connect obsidian-connect user list
-docker compose exec obsidian-connect obsidian-connect user remove <name>
+docker compose exec obsidian-connect obsidian-connect invite                    # a code for one new account
+docker compose exec obsidian-connect obsidian-connect user list                 # account ids, created, vaults
+docker compose exec obsidian-connect obsidian-connect user remove <accountId>
 ```
 
-An invited name needs its code even when registration is open.
+There are no names to list: everyone finds their account id in the plugin's settings,
+under *Signed in as*. A code works once. Sign-in and registration always answer after
+one second, and an address that keeps failing is turned away for 15 minutes.
 
 ## Without Docker
 
@@ -63,7 +69,7 @@ An invited name needs its code even when registration is open.
 copy docs\server.env .env      # Windows; cp on Linux/macOS. Then edit it.
 npm install
 npm run start:server
-npm run cli -- user add <name>
+npm run cli -- invite
 ```
 
 Both read the `.env` in the repository root, so the CLI writes to the same data
