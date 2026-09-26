@@ -13,9 +13,16 @@ on a device.
 - **Deleting ciphertext cannot delete notes.** A deletion is itself an encrypted
   update, which the server cannot produce. Frames that are missing are never read as
   deletions: a device only ever applies what it receives and keeps its own state.
-- **Detection:** on `caughtUp`, `headSeq < cursor.lastSeq`, or a room the device knows
-  is gone — the server has less than this device. Today the client ignores `headSeq`
-  and would skip every new frame whose seq it already "knows", so devices drift apart.
+- **Detection (built):** comparing seq numbers is not enough — a restored server's log
+  grows past a device's position again, and the device would skip frames whose seq it
+  thinks it has. Every cursor keeps the fingerprint of the frame it ends at, and every
+  subscribe asks for that frame once more; missing or different means another log.
+  The room is caught up from zero, merged into the local state, and held.
+- **Following (built):** a device follows a recorded decision if it was made after the
+  device last saw those notes in a log it recognised (`syncedAt`); otherwise it asks.
+- **Index and settings keep the union (built):** structure is never rolled back. Only
+  note contents are, with a backup; a note the restored server does not know is seeded
+  again from its file, so nothing that exists on a device disappears.
 - **Never automatic.** The user chooses, once per vault:
   - *this device is right*: re-upload its state and its local history;
   - *the server is right*: back up this device's newer text first, then adopt the

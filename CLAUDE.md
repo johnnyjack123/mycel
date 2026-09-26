@@ -110,7 +110,19 @@ someone's notes. Treat them as rules, not preferences.
     If the same seed was applied and deleted before, Yjs ignores it, so
     `seedDocument` inserts the text itself then; without that a device with an
     old copy emptied its file, with no backup. And whatever arrived while the
-    seed waited is kept as a union, never replaced.
+    seed waited is kept as a union, never replaced. Seeding depends on whether
+    the document *ever* carried anything (`DocHandle.pristine`), not on text or
+    base: a note emptied on purpose is empty too.
+19. **A seq number alone does not identify a log position.** A server restored
+    from a backup numbers new frames from where the backup ended, and a device
+    that was away took them for frames it had. Every cursor keeps the
+    fingerprint of its last frame, and every subscribe asks for that frame
+    again (`afterSeq = lastSeq - 1`); gone or different means the log is
+    another one. The room is then caught up from zero, merged, and **held** —
+    nothing is sent until the user decided (`Recovery`), because uploading
+    would undo a restore made on purpose and taking the server's state would
+    drop what the devices wrote since. Index and settings always keep the
+    union; only note contents can be rolled back, and only with a backup.
 
 ## Architecture
 
@@ -213,8 +225,12 @@ set. Syncing your own devices never broadcasts a caret. There is no global
 ### History and retention
 
 On the client, because only the client can read the log: `NoteHistory` decrypts
-and replays; restore edits the live document, so the rollback travels like any
-edit and can itself be undone. Retention is account-wide; the owner's
+and replays, ordered by the author's time inside each frame — not the server's
+seq or clock, which re-uploaded history would scramble and which the server
+could fake. Restore edits the live document, so the rollback travels like any
+edit and can itself be undone. Every device also keeps the history it saw,
+decrypted, in its own IndexedDB (`sync/History.ts`) — to upload it again after
+the server lost it. Retention is account-wide; the owner's
 `Compactor` folds frames older than it into a snapshot under the current epoch
 and uploads it; the server drops those frames only then, and keeps a member's
 join snapshot while it is still their starting point.
@@ -229,10 +245,16 @@ npm run test:merge     # merge/reconcile/identity and the crypto — no server, 
 npm run test:load      # the built bundle imports, onload/start/unload run, Obsidian stubbed
 npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart — in-process
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
+npm run test:recovery  # a server that lost its data, and one restored from a backup — in-process server
 # needs a server that lets tests create accounts:
 npm run test:socket    # the encrypted transport, two devices of one account
 npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing
 ```
+
+The end-to-end tests share their devices through `scripts/harness.mts`.
+`test:recovery` starts the server in-process (`startServer` in
+`server/src/server.ts`) so it can stop it, take its data away or restore an old
+copy, and start it again on the same port.
 
 `test:vault` runs the real sync layer against `scripts/stubs/fake-vault.ts`: an
 in-memory vault and a Markdown view that save the way Obsidian does (text taken
