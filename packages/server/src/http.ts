@@ -48,9 +48,10 @@ export function createHttpApp(
   config: ServerConfig,
   tokens: TokenService,
   accounts: AccountStore,
-  hub: RoomHub
+  hub: RoomHub,
+  options: { logger?: boolean } = {}
 ): FastifyInstance {
-  const app = Fastify({ logger: true, bodyLimit: BODY_LIMIT })
+  const app = Fastify({ logger: options.logger ?? true, bodyLimit: BODY_LIMIT })
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof AccountError || error instanceof HubError) {
