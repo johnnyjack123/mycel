@@ -37,7 +37,7 @@ export class IncomingModal extends Modal {
     }
     for (const share of this.shares) {
       new Setting(contentEl)
-        .setName(`From ${share.owner}`)
+        .setName(`From ${this.sharing.nameOf(share.owner)}`)
         .setDesc(`${share.role === 'read' ? 'To read' : 'To edit'} · ${new Date(share.addedAt).toLocaleString()}`)
         .addButton((button) =>
           button

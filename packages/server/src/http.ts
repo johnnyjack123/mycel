@@ -7,7 +7,13 @@ import {
   type AccountKeyResponse,
   type AuthConfigResponse,
   type CompactableResponse,
+  type ContactCodeInfo,
+  type ContactCodeRequest,
+  type ContactReplyRequest,
+  type ContactsResponse,
   type CreateVaultRequest,
+  type InboxResponse,
+  type RedeemRequest,
   type DocRequest,
   type ImportRequest,
   type IncomingSharesResponse,
@@ -24,6 +30,7 @@ import {
 import { AccountError, isAccountId, type AccountStore } from './accounts.js'
 import type { TokenService } from './auth.js'
 import type { ServerConfig } from './config.js'
+import type { ContactStore } from './contacts.js'
 import { HubError, type RoomHub } from './rooms.js'
 import { AddressGuard, paced } from './throttle.js'
 
@@ -53,6 +60,7 @@ export function createHttpApp(
   tokens: TokenService,
   accounts: AccountStore,
   hub: RoomHub,
+  contacts: ContactStore,
   options: HttpOptions = {}
 ): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? true, bodyLimit: BODY_LIMIT })
@@ -177,6 +185,72 @@ export function createHttpApp(
     if (!account) return reply.code(404).send({ error: 'no such account' })
     const response: AccountKeyResponse = { accountId: account.accountId, publicKey: account.publicKey }
     return response
+  })
+
+  // --- contacts ------------------------------------------------------------------
+
+  app.post(`${API.contacts}/codes`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    const body = (request.body ?? {}) as Partial<ContactCodeRequest>
+    await contacts.addCode(accountId, body.codeId, body.redeemHash, body.expiresAt)
+    return { ok: true }
+  })
+
+  app.get<{ Params: { codeId: string } }>(`${API.contacts}/codes/:codeId`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    const owner = await contacts.codeOwner(request.params.codeId)
+    const account = owner ? await accounts.get(owner) : undefined
+    if (!account) return reply.code(404).send({ error: 'this code is not valid (any more)' })
+    const info: ContactCodeInfo = { owner: account.accountId, publicKey: account.publicKey }
+    return info
+  })
+
+  app.post(`${API.contacts}/redeem`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    const body = (request.body ?? {}) as Partial<RedeemRequest>
+    const owner = await contacts.redeem(accountId, body.codeId, body.redeemKey, body.sealed)
+    hub.notify(owner, 'contact', { account: accountId })
+    return { owner }
+  })
+
+  app.post(`${API.contacts}/reply`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    const body = (request.body ?? {}) as Partial<ContactReplyRequest>
+    await contacts.reply(accountId, body.to, body.codeId, body.sealed)
+    hub.notify(body.to as string, 'contact', { account: accountId })
+    return { ok: true }
+  })
+
+  app.get(`${API.contacts}/inbox`, async (request, reply): Promise<InboxResponse | undefined> => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return { items: await contacts.inbox(accountId) }
+  })
+
+  app.post(`${API.contacts}/inbox/done`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    await contacts.done(accountId, ((request.body ?? {}) as { ids?: unknown }).ids)
+    return { ok: true }
+  })
+
+  app.get(API.contacts, async (request, reply): Promise<ContactsResponse | undefined> => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return { contacts: await contacts.contactsOf(accountId) }
+  })
+
+  app.post(`${API.contacts}/remove`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    const other = ((request.body ?? {}) as { account?: unknown }).account
+    if (!isAccountId(other)) return reply.code(400).send({ error: 'not an account id' })
+    if (await contacts.unpair(accountId, other)) hub.notify(other, 'contact-removed', { account: accountId })
+    return { ok: true }
   })
 
   // --- sharing -------------------------------------------------------------------

@@ -183,12 +183,66 @@ export interface AcceptRequest {
 }
 
 /** Why a notification was sent to an account. */
-export type NotifyKind = 'share-added' | 'share-changed' | 'share-removed'
+export type NotifyKind = 'share-added' | 'share-changed' | 'share-removed' | 'contact' | 'contact-removed'
 
 export interface ShareNotice {
   docId: string
   owner: string
   role?: ShareRole
+}
+
+/** For `contact` (something waits in the inbox) and `contact-removed`. */
+export interface ContactNotice {
+  account: string
+}
+
+export type Notice = ShareNotice | ContactNotice
+
+// --- contacts --------------------------------------------------------------------
+
+export interface ContactCodeRequest {
+  codeId: string
+  /** sha256 of the redeem key, hex. The key itself only ever comes with a redemption. */
+  redeemHash: string
+  expiresAt: number
+}
+
+/** What a code's holder needs to check the creator's key against the fingerprint in the code. */
+export interface ContactCodeInfo {
+  owner: string
+  publicKey: string
+}
+
+export interface RedeemRequest {
+  codeId: string
+  redeemKey: string
+  /** The redeemer's name, account and key, sealed to the code's creator and MAC'd with the code. */
+  sealed: string
+}
+
+export interface ContactReplyRequest {
+  to: string
+  codeId: string
+  /** The creator's name, sealed to the redeemer and MAC'd with the code. */
+  sealed: string
+}
+
+export interface InboxItem {
+  id: string
+  kind: 'request' | 'reply'
+  from: string
+  codeId: string
+  sealed: string
+  at: number
+}
+
+export interface InboxResponse {
+  items: InboxItem[]
+}
+
+export interface ContactsResponse {
+  /** Account ids this account is connected with, as far as the server knows. */
+  contacts: string[]
 }
 
 // --- keys and log ----------------------------------------------------------------

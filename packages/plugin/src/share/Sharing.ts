@@ -23,6 +23,7 @@ import {
 import { ApiError, type ConnectApi } from '../account/api.js'
 import type { KeyRing } from '../account/KeyRing.js'
 import type { DocStore } from '../sync/DocStore.js'
+import type { Contacts } from './Contacts.js'
 
 // Sharing a note with a person, and everything that follows from it: the
 // keys they get, the epoch that moves when someone loses access, and what
@@ -55,15 +56,49 @@ export class Sharing {
     private readonly api: ConnectApi,
     private readonly keys: KeyRing,
     private readonly store: DocStore,
-    private readonly options: SharingOptions
+    private readonly options: SharingOptions,
+    private readonly contacts: Contacts | null = null
   ) {}
+
+  /** What this account calls someone. */
+  nameOf(account: string): string {
+    return this.contacts?.name(account) ?? account.slice(0, 8)
+  }
 
   members(docId: string): Promise<ShareMembersResponse> {
     return this.api.members(docId)
   }
 
+  /**
+   * The key pinned when the contact was made. Only someone who is a member
+   * without being a contact - which sharing does not allow - falls back to
+   * what the server says, so a rotation can still seal for everyone who stays.
+   */
   private async publicKey(account: string): Promise<Bytes> {
+    const pinned = this.contacts?.publicKey(account)
+    if (pinned) return pinned
+    console.warn(`[obsidian-connect] ${account} is not a contact; using the key the server has for them`)
     return fromBase64((await this.api.accountKey(account)).publicKey)
+  }
+
+  /**
+   * Ends everything shared with someone, before the contact goes: their
+   * access to this account's notes, and this account's copies of theirs, kept
+   * as notes of its own.
+   */
+  async endWith(account: string): Promise<void> {
+    for (const { docId, entry } of this.store.sharedEntries()) {
+      try {
+        if (entry.owner === account) {
+          await this.detach(docId)
+        } else if (!entry.owner) {
+          const { members } = await this.api.members(docId)
+          if (members.some((member) => member.account === account)) await this.revoke(docId, account)
+        }
+      } catch (error) {
+        console.error(`[obsidian-connect] ending the share of ${docId} failed`, error)
+      }
+    }
   }
 
   /**
@@ -75,7 +110,10 @@ export class Sharing {
   async share(docId: string, account: string, role: ShareRole, withHistory: boolean): Promise<void> {
     const entry = this.store.entry(docId)
     if (!entry || entry.deletedAt) throw new Error('This note is not synced yet.')
-    if (entry.owner) throw new Error(`Only ${entry.owner} can share this note.`)
+    if (entry.owner) throw new Error(`Only ${this.nameOf(entry.owner)} can share this note.`)
+    if (this.contacts && !this.contacts.isContact(account)) {
+      throw new Error('Notes are shared with contacts only. Add them under Settings → Obsidian Connect → Contacts first.')
+    }
     const recipientKey = await this.publicKey(account)
     const handle = await this.store.handle(docId)
     // Without the room's current state there is nothing to hand over, and
@@ -218,7 +256,7 @@ export class Sharing {
       this.keys.forgetShared(docId)
       const file = await this.store.rekeyToOwn(docId)
       new Notice(
-        `${entry.owner} stopped sharing "${titleOf(entry.path)}" with you.${file ? ' Your copy is kept as a note of your own.' : ''}`,
+        `${this.nameOf(entry.owner)} stopped sharing "${titleOf(entry.path)}" with you.${file ? ' Your copy is kept as a note of your own.' : ''}`,
         12_000
       )
     } finally {

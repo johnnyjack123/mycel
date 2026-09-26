@@ -40,6 +40,7 @@ const { VaultSocket } = await import('../src/sync/VaultSocket.js')
 const { Compactor } = await import('../src/sync/Compactor.js')
 const { EditorSync } = await import('../src/editor/EditorSync.js')
 const { Sharing } = await import('../src/share/Sharing.js')
+const { Contacts } = await import('../src/share/Contacts.js')
 const { FakeVault, FakeFileManager, FakeMarkdownView, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
 )
@@ -116,6 +117,7 @@ export class Device {
   sharing: InstanceType<typeof Sharing> | null = null
   compactor: InstanceType<typeof Compactor> | null = null
   settings: InstanceType<typeof AccountSettings> | null = null
+  contacts: InstanceType<typeof Contacts> | null = null
   recovery: InstanceType<typeof Recovery> | null = null
   retentionDays = 30
   /** What the user answers when the server turns out to have other data. */
@@ -151,7 +153,11 @@ export class Device {
     const backups = new BackupStore(vault.adapter as never, 'plugin')
     const index = new VaultIndex(openVault.vaultId, (path, generation) => keys.docId(path, generation))
     const socket = new VaultSocket(serverUrl, openVault.vaultId, () => this.token ?? '', {
-      notify: (kind, payload) => void this.sharing?.onNotify(kind, payload).then(() => this.editors.refresh()),
+      notify: (kind, payload) => {
+        if (kind === 'contact') void this.contacts?.processInbox()
+        else if (kind === 'contact-removed') this.contacts?.forget((payload as { account: string }).account)
+        else void this.sharing?.onNotify(kind, payload as never).then(() => this.editors.refresh())
+      },
       revoked: (room) => void this.sharing?.onRevoked(room).then(() => this.editors.refresh()),
       diverged: (room) => this.recovery?.diverged(room)
     })
@@ -195,7 +201,13 @@ export class Device {
       },
       onResolved: () => this.editors.refresh()
     })
-    const sharing = new Sharing(this.api, keys, store, { folder: () => 'Shared', syncTimeoutMs: 4_000, autoAccept: () => true })
+    const contacts = new Contacts(
+      this.api,
+      { accountId: unlocked.accountId, username: unlocked.username, publicKey: unlocked.publicKey, privateKey: unlocked.privateKey },
+      settings
+    )
+    this.contacts = contacts
+    const sharing = new Sharing(this.api, keys, store, { folder: () => 'Shared', syncTimeoutMs: 4_000, autoAccept: () => true }, contacts)
     this.store = store
     this.index = index
     this.socket = socket
@@ -227,7 +239,10 @@ export class Device {
     ]
     socket.connect()
     started = await store.start()
-    if (started) await sharing.checkIncoming()
+    if (started) {
+      await contacts.processInbox()
+      await sharing.checkIncoming()
+    }
     this.editors.refresh()
     return started
   }

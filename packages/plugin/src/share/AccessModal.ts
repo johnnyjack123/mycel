@@ -44,7 +44,7 @@ export class AccessModal extends Modal {
     }
     for (const member of members.members) {
       new Setting(contentEl)
-        .setName(member.account)
+        .setName(this.sharing.nameOf(member.account))
         .addDropdown((dropdown) =>
           dropdown
             .addOption('write', 'Can edit')
@@ -68,7 +68,7 @@ export class AccessModal extends Modal {
   private async setRole(username: string, role: ShareRole): Promise<void> {
     try {
       await this.sharing.setRole(this.docId, username, role)
-      new Notice(`${username} can now ${role === 'read' ? 'only read' : 'edit'} ${this.file.basename}.`)
+      new Notice(`${this.sharing.nameOf(username)} can now ${role === 'read' ? 'only read' : 'edit'} ${this.file.basename}.`)
     } catch (error) {
       new Notice(`Changing access failed: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -78,7 +78,7 @@ export class AccessModal extends Modal {
   private async revoke(username: string): Promise<void> {
     try {
       await this.sharing.revoke(this.docId, username)
-      new Notice(`${username} no longer has access to ${this.file.basename}.`)
+      new Notice(`${this.sharing.nameOf(username)} no longer has access to ${this.file.basename}.`)
     } catch (error) {
       new Notice(`Removing access failed: ${error instanceof Error ? error.message : String(error)}`)
     }

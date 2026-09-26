@@ -1,5 +1,14 @@
 import { Notice, Plugin, TFile, TFolder, editorInfoField, requestUrl, type TAbstractFile } from 'obsidian'
-import { docRoom, settingsRoom, userColor, type CollabUser } from '@obsidian-connect/shared'
+import {
+  docRoom,
+  settingsRoom,
+  userColor,
+  type CollabUser,
+  type ContactNotice,
+  type Notice as ServerNotice,
+  type NotifyKind,
+  type ShareNotice
+} from '@obsidian-connect/shared'
 import { ConnectApi, type HttpClient } from './account/api'
 import { judgePassword } from './account/password'
 import { probeServer, type ServerProbe } from './account/probe'
@@ -14,8 +23,9 @@ import { NoteHistory } from './history/NoteHistory'
 import { AccessModal } from './share/AccessModal'
 import { IncomingModal } from './share/IncomingModal'
 import { ShareModal } from './share/ShareModal'
+import { Contacts } from './share/Contacts'
 import { Sharing } from './share/Sharing'
-import { AccountSettings, DEFAULT_SHARED_SETTINGS, type SharedSettings } from './sync/AccountSettings'
+import { AccountSettings, DEFAULT_SHARED_SETTINGS, type Contact, type SharedSettings } from './sync/AccountSettings'
 import { BackupStore } from './sync/BackupStore'
 import { Compactor } from './sync/Compactor'
 import { LocalCursor, openIndexedDb, type LocalStore } from './sync/DocHandle'
@@ -99,6 +109,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   private settingsStore: LocalStore | null = null
   private settingsCursor: LocalCursor | null = null
   private sharing: Sharing | null = null
+  private contacts: Contacts | null = null
   private compactor: Compactor | null = null
   private history: HistoryStore | null = null
   private recovery: Recovery | null = null
@@ -312,7 +323,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.backups = new BackupStore(this.app.vault.adapter, root)
     this.index = new VaultIndex(vault.vaultId, (path, generation) => keys.docId(path, generation))
     const socket = new VaultSocket(this.settings.serverUrl, vault.vaultId, () => this.settings.token, {
-      notify: (kind, payload) => void this.sharing?.onNotify(kind, payload).then(() => this.editors.refresh()),
+      notify: (kind, payload) => this.onNotify(kind, payload),
       revoked: (room) => void this.sharing?.onRevoked(room).then(() => this.editors.refresh()),
       denied: (room, reason) => console.error(`[obsidian-connect] ${room} was refused: ${reason}`),
       diverged: (room) => this.recovery?.diverged(room)
@@ -355,11 +366,22 @@ export default class ObsidianConnectPlugin extends Plugin {
       ask: (notes) => new RecoveryModal(this.app, notes).choose(),
       onResolved: () => this.editors.refresh()
     })
-    this.sharing = new Sharing(this.api, keys, store, {
-      folder: () => this.shared().sharedFolder,
-      syncTimeoutMs: this.settings.syncTimeoutMs,
-      autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1
-    })
+    this.contacts = new Contacts(
+      this.api,
+      { accountId: unlocked.accountId, username: unlocked.username, publicKey: unlocked.publicKey, privateKey: unlocked.privateKey },
+      accountSettings
+    )
+    this.sharing = new Sharing(
+      this.api,
+      keys,
+      store,
+      {
+        folder: () => this.shared().sharedFolder,
+        syncTimeoutMs: this.settings.syncTimeoutMs,
+        autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1
+      },
+      this.contacts
+    )
     this.compactor = new Compactor(this.api, keys, () => this.shared().historyRetentionDays)
 
     // Editors bind as soon as the index is there, not after the whole vault
@@ -405,6 +427,8 @@ export default class ObsidianConnectPlugin extends Plugin {
           if (this.store === store) void this.runStart()
         })
       } else {
+        // Contacts first: a share may come from someone who became a contact while this device was away.
+        await this.processContacts()
         void this.sharing?.checkIncoming().then(
           (waiting) => {
             if (waiting > 0) new Notice(`${waiting} note(s) were shared with you. Run "Notes shared with me".`, 10_000)
@@ -559,7 +583,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       new Notice(`This note belongs to ${owner}; only they can share it.`)
       return
     }
-    new ShareModal(this.app, this.sharing, note.file, note.docId).open()
+    new ShareModal(this.app, this.sharing, note.file, note.docId, this.contactList()).open()
   }
 
   private openAccess(): void {
@@ -594,6 +618,63 @@ export default class ObsidianConnectPlugin extends Plugin {
   }
 
   // --- commands ------------------------------------------------------------
+
+  private onNotify(kind: NotifyKind, payload: ServerNotice): void {
+    if (kind === 'contact') {
+      void this.processContacts()
+      return
+    }
+    if (kind === 'contact-removed') {
+      this.contacts?.forget((payload as ContactNotice).account)
+      this.settingTab?.display()
+      return
+    }
+    void this.sharing?.onNotify(kind, payload as ShareNotice).then(() => this.editors.refresh())
+  }
+
+  private async processContacts(): Promise<void> {
+    try {
+      const added = (await this.contacts?.processInbox()) ?? 0
+      if (added > 0) {
+        new Notice(`Obsidian Connect: ${added} contact(s) added.`)
+        this.settingTab?.display()
+      }
+    } catch (error) {
+      console.warn('[obsidian-connect] reading the contact inbox failed', error)
+    }
+  }
+
+  // --- contacts, for the settings tab --------------------------------------
+
+  contactList(): Contact[] {
+    return this.contacts?.list() ?? []
+  }
+
+  contactName(accountId: string): string {
+    return this.contacts?.name(accountId) ?? accountId.slice(0, 8)
+  }
+
+  async createContactCode(): Promise<string> {
+    if (!this.contacts) throw new Error('Sign in first.')
+    return this.contacts.createCode()
+  }
+
+  async redeemContactCode(code: string): Promise<void> {
+    if (!this.contacts) throw new Error('Sign in first.')
+    await this.contacts.redeem(code)
+  }
+
+  renameContact(accountId: string, name: string): void {
+    this.contacts?.rename(accountId, name)
+  }
+
+  /** Ends every share with them first, each side keeping what it has. */
+  async removeContact(accountId: string): Promise<void> {
+    if (!this.contacts || !this.sharing) throw new Error('Sign in first.')
+    await this.sharing.endWith(accountId)
+    await this.contacts.remove(accountId)
+    this.editors.refresh()
+  }
 
   /** For debugging and for the admin: the server knows accounts and vaults only by these. */
   ids(): { account: string; vault: string } | null {

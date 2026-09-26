@@ -10,12 +10,13 @@ import {
   type RevokeRequest,
   type RoleRequest,
   type ShareMembersResponse,
-  type ShareNotice,
+  type Notice,
   type ShareRequest,
   type ShareRole,
   type SnapshotRequest
 } from '@obsidian-connect/shared'
 import { isAccountId, type AccountStore } from './accounts.js'
+import type { ContactStore } from './contacts.js'
 import { RoomLog, loadAllMeta, type Frame, type RoomMeta, type SnapshotInfo } from './log.js'
 
 // The server's side of an end-to-end encrypted vault: it keeps every room's
@@ -35,7 +36,7 @@ export interface RoomClient {
   sendRekey(room: string, epoch: number): void
   sendRevoked(room: string, reason: string): void
   sendDenied(room: string, reason: string): void
-  sendNotify(kind: NotifyKind, payload: ShareNotice): void
+  sendNotify(kind: NotifyKind, payload: Notice): void
 }
 
 export class HubError extends Error {
@@ -92,7 +93,8 @@ export class RoomHub {
 
   constructor(
     private readonly options: RoomHubOptions,
-    private readonly accounts: AccountStore
+    private readonly accounts: AccountStore,
+    private readonly contacts: ContactStore
   ) {
     this.ready = loadAllMeta(options.dataDir).then((metas) => {
       for (const meta of metas) this.metas.set(meta.room, meta)
@@ -199,7 +201,7 @@ export class RoomHub {
     }
   }
 
-  private notify(account: string, kind: NotifyKind, payload: ShareNotice): void {
+  notify(account: string, kind: NotifyKind, payload: Notice): void {
     for (const client of this.clients) if (client.account === account) client.sendNotify(kind, payload)
   }
 
@@ -312,6 +314,8 @@ export class RoomHub {
   private async recipient(id: unknown, owner: string): Promise<string> {
     if (!isAccountId(id) || !(await this.accounts.get(id))) throw new HubError(404, 'no such person')
     if (id === owner) throw new HubError(400, 'that is you')
+    // The client checks this too; the server holds it even for one that does not.
+    if (!(await this.contacts.connected(owner, id))) throw new HubError(403, 'notes are shared with contacts only')
     return id
   }
 

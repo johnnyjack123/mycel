@@ -5,6 +5,12 @@ import {
   type AccountKeyResponse,
   type AuthConfigResponse,
   type CompactableResponse,
+  type ContactCodeInfo,
+  type ContactCodeRequest,
+  type ContactReplyRequest,
+  type ContactsResponse,
+  type InboxResponse,
+  type RedeemRequest,
   type CreateVaultRequest,
   type ImportRequest,
   type IncomingSharesResponse,
@@ -120,6 +126,38 @@ export class ConnectApi {
   /** Someone's public key as the server has it. Contacts pin it; until then it is the server's word. */
   accountKey(accountId: string): Promise<AccountKeyResponse> {
     return this.call('GET', `${API.accounts}/${encodeURIComponent(accountId)}/key`)
+  }
+
+  addContactCode(request: ContactCodeRequest): Promise<unknown> {
+    return this.call('POST', `${API.contacts}/codes`, request)
+  }
+
+  contactCode(codeId: string): Promise<ContactCodeInfo> {
+    return this.call('GET', `${API.contacts}/codes/${encodeURIComponent(codeId)}`)
+  }
+
+  redeemContact(request: RedeemRequest): Promise<{ owner: string }> {
+    return this.call('POST', `${API.contacts}/redeem`, request)
+  }
+
+  replyContact(request: ContactReplyRequest): Promise<unknown> {
+    return this.call('POST', `${API.contacts}/reply`, request)
+  }
+
+  contactInbox(): Promise<InboxResponse> {
+    return this.call('GET', `${API.contacts}/inbox`)
+  }
+
+  contactInboxDone(ids: string[]): Promise<unknown> {
+    return this.call('POST', `${API.contacts}/inbox/done`, { ids })
+  }
+
+  contacts(): Promise<ContactsResponse> {
+    return this.call('GET', API.contacts)
+  }
+
+  removeContact(account: string): Promise<unknown> {
+    return this.call('POST', `${API.contacts}/remove`, { account })
   }
 
   share(request: ShareRequest): Promise<unknown> {

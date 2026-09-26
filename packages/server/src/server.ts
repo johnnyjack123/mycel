@@ -5,6 +5,7 @@ import { WebSocketServer } from 'ws'
 import { isHexId } from '@obsidian-connect/shared'
 import { AccountStore } from './accounts.js'
 import { TokenService } from './auth.js'
+import { ContactStore } from './contacts.js'
 import type { ServerConfig } from './config.js'
 import { createHttpApp } from './http.js'
 import { RoomHub } from './rooms.js'
@@ -36,8 +37,9 @@ function reject(socket: Duplex, status: string): void {
 export async function startServer(config: ServerConfig, options: StartOptions = {}): Promise<RunningServer> {
   const tokens = new TokenService(config.jwtSecret, config.accessTokenTtlSeconds)
   const accounts = new AccountStore(config.dataDir)
-  const hub = new RoomHub({ dataDir: config.dataDir, logUpdates: config.logUpdates }, accounts)
-  const app = createHttpApp(config, tokens, accounts, hub, { logger: options.logger ?? true, paceMs: options.paceMs })
+  const contacts = new ContactStore(config.dataDir)
+  const hub = new RoomHub({ dataDir: config.dataDir, logUpdates: config.logUpdates }, accounts, contacts)
+  const app = createHttpApp(config, tokens, accounts, hub, contacts, { logger: options.logger ?? true, paceMs: options.paceMs })
   const wss = new WebSocketServer({ noServer: true })
 
   async function handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {

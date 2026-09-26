@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
 import type { ShareRole } from '@obsidian-connect/shared'
+import type { Contact } from '../sync/AccountSettings.js'
 import type { Sharing } from './Sharing.js'
 
 /** Share this note: with whom, what they may do, and whether they see the past. */
@@ -13,7 +14,9 @@ export class ShareModal extends Modal {
     app: App,
     private readonly sharing: Sharing,
     private readonly file: TFile,
-    private readonly docId: string
+    private readonly docId: string,
+    /** Only contacts: their keys are pinned, and the server shares with nobody else. */
+    private readonly contacts: Contact[]
   ) {
     super(app)
   }
@@ -26,15 +29,22 @@ export class ShareModal extends Modal {
   private render(): void {
     const { contentEl } = this
     contentEl.empty()
+    // Only contacts whose device answered: before that their name is unknown.
+    const people = this.contacts.filter((contact) => contact.name || contact.localName)
+    if (people.length === 0) {
+      contentEl.createEl('p', {
+        text: 'Notes are shared with contacts. Add one under Settings → Obsidian Connect → Contacts first.'
+      })
+      return
+    }
+    this.person ||= people[0]?.accountId ?? ''
 
-    new Setting(contentEl)
-      .setName('Account ID')
-      .setDesc('The server knows no names. The other person finds their account ID in their Obsidian Connect settings.')
-      .addText((text) =>
-        text.setValue(this.person).onChange((value) => {
-          this.person = value.trim().toLowerCase()
-        })
-      )
+    new Setting(contentEl).setName('Person').addDropdown((dropdown) => {
+      for (const contact of people) dropdown.addOption(contact.accountId, contact.localName || contact.name)
+      dropdown.setValue(this.person).onChange((value) => {
+        this.person = value
+      })
+    })
 
     new Setting(contentEl)
       .setName('Access')
@@ -77,7 +87,7 @@ export class ShareModal extends Modal {
     this.busy = true
     try {
       await this.sharing.share(this.docId, this.person, this.role, this.withHistory)
-      new Notice(`${this.file.basename} is shared with ${this.person}.`)
+      new Notice(`${this.file.basename} is shared with ${this.sharing.nameOf(this.person)}.`)
       this.close()
     } catch (error) {
       console.error('[obsidian-connect] sharing failed', error)

@@ -39,6 +39,10 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private repeat = ''
   private revealed = false
   private invite = ''
+  private contactCode = ''
+  /** A code this device just made, shown until the settings close. */
+  private shownCode = ''
+  private removing: string | null = null
   private busy = false
 
   /** What the configured server answered; undefined while asking. */
@@ -62,6 +66,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     this.gated = []
     this.serverStatus = null
     this.account(containerEl)
+    this.contactsSection(containerEl)
     this.device(containerEl)
     this.shared(containerEl)
     if (!this.plugin.settings.username) {
@@ -76,6 +81,8 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     this.probeTimer = null
     this.probing = 0
     this.probe = undefined
+    this.shownCode = ''
+    this.removing = null
   }
 
   private async checkServer(): Promise<void> {
@@ -332,6 +339,86 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           this.display()
         })
       )
+  }
+
+  private contactsSection(containerEl: HTMLElement): void {
+    if (!this.plugin.settings.username) return
+    new Setting(containerEl).setName('Contacts').setHeading()
+    containerEl.createEl('p', {
+      cls: 'setting-item-description',
+      text: 'You share notes with contacts only. The server never learns their names: those travel encrypted between your devices and theirs.'
+    })
+
+    new Setting(containerEl)
+      .setName('Invite someone')
+      .setDesc(
+        this.shownCode
+          ? `${this.shownCode} - works once, for seven days. Send it any way but through this server, to one person.`
+          : 'A code for one person. Whoever enters it becomes your contact, without you having to confirm.'
+      )
+      .addButton((button) =>
+        button.setButtonText(this.shownCode ? 'Copy' : 'Create a code').onClick(() => {
+          if (this.shownCode) {
+            void navigator.clipboard.writeText(this.shownCode)
+            new Notice('Copied.')
+            return
+          }
+          void this.run(async () => {
+            this.shownCode = await this.plugin.createContactCode()
+          })
+        })
+      )
+
+    new Setting(containerEl)
+      .setName('Add a contact')
+      .setDesc('Enter the code someone gave you.')
+      .addText((text) =>
+        text
+          .setPlaceholder('XXXXX-XXXXX-…')
+          .setValue(this.contactCode)
+          .onChange((value) => {
+            this.contactCode = value
+          })
+      )
+      .addButton((button) =>
+        button.setButtonText('Add').onClick(
+          () =>
+            void this.run(async () => {
+              await this.plugin.redeemContactCode(this.contactCode)
+              this.contactCode = ''
+              new Notice('Added. Their name appears once one of their devices answers.')
+            })
+        )
+      )
+
+    for (const contact of this.plugin.contactList()) {
+      const confirming = this.removing === contact.accountId
+      const own = contact.localName && contact.name && contact.localName !== contact.name ? ` · calls themselves ${contact.name}` : ''
+      new Setting(containerEl)
+        .setName(contact.localName || contact.name || 'Waiting for their device to answer…')
+        .setDesc(`${contact.accountId}${own}`)
+        .addText((text) =>
+          text
+            .setPlaceholder('Your name for them')
+            .setValue(contact.localName ?? '')
+            .onChange((value) => this.plugin.renameContact(contact.accountId, value))
+        )
+        .addButton((button) =>
+          button
+            .setButtonText(confirming ? 'Really remove?' : 'Remove')
+            .setWarning()
+            .onClick(() => {
+              if (!confirming) {
+                this.removing = contact.accountId
+                this.display()
+                return
+              }
+              this.removing = null
+              // Ends every share between the two first; each keeps what they have.
+              void this.run(() => this.plugin.removeContact(contact.accountId))
+            })
+        )
+    }
   }
 
   private device(containerEl: HTMLElement): void {

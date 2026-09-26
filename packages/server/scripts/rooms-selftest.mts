@@ -3,12 +3,13 @@
 // arbitrary bytes - the server treats them as opaque, which is the point.
 //
 //   npm run test:rooms
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { NotifyKind, ShareNotice } from '@obsidian-connect/shared'
+import type { Notice, NotifyKind } from '@obsidian-connect/shared'
 import { AccountStore } from '../src/accounts.js'
+import { ContactStore } from '../src/contacts.js'
 import { loadEnvFile } from '../src/config.js'
 import { AddressGuard, paced } from '../src/throttle.js'
 import type { Frame } from '../src/log.js'
@@ -83,7 +84,7 @@ class Client implements RoomClient {
   sendDenied(room: string, reason: string): void {
     this.messages.push({ type: 'denied', room, reason })
   }
-  sendNotify(kind: NotifyKind, _payload: ShareNotice): void {
+  sendNotify(kind: NotifyKind, _payload: Notice): void {
     this.messages.push({ type: 'notify', kind })
   }
 
@@ -189,8 +190,48 @@ try {
     )
   }
 
+  // --- contacts ----------------------------------------------------------------
+  const contacts = new ContactStore(dataDir)
+  {
+    const secretKey = randomBytes(32)
+    const redeemHash = createHash('sha256').update(secretKey).digest('hex')
+    const codeId = hexId()
+    await contacts.addCode(alice, codeId, redeemHash, Date.now() + 60_000)
+    check((await contacts.codeOwner(codeId)) === alice, 'a code tells its holder whose it is')
+    check(
+      (await status(() => contacts.redeem(dave, codeId, randomBytes(32).toString('base64'), 'sealed'))) === 403,
+      'a redemption without the right key is refused'
+    )
+    check((await status(() => contacts.redeem(alice, codeId, secretKey.toString('base64'), 'sealed'))) === 400, 'nobody redeems their own code')
+    check((await contacts.redeem(dave, codeId, secretKey.toString('base64'), 'sealed-for-alice')) === alice, 'the right key redeems it')
+    check(await contacts.connected(alice, dave), 'and the two are contacts')
+    const inbox = await contacts.inbox(alice)
+    check(inbox.length === 1 && inbox[0]?.from === dave && inbox[0].sealed === 'sealed-for-alice', "the creator finds the redeemer's message")
+    check(
+      (await status(() => contacts.redeem(bob, codeId, secretKey.toString('base64'), 'sealed'))) === 403,
+      'a code works once'
+    )
+    check((await status(() => contacts.reply(alice, bob, codeId, 'sealed'))) === 403, 'the answer goes only to who redeemed it')
+    await contacts.reply(alice, dave, codeId, 'sealed-for-dave')
+    check((await contacts.inbox(dave))[0]?.sealed === 'sealed-for-dave', 'and reaches them')
+    await contacts.done(alice, inbox.map((item) => item.id))
+    check((await contacts.inbox(alice)).length === 0, 'handled messages are gone')
+
+    const late = hexId()
+    const lateKey = randomBytes(32)
+    await contacts.addCode(alice, late, createHash('sha256').update(lateKey).digest('hex'), Date.now() + 60_000)
+    check(
+      (await status(() => contacts.redeem(bob, late, lateKey.toString('base64'), 'sealed', Date.now() + 8 * 24 * 60 * 60 * 1000))) === 403,
+      'a code expires after at most seven days'
+    )
+    check(await contacts.unpair(alice, dave), 'contacts can part')
+    check(!(await contacts.connected(alice, dave)), 'and are no longer connected')
+  }
+  await contacts.pair(alice, bob)
+  await contacts.pair(alice, carol)
+
   // --- rooms -------------------------------------------------------------------
-  let hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts)
+  let hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts, contacts)
   const a1 = new Client(alice, aliceVault.vaultId)
   const a2 = new Client(alice, aliceVault.vaultId)
   const bobDevice = new Client(bob, bobVault.vaultId)
@@ -241,6 +282,10 @@ try {
   }
 
   // --- sharing with history ------------------------------------------------------
+  check(
+    (await status(() => hub.share(alice, { docId, account: dave, role: 'write', withHistory: true, keys: { '0': 'k0' }, title: 'title' }))) === 403,
+    'a note is shared with contacts only'
+  )
   await hub.share(alice, { docId, account: bob, role: 'write', withHistory: true, keys: { '0': 'k0' }, title: 'title' })
   check(bobDevice.take().some((m) => m.type === 'notify' && m.kind === 'share-added'), 'the recipient is told')
   await hub.subscribe(bobDevice, room, 0)
@@ -369,7 +414,7 @@ try {
 
   // --- restart ---------------------------------------------------------------------------
   await hub.shutdown()
-  hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts)
+  hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts, contacts)
   const afterRestart = new Client(alice, aliceVault.vaultId)
   hub.attach(afterRestart)
   await hub.subscribe(afterRestart, room, 0)

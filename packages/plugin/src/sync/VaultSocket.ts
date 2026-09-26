@@ -7,7 +7,7 @@ import {
 } from 'y-protocols/awareness'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { MUX, awarenessAad, frameAad, snapshotAad, type NotifyKind, type ShareNotice } from '@obsidian-connect/shared'
+import { MUX, awarenessAad, frameAad, snapshotAad, type Notice, type NotifyKind } from '@obsidian-connect/shared'
 import { bytes, decrypt, encrypt, packFrame, sha256, toHex, unpackFrame } from '@obsidian-connect/shared/crypto'
 import type { HistoryEntry } from './History.js'
 
@@ -86,7 +86,7 @@ export interface RoomOptions {
 }
 
 export interface SocketHandlers {
-  notify?(kind: NotifyKind, payload: ShareNotice): void
+  notify?(kind: NotifyKind, payload: Notice): void
   /** Access to a room was taken away - also answered to a later subscribe. */
   revoked?(room: string): void
   denied?(room: string, reason: string): void
@@ -278,7 +278,7 @@ export class VaultSocket {
     if (type === MUX.notify) {
       const kind = decoding.readVarString(decoder) as NotifyKind
       try {
-        this.handlers.notify?.(kind, JSON.parse(decoding.readVarString(decoder)) as ShareNotice)
+        this.handlers.notify?.(kind, JSON.parse(decoding.readVarString(decoder)) as Notice)
       } catch (error) {
         console.error('[obsidian-connect] a notification could not be read', error)
       }

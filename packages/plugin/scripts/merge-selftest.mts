@@ -356,6 +356,140 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(again.getText(CONTENT_FIELD).length === 0, 'a seed deleted since does nothing when applied again - hence the fallback in DocStore')
 }
 
+// --- contacts, against a server that may lie ---------------------------------------------
+{
+  const { Contacts } = await import('../src/share/Contacts.js')
+  const { AccountSettings } = await import('../src/sync/AccountSettings.js')
+  type InboxItem = { id: string; kind: 'request' | 'reply'; from: string; codeId: string; sealed: string; at: number }
+
+  const codeRoundTrip = e2e.decodeContactCode(e2e.encodeContactCode(e2e.newContactSecret(), e2e.randomBytes(12)))
+  check(codeRoundTrip !== null, 'a contact code reads back')
+  const sample = e2e.encodeContactCode(e2e.newContactSecret(), e2e.randomBytes(12))
+  check(
+    e2e.toHex(e2e.decodeContactCode(sample.toLowerCase().replace(/-/g, ' '))?.secret ?? new Uint8Array()) ===
+      e2e.toHex(e2e.decodeContactCode(sample)?.secret ?? new Uint8Array(1)),
+    'typed in lower case or with spaces, too'
+  )
+  check(e2e.decodeContactCode('not a code') === null, 'and anything else is no code')
+
+  // The server as the plugin sees it; `lie` lets it misbehave.
+  const codes = new Map<string, { owner: string; redeemHash: string; usedBy?: string }>()
+  const inbox = new Map<string, InboxItem[]>()
+  const keysOf = new Map<string, string>()
+  const lie: { swapKey?: string } = {}
+  const deliver = (to: string, item: Omit<InboxItem, 'id' | 'at'>): void => {
+    inbox.set(to, [...(inbox.get(to) ?? []), { ...item, id: Math.random().toString(36).slice(2), at: Date.now() }])
+  }
+  const apiFor = (me: string) => ({
+    addContactCode: async (request: { codeId: string; redeemHash: string }) => {
+      codes.set(request.codeId, { owner: me, redeemHash: request.redeemHash })
+    },
+    contactCode: async (codeId: string) => {
+      const code = codes.get(codeId)
+      if (!code) throw new Error('no such code')
+      return { owner: code.owner, publicKey: lie.swapKey ?? (keysOf.get(code.owner) as string) }
+    },
+    redeemContact: async (request: { codeId: string; redeemKey: string; sealed: string }) => {
+      const code = codes.get(request.codeId)
+      const hash = e2e.toHex(await e2e.sha256(e2e.fromBase64(request.redeemKey)))
+      if (!code || code.redeemHash !== hash) throw new Error('refused')
+      code.usedBy = me
+      deliver(code.owner, { kind: 'request', from: me, codeId: request.codeId, sealed: request.sealed })
+      return { owner: code.owner }
+    },
+    replyContact: async (request: { to: string; codeId: string; sealed: string }) => {
+      deliver(request.to, { kind: 'reply', from: me, codeId: request.codeId, sealed: request.sealed })
+    },
+    contactInbox: async () => ({ items: inbox.get(me) ?? [] }),
+    contactInboxDone: async (ids: string[]) => {
+      inbox.set(me, (inbox.get(me) ?? []).filter((item) => !ids.includes(item.id)))
+    },
+    removeContact: async () => ({})
+  })
+  const person = async (name: string) => {
+    const identity = await e2e.generateIdentity()
+    const accountId = e2e.toHex(e2e.randomBytes(16))
+    keysOf.set(accountId, e2e.toBase64(identity.publicKey))
+    const settings = new AccountSettings()
+    const me = { accountId, username: name, publicKey: identity.publicKey, privateKey: await e2e.importPrivateKey(identity.privateKey) }
+    return { me, settings, contacts: new Contacts(apiFor(accountId) as never, me, settings) }
+  }
+
+  const anna = await person('anna')
+  const ben = await person('ben')
+  const code = await anna.contacts.createCode()
+  check((await ben.contacts.redeem(code)) === anna.me.accountId, "ben redeems anna's code")
+  check((await anna.contacts.processInbox()) === 1, "anna's device takes ben in")
+  check((await ben.contacts.processInbox()) === 1, "and ben's device learns anna's name from her answer")
+  check(anna.contacts.name(ben.me.accountId) === 'ben' && ben.contacts.name(anna.me.accountId) === 'anna', 'each knows the other by name')
+  check(
+    e2e.toBase64(ben.contacts.publicKey(anna.me.accountId) ?? new Uint8Array()) === keysOf.get(anna.me.accountId),
+    "and holds the other's key, pinned"
+  )
+
+  // A second person with the same code: the server lets it through, anna's device does not.
+  const eve = await person('eve')
+  const secondCode = await anna.contacts.createCode()
+  await ben.contacts.redeem(secondCode)
+  await anna.contacts.processInbox()
+  await ben.contacts.processInbox()
+  const reused = codes.get([...codes.keys()].at(-1) as string)
+  if (reused) reused.usedBy = undefined
+  await eve.contacts.redeem(secondCode).catch(() => undefined)
+  await anna.contacts.processInbox()
+  check(!anna.contacts.isContact(eve.me.accountId), "a code redeemed a second time is refused by the creator's device")
+
+  // A server handing out its own key for the code's creator.
+  const fake = await e2e.generateIdentity()
+  lie.swapKey = e2e.toBase64(fake.publicKey)
+  const thirdCode = await anna.contacts.createCode()
+  const swapped = await eve.contacts.redeem(thirdCode).then(
+    () => 'sent',
+    (error: Error) => error.message
+  )
+  check(swapped.includes('does not belong'), 'a key that does not match the code is refused before anything is sent', swapped)
+  lie.swapKey = undefined
+
+  // A server inventing a request: it has no code secret, so no valid MAC.
+  const forger = await person('mallory')
+  const forged = await e2e.seal(
+    anna.me.publicKey,
+    e2e.utf8(JSON.stringify({ account: forger.me.accountId, publicKey: keysOf.get(forger.me.accountId), name: 'ben', mac: '00'.repeat(32) })),
+    e2e.contactContext([...codes.keys()].at(-1) as string, 'request')
+  )
+  const forgedCodeId = [...codes.keys()].at(-1) as string
+  deliver(anna.me.accountId, { kind: 'request', from: forger.me.accountId, codeId: forgedCodeId, sealed: forged })
+  await anna.contacts.processInbox()
+  check(!anna.contacts.isContact(forger.me.accountId), 'an introduction without the code is not believed')
+
+  // A server answering in anna's name with a key of its own.
+  const fourthCode = await anna.contacts.createCode()
+  const carl = await person('carl')
+  await carl.contacts.redeem(fourthCode)
+  inbox.set(anna.me.accountId, [])
+  const fakeAnswer = await e2e.seal(
+    carl.me.publicKey,
+    e2e.utf8(JSON.stringify({ account: anna.me.accountId, publicKey: e2e.toBase64(fake.publicKey), name: 'anna', mac: '00'.repeat(32) })),
+    e2e.contactContext([...codes.keys()].at(-1) as string, 'reply')
+  )
+  deliver(carl.me.accountId, { kind: 'reply', from: anna.me.accountId, codeId: [...codes.keys()].at(-1) as string, sealed: fakeAnswer })
+  await carl.contacts.processInbox()
+  check(
+    carl.contacts.name(anna.me.accountId) !== 'anna' &&
+      e2e.toBase64(carl.contacts.publicKey(anna.me.accountId) ?? new Uint8Array()) === keysOf.get(anna.me.accountId),
+    "a forged answer neither names the contact nor changes the key checked against the code"
+  )
+  // The same with anna's real key: only the MAC can tell it is not hers.
+  const namedAnswer = await e2e.seal(
+    carl.me.publicKey,
+    e2e.utf8(JSON.stringify({ account: anna.me.accountId, publicKey: keysOf.get(anna.me.accountId), name: 'not anna', mac: '00'.repeat(32) })),
+    e2e.contactContext([...codes.keys()].at(-1) as string, 'reply')
+  )
+  deliver(carl.me.accountId, { kind: 'reply', from: anna.me.accountId, codeId: [...codes.keys()].at(-1) as string, sealed: namedAnswer })
+  await carl.contacts.processInbox()
+  check(carl.contacts.name(anna.me.accountId) !== 'not anna', 'nor does one with the right key but without the code')
+}
+
 // --- passwords -------------------------------------------------------------------------
 {
   const { generatePassword, judgePassword } = await import('../src/account/password.js')

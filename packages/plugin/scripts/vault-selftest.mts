@@ -341,6 +341,26 @@ try {
   const C = new Device(carol, true)
   try {
     check(await C.boot(), 'C creates an account of her own')
+
+    // Contacts first: A hands C a one-time code, C enters it.
+    const code = await (A.contacts as NonNullable<typeof A.contacts>).createCode()
+    await C.contacts?.redeem(code)
+    check(
+      await eventually(() => A.contacts?.name(C.accountId) === carol && C.contacts?.name(A.accountId) === alice),
+      "A and C become contacts, each knowing the other's name"
+    )
+    check(
+      await eventually(() => B.contacts?.name(C.accountId) === carol),
+      "and A's other device knows C too"
+    )
+    check(
+      (await (C.contacts as NonNullable<typeof C.contacts>).redeem(code).then(
+        () => 'redeemed',
+        () => 'refused'
+      )) === 'refused',
+      'the code works once'
+    )
+
     await A.vault.userCreate('Together.md', 'a draft nobody else should see\n')
     await delay(400)
     await A.vault.userWrite('Together.md', 'shared text\n')
@@ -514,6 +534,29 @@ try {
       await eventually(() => B.vault.text('Together.md') === 'a draft nobody else should see\n' && B.vault.text('Archive/Plan.md') === A.vault.text('Archive/Plan.md')),
       'and still has every note right'
     )
+
+    // Removing a contact ends what the two share; each keeps what they have.
+    await A.vault.userCreate('Parting.md', 'shared before parting\n')
+    check(await eventually(() => A.docText('Parting.md') === 'shared before parting\n'), 'A writes one more note')
+    const partingId = A.index?.docIdForPath('Parting.md') as string
+    await A.sharing?.share(partingId, C.accountId, 'write', true)
+    check(await eventually(() => C.vault.text('Shared/Parting.md') === 'shared before parting\n'), 'and shares it with C')
+    await A.sharing?.endWith(C.accountId)
+    await A.contacts?.remove(C.accountId)
+    check(await eventually(() => C.contacts?.isContact(A.accountId) === false), 'removing a contact reaches the other side')
+    check(
+      await eventually(() => {
+        const id = C.index?.docIdForPath('Shared/Parting.md')
+        return Boolean(id) && C.store?.entry(id as string)?.owner === undefined
+      }),
+      'and ends the share, C keeping her copy as a note of her own'
+    )
+    check(C.vault.text('Shared/Parting.md') === 'shared before parting\n', 'text and all')
+    const again = await A.sharing?.share(partingId, C.accountId, 'write', true).then(
+      () => 'shared',
+      () => 'refused'
+    )
+    check(again === 'refused', 'and nothing more is shared with a former contact')
   } finally {
     await C.shutdown()
   }

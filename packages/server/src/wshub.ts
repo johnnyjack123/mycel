@@ -1,7 +1,7 @@
 import type { WebSocket } from 'ws'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { MUX, type NotifyKind, type ShareNotice } from '@obsidian-connect/shared'
+import { MUX, type Notice, type NotifyKind } from '@obsidian-connect/shared'
 import type { Frame } from './log.js'
 import type { RoomClient, RoomHub } from './rooms.js'
 
@@ -125,7 +125,7 @@ class VaultConnection implements RoomClient {
     this.message(MUX.denied, room, (encoder) => encoding.writeVarString(encoder, reason))
   }
 
-  sendNotify(kind: NotifyKind, payload: ShareNotice): void {
+  sendNotify(kind: NotifyKind, payload: Notice): void {
     this.message(MUX.notify, null, (encoder) => {
       encoding.writeVarString(encoder, kind)
       encoding.writeVarString(encoder, JSON.stringify(payload))

@@ -114,6 +114,7 @@ export const API = {
   vaults: '/vaults',
   /** `/accounts/:accountId/key`: someone's public key, by account id. */
   accounts: '/accounts',
+  contacts: '/contacts',
   shares: '/shares',
   keys: '/keys',
   log: '/log',

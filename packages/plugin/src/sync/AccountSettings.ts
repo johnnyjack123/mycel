@@ -32,6 +32,39 @@ export interface RecoveryDecision {
 
 const RECOVERY_KEY = 'recovery'
 
+/** Someone this account shares with. Their key is pinned when the contact is made. */
+export interface Contact {
+  accountId: string
+  /** The name they gave; empty until their device answered. */
+  name: string
+  /** What this account calls them, if it renamed them. */
+  localName?: string
+  publicKey: string
+  addedAt: number
+}
+
+/** A code this account handed out; its secret opens the redemption. */
+export interface ContactCode {
+  secret: string
+  createdAt: number
+  expiresAt: number
+  usedBy?: string
+}
+
+/** A code this account redeemed, waiting for the other side to answer with its name. */
+export interface PendingContact {
+  secret: string
+  owner: string
+  publicKey: string
+  requestedAt: number
+}
+
+// One key per entry, so two devices adding different contacts at once do not
+// overwrite each other the way one shared object would.
+const CONTACT = 'contact:'
+const CODE = 'code:'
+const PENDING = 'pending:'
+
 function stringList(value: unknown): string[] | null {
   return Array.isArray(value) && value.every((item) => typeof item === 'string') ? (value as string[]) : null
 }
@@ -94,6 +127,49 @@ export class AccountSettings {
 
   decideRecovery(decision: RecoveryDecision): void {
     this.doc.transact(() => this.map.set(RECOVERY_KEY, decision), 'local')
+  }
+
+  private entries<T>(prefix: string): T[] {
+    const found: T[] = []
+    this.map.forEach((value, key) => {
+      if (key.startsWith(prefix) && value && typeof value === 'object') found.push(value as T)
+    })
+    return found
+  }
+
+  private put(key: string, value: unknown): void {
+    this.doc.transact(() => {
+      if (value === null) this.map.delete(key)
+      else this.map.set(key, value)
+    }, 'local')
+  }
+
+  contacts(): Contact[] {
+    return this.entries<Contact>(CONTACT)
+  }
+
+  contact(accountId: string): Contact | null {
+    return (this.map.get(`${CONTACT}${accountId}`) as Contact | undefined) ?? null
+  }
+
+  setContact(accountId: string, contact: Contact | null): void {
+    this.put(`${CONTACT}${accountId}`, contact)
+  }
+
+  code(codeId: string): ContactCode | null {
+    return (this.map.get(`${CODE}${codeId}`) as ContactCode | undefined) ?? null
+  }
+
+  setCode(codeId: string, code: ContactCode | null): void {
+    this.put(`${CODE}${codeId}`, code)
+  }
+
+  pending(codeId: string): PendingContact | null {
+    return (this.map.get(`${PENDING}${codeId}`) as PendingContact | undefined) ?? null
+  }
+
+  setPending(codeId: string, pending: PendingContact | null): void {
+    this.put(`${PENDING}${codeId}`, pending)
   }
 
   onChange(listener: (settings: SharedSettings) => void): () => void {

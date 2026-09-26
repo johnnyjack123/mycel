@@ -312,3 +312,108 @@ export function epochKeyContext(room: string, epoch: number): string {
 export function titleContext(docId: string): string {
   return `title:${docId}`
 }
+
+// --- contacts ------------------------------------------------------------------------
+//
+// A one-time friend code carries a random secret and the fingerprint of its
+// creator's public key, and travels outside the server. From the secret come
+// the code's id, a key the server checks a redemption with (it stores only a
+// hash), and a MAC key that never leaves a device: both sides sign what they
+// send each other with it, so a server that saw the redemption still cannot
+// forge a contact or swap a key.
+
+const CONTACT_SECRET_BYTES = 16
+const FINGERPRINT_BYTES = 12
+// Crockford's base32: no I, L, O or U to misread.
+const BASE32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+
+export function newContactSecret(): Bytes {
+  return randomBytes(CONTACT_SECRET_BYTES)
+}
+
+/** The first 96 bits of the key's hash: enough that nobody can make another key that matches. */
+export async function keyFingerprint(publicKey: Bytes): Promise<Bytes> {
+  return (await sha256(publicKey)).slice(0, FINGERPRINT_BYTES)
+}
+
+export interface ContactKeys {
+  codeId: string
+  /** Sent to the server when redeeming; the server keeps only its hash. */
+  redeemKey: Bytes
+  /** Never leaves a device. */
+  macKey: Bytes
+}
+
+export async function contactKeys(secret: Bytes): Promise<ContactKeys> {
+  return {
+    codeId: toHex(await hkdf(secret, 'obsidian-connect contact-id', 16)),
+    redeemKey: await hkdf(secret, 'obsidian-connect contact-redeem'),
+    macKey: await hkdf(secret, 'obsidian-connect contact-mac')
+  }
+}
+
+export async function contactMac(macKey: Bytes, message: string): Promise<string> {
+  return toHex(await hmac(macKey, message))
+}
+
+/** Compares two MACs without leaking through timing where they first differ. */
+export function sameMac(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let difference = 0
+  for (let i = 0; i < a.length; i += 1) difference |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return difference === 0
+}
+
+function toBase32(data: Uint8Array): string {
+  let bits = 0
+  let value = 0
+  let out = ''
+  for (const byte of data) {
+    value = (value << 8) | byte
+    bits += 8
+    while (bits >= 5) {
+      out += BASE32[(value >>> (bits - 5)) & 31]
+      bits -= 5
+    }
+  }
+  if (bits > 0) out += BASE32[(value << (5 - bits)) & 31]
+  return out
+}
+
+function fromBase32(text: string): Bytes | null {
+  const normalized = text
+    .toUpperCase()
+    .replace(/[\s-]/g, '')
+    .replace(/[IL]/g, '1')
+    .replace(/O/g, '0')
+  let bits = 0
+  let value = 0
+  const out: number[] = []
+  for (const char of normalized) {
+    const index = BASE32.indexOf(char)
+    if (index < 0) return null
+    value = (value << 5) | index
+    bits += 5
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 255)
+      bits -= 8
+    }
+  }
+  return new Uint8Array(out)
+}
+
+/** Secret and fingerprint, in groups of five for reading out or typing. */
+export function encodeContactCode(secret: Bytes, fingerprint: Bytes): string {
+  return (toBase32(concat(secret, fingerprint)).match(/.{1,5}/g) ?? []).join('-')
+}
+
+export function decodeContactCode(code: string): { secret: Bytes; fingerprint: Bytes } | null {
+  const data = fromBase32(code)
+  if (!data || data.length !== CONTACT_SECRET_BYTES + FINGERPRINT_BYTES) return null
+  return { secret: data.slice(0, CONTACT_SECRET_BYTES), fingerprint: data.slice(CONTACT_SECRET_BYTES) }
+}
+
+/** What a sealed contact message is for; binds it to its code and direction. */
+export function contactContext(codeId: string, kind: 'request' | 'reply'): string {
+  return `contact-${kind}:${codeId}`
+}

@@ -148,6 +148,11 @@ export class DocStore {
     return this.index.isShared(docId)
   }
 
+  /** Every note of this vault that is shared, either way. */
+  sharedEntries(): Array<{ docId: string; entry: IndexEntry }> {
+    return this.index.live().filter(({ entry }) => entry.shared || entry.owner)
+  }
+
   /** Someone else owns the note and shared it with this account to read only. */
   isReadOnly(docId: string): boolean {
     const entry = this.index.entry(docId)
