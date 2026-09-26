@@ -154,8 +154,16 @@ server together with a read-only member could therefore inject edits. The fix is
 signature per frame with the author's key, checked by every device against the
 members and roles the owner signed.
 
-## Trash
+## Trash (built)
 
 - A deleted note stays restorable for the history retention. Then the owner's device
   asks the server to delete its room; refused while it is shared or a fork is pending.
 - Deleting an account ends every share as above (built, see *Ending a share*).
+- As built: "a fork is pending" does not hold a purge up any more - what the
+  participant could read was copied into their folder when the share ended, so the
+  room is not needed for it. Still shared means refused (409), and the device asks
+  again next time. A purged note's tombstone gets `purgedAt`, so no device offers it
+  for restoring. A retention of 0 keeps deleted notes forever. Restoring puts a note
+  back at its path, or next to the note that took it (`Name (restored).md`).
+- Left for later: other devices keep their local IndexedDB copy of a purged note;
+  only the device that purged it clears its own.

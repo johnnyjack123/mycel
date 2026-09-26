@@ -6,8 +6,9 @@ collaboration.
 Keeps a vault in sync across your own devices, and lets you share single notes
 with other people for live editing with cursors — in Obsidian's own editor. The
 server you run only ever sees ciphertext. See `CLAUDE.md` for the architecture,
-`docs/PHASE2.md` for accounts, keys and sharing, and `docs/SERVER.md` for running
-the server.
+`docs/PHASE2.md` for keys and sharing, `docs/PHASE3.md` for accounts without
+names, contacts, the end of a share and surviving the server, and
+`docs/SERVER.md` for running the server.
 
 ## Requirements
 
@@ -81,30 +82,51 @@ npm run dev:plugin
 
 The password never leaves the device, and nobody can reset it: losing it means
 losing access to the encrypted notes on the server. Your devices keep their
-files.
+files. It needs to be strong (the plugin checks, and offers to generate one);
+the server never learns your name either — it knows accounts only by random ids.
 
 Every markdown note is synced automatically; there is no per-note switch.
 Settings under *All your devices* (exclusions, conflict markers, retention, share
 folder) are the same on every device; the ones under *This device* are not.
 
 Commands: *Show sync status*, *Open version history for this note*,
-*Browse backups*, *Force resync of this note*, *Reconnect and rescan the vault*,
-and the sharing commands below.
+*Browse backups*, *Deleted notes…*, *Force resync of this note*, *Reconnect and
+rescan the vault*, and the sharing commands below.
+
+**Deleted notes…** lists what was deleted on any of your devices and brings a
+note back. Deleted notes stay restorable for the history retention; after that
+the server deletes them, unless they are still shared with someone.
+
+If the server ever lost data or was restored from an older backup, the plugin
+notices, syncs nothing for the affected notes and asks once whether this device
+or the server is right. The answer holds for all your devices; a backup of this
+device's text is made before the server's older state is taken.
+
+### Contacts
+
+Notes are shared with contacts only. Under *Settings → Obsidian Connect →
+Contacts*, one of you creates a friend code and sends it by any other channel;
+the other enters it. A code works once and for 7 days. It carries a fingerprint
+of its creator's key, so the server cannot slip in a key of its own. Names are
+exchanged encrypted and can be changed locally. Removing a contact ends every
+share between the two of you; each keeps their copies.
 
 ### Sharing a note
 
-1. Open the note and run **Share this note…**. Pick a person with an account on
-   the same server, *can edit* or *can read*, and whether they get the note's
-   history or only what is written from now on.
+1. Open the note and run **Share this note…**. Pick a contact, *can edit* or
+   *can read*, and whether they get the note's history or only what is written
+   from now on.
 2. The note appears in their share folder (`Shared/` by default) and stays live
    between you, with each other's cursors. **Notes shared with me** lists what
    others shared with you.
 3. **Who has access to this note** changes a person's role or removes them.
-   Removing someone moves the note to a new key; what they already have stays
-   with them, as their own note.
+   Removing someone moves the note to a new key.
 4. As the one it was shared with, deleting the note leaves the share, and
-   **Make this shared note my own copy** detaches it with the history you could
-   read.
+   **Make this shared note my own copy** detaches it.
+
+However a share ends — removed, detached, a contact removed, the owner's account
+deleted — the other person keeps the note as their own, with the history they
+could read and whatever they had not sent yet.
 
 ## Tests
 
@@ -113,6 +135,7 @@ npm run test:merge        # merge, reconcile, identity and crypto (no server, no
 npm run test:load         # does the built bundle load, start and unload cleanly?
 npm run test:rooms        # accounts, access, key epochs, sharing, compaction, restart
 npm run test:sync         # does the editor binding actually sync? (jsdom)
+npm run test:recovery     # a server that lost data or was rolled back, a removed account (in-process server)
 # against a running server with open registration:
 npm run test:socket       # the encrypted transport, two devices of one account
 npm run test:vault        # three devices and a collaborator, end to end
@@ -130,9 +153,10 @@ npm run test:vault -- ws://localhost:1235
 `test:vault` runs the real accounts, keys, sync layer and editor binding against
 an in-memory vault whose editor saves and reloads files the way Obsidian does:
 pulling a vault onto a new device, renames, deletes, both devices typing at
-once, offline edits on both sides, sharing with and without history, read-only
-access, revoking, restoring an old version and compaction — and checks that
-nothing on the server is readable.
+once, offline edits on both sides, contacts, sharing with and without history,
+read-only access, revoking and detaching with the history kept, the trash,
+restoring an old version and compaction — and checks that nothing on the server
+is readable.
 
 ## How it works
 
@@ -163,8 +187,9 @@ nothing on the server is readable.
   opened again. They catch up on the next load, but a note you have not touched
   in a while is not live.
 - **A forgotten password cannot be recovered** (no recovery codes yet).
-- **The server still sees metadata:** account and vault names, which notes
-  exist, who shares with whom, and when and how much was written.
+- **The server still sees metadata:** which account ids, vault ids and note ids
+  exist, who is whose contact and shares with whom, and when and how much was
+  written. No names, no titles, no text.
 - **Conflicts keep both versions rather than resolving them.** That is
   deliberate — duplication is recoverable, deletion often is not — but it means
   a conflicted note needs manual cleanup.

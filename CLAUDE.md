@@ -278,6 +278,15 @@ the server lost it. Retention is account-wide; the owner's
 and uploads it; the server drops those frames only then, and keeps a member's
 join snapshot while it is still their starting point.
 
+The retention is also the **trash** (`sync/Trash.ts`, "Deleted notes…"): a
+deleted note of one's own stays restorable for that long, on any device —
+restoring revives its index entry and pulls it from its document, next to a
+note that took its name meanwhile. After that the owner's device asks the
+server to delete the room (`POST /log/:room/purge`), which it refuses while the
+note is still shared, and marks the tombstone `purgedAt`. A retention of 0 keeps
+everything, deleted notes included. Local copies of a purged note are cleared
+only on the device that purged it; the others keep their IndexedDB copy.
+
 ## Testing
 
 Nothing that touches Obsidian's API can be tested headlessly. Everything else is
@@ -370,11 +379,12 @@ modals and the settings tab.
     ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
   ```
 
-## Next: Phase 3
+## Phase 3
 
-Agreed, not built: accounts without names, contacts by one-time friend code,
-forking a share with its history, surviving a server that lost or rolled back
-data, trash. Specified in **`docs/PHASE3.md`**.
+Built: surviving a server that lost or rolled back data, accounts without
+names, contacts by one-time friend code, forking a share with its history,
+removing accounts, the trash. Specified in **`docs/PHASE3.md`**, which also
+names what is known and left for later (signatures per author).
 
 ## Not built yet
 

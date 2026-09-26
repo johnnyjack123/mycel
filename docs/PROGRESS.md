@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-09-23 · **Phase 2 built: accounts, end-to-end encryption, sharing with a person (read or write), revoke.** Headless tests only so far — next: on-device run._
+_Last updated: 2026-09-26 · **Phase 3 built: surviving the server, accounts without names, contacts, forking a share, removing accounts, the trash.** Headless tests only — next: on-device run._
 
 ## Where we are
 
@@ -14,22 +14,46 @@ to `main`; merging to `main` is what builds and publishes the Docker image.
 
 ## Next step
 
-**Phase 3, in progress** — specified in `docs/PHASE3.md`, built in its order:
-surviving the server, accounts without names, contacts, ending a share, trash. Each
-step lands as its own commits on `feat/accounts`; everything is pushed at the end.
+**On-device run of Phases 2 and 3.** Start fresh: a new data directory for the server,
+and on every device the plugin's old state is obsolete — accounts have no names on the
+server any more and salts depend on the server's id, so every account is created anew.
+Sign in on each device with the same name, password and vault name.
 
-Still open from Phase 2, for when the user tests on devices:
-
-1. **On-device run of Phase 2.** Start fresh: the server from `docker compose`, a new
-   data volume, and on every device the plugin's old state is obsolete (old vault ids,
-   old document ids, plaintext). Sign in on each device with the same account and
-   vault name.
+1. Check on device: creating an account (password rule, generator, repeat), the Argon2
+   time on a phone, a contact made with a friend code between two accounts, sharing
+   with that contact, revoking — the copy keeps its history —, "Deleted notes…" and
+   restoring, and the recovery question after the server's data directory was swapped
+   for an older copy.
 2. Check on device what the tests cannot: `requestUrl` against the real server,
    Argon2 speed on mobile, `localStorage` surviving a restart, the settings tab, the
    share / access / incoming dialogs, a read-only editor, and presence on a shared note.
 3. The fixes of 2026-09-23 still need their device check: delete a note on one device
    while it is open on the other; create several new notes in a row; open a new note
    in a tab that showed another one; type exactly at someone's caret.
+
+## Built on 2026-09-24 to 26: Phase 3
+
+- **Surviving the server.** Every cursor keeps the fingerprint of its last frame; a
+  lost or rolled-back log is recognised, the room caught up, merged and held until the
+  user decides "this device is right" or "the server is right" (with a backup). The
+  decision is stored encrypted and followed by the account's other devices. Every
+  device keeps the history it saw, decrypted, in its own IndexedDB.
+- **Accounts without names.** The server knows random account ids and finds an
+  account by the hash of a login key from name and password; salts come from the
+  server's random id. Argon2id 64 MiB, t = 4. Passwords need 10¹² guesses (zxcvbn);
+  a generator suggests 20 random characters. Sign-in takes exactly one second; failing
+  addresses are blocked. Folders per account on the server.
+- **Contacts.** One-time friend codes, valid 7 days, carrying the fingerprint of the
+  creator's key; introductions sealed and MAC'd, keys pinned. Sharing only with
+  contacts, enforced by the server too; removing a contact ends every share.
+- **Ending a share forks.** Revoking, detaching, a contact removed or the owner's
+  account removed: the participant keeps the note as their own, with the history they
+  could read and their unsent edits. The server holds that history in their folder
+  until a device forked (90 days after an owner's account went).
+- **Removing an account** marks it; the server's sweep ends its shares and deletes its
+  folder, and nothing else.
+- **Trash.** Deleted notes are restorable for the history retention, then the server
+  deletes them unless they are still shared.
 
 ## Built on 2026-09-23: Phase 2
 
@@ -57,13 +81,26 @@ Still open from Phase 2, for when the user tests on devices:
 - **Attachments are not synced.**
 - **Notes beyond `maxLoadedDocuments` (500) stop receiving live updates** until
   opened again or the next restart.
-- **No password recovery**, no 2FA, no key fingerprint check between people.
-- **No rate limiting** on login.
-- Rooms nobody references any more are never deleted from the server.
+- **No password recovery**, no 2FA.
+- Frames are authenticated by the note's key, not signed per author: a read-only
+  member together with a compromised server could inject edits (`docs/PHASE3.md`).
+- Local copies of a purged note stay in IndexedDB on the devices that did not purge it.
 - **Conflicts keep both versions** — deliberate, but needs manual cleanup.
 - The plugin name contains "Obsidian", which the community catalogue forbids.
 
 ## Verification state
+
+- 2026-09-26, Phase 3: `typecheck`, `build` pass; `test:merge`, `test:load`,
+  `test:rooms`, `test:sync`, `test:recovery` in-process, `test:socket` and
+  `test:vault` against a scratch server on 1235 — all pass. Each step was checked by
+  putting its bugs back one at a time (a lost log taken for the known one, a rollback
+  uploaded over, names reaching the server, a forged contact reply, a code redeemed
+  twice, sharing with a stranger, a revocation keeping nothing, an ended share's room
+  claimed again, a fork without the kept history or the base text, a still-shared note
+  purged, a restore over another note, ...) and seeing the matching check fail. The
+  few that survived are redundant by design and noted in the commit history.
+
+Phase 2:
 
 - `typecheck`, `build:plugin`: pass.
 - Against a scratch server on 1235 with open registration: `test:merge` (63),
@@ -82,6 +119,18 @@ Still open from Phase 2, for when the user tests on devices:
   on a device.
 
 ## Log
+
+### 2026-09-26
+- Built Phase 3's contacts, forking a share with its history, removing accounts and the
+  trash. A fork made while an editor is open takes the file as its base, so Obsidian's
+  lagging save is not merged against the note as a second side (not testable headless
+  in its real timing). A test whose offline edit only added text passed without the
+  base being carried over, so it now replaces text.
+
+### 2026-09-25
+- Built Phase 3's surviving the server (with a local history on every device) and
+  accounts without names. A GitHub Action builds and publishes the Docker image on
+  `main`.
 
 ### 2026-09-23
 - First on-device run: sync and sharing work. Fixed the four bugs it surfaced, each
