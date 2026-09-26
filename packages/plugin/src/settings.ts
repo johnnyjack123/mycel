@@ -1,4 +1,5 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian'
+import { generatePassword } from './account/password'
 import type { ServerProbe } from './account/probe'
 import type ObsidianConnectPlugin from './main'
 import type { SharedSettings } from './sync/AccountSettings'
@@ -36,6 +37,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private username = ''
   private password = ''
   private repeat = ''
+  private revealed = false
   private invite = ''
   private busy = false
 
@@ -189,6 +191,18 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
             .setWarning()
             .onClick(() => void this.run(() => this.plugin.signOut()))
         )
+      const ids = this.plugin.ids()
+      if (ids) {
+        // The server knows no names; these are what it knows, and what the
+        // admin's `obsidian-connect user list` shows.
+        new Setting(containerEl)
+          .setName('Account ID')
+          .setDesc(ids.account)
+          .addButton((button) =>
+            button.setButtonText('Copy').onClick(() => void navigator.clipboard.writeText(ids.account))
+          )
+        if (ids.vault) new Setting(containerEl).setName('Vault ID').setDesc(ids.vault)
+      }
       return
     }
 
@@ -202,7 +216,8 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
   private passwordField(containerEl: HTMLElement, name: string, desc: string, value: string, set: (value: string) => void): void {
     const setting = new Setting(containerEl).setName(name).addText((text) => {
-      text.inputEl.type = 'password'
+      // Shown once the generator made it, so it can be copied into a password manager.
+      text.inputEl.type = this.revealed ? 'text' : 'password'
       text.setValue(value).onChange(set)
       this.gated.push(text)
     })
@@ -221,6 +236,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private forgetPasswords(): void {
     this.password = ''
     this.repeat = ''
+    this.revealed = false
   }
 
   private signInForm(containerEl: HTMLElement): void {
@@ -265,13 +281,25 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     this.passwordField(containerEl, 'Password again', '', this.repeat, (value) => {
       this.repeat = value
     })
+    new Setting(containerEl)
+      .setDesc('Or let this device make one: 20 random characters. Keep it in a password manager.')
+      .addButton((button) => {
+        button.setButtonText('Generate').onClick(() => {
+          const generated = generatePassword()
+          this.password = generated
+          this.repeat = generated
+          this.revealed = true
+          this.display()
+        })
+        this.gated.push(button)
+      })
 
     if (!this.inviteHidden()) {
       new Setting(containerEl)
         .setName('Invite code')
         .setDesc(
           this.probe?.state === 'ok'
-            ? 'This server creates accounts only with a code from its admin (obsidian-connect user add <name>).'
+            ? 'This server creates accounts only with a code from its admin (obsidian-connect invite).'
             : 'Only if the server asks for one.'
         )
         .addText((text) => {

@@ -22,6 +22,8 @@ export interface RunningServer {
 export interface StartOptions {
   /** Request logging; off in self-tests, where it would bury the output. */
   logger?: boolean
+  /** How long every sign-in and registration takes. */
+  paceMs?: number
 }
 
 const VAULT_PREFIX = '/vault/'
@@ -33,9 +35,9 @@ function reject(socket: Duplex, status: string): void {
 
 export async function startServer(config: ServerConfig, options: StartOptions = {}): Promise<RunningServer> {
   const tokens = new TokenService(config.jwtSecret, config.accessTokenTtlSeconds)
-  const accounts = new AccountStore(config.dataDir, config.jwtSecret)
+  const accounts = new AccountStore(config.dataDir)
   const hub = new RoomHub({ dataDir: config.dataDir, logUpdates: config.logUpdates }, accounts)
-  const app = createHttpApp(config, tokens, accounts, hub, { logger: options.logger ?? true })
+  const app = createHttpApp(config, tokens, accounts, hub, { logger: options.logger ?? true, paceMs: options.paceMs })
   const wss = new WebSocketServer({ noServer: true })
 
   async function handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
@@ -46,22 +48,22 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
         return
       }
       const vaultId = decodeURIComponent(url.pathname.slice(VAULT_PREFIX.length))
-      let username: string
+      let accountId: string
       try {
-        username = await tokens.verify(url.searchParams.get('token') ?? '')
+        accountId = await tokens.verify(url.searchParams.get('token') ?? '')
       } catch {
         reject(socket, '401 Unauthorized')
         return
       }
-      const account = await accounts.get(username)
+      const account = await accounts.get(accountId)
       // A vault's connection carries its index; only its owner may open one.
-      if (!isHexId(vaultId) || account?.status !== 'active' || !account.vaults[vaultId]) {
-        app.log.warn({ vaultId, username, remote: request.socket.remoteAddress }, 'ws upgrade rejected')
+      if (!isHexId(vaultId) || !account || !account.vaults[vaultId]) {
+        app.log.warn({ vaultId, accountId }, 'ws upgrade rejected')
         reject(socket, '403 Forbidden')
         return
       }
-      app.log.info({ vaultId, username, remote: request.socket.remoteAddress }, 'ws upgrade accepted')
-      wss.handleUpgrade(request, socket, head, (ws) => setupVaultConnection(ws, username, vaultId, hub))
+      app.log.info({ vaultId, accountId }, 'ws upgrade accepted')
+      wss.handleUpgrade(request, socket, head, (ws) => setupVaultConnection(ws, accountId, vaultId, hub))
     } catch (error) {
       app.log.error(error)
       socket.destroy()

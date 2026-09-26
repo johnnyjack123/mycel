@@ -16,14 +16,17 @@ export type Argon2id = (
   params: { memoryKiB: number; iterations: number; parallelism: number; hashLength: number }
 ) => Promise<Uint8Array>
 
-// OWASP's minimum for Argon2id. Stored with each account, so it can be raised
-// for new passwords without breaking old ones.
-export const DEFAULT_KDF: Omit<KdfParams, 'salt'> = {
-  algorithm: 'argon2id',
-  memoryKiB: 19_456,
-  iterations: 2,
-  parallelism: 1
+/**
+ * The Argon2id parameter sets this code knows, by version. Pinned here rather
+ * than taken from the server: a server handing out weak parameters would
+ * weaken every password stretched with them. An account records the version
+ * it was created with, so a later, stronger set does not lock anyone out.
+ * Version 1 is above RFC 9106's second recommendation (64 MiB, t = 3).
+ */
+export const KDF_VERSIONS: Readonly<Record<number, KdfParams>> = {
+  1: { algorithm: 'argon2id', memoryKiB: 65_536, iterations: 4, parallelism: 1 }
 }
+export const CURRENT_KDF_VERSION = 1
 
 const IV_BYTES = 12
 const P256_PUBLIC_BYTES = 65
@@ -100,14 +103,28 @@ async function hmac(secret: Bytes, message: string): Promise<Bytes> {
   return new Uint8Array(await crypto.subtle.sign('HMAC', key, utf8(message)))
 }
 
-export function newKdfParams(): KdfParams {
-  return { ...DEFAULT_KDF, salt: toBase64(randomBytes(16)) }
+/** How a name is compared: the same account whatever the case or spacing it is typed in. */
+export function normalizeName(name: string): string {
+  return name.normalize('NFKC').trim().toLowerCase()
+}
+
+/**
+ * Derived, never stored, never secret: from the server's random id and the
+ * name, so a device can compute it before signing in without asking the
+ * server about a name. It only has to differ per server and per name, which
+ * keeps one precomputed table from attacking everyone at once.
+ */
+export async function accountSalt(serverId: string, username: string): Promise<Bytes> {
+  return (await sha256(utf8(`obsidian-connect salt::${serverId}::${normalizeName(username)}`))).slice(0, 16)
 }
 
 export interface PasswordKeys {
-  /** Sent to the server, which only ever stores a keyed hash of it. */
-  authKey: Bytes
-  /** Never leaves the device. Wraps the private key and the vault keys. */
+  /**
+   * Sent to the server, which finds the account by a hash of it and never
+   * learns the name. Name and password together are the only way to it.
+   */
+  loginKey: Bytes
+  /** Never leaves the device. Wraps the private key and the account secret. */
   masterKey: Bytes
 }
 
@@ -117,21 +134,36 @@ export interface PasswordKeys {
  */
 export async function derivePasswordKeys(
   password: string,
-  kdf: KdfParams,
+  salt: Bytes,
+  version: number,
   argon2id: Argon2id
 ): Promise<PasswordKeys> {
+  const params = KDF_VERSIONS[version]
+  if (!params) throw new Error(`unknown key derivation version ${version}`)
   const stretched = bytes(
-    await argon2id(password.normalize('NFKC'), fromBase64(kdf.salt), {
-      memoryKiB: kdf.memoryKiB,
-      iterations: kdf.iterations,
-      parallelism: kdf.parallelism,
+    await argon2id(password.normalize('NFKC'), salt, {
+      memoryKiB: params.memoryKiB,
+      iterations: params.iterations,
+      parallelism: params.parallelism,
       hashLength: 64
     })
   )
   return {
-    authKey: await hkdf(stretched, 'obsidian-connect auth'),
+    loginKey: await hkdf(stretched, 'obsidian-connect login'),
     masterKey: await hkdf(stretched, 'obsidian-connect master')
   }
+}
+
+/**
+ * From the account secret: random, made once, kept under the master key.
+ * A password change re-wraps only the secret; vaults stay as they are.
+ */
+export const accountKeys = {
+  vaultWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect vault-wrap'),
+  vaultName: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect vault-name'),
+  /** The same on every device of the account, and meaningless to everyone else. */
+  vaultId: async (secret: Bytes, vaultName: string): Promise<string> =>
+    toHex((await hmac(await hkdf(secret, 'obsidian-connect vault-id'), `vault::${vaultName.trim()}`)).subarray(0, 16))
 }
 
 /**

@@ -4,7 +4,7 @@ import type { ShareRole } from './protocol.js'
 // `title` in a share travels base64-encoded and is opaque to the server.
 
 export interface JwtClaims {
-  /** The username. */
+  /** The account id. Never a name: the server does not know any. */
   sub: string
   scope: 'user'
   iat?: number
@@ -23,7 +23,7 @@ export interface IndexEntry {
    * broadcasts a caret.
    */
   shared?: boolean
-  /** Set when the note belongs to someone else and was shared with this account. */
+  /** The owner's account id, when the note belongs to someone else and was shared with this account. */
   owner?: string
   /** What this account may do with a note someone else owns. */
   role?: ShareRole
@@ -35,7 +35,6 @@ export type RegistrationMode = 'open' | 'invite'
 
 export interface KdfParams {
   algorithm: 'argon2id'
-  salt: string
   memoryKiB: number
   iterations: number
   parallelism: number
@@ -44,42 +43,38 @@ export interface KdfParams {
 export interface AuthConfigResponse {
   registration: RegistrationMode
   protocol: number
-}
-
-export interface PreloginRequest {
-  username: string
-}
-
-export interface PreloginResponse {
-  kdf: KdfParams
+  /** Random, made once by the server; part of every account's salt. */
+  serverId: string
 }
 
 export interface RegisterRequest {
-  username: string
   /** Required unless registration is open. */
   invite?: string
-  kdf: KdfParams
-  authKey: string
+  loginKey: string
+  /** Which of the pinned Argon2id parameter sets derived the login key. */
+  kdfVersion: number
   publicKey: string
   wrappedPrivateKey: string
+  wrappedAccountSecret: string
 }
 
 export interface LoginRequest {
-  username: string
-  authKey: string
+  loginKey: string
 }
 
 export interface VaultRecord {
   vaultId: string
-  name: string
+  /** The vault's name, encrypted under a key from the account secret. */
+  sealedName: string
   wrappedKey: string
 }
 
 export interface AccountBundle {
-  username: string
-  kdf: KdfParams
+  accountId: string
+  kdfVersion: number
   publicKey: string
   wrappedPrivateKey: string
+  wrappedAccountSecret: string
   vaults: VaultRecord[]
 }
 
@@ -95,26 +90,23 @@ export interface RefreshResponse {
 }
 
 export interface CreateVaultRequest {
-  name: string
+  /** Derived on the device from the account secret and the name. */
+  vaultId: string
+  sealedName: string
   wrappedKey: string
 }
 
 export interface PasswordChangeRequest {
   /** Proves the current password. */
-  authKey: string
-  kdf: KdfParams
-  newAuthKey: string
+  loginKey: string
+  newLoginKey: string
+  kdfVersion: number
   wrappedPrivateKey: string
-  /** vaultId -> vault key wrapped under the new master key. */
-  vaults: Record<string, string>
+  wrappedAccountSecret: string
 }
 
-export interface UsersResponse {
-  users: string[]
-}
-
-export interface UserKeyResponse {
-  username: string
+export interface AccountKeyResponse {
+  accountId: string
   publicKey: string
 }
 
@@ -123,7 +115,7 @@ export interface UserKeyResponse {
 /** A move to a new epoch, sealed for everyone who keeps access. */
 export interface Rotation {
   epoch: number
-  /** username -> the new epoch key sealed to that account. */
+  /** account id -> the new epoch key sealed to that account. */
   keys: Record<string, string>
   /** For a share without history: the note at the server's head, under the new epoch. */
   snapshot?: { uptoSeq: number; data: string }
@@ -131,7 +123,8 @@ export interface Rotation {
 
 export interface ShareRequest {
   docId: string
-  username: string
+  /** The recipient's account id. */
+  account: string
   role: ShareRole
   withHistory: boolean
   /** epoch -> key sealed to the recipient. Every epoch with history, none without. */
@@ -144,6 +137,7 @@ export interface ShareRequest {
 
 export interface IncomingShare {
   docId: string
+  /** The owner's account id. */
   owner: string
   role: ShareRole
   title: string
@@ -155,7 +149,7 @@ export interface IncomingSharesResponse {
 }
 
 export interface ShareMember {
-  username: string
+  account: string
   role: ShareRole
   addedAt: number
 }
@@ -169,13 +163,13 @@ export interface ShareMembersResponse {
 
 export interface RevokeRequest {
   docId: string
-  username: string
+  account: string
   rotation: Rotation
 }
 
 export interface RoleRequest {
   docId: string
-  username: string
+  account: string
   role: ShareRole
 }
 

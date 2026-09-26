@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting } from 'obsidian'
+import { App, Modal, Notice, Setting, TextComponent } from 'obsidian'
+import { generatePassword, judgePassword } from './password'
 
 /** Asks for the current and a new password. The change itself happens on this device. */
 export class PasswordModal extends Modal {
@@ -16,21 +17,34 @@ export class PasswordModal extends Modal {
 
   onOpen(): void {
     this.titleEl.setText('Change password')
-    const field = (name: string, set: (value: string) => void): void => {
-      new Setting(this.contentEl).setName(name).addText((text) => {
-        text.inputEl.type = 'password'
-        text.onChange(set)
-      })
+    const field = (name: string, set: (value: string) => void): HTMLInputElement => {
+      const text = new TextComponent(new Setting(this.contentEl).setName(name).controlEl)
+      text.inputEl.type = 'password'
+      text.onChange(set)
+      return text.inputEl
     }
     field('Current password', (value) => {
       this.current = value
     })
-    field('New password', (value) => {
+    const nextInput = field('New password', (value) => {
       this.next = value
     })
-    field('New password again', (value) => {
+    const repeatInput = field('New password again', (value) => {
       this.repeat = value
     })
+    new Setting(this.contentEl)
+      .setDesc('Or let this device make one: 20 random characters. Keep it in a password manager - there is no reset.')
+      .addButton((button) =>
+        button.setButtonText('Generate').onClick(() => {
+          const generated = generatePassword()
+          this.next = generated
+          this.repeat = generated
+          for (const input of [nextInput, repeatInput]) {
+            input.value = generated
+            input.type = 'text'
+          }
+        })
+      )
     this.contentEl.createEl('p', {
       cls: 'setting-item-description',
       text: 'Your other devices will ask you to sign in again. Your notes stay encrypted as they are.'
@@ -45,8 +59,9 @@ export class PasswordModal extends Modal {
 
   private async submit(): Promise<void> {
     if (this.busy) return
-    if (this.next.length < 8) {
-      new Notice('Use at least 8 characters.')
+    const verdict = judgePassword(this.next)
+    if (!verdict.ok) {
+      new Notice(verdict.reason ?? 'Choose another password.')
       return
     }
     if (this.next !== this.repeat) {

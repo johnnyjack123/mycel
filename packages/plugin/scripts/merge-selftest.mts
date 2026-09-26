@@ -311,13 +311,30 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   const frame = e2e.unpackFrame(e2e.packFrame(1_790_000_000_123, utf8('update')))
   check(frame.authorTs === 1_790_000_000_123 && fromUtf8(frame.update) === 'update', 'frames carry the author clock')
 
-  const kdf = e2e.newKdfParams()
-  const first = await e2e.derivePasswordKeys('correct horse', kdf, hashWasmArgon2id)
-  const again = await e2e.derivePasswordKeys('correct horse', kdf, hashWasmArgon2id)
-  const other = await e2e.derivePasswordKeys('correct horsf', kdf, hashWasmArgon2id)
+  // The salt: derived, not stored - from the server's id and the name.
+  const salt = await e2e.accountSalt('server-a', 'Anna')
+  check(e2e.toHex(salt) === e2e.toHex(await e2e.accountSalt('server-a', '  anna ')), 'a name is the same account however it is typed')
+  check(e2e.toHex(salt) !== e2e.toHex(await e2e.accountSalt('server-b', 'anna')), 'another server gives another salt')
+  check(e2e.toHex(salt) !== e2e.toHex(await e2e.accountSalt('server-a', 'ben')), 'and so does another name')
+
+  const version = e2e.CURRENT_KDF_VERSION
+  check((e2e.KDF_VERSIONS[version]?.memoryKiB ?? 0) >= 65_536, 'Argon2id runs with at least 64 MiB')
+  const first = await e2e.derivePasswordKeys('correct horse', salt, version, hashWasmArgon2id)
+  const again = await e2e.derivePasswordKeys('correct horse', salt, version, hashWasmArgon2id)
+  const other = await e2e.derivePasswordKeys('correct horsf', salt, version, hashWasmArgon2id)
+  const elsewhere = await e2e.derivePasswordKeys('correct horse', await e2e.accountSalt('server-a', 'ben'), version, hashWasmArgon2id)
   check(e2e.toHex(first.masterKey) === e2e.toHex(again.masterKey), 'a password gives the same keys every time')
-  check(e2e.toHex(first.authKey) !== e2e.toHex(first.masterKey), 'what logs in is not what decrypts')
+  check(e2e.toHex(first.loginKey) !== e2e.toHex(first.masterKey), 'what logs in is not what decrypts')
   check(e2e.toHex(first.masterKey) !== e2e.toHex(other.masterKey), 'and a different password gives different keys')
+  check(e2e.toHex(first.loginKey) !== e2e.toHex(elsewhere.loginKey), 'the same password under another name is another account')
+
+  // Vaults: ids and names from the account secret.
+  const accountSecret = e2e.randomBytes(32)
+  check(
+    (await e2e.accountKeys.vaultId(accountSecret, 'Notes')) === (await e2e.accountKeys.vaultId(accountSecret, ' Notes ')) &&
+      (await e2e.accountKeys.vaultId(accountSecret, 'Notes')) !== (await e2e.accountKeys.vaultId(e2e.randomBytes(32), 'Notes')),
+    "a vault's id follows from the account secret and its name, and means nothing without the secret"
+  )
 }
 
 // --- seeding an empty document from its file ------------------------------------------
@@ -337,6 +354,24 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   again.getText(CONTENT_FIELD).delete(0, note.length)
   Y.applyUpdate(again, seedUpdate('doc-1', note))
   check(again.getText(CONTENT_FIELD).length === 0, 'a seed deleted since does nothing when applied again - hence the fallback in DocStore')
+}
+
+// --- passwords -------------------------------------------------------------------------
+{
+  const { generatePassword, judgePassword } = await import('../src/account/password.js')
+  check(!judgePassword('short').ok, 'a short password is refused')
+  for (const weak of ['Sommer2024!Sommer2024!', 'passwordpassword1', 'qwertzuiopasdfgh', 'Passwort123456!']) {
+    check(!judgePassword(weak).ok, `a long but guessable password is refused: ${weak}`)
+  }
+  check(!judgePassword('anna-anna-anna-2024', ['anna']).ok, 'and so is one built on the name')
+  const generated = Array.from({ length: 20 }, () => generatePassword())
+  check(
+    generated.every((password) => /^([A-HJ-NP-Za-km-z2-9]{5}-){3}[A-HJ-NP-Za-km-z2-9]{5}$/.test(password)),
+    'generated passwords are 20 unambiguous characters in groups of five',
+    generated[0]
+  )
+  check(new Set(generated).size === generated.length, 'and never repeat')
+  check(generated.every((password) => judgePassword(password).ok), 'and pass the rule themselves')
 }
 
 // --- asking the server before signing in -----------------------------------------------

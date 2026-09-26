@@ -15,7 +15,7 @@ import {
   type ShareRole,
   type SnapshotRequest
 } from '@obsidian-connect/shared'
-import { normalizeUsername, type AccountStore } from './accounts.js'
+import { isAccountId, type AccountStore } from './accounts.js'
 import { RoomLog, loadAllMeta, type Frame, type RoomMeta, type SnapshotInfo } from './log.js'
 
 // The server's side of an end-to-end encrypted vault: it keeps every room's
@@ -24,7 +24,7 @@ import { RoomLog, loadAllMeta, type Frame, type RoomMeta, type SnapshotInfo } fr
 
 /** A connection that wants a room's traffic. One socket may hold many rooms. */
 export interface RoomClient {
-  readonly username: string
+  readonly account: string
   /** The vault the connection was opened for. */
   readonly vaultId: string
   sendFrame(room: string, frame: Frame): void
@@ -101,11 +101,11 @@ export class RoomHub {
 
   // --- rooms -------------------------------------------------------------------
 
-  private access(meta: RoomMeta, username: string): Access | 'revoked' | null {
-    if (meta.owner === username) return { owner: true, write: true, fromSeq: 0 }
-    const member = meta.members[username]
+  private access(meta: RoomMeta, account: string): Access | 'revoked' | null {
+    if (meta.owner === account) return { owner: true, write: true, fromSeq: 0 }
+    const member = meta.members[account]
     if (member) return { owner: false, write: member.role === 'write', fromSeq: member.fromSeq }
-    if (meta.revoked[username]) return 'revoked'
+    if (meta.revoked[account]) return 'revoked'
     return null
   }
 
@@ -199,8 +199,8 @@ export class RoomHub {
     }
   }
 
-  private notify(username: string, kind: NotifyKind, payload: ShareNotice): void {
-    for (const client of this.clients) if (client.username === username) client.sendNotify(kind, payload)
+  private notify(account: string, kind: NotifyKind, payload: ShareNotice): void {
+    for (const client of this.clients) if (client.account === account) client.sendNotify(kind, payload)
   }
 
   /**
@@ -226,8 +226,8 @@ export class RoomHub {
       client.sendDenied(room, 'missing')
       return
     }
-    const open = loaded ?? (await this.claim(room, client.username, client.vaultId))
-    const access = this.access(open.log.meta, client.username)
+    const open = loaded ?? (await this.claim(room, client.account, client.vaultId))
+    const access = this.access(open.log.meta, client.account)
     if (access === 'revoked') {
       client.sendRevoked(room, 'access was revoked')
       return
@@ -270,7 +270,7 @@ export class RoomHub {
       client.sendDenied(room, 'not subscribed')
       return
     }
-    const access = this.access(open.log.meta, client.username)
+    const access = this.access(open.log.meta, client.account)
     if (access === 'revoked' || !access) {
       client.sendRevoked(room, 'access was revoked')
       open.subscribers.delete(client)
@@ -309,12 +309,10 @@ export class RoomHub {
     return open
   }
 
-  private async recipient(name: unknown, owner: string): Promise<string> {
-    const username = normalizeUsername(name)
-    const account = username ? await this.accounts.get(username) : undefined
-    if (!username || account?.status !== 'active') throw new HubError(404, 'no such person')
-    if (username === owner) throw new HubError(400, 'that is you')
-    return username
+  private async recipient(id: unknown, owner: string): Promise<string> {
+    if (!isAccountId(id) || !(await this.accounts.get(id))) throw new HubError(404, 'no such person')
+    if (id === owner) throw new HubError(400, 'that is you')
+    return id
   }
 
   private rekeyAll(open: OpenRoom): void {
@@ -324,17 +322,17 @@ export class RoomHub {
   async share(owner: string, request: ShareRequest): Promise<void> {
     const open = await this.owned(owner, request.docId)
     const meta = open.log.meta
-    const username = await this.recipient(request.username, owner)
+    const account = await this.recipient(request.account, owner)
     if (!ROLES.includes(request.role)) throw new HubError(400, 'the role is read or write')
     if (typeof request.title !== 'string') throw new HubError(400, 'the title is missing')
-    const existing = meta.members[username]
+    const existing = meta.members[account]
     let fromSeq: number
 
     if (request.withHistory) {
       for (let epoch = 0; epoch <= meta.epoch; epoch += 1) {
         if (typeof request.keys?.[String(epoch)] !== 'string') throw new HubError(400, `the key of epoch ${epoch} is missing`)
       }
-      meta.sealedKeys[username] = { ...meta.sealedKeys[username], ...request.keys }
+      meta.sealedKeys[account] = { ...meta.sealedKeys[account], ...request.keys }
       fromSeq = 0
     } else {
       const rotation = request.rotation
@@ -342,7 +340,7 @@ export class RoomHub {
       if (!rotation.snapshot || rotation.snapshot.uptoSeq !== open.log.headSeq) {
         throw new HubError(409, 'the note changed meanwhile; try again')
       }
-      for (const member of [username, ...Object.keys(meta.members).filter((name) => name !== username)]) {
+      for (const member of [account, ...Object.keys(meta.members).filter((name) => name !== account)]) {
         if (typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
       }
       const snapshot = fromBase64(rotation.snapshot.data, 'the snapshot')
@@ -359,88 +357,88 @@ export class RoomHub {
       fromSeq = Math.min(existing?.fromSeq ?? Number.MAX_SAFE_INTEGER, rotation.snapshot.uptoSeq + 1)
     }
 
-    meta.members[username] = {
+    meta.members[account] = {
       role: request.role,
       fromSeq,
       addedAt: existing?.addedAt ?? Date.now(),
       title: request.title,
       acceptedInto: existing?.acceptedInto
     }
-    delete meta.revoked[username]
+    delete meta.revoked[account]
     await open.log.saveMeta()
-    this.notify(username, existing ? 'share-changed' : 'share-added', { docId: roomSubject(meta.room), owner, role: request.role })
+    this.notify(account, existing ? 'share-changed' : 'share-added', { docId: roomSubject(meta.room), owner, role: request.role })
   }
 
   async revoke(owner: string, request: RevokeRequest): Promise<void> {
     const open = await this.owned(owner, request.docId)
     const meta = open.log.meta
-    const username = normalizeUsername(request.username)
-    if (!username || !meta.members[username]) throw new HubError(404, 'not a member')
+    const account = isAccountId(request.account) ? request.account : null
+    if (!account || !meta.members[account]) throw new HubError(404, 'not a member')
     const rotation = request.rotation
     if (!rotation || rotation.epoch !== meta.epoch + 1) throw new HubError(409, 'the note moved to another epoch; try again')
-    const remaining = Object.keys(meta.members).filter((name) => name !== username)
+    const remaining = Object.keys(meta.members).filter((name) => name !== account)
     for (const member of remaining) {
       if (typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
     }
 
     meta.epoch = rotation.epoch
-    delete meta.members[username]
-    delete meta.sealedKeys[username]
-    meta.revoked[username] = Date.now()
+    delete meta.members[account]
+    delete meta.sealedKeys[account]
+    meta.revoked[account] = Date.now()
     for (const member of remaining) {
       meta.sealedKeys[member] = { ...meta.sealedKeys[member], [String(rotation.epoch)]: rotation.keys[member] as string }
     }
     await open.log.saveMeta()
 
     for (const subscriber of Array.from(open.subscribers)) {
-      if (subscriber.username === username) {
+      if (subscriber.account === account) {
         subscriber.sendRevoked(meta.room, 'access was revoked')
         open.subscribers.delete(subscriber)
       } else {
         subscriber.sendRekey(meta.room, meta.epoch)
       }
     }
-    this.notify(username, 'share-removed', { docId: roomSubject(meta.room), owner })
+    this.notify(account, 'share-removed', { docId: roomSubject(meta.room), owner })
   }
 
-  async leave(username: string, docId: unknown): Promise<void> {
+  async leave(account: string, docId: unknown): Promise<void> {
     const open = await this.require(docRoomOf(docId))
     const meta = open.log.meta
-    if (meta.owner === username) throw new HubError(400, 'the owner cannot leave their own note')
-    if (!meta.members[username]) return
-    delete meta.members[username]
-    delete meta.sealedKeys[username]
+    if (meta.owner === account) throw new HubError(400, 'the owner cannot leave their own note')
+    if (!meta.members[account]) return
+    delete meta.members[account]
+    delete meta.sealedKeys[account]
     await open.log.saveMeta()
     for (const subscriber of Array.from(open.subscribers)) {
-      if (subscriber.username === username) open.subscribers.delete(subscriber)
+      if (subscriber.account === account) open.subscribers.delete(subscriber)
     }
   }
 
   async setRole(owner: string, request: RoleRequest): Promise<void> {
     const open = await this.owned(owner, request.docId)
-    const username = normalizeUsername(request.username)
-    const member = username ? open.log.meta.members[username] : undefined
-    if (!username || !member) throw new HubError(404, 'not a member')
+    const account = isAccountId(request.account) ? request.account : null
+    const member = account ? open.log.meta.members[account] : undefined
+    if (!account || !member) throw new HubError(404, 'not a member')
     if (!ROLES.includes(request.role)) throw new HubError(400, 'the role is read or write')
     member.role = request.role
     await open.log.saveMeta()
-    this.notify(username, 'share-changed', { docId: roomSubject(open.log.meta.room), owner, role: request.role })
+    this.notify(account, 'share-changed', { docId: roomSubject(open.log.meta.room), owner, role: request.role })
   }
 
-  async accept(username: string, docId: unknown, vaultId: unknown): Promise<void> {
+  async accept(account: string, docId: unknown, vaultId: unknown): Promise<void> {
     const open = await this.require(docRoomOf(docId))
-    const member = open.log.meta.members[username]
+    const member = open.log.meta.members[account]
     if (!member) throw new HubError(404, 'not shared with you')
     if (typeof vaultId !== 'string' || !isHexId(vaultId)) throw new HubError(400, 'not a vault id')
     member.acceptedInto = vaultId
     await open.log.saveMeta()
   }
 
-  async incoming(username: string): Promise<IncomingShare[]> {
+  async incoming(account: string): Promise<IncomingShare[]> {
     await this.ready
     const shares: IncomingShare[] = []
     for (const meta of this.metas.values()) {
-      const member = meta.members[username]
+      const member = meta.members[account]
       if (!member || member.acceptedInto) continue
       shares.push({
         docId: roomSubject(meta.room),
@@ -453,40 +451,40 @@ export class RoomHub {
     return shares.sort((a, b) => a.addedAt - b.addedAt)
   }
 
-  async members(username: string, docId: unknown): Promise<ShareMembersResponse> {
+  async members(account: string, docId: unknown): Promise<ShareMembersResponse> {
     const open = await this.require(docRoomOf(docId))
     const meta = open.log.meta
-    if (!this.access(meta, username) || this.access(meta, username) === 'revoked') throw new HubError(403, 'no access')
+    if (!this.access(meta, account) || this.access(meta, account) === 'revoked') throw new HubError(403, 'no access')
     return {
       docId: roomSubject(meta.room),
       owner: meta.owner,
       epoch: meta.epoch,
       members: Object.entries(meta.members)
-        .map(([name, member]) => ({ username: name, role: member.role, addedAt: member.addedAt }))
+        .map(([name, member]) => ({ account: name, role: member.role, addedAt: member.addedAt }))
         .sort((a, b) => a.addedAt - b.addedAt)
     }
   }
 
   // --- keys and log --------------------------------------------------------------
 
-  private async readable(username: string, room: string): Promise<{ open: OpenRoom; access: Access }> {
+  private async readable(account: string, room: string): Promise<{ open: OpenRoom; access: Access }> {
     if (!roomKind(room) || !isHexId(roomSubject(room))) throw new HubError(400, 'unknown room')
     const open = await this.require(room)
-    const access = this.access(open.log.meta, username)
+    const access = this.access(open.log.meta, account)
     if (access === 'revoked') throw new HubError(410, 'access was revoked')
     if (!access) throw new HubError(403, 'no access')
     return { open, access }
   }
 
-  async keys(username: string, room: string): Promise<KeysResponse> {
-    const { open, access } = await this.readable(username, room)
+  async keys(account: string, room: string): Promise<KeysResponse> {
+    const { open, access } = await this.readable(account, room)
     const meta = open.log.meta
-    return { room, epoch: meta.epoch, keys: access.owner ? {} : { ...meta.sealedKeys[username] } }
+    return { room, epoch: meta.epoch, keys: access.owner ? {} : { ...meta.sealedKeys[account] } }
   }
 
   /** Everything the caller may read, for the history view: a starting snapshot and the frames after it. */
-  async log(username: string, room: string): Promise<LogResponse> {
-    const { open, access } = await this.readable(username, room)
+  async log(account: string, room: string): Promise<LogResponse> {
+    const { open, access } = await this.readable(account, room)
     const meta = open.log.meta
     let snapshot: SnapshotInfo | null = null
     let frames: Frame[]
@@ -514,8 +512,8 @@ export class RoomHub {
   }
 
   /** The owner's compaction: frames up to `uptoSeq` are replaced by the uploaded state. */
-  async snapshot(username: string, room: string, request: SnapshotRequest): Promise<void> {
-    const { open, access } = await this.readable(username, room)
+  async snapshot(account: string, room: string, request: SnapshotRequest): Promise<void> {
+    const { open, access } = await this.readable(account, room)
     const meta = open.log.meta
     // The owner's retention governs a shared note, and only the owner's client
     // may act on it; anyone else could shorten everybody's history.
@@ -529,20 +527,19 @@ export class RoomHub {
 
   /** Fills a brand-new room with frames, oldest first - a detached note's history. */
   async importFrames(
-    username: string,
+    account: string,
     room: string,
     vaultId: string,
     frames: Array<{ epoch: number; data: string }>
   ): Promise<number> {
     if (roomKind(room) !== 'doc' || !isHexId(roomSubject(room))) throw new HubError(400, 'only notes can be imported')
-    const account = await this.accounts.get(username)
-    if (!account?.vaults[vaultId]) throw new HubError(403, 'not your vault')
+    if (!(await this.accounts.get(account))?.vaults[vaultId]) throw new HubError(403, 'not your vault')
     const existing = await this.load(room)
-    if (existing && (existing.log.meta.owner !== username || existing.log.headSeq > 0)) {
+    if (existing && (existing.log.meta.owner !== account || existing.log.headSeq > 0)) {
       throw new HubError(409, 'the room already exists')
     }
-    const open = existing ?? (await this.claim(room, username, vaultId))
-    if (open.log.meta.owner !== username) throw new HubError(409, 'the room already exists')
+    const open = existing ?? (await this.claim(room, account, vaultId))
+    if (open.log.meta.owner !== account) throw new HubError(409, 'the room already exists')
     for (const frame of frames) {
       if (frame.epoch !== 0) throw new HubError(400, 'a new room starts in epoch 0')
       await open.log.append(0, fromBase64(frame.data, 'a frame'))
@@ -551,11 +548,11 @@ export class RoomHub {
   }
 
   /** The caller's rooms of one vault that hold frames older than `before`. */
-  async compactable(username: string, vaultId: string, before: number): Promise<string[]> {
+  async compactable(account: string, vaultId: string, before: number): Promise<string[]> {
     await this.ready
     const rooms: string[] = []
     for (const meta of this.metas.values()) {
-      if (meta.owner !== username || meta.vaultId !== vaultId) continue
+      if (meta.owner !== account || meta.vaultId !== vaultId) continue
       if (meta.oldestFrameTs !== null && meta.oldestFrameTs < before) rooms.push(meta.room)
     }
     return rooms

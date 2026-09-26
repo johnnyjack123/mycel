@@ -44,19 +44,19 @@ export class AccessModal extends Modal {
     }
     for (const member of members.members) {
       new Setting(contentEl)
-        .setName(member.username)
+        .setName(member.account)
         .addDropdown((dropdown) =>
           dropdown
             .addOption('write', 'Can edit')
             .addOption('read', 'Can read')
             .setValue(member.role)
-            .onChange((value) => void this.setRole(member.username, value as ShareRole))
+            .onChange((value) => void this.setRole(member.account, value as ShareRole))
         )
         .addButton((button) =>
           button
             .setButtonText('Remove')
             .setWarning()
-            .onClick(() => void this.revoke(member.username))
+            .onClick(() => void this.revoke(member.account))
         )
     }
     contentEl.createEl('p', {

@@ -2,7 +2,7 @@
 # docker job in .github/workflows/build.yml); by hand, from the repository root:
 #
 #   docker build -t obsidian-connect-server .
-#   docker exec <container> obsidian-connect user add <name>
+#   docker exec <container> obsidian-connect invite
 FROM node:24-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./

@@ -2,9 +2,8 @@ import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
 import type { ShareRole } from '@obsidian-connect/shared'
 import type { Sharing } from './Sharing.js'
 
-/** Share this note: pick a person the server knows, what they may do, and whether they see the past. */
+/** Share this note: with whom, what they may do, and whether they see the past. */
 export class ShareModal extends Modal {
-  private people: string[] = []
   private person = ''
   private role: ShareRole = 'write'
   private withHistory = false
@@ -19,35 +18,23 @@ export class ShareModal extends Modal {
     super(app)
   }
 
-  async onOpen(): Promise<void> {
+  onOpen(): void {
     this.titleEl.setText(`Share "${this.file.basename}"`)
-    this.contentEl.createEl('p', { text: 'Loading people…' })
-    try {
-      this.people = await this.sharing.people()
-    } catch (error) {
-      console.error('[obsidian-connect] listing people failed', error)
-      this.contentEl.empty()
-      this.contentEl.createEl('p', { text: 'Could not reach the server.' })
-      return
-    }
-    this.person = this.people[0] ?? ''
     this.render()
   }
 
   private render(): void {
     const { contentEl } = this
     contentEl.empty()
-    if (this.people.length === 0) {
-      contentEl.createEl('p', { text: 'Nobody else has an account on this server yet.' })
-      return
-    }
 
-    new Setting(contentEl).setName('Person').addDropdown((dropdown) => {
-      for (const person of this.people) dropdown.addOption(person, person)
-      dropdown.setValue(this.person).onChange((value) => {
-        this.person = value
-      })
-    })
+    new Setting(contentEl)
+      .setName('Account ID')
+      .setDesc('The server knows no names. The other person finds their account ID in their Obsidian Connect settings.')
+      .addText((text) =>
+        text.setValue(this.person).onChange((value) => {
+          this.person = value.trim().toLowerCase()
+        })
+      )
 
     new Setting(contentEl)
       .setName('Access')

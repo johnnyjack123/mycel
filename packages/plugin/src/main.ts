@@ -1,6 +1,7 @@
 import { Notice, Plugin, TFile, TFolder, editorInfoField, requestUrl, type TAbstractFile } from 'obsidian'
 import { docRoom, settingsRoom, userColor, type CollabUser } from '@obsidian-connect/shared'
 import { ConnectApi, type HttpClient } from './account/api'
+import { judgePassword } from './account/password'
 import { probeServer, type ServerProbe } from './account/probe'
 import { hashWasmArgon2id } from './account/argon2'
 import { KeyRing } from './account/KeyRing'
@@ -74,8 +75,12 @@ export default class ObsidianConnectPlugin extends Plugin {
     obsidianHttp,
     () => this.settings.token || null
   )
-  private readonly session = new Session(this.api, this.secrets, hashWasmArgon2id, (token, username) =>
-    this.storeToken(token, username)
+  private readonly session = new Session(
+    this.api,
+    this.secrets,
+    hashWasmArgon2id,
+    (token, username) => this.storeToken(token, username),
+    () => this.settings.serverUrl
   )
   private readonly editors = new EditorSync(
     () => this.store,
@@ -238,7 +243,8 @@ export default class ObsidianConnectPlugin extends Plugin {
 
   async createAccount(username: string, password: string, repeat: string, invite: string): Promise<void> {
     if (!username) throw new Error('Choose a name.')
-    if (password.length < 8) throw new Error('Use a password of at least 8 characters.')
+    const verdict = judgePassword(password, [username])
+    if (!verdict.ok) throw new Error(verdict.reason)
     // There is no reset: a typo here locks the account's notes for good.
     if (password !== repeat) throw new Error('The passwords differ.')
     await this.stopSync()
@@ -588,6 +594,12 @@ export default class ObsidianConnectPlugin extends Plugin {
   }
 
   // --- commands ------------------------------------------------------------
+
+  /** For debugging and for the admin: the server knows accounts and vaults only by these. */
+  ids(): { account: string; vault: string } | null {
+    if (!this.unlocked) return null
+    return { account: this.unlocked.accountId, vault: this.vault?.vaultId ?? '' }
+  }
 
   statusLine(): string {
     if (!this.store) return this.settings.syncEnabled ? 'Not syncing yet.' : 'Sync is off on this device.'

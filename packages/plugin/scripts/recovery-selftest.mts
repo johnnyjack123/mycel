@@ -4,10 +4,10 @@
 // which no other test can.
 //
 //   npm run test:recovery
-import { cpSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { check, delay, Device, eventually, finish, useServer } from './harness.mjs'
+import { check, delay, Device, eventually, finish, useServer, VAULT } from './harness.mjs'
 
 const { docRoom } = await import('@obsidian-connect/shared')
 const { KeyRing } = await import('../src/account/KeyRing.js')
@@ -50,12 +50,44 @@ try {
   check(await eventually(() => A2.vault.text('One.md') === 'first\nmore\n'), 'an edit reaches A2')
   check(A1.asked === 0 && A2.asked === 0, 'nobody is asked while the server has what they saw')
 
+  // What a compromised server has: every file it wrote, searched for what the
+  // devices know in plain text.
+  {
+    const files: string[] = []
+    // Every string in the server's JSON, decoded from base64 as well: that is
+    // how anything would be carried there, and anyone reading it undoes it.
+    const decodedStrings = (value: unknown): string[] => {
+      if (typeof value === 'string') return [value, Buffer.from(value, 'base64').toString('latin1')]
+      if (Array.isArray(value)) return value.flatMap(decodedStrings)
+      if (value && typeof value === 'object') return Object.entries(value).flatMap(([key, inner]) => [key, ...decodedStrings(inner)])
+      return []
+    }
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          walk(path)
+          continue
+        }
+        const raw = readFileSync(path)
+        files.push(raw.toString('latin1'))
+        if (entry.name.endsWith('.json')) files.push(...decodedStrings(JSON.parse(raw.toString('utf8'))))
+      }
+    }
+    walk(live)
+    const secrets = [`anna${run}`, VAULT, 'first', 'second', 'One.md', 'Two.md']
+    const leaks = secrets.filter((secret) => files.some((file) => file.includes(secret)))
+    check(files.length > 0 && leaks.length === 0, 'the server stores no name, vault name, note name or text', leaks)
+  }
+
   // --- the server loses every note, keeps the accounts ---------------------------------
   await A2.shutdown()
   await server.close()
   const empty = join(root, 'empty')
   mkdirSync(empty, { recursive: true })
+  // The accounts, and the server's id, which every account's salt includes.
   cpSync(join(live, 'accounts.json'), join(empty, 'accounts.json'))
+  cpSync(join(live, 'server.json'), join(empty, 'server.json'))
   A1.recoveryAnswer = 'device'
   server = await serve(empty)
   check(await eventually(() => A1.asked === 1, 20_000), 'A1 notices the server has other data and asks', A1.asked)

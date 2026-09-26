@@ -348,7 +348,7 @@ try {
     const docId = A.index?.docIdForPath('Together.md') as string
     const room = docRoom(docId)
 
-    await A.sharing?.share(docId, carol, 'write', false)
+    await A.sharing?.share(docId, C.accountId, 'write', false)
     check(
       await eventually(() => C.vault.text('Shared/Together.md') === 'shared text\n'),
       'C receives the note in her share folder, without being asked',
@@ -445,7 +445,7 @@ try {
     }
 
     // Read only.
-    await A.sharing?.setRole(docId, carol, 'read')
+    await A.sharing?.setRole(docId, C.accountId, 'read')
     check(await eventually(() => C.store?.isReadOnly(docId) === true), 'C learns she may only read now')
     check(await eventually(() => cTogether.view.state.readOnly), "and C's editor stops taking input")
     const beforeReading = aTogether.text()
@@ -457,7 +457,7 @@ try {
 
     // Revoking: C keeps her copy, as a note of her own, and they part ways.
     C.close(cTogether)
-    await A.sharing?.revoke(docId, carol)
+    await A.sharing?.revoke(docId, C.accountId)
     const keptByCarol = `${beforeReading} for readers`
     check(
       await eventually(() => C.store?.entry(C.index?.docIdForPath('Shared/Together.md') ?? '')?.owner === undefined && Boolean(C.index?.docIdForPath('Shared/Together.md'))),

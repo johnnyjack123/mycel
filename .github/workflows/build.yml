@@ -229,9 +229,9 @@ jobs:
             docker logs smoke
             exit 1
           fi
-          docker exec smoke obsidian-connect user add smoke-test
-          if ! docker exec smoke obsidian-connect user list | grep -q '^smoke-test'; then
-            echo "::error::the CLI did not create the account"
+          docker exec smoke obsidian-connect invite
+          if ! docker exec smoke obsidian-connect user list | grep -q 'invite code(s) not used yet'; then
+            echo "::error::the CLI did not write the data volume"
             docker logs smoke
             exit 1
           fi

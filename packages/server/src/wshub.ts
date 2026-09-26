@@ -63,7 +63,7 @@ function heartbeat(ws: WebSocket, onDead: () => void): () => void {
 class VaultConnection implements RoomClient {
   constructor(
     private readonly ws: WebSocket,
-    readonly username: string,
+    readonly account: string,
     readonly vaultId: string
   ) {}
 
@@ -141,9 +141,9 @@ class VaultConnection implements RoomClient {
  * One socket carries every note of a vault. The upgrade already checked that
  * the account owns the vault; each room is checked again on subscribe.
  */
-export function setupVaultConnection(ws: WebSocket, username: string, vaultId: string, hub: RoomHub): void {
+export function setupVaultConnection(ws: WebSocket, account: string, vaultId: string, hub: RoomHub): void {
   ws.binaryType = 'arraybuffer'
-  const connection = new VaultConnection(ws, username, vaultId)
+  const connection = new VaultConnection(ws, account, vaultId)
   const queue = serializer()
   hub.attach(connection)
   const stopHeartbeat = heartbeat(ws, () => hub.detach(connection))

@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { ShareRole } from '@obsidian-connect/shared'
+import { roomKind, roomSubject, type ShareRole } from '@obsidian-connect/shared'
 
 // One room on disk: `meta.json` with who may do what, `log.bin` with the
 // frames, and `snap-<uptoSeq>.bin` for each snapshot still needed. The server
@@ -49,7 +49,7 @@ export interface RoomMeta {
   oldestFrameTs: number | null
   members: Record<string, Member>
   revoked: Record<string, number>
-  /** username -> epoch -> that epoch's key sealed to them. */
+  /** account id -> epoch -> that epoch's key sealed to them. */
   sealedKeys: Record<string, Record<string, string>>
   snapshots: SnapshotInfo[]
 }
@@ -98,23 +98,46 @@ async function writeAtomic(path: string, data: string | Uint8Array): Promise<voi
   await rename(temp, path)
 }
 
-export function roomDir(dataDir: string, room: string): string {
-  return join(dataDir, 'rooms', encodeURIComponent(room))
+const USERS = 'users'
+const NOTES = 'notes'
+
+/**
+ * `users/<owner>/<vaultId>/{index,settings,notes/<docId>}`: everything an
+ * account owns under one folder, so removing an account removes a folder and
+ * a person can find their own data by the ids the plugin shows. A shared note
+ * lives with its owner only; everyone else's index merely points at it.
+ */
+export function roomDir(dataDir: string, meta: Pick<RoomMeta, 'room' | 'owner' | 'vaultId'>): string {
+  const vault = join(dataDir, USERS, meta.owner, meta.vaultId)
+  const kind = roomKind(meta.room)
+  if (kind === 'idx') return join(vault, 'index')
+  if (kind === 'set') return join(vault, 'settings')
+  return join(vault, NOTES, roomSubject(meta.room))
 }
 
-/** Every room's metadata, for questions that span rooms: incoming shares, compaction. */
-export async function loadAllMeta(dataDir: string): Promise<RoomMeta[]> {
-  let entries: string[]
+async function list(dir: string): Promise<string[]> {
   try {
-    entries = await readdir(join(dataDir, 'rooms'))
+    return await readdir(dir)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
     throw error
   }
+}
+
+/** Every room's metadata, for questions that span rooms: incoming shares, compaction. */
+export async function loadAllMeta(dataDir: string): Promise<RoomMeta[]> {
   const metas: RoomMeta[] = []
-  for (const entry of entries) {
-    const raw = await readOptional(join(dataDir, 'rooms', entry, 'meta.json'))
+  const read = async (dir: string): Promise<void> => {
+    const raw = await readOptional(join(dir, 'meta.json'))
     if (raw) metas.push(JSON.parse(raw.toString('utf8')) as RoomMeta)
+  }
+  for (const owner of await list(join(dataDir, USERS))) {
+    for (const vault of await list(join(dataDir, USERS, owner))) {
+      const base = join(dataDir, USERS, owner, vault)
+      await read(join(base, 'index'))
+      await read(join(base, 'settings'))
+      for (const docId of await list(join(base, NOTES))) await read(join(base, NOTES, docId))
+    }
   }
   return metas
 }
@@ -130,14 +153,14 @@ export class RoomLog {
   ) {}
 
   static async load(dataDir: string, meta: RoomMeta): Promise<RoomLog> {
-    const dir = roomDir(dataDir, meta.room)
+    const dir = roomDir(dataDir, meta)
     const raw = await readOptional(join(dir, 'log.bin'))
     const frames = raw ? decodeFrames(raw).filter((frame) => frame.seq > meta.compactedUpTo) : []
     return new RoomLog(dir, meta, frames)
   }
 
   static async create(dataDir: string, meta: RoomMeta): Promise<RoomLog> {
-    const log = new RoomLog(roomDir(dataDir, meta.room), meta, [])
+    const log = new RoomLog(roomDir(dataDir, meta), meta, [])
     await log.saveMeta()
     return log
   }

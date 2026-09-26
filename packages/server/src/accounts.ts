@@ -1,9 +1,8 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
   AccountBundle,
-  KdfParams,
   PasswordChangeRequest,
   RegisterRequest,
   RegistrationMode,
@@ -11,34 +10,44 @@ import type {
 } from '@obsidian-connect/shared'
 
 // Accounts live in one JSON file. The server and the CLI (`docker exec …
-// obsidian-connect user add`) both write it, so every change re-reads the file
+// obsidian-connect invite`) both write it, so every change re-reads the file
 // first and replaces it atomically, and the server reloads it when it changed.
 //
-// Nothing here can decrypt anything. The server keeps a keyed hash of a key
-// the client derived from the password, and key material that only the
-// client's master key opens.
+// The server knows no names. An account is a random id; it is found by the
+// hash of a login key the device derived from name and password together, so
+// neither part alone leads anywhere, and nothing stored here says who anyone
+// is. Nothing here can decrypt anything either: the key material is wrapped
+// under a master key that never leaves a device.
 
 export interface StoredVault {
-  name: string
+  sealedName: string
   wrappedKey: string
   createdAt: number
 }
 
 export interface StoredAccount {
-  username: string
+  accountId: string
   createdAt: number
-  status: 'pending' | 'active'
-  /** sha256 of the invite code, while the account waits to be claimed. */
-  inviteHash?: string
-  kdf?: KdfParams
-  authSalt?: string
-  authHash?: string
-  publicKey?: string
-  wrappedPrivateKey?: string
+  /** sha256 of the login key. */
+  loginHash: string
+  kdfVersion: number
+  publicKey: string
+  wrappedPrivateKey: string
+  wrappedAccountSecret: string
   vaults: Record<string, StoredVault>
 }
 
-type AccountMap = Record<string, StoredAccount>
+export interface StoredInvite {
+  createdAt: number
+}
+
+interface AccountFile {
+  accounts: Record<string, StoredAccount>
+  /** loginHash -> account id. */
+  logins: Record<string, string>
+  /** sha256 of an invite code -> the invite. Consumed by registering. */
+  invites: Record<string, StoredInvite>
+}
 
 export class AccountError extends Error {
   constructor(
@@ -49,18 +58,10 @@ export class AccountError extends Error {
   }
 }
 
-const USERNAME = /^[a-z0-9][a-z0-9._-]{1,31}$/
-const MIN_MEMORY_KIB = 8_192
+const HEX_ID = /^[0-9a-f]{32}$/
 
-export function normalizeUsername(name: unknown): string | null {
-  if (typeof name !== 'string') return null
-  const normalized = name.trim().toLowerCase()
-  return USERNAME.test(normalized) ? normalized : null
-}
-
-/** One vault per name per account; a second device finds it by signing in and naming it. */
-export function vaultIdFor(username: string, vaultName: string): string {
-  return createHash('sha256').update(`vault::${username}::${vaultName}`).digest('hex').slice(0, 32)
+export function isAccountId(value: unknown): value is string {
+  return typeof value === 'string' && HEX_ID.test(value)
 }
 
 function decoded(value: unknown, minBytes: number): Buffer | null {
@@ -69,23 +70,8 @@ function decoded(value: unknown, minBytes: number): Buffer | null {
   return buffer.length >= minBytes ? buffer : null
 }
 
-function validKdf(kdf: unknown): kdf is KdfParams {
-  if (!kdf || typeof kdf !== 'object') return false
-  const params = kdf as Partial<KdfParams>
-  return (
-    params.algorithm === 'argon2id' &&
-    Number.isInteger(params.memoryKiB) &&
-    (params.memoryKiB ?? 0) >= MIN_MEMORY_KIB &&
-    Number.isInteger(params.iterations) &&
-    (params.iterations ?? 0) >= 1 &&
-    Number.isInteger(params.parallelism) &&
-    (params.parallelism ?? 0) >= 1 &&
-    decoded(params.salt, 16) !== null
-  )
-}
-
-function authHash(salt: string, authKey: string): string {
-  return createHmac('sha256', Buffer.from(salt, 'base64')).update(Buffer.from(authKey, 'base64')).digest('base64')
+function loginHash(loginKey: Buffer): string {
+  return createHash('sha256').update(loginKey).digest('hex')
 }
 
 function inviteHash(code: string): string {
@@ -93,217 +79,218 @@ function inviteHash(code: string): string {
 }
 
 function newInviteCode(): string {
-  const hex = randomBytes(8).toString('hex')
+  const hex = randomBytes(10).toString('hex')
   return hex.match(/.{4}/g)?.join('-') ?? hex
 }
 
-export class AccountStore {
-  private cache: { mtimeMs: number; accounts: AccountMap } | null = null
-  private writes: Promise<unknown> = Promise.resolve()
+function empty(): AccountFile {
+  return { accounts: {}, logins: {}, invites: {} }
+}
 
-  constructor(
-    private readonly dataDir: string,
-    private readonly secret: string
-  ) {}
+export class AccountStore {
+  private cache: { mtimeMs: number; data: AccountFile } | null = null
+  private writes: Promise<unknown> = Promise.resolve()
+  private serverIdOnce: Promise<string> | null = null
+
+  constructor(private readonly dataDir: string) {}
 
   private get file(): string {
     return join(this.dataDir, 'accounts.json')
   }
 
-  private async load(): Promise<AccountMap> {
+  private async load(): Promise<AccountFile> {
     let mtimeMs: number
     try {
       mtimeMs = (await stat(this.file)).mtimeMs
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      return {}
+      return empty()
     }
-    if (this.cache && this.cache.mtimeMs === mtimeMs) return this.cache.accounts
-    const parsed = JSON.parse(await readFile(this.file, 'utf8')) as { accounts?: AccountMap }
-    const accounts = parsed.accounts ?? {}
-    this.cache = { mtimeMs, accounts }
-    return accounts
+    if (this.cache && this.cache.mtimeMs === mtimeMs) return this.cache.data
+    const parsed = JSON.parse(await readFile(this.file, 'utf8')) as Partial<AccountFile>
+    const data = { ...empty(), ...parsed }
+    this.cache = { mtimeMs, data }
+    return data
   }
 
-  private async save(accounts: AccountMap): Promise<void> {
+  private async save(data: AccountFile): Promise<void> {
     await mkdir(this.dataDir, { recursive: true })
     const temp = `${this.file}.${process.pid}.tmp`
-    await writeFile(temp, JSON.stringify({ accounts }, null, 2))
+    await writeFile(temp, JSON.stringify(data, null, 2))
     await rename(temp, this.file)
-    this.cache = { mtimeMs: (await stat(this.file)).mtimeMs, accounts }
+    this.cache = { mtimeMs: (await stat(this.file)).mtimeMs, data }
   }
 
   /** Read, change, write - one at a time within this process. */
-  private update<T>(mutate: (accounts: AccountMap) => T | Promise<T>): Promise<T> {
+  private update<T>(mutate: (data: AccountFile) => T | Promise<T>): Promise<T> {
     const run = this.writes.then(async () => {
       this.cache = null
-      const accounts = structuredClone(await this.load())
-      const result = await mutate(accounts)
-      await this.save(accounts)
+      const data = structuredClone(await this.load())
+      const result = await mutate(data)
+      await this.save(data)
       return result
     })
     this.writes = run.catch(() => undefined)
     return run
   }
 
-  async get(username: string): Promise<StoredAccount | undefined> {
-    return (await this.load())[username]
+  /**
+   * 128 random bits, made on the very first start and kept with the data:
+   * every account's salt includes it, so it must never change - and it moves
+   * with the data when the server moves.
+   */
+  serverId(): Promise<string> {
+    this.serverIdOnce ??= (async () => {
+      const file = join(this.dataDir, 'server.json')
+      try {
+        const stored = JSON.parse(await readFile(file, 'utf8')) as { serverId?: unknown }
+        if (typeof stored.serverId === 'string' && HEX_ID.test(stored.serverId)) return stored.serverId
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      const serverId = randomBytes(16).toString('hex')
+      await mkdir(this.dataDir, { recursive: true })
+      await writeFile(file, JSON.stringify({ serverId }, null, 2), { flag: 'wx' }).catch(async (error: NodeJS.ErrnoException) => {
+        // Another process made it first; theirs counts.
+        if (error.code !== 'EEXIST') throw error
+      })
+      const kept = JSON.parse(await readFile(file, 'utf8')) as { serverId: string }
+      return kept.serverId
+    })()
+    return this.serverIdOnce
+  }
+
+  async get(accountId: string): Promise<StoredAccount | undefined> {
+    return (await this.load()).accounts[accountId]
   }
 
   async list(): Promise<StoredAccount[]> {
-    return Object.values(await this.load()).sort((a, b) => a.username.localeCompare(b.username))
+    return Object.values((await this.load()).accounts).sort((a, b) => a.createdAt - b.createdAt)
   }
 
-  async activeUsernames(): Promise<string[]> {
-    return (await this.list()).filter((account) => account.status === 'active').map((account) => account.username)
+  async invites(): Promise<number> {
+    return Object.keys((await this.load()).invites).length
   }
 
-  /** Creates a pending account, or renews the code of one, and returns the code. */
-  invite(name: string): Promise<string> {
-    const username = normalizeUsername(name)
-    if (!username) return Promise.reject(new AccountError(400, 'usernames are 2-32 of a-z, 0-9, . _ -'))
+  /** A code that lets one person create one account. It names nobody. */
+  invite(): Promise<string> {
     const code = newInviteCode()
-    return this.update((accounts) => {
-      const existing = accounts[username]
-      if (existing?.status === 'active') throw new AccountError(409, `${username} already exists`)
-      accounts[username] = {
-        username,
-        createdAt: existing?.createdAt ?? Date.now(),
-        status: 'pending',
-        inviteHash: inviteHash(code),
-        vaults: {}
-      }
+    return this.update((data) => {
+      data.invites[inviteHash(code)] = { createdAt: Date.now() }
       return code
     })
   }
 
   register(request: RegisterRequest, mode: RegistrationMode): Promise<StoredAccount> {
-    const username = normalizeUsername(request.username)
-    if (!username) return Promise.reject(new AccountError(400, 'usernames are 2-32 of a-z, 0-9, . _ -'))
-    if (!validKdf(request.kdf)) return Promise.reject(new AccountError(400, 'invalid key derivation parameters'))
-    if (!decoded(request.authKey, 32) || !decoded(request.publicKey, 65) || !decoded(request.wrappedPrivateKey, 16)) {
+    const loginKey = decoded(request.loginKey, 32)
+    if (!loginKey) return Promise.reject(new AccountError(400, 'the login key is missing'))
+    if (!Number.isInteger(request.kdfVersion) || request.kdfVersion < 1) {
+      return Promise.reject(new AccountError(400, 'unknown key derivation version'))
+    }
+    if (!decoded(request.publicKey, 65) || !decoded(request.wrappedPrivateKey, 16) || !decoded(request.wrappedAccountSecret, 16)) {
       return Promise.reject(new AccountError(400, 'incomplete key material'))
     }
-    return this.update((accounts) => {
-      const existing = accounts[username]
-      if (existing?.status === 'active') throw new AccountError(409, 'that name is taken')
-      // An invited name needs its invite even when anyone may register: the
-      // admin meant it for someone.
-      if (existing?.status === 'pending' || mode === 'invite') {
-        if (!existing || !request.invite || existing.inviteHash !== inviteHash(request.invite)) {
-          throw new AccountError(403, 'a valid invite code is required')
-        }
+    return this.update((data) => {
+      const hash = loginHash(loginKey)
+      // Only someone who typed exactly these name and password gets here, and
+      // they could sign in with them just as well - refusing tells nothing new.
+      if (data.logins[hash]) throw new AccountError(409, 'choose another name or password')
+      const invite = request.invite ? inviteHash(request.invite) : null
+      if (mode === 'invite' || invite) {
+        if (!invite || !data.invites[invite]) throw new AccountError(403, 'a valid invite code is required')
+        delete data.invites[invite]
       }
-      const authSalt = randomBytes(16).toString('base64')
+      const accountId = randomBytes(16).toString('hex')
       const account: StoredAccount = {
-        username,
-        createdAt: existing?.createdAt ?? Date.now(),
-        status: 'active',
-        kdf: request.kdf,
-        authSalt,
-        authHash: authHash(authSalt, request.authKey),
-        publicKey: request.publicKey,
-        wrappedPrivateKey: request.wrappedPrivateKey,
+        accountId,
+        createdAt: Date.now(),
+        loginHash: hash,
+        kdfVersion: request.kdfVersion,
+        publicKey: request.publicKey as string,
+        wrappedPrivateKey: request.wrappedPrivateKey as string,
+        wrappedAccountSecret: request.wrappedAccountSecret as string,
         vaults: {}
       }
-      accounts[username] = account
+      data.accounts[accountId] = account
+      data.logins[hash] = accountId
       return account
     })
   }
 
-  /** The account if `authKey` is right, otherwise null - never which part was wrong. */
-  async verify(name: string, authKey: unknown): Promise<StoredAccount | null> {
-    const username = normalizeUsername(name)
-    if (!username || typeof authKey !== 'string') return null
-    const account = await this.get(username)
-    if (!account || account.status !== 'active' || !account.authSalt || !account.authHash) return null
-    const expected = Buffer.from(account.authHash, 'base64')
-    const actual = Buffer.from(authHash(account.authSalt, authKey), 'base64')
-    return expected.length === actual.length && timingSafeEqual(expected, actual) ? account : null
+  /** The account a login key opens, or null - never why. */
+  async login(loginKey: unknown): Promise<StoredAccount | null> {
+    const key = decoded(loginKey, 32)
+    if (!key) return null
+    const data = await this.load()
+    const accountId = data.logins[loginHash(key)]
+    return accountId ? (data.accounts[accountId] ?? null) : null
   }
 
-  /**
-   * The parameters to derive a login key with. An unknown name gets a salt
-   * derived from the server secret, stable across calls, so asking does not
-   * tell whether an account exists.
-   */
-  async kdfFor(name: string): Promise<KdfParams> {
-    const username = normalizeUsername(name) ?? ''
-    const account = username ? await this.get(username) : undefined
-    if (account?.status === 'active' && account.kdf) return account.kdf
-    const salt = createHmac('sha256', this.secret).update(`prelogin::${username}`).digest().subarray(0, 16)
-    return { algorithm: 'argon2id', salt: salt.toString('base64'), memoryKiB: 19_456, iterations: 2, parallelism: 1 }
-  }
-
-  /** Registers a vault, or returns the one the account already has under that name. */
-  addVault(username: string, name: unknown, wrappedKey: unknown): Promise<VaultRecord> {
-    if (typeof name !== 'string' || name.trim().length === 0 || name.length > 200) {
-      return Promise.reject(new AccountError(400, 'a vault needs a name'))
+  /** Registers a vault under the id the device derived, or returns the one it already has. */
+  addVault(accountId: string, vaultId: unknown, sealedName: unknown, wrappedKey: unknown): Promise<VaultRecord> {
+    if (!isAccountId(vaultId)) return Promise.reject(new AccountError(400, 'not a vault id'))
+    if (!decoded(sealedName, 16) || !decoded(wrappedKey, 16)) {
+      return Promise.reject(new AccountError(400, 'a vault needs its sealed name and wrapped key'))
     }
-    if (!decoded(wrappedKey, 16)) return Promise.reject(new AccountError(400, 'a vault needs its wrapped key'))
-    const vaultName = name.trim()
-    return this.update((accounts) => {
-      const account = accounts[username]
-      if (!account || account.status !== 'active') throw new AccountError(401, 'unknown account')
-      const vaultId = vaultIdFor(username, vaultName)
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account) throw new AccountError(401, 'unknown account')
       const existing = account.vaults[vaultId]
       // First writer wins: a second device creating the same vault at the same
       // moment gets the first one's key back and uses that.
-      if (existing) return { vaultId, name: existing.name, wrappedKey: existing.wrappedKey }
-      account.vaults[vaultId] = { name: vaultName, wrappedKey: wrappedKey as string, createdAt: Date.now() }
-      return { vaultId, name: vaultName, wrappedKey: wrappedKey as string }
+      if (existing) return { vaultId, sealedName: existing.sealedName, wrappedKey: existing.wrappedKey }
+      account.vaults[vaultId] = { sealedName: sealedName as string, wrappedKey: wrappedKey as string, createdAt: Date.now() }
+      return { vaultId, sealedName: sealedName as string, wrappedKey: wrappedKey as string }
     })
   }
 
-  changePassword(username: string, request: PasswordChangeRequest): Promise<StoredAccount> {
-    if (!validKdf(request.kdf)) return Promise.reject(new AccountError(400, 'invalid key derivation parameters'))
-    if (!decoded(request.newAuthKey, 32) || !decoded(request.wrappedPrivateKey, 16)) {
+  changePassword(accountId: string, request: PasswordChangeRequest): Promise<StoredAccount> {
+    const current = decoded(request.loginKey, 32)
+    const next = decoded(request.newLoginKey, 32)
+    if (!current || !next) return Promise.reject(new AccountError(400, 'the login keys are missing'))
+    if (!Number.isInteger(request.kdfVersion) || request.kdfVersion < 1) {
+      return Promise.reject(new AccountError(400, 'unknown key derivation version'))
+    }
+    if (!decoded(request.wrappedPrivateKey, 16) || !decoded(request.wrappedAccountSecret, 16)) {
       return Promise.reject(new AccountError(400, 'incomplete key material'))
     }
-    return this.verify(username, request.authKey).then((verified) => {
-      if (!verified) throw new AccountError(403, 'the current password is wrong')
-      return this.update((accounts) => {
-        const account = accounts[username]
-        if (!account) throw new AccountError(401, 'unknown account')
-        // Every vault must come along; a missing one would be locked for good.
-        for (const vaultId of Object.keys(account.vaults)) {
-          if (!decoded(request.vaults?.[vaultId], 16)) throw new AccountError(400, `vault ${vaultId} is missing`)
-        }
-        const authSalt = randomBytes(16).toString('base64')
-        account.kdf = request.kdf
-        account.authSalt = authSalt
-        account.authHash = authHash(authSalt, request.newAuthKey)
-        account.wrappedPrivateKey = request.wrappedPrivateKey
-        for (const [vaultId, vault] of Object.entries(account.vaults)) {
-          vault.wrappedKey = request.vaults[vaultId] as string
-        }
-        return account
-      })
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      // A token alone - it travels in the socket URL - is not enough to
+      // replace every wrapped key of the account.
+      if (!account || account.loginHash !== loginHash(current)) throw new AccountError(403, 'the current password is wrong')
+      const hash = loginHash(next)
+      if (data.logins[hash] && data.logins[hash] !== accountId) throw new AccountError(409, 'choose another name or password')
+      delete data.logins[account.loginHash]
+      data.logins[hash] = accountId
+      account.loginHash = hash
+      account.kdfVersion = request.kdfVersion
+      account.wrappedPrivateKey = request.wrappedPrivateKey
+      account.wrappedAccountSecret = request.wrappedAccountSecret
+      return account
     })
   }
 
-  remove(name: string): Promise<boolean> {
-    const username = normalizeUsername(name)
-    if (!username) return Promise.resolve(false)
-    return this.update((accounts) => {
-      if (!accounts[username]) return false
-      delete accounts[username]
+  remove(accountId: string): Promise<boolean> {
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account) return false
+      delete data.logins[account.loginHash]
+      delete data.accounts[accountId]
       return true
     })
   }
 
   bundle(account: StoredAccount): AccountBundle {
-    if (!account.kdf || !account.publicKey || !account.wrappedPrivateKey) {
-      throw new AccountError(409, 'the account has not been set up yet')
-    }
     return {
-      username: account.username,
-      kdf: account.kdf,
+      accountId: account.accountId,
+      kdfVersion: account.kdfVersion,
       publicKey: account.publicKey,
       wrappedPrivateKey: account.wrappedPrivateKey,
+      wrappedAccountSecret: account.wrappedAccountSecret,
       vaults: Object.entries(account.vaults).map(([vaultId, vault]) => ({
         vaultId,
-        name: vault.name,
+        sealedName: vault.sealedName,
         wrappedKey: vault.wrappedKey
       }))
     }

@@ -62,12 +62,8 @@ export class Sharing {
     return this.api.members(docId)
   }
 
-  async people(): Promise<string[]> {
-    return (await this.api.users()).users
-  }
-
-  private async publicKey(username: string): Promise<Bytes> {
-    return fromBase64((await this.api.userKey(username)).publicKey)
+  private async publicKey(account: string): Promise<Bytes> {
+    return fromBase64((await this.api.accountKey(account)).publicKey)
   }
 
   /**
@@ -76,11 +72,11 @@ export class Sharing {
    * snapshot of the note as it is now - the frames before it are deltas they
    * could not read anyway.
    */
-  async share(docId: string, username: string, role: ShareRole, withHistory: boolean): Promise<void> {
+  async share(docId: string, account: string, role: ShareRole, withHistory: boolean): Promise<void> {
     const entry = this.store.entry(docId)
     if (!entry || entry.deletedAt) throw new Error('This note is not synced yet.')
     if (entry.owner) throw new Error(`Only ${entry.owner} can share this note.`)
-    const recipientKey = await this.publicKey(username)
+    const recipientKey = await this.publicKey(account)
     const handle = await this.store.handle(docId)
     // Without the room's current state there is nothing to hand over, and
     // without it on the server there is no room to share yet.
@@ -95,7 +91,7 @@ export class Sharing {
           const epochs = Array.from({ length: members.epoch + 1 }, (_value, index) => index)
           await this.api.share({
             docId,
-            username,
+            account,
             role,
             withHistory: true,
             keys: await this.keys.sealEpochKeys(docId, epochs, recipientKey),
@@ -104,11 +100,11 @@ export class Sharing {
         } else {
           const epoch = members.epoch + 1
           const rotationKeys: Record<string, string> = {}
-          rotationKeys[username] = (await this.keys.sealEpochKeys(docId, [epoch], recipientKey))[String(epoch)] as string
+          rotationKeys[account] = (await this.keys.sealEpochKeys(docId, [epoch], recipientKey))[String(epoch)] as string
           for (const member of members.members) {
-            if (member.username === username) continue
-            const sealed = await this.keys.sealEpochKeys(docId, [epoch], await this.publicKey(member.username))
-            rotationKeys[member.username] = sealed[String(epoch)] as string
+            if (member.account === account) continue
+            const sealed = await this.keys.sealEpochKeys(docId, [epoch], await this.publicKey(member.account))
+            rotationKeys[member.account] = sealed[String(epoch)] as string
           }
           // The note as far as the server's log goes. The server refuses it
           // when frames arrived meanwhile, and the loop tries again once they
@@ -118,7 +114,7 @@ export class Sharing {
           const snapshot = await encrypt(key, state, snapshotAad(room, epoch))
           await this.api.share({
             docId,
-            username,
+            account,
             role,
             withHistory: false,
             keys: {},
@@ -139,22 +135,22 @@ export class Sharing {
   }
 
   /** Takes access away and moves the note to an epoch the person never gets. */
-  async revoke(docId: string, username: string): Promise<void> {
+  async revoke(docId: string, account: string): Promise<void> {
     const members = await this.api.members(docId)
     const epoch = members.epoch + 1
     const keys: Record<string, string> = {}
     for (const member of members.members) {
-      if (member.username === username) continue
-      const sealed = await this.keys.sealEpochKeys(docId, [epoch], await this.publicKey(member.username))
-      keys[member.username] = sealed[String(epoch)] as string
+      if (member.account === account) continue
+      const sealed = await this.keys.sealEpochKeys(docId, [epoch], await this.publicKey(member.account))
+      keys[member.account] = sealed[String(epoch)] as string
     }
-    await this.api.revoke({ docId, username, rotation: { epoch, keys } })
+    await this.api.revoke({ docId, account, rotation: { epoch, keys } })
     // Nobody left to see a caret.
     if (Object.keys(keys).length === 0) this.store.share(docId, false)
   }
 
-  async setRole(docId: string, username: string, role: ShareRole): Promise<void> {
-    await this.api.setRole({ docId, username, role })
+  async setRole(docId: string, account: string, role: ShareRole): Promise<void> {
+    await this.api.setRole({ docId, account, role })
   }
 
   async incoming(): Promise<IncomingShare[]> {

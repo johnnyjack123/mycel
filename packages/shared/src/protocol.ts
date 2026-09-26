@@ -1,4 +1,5 @@
-// Version 4: a subscribe says whether the room may be created. Version 3: the
+// Version 4: a subscribe says whether the room may be created, and the server
+// knows accounts only by id - no names, no salts per name. Version 3: the
 // server stores an ordered log of encrypted frames and can no longer read a
 // document. Version 2 relayed plaintext Yjs sync messages.
 export const PROTOCOL_VERSION = 4
@@ -105,14 +106,14 @@ export type MuxMessage = (typeof MUX)[keyof typeof MUX]
 export const API = {
   health: '/health',
   config: '/auth/config',
-  prelogin: '/auth/prelogin',
   register: '/auth/register',
   login: '/auth/login',
   refresh: '/auth/refresh',
   password: '/auth/password',
   account: '/account',
   vaults: '/vaults',
-  users: '/users',
+  /** `/accounts/:accountId/key`: someone's public key, by account id. */
+  accounts: '/accounts',
   shares: '/shares',
   keys: '/keys',
   log: '/log',

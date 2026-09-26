@@ -16,10 +16,10 @@ export class TokenService {
     this.key = new TextEncoder().encode(secret)
   }
 
-  async issue(username: string): Promise<IssuedToken> {
+  async issue(accountId: string): Promise<IssuedToken> {
     const token = await new SignJWT({ scope: 'user' })
       .setProtectedHeader({ alg: 'HS256' })
-      .setSubject(username)
+      .setSubject(accountId)
       .setIssuer('obsidian-connect')
       .setIssuedAt()
       .setExpirationTime(`${this.ttlSeconds}s`)
@@ -27,7 +27,7 @@ export class TokenService {
     return { token, expiresIn: this.ttlSeconds }
   }
 
-  /** The username the token was issued to. Throws for anything else. */
+  /** The accountId the token was issued to. Throws for anything else. */
   async verify(token: string): Promise<string> {
     const { payload } = await jwtVerify(token, this.key, { issuer: 'obsidian-connect' })
     if (payload.scope !== 'user' || typeof payload.sub !== 'string') throw new Error('not a user token')

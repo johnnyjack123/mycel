@@ -96,9 +96,17 @@ export class Device {
   }
   private token: string | null = null
   readonly api = new ConnectApi(() => serverUrl, fetchHttp, () => this.token)
-  private readonly session = new Session(this.api, this.secrets, hashWasmArgon2id, async (token) => {
-    this.token = token
-  })
+  private readonly session = new Session(
+    this.api,
+    this.secrets,
+    hashWasmArgon2id,
+    async (token) => {
+      this.token = token
+    },
+    () => serverUrl
+  )
+  /** The server knows this account by this id alone; sharing addresses it. */
+  accountId = ''
   // Outlives restarts, like the plugin's own: Obsidian keeps the extension in
   // its editors while sync is stopped and started again.
   readonly editors = new EditorSync(() => this.store, noteOf)
@@ -134,6 +142,7 @@ export class Device {
     const unlocked =
       (await this.session.unlock()) ??
       (this.signUp ? await this.session.register(this.username, PASSWORD) : await this.session.login(this.username, PASSWORD))
+    this.accountId = unlocked.accountId
     const openVault = await this.session.openVault(unlocked, VAULT)
     const keys = new KeyRing(openVault, unlocked, this.api, this.secrets)
     const vault = this.vault

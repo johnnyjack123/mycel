@@ -2,6 +2,7 @@ import {
   API,
   type AcceptRequest,
   type AccountBundle,
+  type AccountKeyResponse,
   type AuthConfigResponse,
   type CompactableResponse,
   type CreateVaultRequest,
@@ -11,7 +12,6 @@ import {
   type LoginRequest,
   type LogResponse,
   type PasswordChangeRequest,
-  type PreloginResponse,
   type RefreshResponse,
   type RegisterRequest,
   type RevokeRequest,
@@ -20,8 +20,6 @@ import {
   type ShareMembersResponse,
   type ShareRequest,
   type SnapshotRequest,
-  type UserKeyResponse,
-  type UsersResponse,
   type VaultRecord
 } from '@obsidian-connect/shared'
 
@@ -95,10 +93,6 @@ export class ConnectApi {
     return this.call('GET', API.config, undefined, false)
   }
 
-  prelogin(username: string): Promise<PreloginResponse> {
-    return this.call('POST', API.prelogin, { username }, false)
-  }
-
   register(request: RegisterRequest): Promise<SessionResponse> {
     return this.call('POST', API.register, request, false)
   }
@@ -123,12 +117,9 @@ export class ConnectApi {
     return this.call('POST', API.vaults, request)
   }
 
-  users(): Promise<UsersResponse> {
-    return this.call('GET', API.users)
-  }
-
-  userKey(username: string): Promise<UserKeyResponse> {
-    return this.call('GET', `${API.users}/${encodeURIComponent(username)}/key`)
+  /** Someone's public key as the server has it. Contacts pin it; until then it is the server's word. */
+  accountKey(accountId: string): Promise<AccountKeyResponse> {
+    return this.call('GET', `${API.accounts}/${encodeURIComponent(accountId)}/key`)
   }
 
   share(request: ShareRequest): Promise<unknown> {
