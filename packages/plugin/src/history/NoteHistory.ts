@@ -7,14 +7,20 @@ import type { RoomCrypto } from '../sync/VaultSocket.js'
 // A note's history, read on this device: the server holds only ciphertext, so
 // replaying to a point in time happens here. Restoring then edits the live
 // document like any other change, so a restore can be undone.
+//
+// Ordered by when each change was made, as its author's device recorded it
+// inside the encrypted frame - not by the server's seq or clock. A device that
+// uploads a history again after the server lost it sends old changes late;
+// they still belong where they were made. And the author's time is sealed,
+// the server's is only claimed.
 
 export interface Version {
-  /** Replaying up to and including this frame shows the version. */
+  /** Identifies the last change of the version; `textAt` replays up to it. */
   seq: number
   ts: number
 }
 
-// Frames this close together count as one version; a version per keystroke
+// Changes this close together count as one version; a version per keystroke
 // batch would bury the ones people look for.
 const SESSION_GAP_MS = 60_000
 
@@ -25,7 +31,7 @@ interface Step {
 }
 
 export class NoteHistory {
-  private base: { seq: number; ts: number; update: Uint8Array } | null = null
+  private base: Step | null = null
   private steps: Step[] = []
   /** Frames this device has no key for - they are skipped, and the view says so. */
   unreadable = 0
@@ -46,7 +52,8 @@ export class NoteHistory {
       const key = await this.crypto.key(log.snapshot.epoch)
       if (key) {
         const plaintext = await decrypt(key, fromBase64(log.snapshot.data), snapshotAad(this.room, log.snapshot.epoch))
-        this.base = { seq: log.snapshot.uptoSeq, ts: log.snapshot.ts, update: unpackFrame(plaintext).update }
+        const snapshot = unpackFrame(plaintext)
+        this.base = { seq: log.snapshot.uptoSeq, ts: snapshot.authorTs, update: snapshot.update }
       } else {
         this.unreadable += 1
       }
@@ -58,8 +65,10 @@ export class NoteHistory {
         continue
       }
       const plaintext = await decrypt(key, fromBase64(frame.data), frameAad(this.room, frame.epoch))
-      this.steps.push({ seq: frame.seq, ts: frame.ts, update: unpackFrame(plaintext).update })
+      const change = unpackFrame(plaintext)
+      this.steps.push({ seq: frame.seq, ts: change.authorTs, update: change.update })
     }
+    this.steps.sort((a, b) => a.ts - b.ts || a.seq - b.seq)
   }
 
   /** Newest first, one per editing session. */
@@ -79,9 +88,10 @@ export class NoteHistory {
     try {
       doc.transact(() => {
         if (this.base) Y.applyUpdate(doc, this.base.update)
+        if (this.base?.seq === seq) return
         for (const step of this.steps) {
-          if (step.seq > seq) break
           Y.applyUpdate(doc, step.update)
+          if (step.seq === seq) break
         }
       })
       return doc.getText(CONTENT_FIELD).toString()

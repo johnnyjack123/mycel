@@ -10,6 +10,7 @@ import { history } from '@codemirror/commands'
 import { TAbstractFile, TFile, TFolder } from 'obsidian'
 import type { NoteRef } from '../../src/editor/binding.js'
 import type { LocalStore, OpenLocalStore } from '../../src/sync/DocHandle.js'
+import { memoryHistory } from '../../src/sync/History.js'
 
 type Listener = (...args: unknown[]) => void
 
@@ -239,6 +240,8 @@ export class FakeFileManager {
 export class MemoryLocalStores {
   private readonly saved = new Map<string, Uint8Array>()
   private readonly meta = new Map<string, Map<string, string>>()
+  /** The device's own history of changes, which outlives restarts like IndexedDB. */
+  readonly history = memoryHistory()
 
   readonly open: OpenLocalStore = (name: string, doc: Y.Doc): LocalStore => {
     const stored = this.saved.get(name)
@@ -258,6 +261,11 @@ export class MemoryLocalStores {
       destroy: () => {
         save()
         doc.off('update', save)
+      },
+      clear: async () => {
+        doc.off('update', save)
+        this.saved.delete(name)
+        this.meta.delete(name)
       },
       get: async (key) => kept.get(key) ?? null,
       set: async (key, value) => {

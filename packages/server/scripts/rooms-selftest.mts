@@ -212,6 +212,16 @@ try {
 
   await hub.subscribe(bob, room, 0)
   check(bob.take()[0]?.type === 'denied', 'nobody else can read a note that is not shared')
+  {
+    // A device subscribing to a note it does not own - one that was shared
+    // with it - must not become its owner when the server lost it.
+    const lost = `doc:${hexId()}`
+    await hub.subscribe(bob, lost, 0, false)
+    const answer = bob.take()[0]
+    check(answer?.type === 'denied' && answer.reason === 'missing', 'a missing room is not created when the subscriber may not', answer)
+    await hub.subscribe(a1, lost, 0, true)
+    check(a1.take().at(-1)?.type === 'caughtUp', 'and stays free for the one who may')
+  }
 
   // --- sharing with history ------------------------------------------------------
   await hub.share('alice', { docId, username: 'bob', role: 'write', withHistory: true, keys: { '0': 'k0' }, title: 'title' })

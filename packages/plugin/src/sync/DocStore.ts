@@ -2,6 +2,7 @@ import { Notice, TFile, type App } from 'obsidian'
 import * as Y from 'yjs'
 import {
   applyTextEdits,
+  docRoom,
   indexRoom,
   textEdits,
   type CollabUser,
@@ -12,6 +13,7 @@ import { additiveEdits, reconcile, type ReconcileOutcome } from './Reconciler.js
 import { matchesGlob } from './glob.js'
 import { RESTORE_ORIGIN, SYNC_ORIGIN } from './origin.js'
 import { seedUpdate } from './seed.js'
+import { memoryHistory, type HistoryStore } from './History.js'
 import type { BackupStore } from './BackupStore.js'
 import { DocHandle, LocalCursor, openIndexedDb, type LocalStore, type OpenLocalStore } from './DocHandle.js'
 import type { StateStore } from './StateStore.js'
@@ -107,7 +109,8 @@ export class DocStore {
     private readonly backups: BackupStore,
     private options: DocStoreOptions,
     private readonly access: DocAccess,
-    private readonly openLocal: OpenLocalStore = openIndexedDb
+    private readonly openLocal: OpenLocalStore = openIndexedDb,
+    private readonly history: HistoryStore = memoryHistory()
   ) {}
 
   setOptions(options: DocStoreOptions): void {
@@ -362,7 +365,9 @@ export class DocStore {
         {
           shared: this.isShared(docId),
           readOnly: this.isReadOnly(docId),
-          crypto: this.access.docCrypto(docId, this.index.entry(docId))
+          crypto: this.access.docCrypto(docId, this.index.entry(docId)),
+          history: this.history,
+          owned: !this.index.entry(docId)?.owner
         },
         this.openLocal
       )
@@ -410,14 +415,40 @@ export class DocStore {
     }
   }
 
-  private async dropHandle(docId: string): Promise<void> {
+  private async dropHandle(docId: string, clearLocal = false): Promise<void> {
     const timer = this.writeTimers.get(docId)
     if (timer !== undefined) window.clearTimeout(timer)
     this.writeTimers.delete(docId)
     const handle = this.handles.get(docId)
     this.handles.delete(docId)
     this.lastUsed.delete(docId)
-    await handle?.destroy()
+    await handle?.destroy(clearLocal)
+  }
+
+  // --- a server that lost data or was rolled back ---------------------------------
+
+  /** This device is right: its whole note goes to the server again, with its history. */
+  async keepLocal(docId: string): Promise<void> {
+    const room = docRoom(docId)
+    this.socket.keepLocal(room, await this.history.entries(room))
+  }
+
+  /**
+   * The server is right - it was restored on purpose. This device's text is
+   * backed up, its copy of the note dropped and fetched again from the
+   * server; the file then follows. A note the server does not have at all is
+   * seeded again from the file, so nothing that exists here disappears.
+   */
+  async adoptServer(docId: string): Promise<void> {
+    await this.withLock(docId, async () => {
+      const file = this.fileFor(docId)
+      const path = file?.path ?? this.index.pathFor(docId) ?? docId
+      const text = file && this.exists(file) ? await this.app.vault.read(file) : (this.handles.get(docId)?.text() ?? '')
+      if (text.length > 0) await this.backups.write(path, 'local', text)
+      await this.dropHandle(docId, true)
+    })
+    const file = this.fileFor(docId)
+    if (file && this.exists(file)) await this.syncFile(file)
   }
 
   private forget(docId: string): void {

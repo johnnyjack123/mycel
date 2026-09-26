@@ -156,9 +156,11 @@ export function setupVaultConnection(ws: WebSocket, username: string, vaultId: s
       const type = decoding.readVarUint(decoder)
       const room = decoding.readVarString(decoder)
       switch (type) {
-        case MUX.subscribe:
-          await hub.subscribe(connection, room, decoding.readVarUint(decoder))
+        case MUX.subscribe: {
+          const afterSeq = decoding.readVarUint(decoder)
+          await hub.subscribe(connection, room, afterSeq, decoding.readVarUint(decoder) === 1)
           return
+        }
         case MUX.unsubscribe:
           hub.unsubscribe(connection, room)
           return

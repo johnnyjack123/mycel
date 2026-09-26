@@ -19,6 +19,9 @@ import { BackupStore } from './sync/BackupStore'
 import { Compactor } from './sync/Compactor'
 import { LocalCursor, openIndexedDb, type LocalStore } from './sync/DocHandle'
 import { DocStore, type DocStoreOptions } from './sync/DocStore'
+import { indexedDbHistory, type HistoryStore } from './sync/History'
+import { Recovery } from './sync/Recovery'
+import { RecoveryModal } from './history/RecoveryModal'
 import { StateStore } from './sync/StateStore'
 import { VaultIndex } from './sync/VaultIndex'
 import { VaultSocket, type SocketStatus } from './sync/VaultSocket'
@@ -29,6 +32,7 @@ import { ObsidianConnectSettingTab, DEFAULT_SETTINGS, type ObsidianConnectSettin
 const MOVED_TO_ACCOUNT = ['excludeGlobs', 'conflictMarkers', 'backupRetentionDays'] as const
 const COMPACT_EVERY_MS = 6 * 60 * 60 * 1000
 const COMPACT_DELAY_MS = 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
 
 /** Obsidian's own request function: no CORS, works on mobile. */
 const obsidianHttp: HttpClient = async (request) => {
@@ -91,6 +95,8 @@ export default class ObsidianConnectPlugin extends Plugin {
   private settingsCursor: LocalCursor | null = null
   private sharing: Sharing | null = null
   private compactor: Compactor | null = null
+  private history: HistoryStore | null = null
+  private recovery: Recovery | null = null
   private movedSettings: Partial<SharedSettings> | null = null
   private settingTab: ObsidianConnectSettingTab | null = null
   private statusBar!: HTMLElement
@@ -302,9 +308,11 @@ export default class ObsidianConnectPlugin extends Plugin {
     const socket = new VaultSocket(this.settings.serverUrl, vault.vaultId, () => this.settings.token, {
       notify: (kind, payload) => void this.sharing?.onNotify(kind, payload).then(() => this.editors.refresh()),
       revoked: (room) => void this.sharing?.onRevoked(room).then(() => this.editors.refresh()),
-      denied: (room, reason) => console.error(`[obsidian-connect] ${room} was refused: ${reason}`)
+      denied: (room, reason) => console.error(`[obsidian-connect] ${room} was refused: ${reason}`),
+      diverged: (room) => this.recovery?.diverged(room)
     })
     this.socket = socket
+    this.history = indexedDbHistory(vault.vaultId)
 
     // The account's settings first: the scan depends on what is excluded.
     const accountSettings = new AccountSettings()
@@ -327,9 +335,20 @@ export default class ObsidianConnectPlugin extends Plugin {
       {
         indexCrypto: keys.indexCrypto(),
         docCrypto: (docId, entry) => (entry?.owner ? keys.sharedDocCrypto(docId) : keys.ownDocCrypto(docId))
-      }
+      },
+      openIndexedDb,
+      this.history
     )
     this.store = store
+    this.recovery = new Recovery({
+      socket,
+      store,
+      settings: accountSettings,
+      settingsReady: () =>
+        Promise.race([socket.whenSynced(settingsRoom(vault.vaultId)), delay(this.settings.syncTimeoutMs)]),
+      ask: (notes) => new RecoveryModal(this.app, notes).choose(),
+      onResolved: () => this.editors.refresh()
+    })
     this.sharing = new Sharing(this.api, keys, store, {
       folder: () => this.shared().sharedFolder,
       syncTimeoutMs: this.settings.syncTimeoutMs,
@@ -407,6 +426,13 @@ export default class ObsidianConnectPlugin extends Plugin {
     } catch (error) {
       console.warn('[obsidian-connect] compacting history failed', error)
     }
+    // The device's own copy of the history follows the same retention.
+    const days = this.shared().historyRetentionDays
+    if (days > 0) {
+      await this.history?.prune(Date.now() - days * DAY_MS).catch((error: unknown) => {
+        console.warn('[obsidian-connect] pruning the local history failed', error)
+      })
+    }
   }
 
   private async stopSync(): Promise<void> {
@@ -423,6 +449,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.unwatchSocket = null
     this.unwatchSettings?.()
     this.unwatchSettings = null
+    this.recovery?.stop()
+    this.recovery = null
     const store = this.store
     this.store = null
     await store?.stop()

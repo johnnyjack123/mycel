@@ -23,6 +23,15 @@ export const DEFAULT_SHARED_SETTINGS: SharedSettings = {
   sharedFolder: 'Shared'
 }
 
+/** How the user answered the last time a server turned out to have other data than a device. */
+export interface RecoveryDecision {
+  /** `device`: what the devices had is right. `server`: the server was restored on purpose. */
+  choice: 'device' | 'server'
+  at: number
+}
+
+const RECOVERY_KEY = 'recovery'
+
 function stringList(value: unknown): string[] | null {
   return Array.isArray(value) && value.every((item) => typeof item === 'string') ? (value as string[]) : null
 }
@@ -70,6 +79,21 @@ export class AccountSettings {
         if (value !== undefined) this.map.set(key, value)
       }
     }, 'local')
+  }
+
+  /**
+   * Kept in this document because it is encrypted like everything else: a
+   * server that could fake "the user chose the server" could make every
+   * device roll back.
+   */
+  recoveryDecision(): RecoveryDecision | null {
+    const value = this.map.get(RECOVERY_KEY) as Partial<RecoveryDecision> | undefined
+    if (!value || (value.choice !== 'device' && value.choice !== 'server') || typeof value.at !== 'number') return null
+    return { choice: value.choice, at: value.at }
+  }
+
+  decideRecovery(decision: RecoveryDecision): void {
+    this.doc.transact(() => this.map.set(RECOVERY_KEY, decision), 'local')
   }
 
   onChange(listener: (settings: SharedSettings) => void): () => void {

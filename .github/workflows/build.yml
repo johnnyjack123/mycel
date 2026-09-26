@@ -55,6 +55,12 @@ jobs:
       - name: Editor binding self-test
         run: npm run test:sync
 
+      # Runs its own server in-process, so it can take the server's data away
+      # and restore an old copy: devices must notice, ask once, and lose
+      # nothing either way.
+      - name: Server data loss and rollback self-test
+        run: npm run test:recovery
+
       # The end-to-end self-tests need a live server that lets them create
       # accounts, so start one and wait for it.
       - name: Start the sync server

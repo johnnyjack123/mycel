@@ -3,6 +3,7 @@ import { Awareness } from 'y-protocols/awareness'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import { CONTENT_FIELD, docRoom, type CollabUser } from '@obsidian-connect/shared'
 import { fromBase64, toBase64 } from '@obsidian-connect/shared/crypto'
+import type { HistoryStore } from './History.js'
 import type { RoomCrypto, RoomCursor, VaultSocket } from './VaultSocket.js'
 
 // One note. The document is persisted locally before anything touches the
@@ -14,6 +15,8 @@ import type { RoomCrypto, RoomCursor, VaultSocket } from './VaultSocket.js'
 export interface LocalStore {
   whenSynced: Promise<unknown>
   destroy(): Promise<unknown> | void
+  /** Deletes what this store kept - document and log position - and closes it. */
+  clear(): Promise<void>
   get(key: string): Promise<string | null>
   set(key: string, value: string): Promise<void>
 }
@@ -25,6 +28,7 @@ export const openIndexedDb: OpenLocalStore = (name, doc) => {
   return {
     whenSynced: persistence.whenSynced,
     destroy: () => persistence.destroy(),
+    clear: () => persistence.clearData(),
     get: async (key) => {
       const value: unknown = await persistence.get(key)
       return typeof value === 'string' ? value : null
@@ -40,6 +44,9 @@ const PERSIST_DELAY_MS = 250
 
 interface SavedCursor {
   lastSeq: number
+  lastHash?: string | null
+  held?: boolean
+  syncedAt?: number
   epoch: number
   sending: string | null
   outbox: string | null
@@ -48,6 +55,9 @@ interface SavedCursor {
 /** A room cursor kept next to the document it belongs to. */
 export class LocalCursor implements RoomCursor {
   lastSeq = 0
+  lastHash: string | null = null
+  held = false
+  syncedAt = 0
   epoch = 0
   sending: Uint8Array | null = null
   outbox: Uint8Array | null = null
@@ -63,6 +73,9 @@ export class LocalCursor implements RoomCursor {
       if (raw) {
         const saved = JSON.parse(raw) as SavedCursor
         cursor.lastSeq = saved.lastSeq ?? 0
+        cursor.lastHash = saved.lastHash ?? null
+        cursor.held = saved.held ?? false
+        cursor.syncedAt = saved.syncedAt ?? 0
         cursor.epoch = saved.epoch ?? 0
         cursor.sending = saved.sending ? fromBase64(saved.sending) : null
         cursor.outbox = saved.outbox ? fromBase64(saved.outbox) : null
@@ -91,6 +104,9 @@ export class LocalCursor implements RoomCursor {
     this.timer = null
     const saved: SavedCursor = {
       lastSeq: this.lastSeq,
+      lastHash: this.lastHash,
+      held: this.held,
+      syncedAt: this.syncedAt,
       epoch: this.epoch,
       sending: this.sending ? toBase64(this.sending) : null,
       outbox: this.outbox ? toBase64(this.outbox) : null
@@ -106,6 +122,10 @@ export interface DocHandleOptions {
   shared: boolean
   readOnly: boolean
   crypto: RoomCrypto
+  /** Where every change seen is kept on this device. */
+  history?: HistoryStore | null
+  /** This account owns the note, so the server may create it if it lost it. */
+  owned?: boolean
 }
 
 export class DocHandle {
@@ -150,11 +170,14 @@ export class DocHandle {
     await this.persistence.whenSynced
     this.cursor = await LocalCursor.load(this.persistence)
     if (this.destroyed) return
+    const history = this.options.history
     this.socket.register(this.room, this.doc, {
       crypto: this.options.crypto,
       cursor: this.cursor,
       awareness: this.sharedNow ? this.awareness : null,
-      readOnly: this.readOnlyNow
+      readOnly: this.readOnlyNow,
+      history: history ? (entry) => history.add(this.room, entry) : null,
+      create: this.options.owned ?? true
     })
   }
 
@@ -221,16 +244,27 @@ export class DocHandle {
     return this.destroyed
   }
 
-  async destroy(): Promise<void> {
+  /**
+   * `clearLocal`: also deletes this device's copy - document, log position
+   * and history - so the next handle starts from what the server has. Only
+   * after the text was backed up.
+   */
+  async destroy(clearLocal = false): Promise<void> {
     if (this.destroyed) return
     this.destroyed = true
     this.socket.unregister(this.room)
     this.awareness.destroy()
-    // Flush before tearing the document down, or the last edits and the
-    // unacknowledged ones never reach local storage.
     try {
-      await this.cursor?.flush()
-      await this.persistence.destroy()
+      if (clearLocal) {
+        await this.cursor?.flush()
+        await this.persistence.clear()
+        await this.options.history?.clear(this.room)
+      } else {
+        // Flush before tearing the document down, or the last edits and the
+        // unacknowledged ones never reach local storage.
+        await this.cursor?.flush()
+        await this.persistence.destroy()
+      }
     } catch (error) {
       console.error(`[obsidian-connect] closing local storage for ${this.docId} failed`, error)
     }

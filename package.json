@@ -20,7 +20,8 @@
     "test:rooms": "npm run test:rooms -w @obsidian-connect/server",
     "test:sync": "npm run test:sync -w @obsidian-connect/plugin",
     "test:socket": "npm run test:socket -w @obsidian-connect/plugin",
-    "test:vault": "npm run test:vault -w @obsidian-connect/plugin"
+    "test:vault": "npm run test:vault -w @obsidian-connect/plugin",
+    "test:recovery": "npm run test:recovery -w @obsidian-connect/plugin"
   },
   "overrides": {
     "@codemirror/state": "6.5.0",

@@ -203,7 +203,12 @@ export class RoomHub {
     for (const client of this.clients) if (client.username === username) client.sendNotify(kind, payload)
   }
 
-  async subscribe(client: RoomClient, room: string, afterSeq: number): Promise<void> {
+  /**
+   * `create`: a missing room is created, owned by the caller. A device asks
+   * for that only for its own notes - after a server lost a note someone else
+   * owns, claiming it would take it from them.
+   */
+  async subscribe(client: RoomClient, room: string, afterSeq: number, create = true): Promise<void> {
     const kind = roomKind(room)
     const subject = roomSubject(room)
     if (!kind || !isHexId(subject)) {
@@ -216,7 +221,12 @@ export class RoomHub {
       client.sendDenied(room, 'not this vault')
       return
     }
-    const open = (await this.load(room)) ?? (await this.claim(room, client.username, client.vaultId))
+    const loaded = await this.load(room)
+    if (!loaded && !create) {
+      client.sendDenied(room, 'missing')
+      return
+    }
+    const open = loaded ?? (await this.claim(room, client.username, client.vaultId))
     const access = this.access(open.log.meta, client.username)
     if (access === 'revoked') {
       client.sendRevoked(room, 'access was revoked')

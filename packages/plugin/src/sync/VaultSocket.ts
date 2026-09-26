@@ -8,7 +8,8 @@ import {
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
 import { MUX, awarenessAad, frameAad, snapshotAad, type NotifyKind, type ShareNotice } from '@obsidian-connect/shared'
-import { bytes, decrypt, encrypt, packFrame, unpackFrame } from '@obsidian-connect/shared/crypto'
+import { bytes, decrypt, encrypt, packFrame, sha256, toHex, unpackFrame } from '@obsidian-connect/shared/crypto'
+import type { HistoryEntry } from './History.js'
 
 // One WebSocket carries every document of the vault, end-to-end encrypted.
 // The server keeps an ordered log per room and cannot read it, so there is no
@@ -29,6 +30,21 @@ export interface RoomCrypto {
 export interface RoomCursor {
   /** The last frame applied. */
   lastSeq: number
+  /**
+   * Fingerprint of what the server sent as `lastSeq`. Seq numbers alone do
+   * not tell one log from another: a server restored from a backup numbers
+   * its new frames from where the backup ended, so a device that was away
+   * would take them for frames it has and skip them.
+   */
+  lastHash: string | null
+  /**
+   * The server's log turned out not to be the one this device knew. Nothing
+   * is sent until the user decided whose state is right - or a restored
+   * server would be overwritten, or a lost one filled with half a state.
+   */
+  held: boolean
+  /** When this room was last caught up with a log it recognised. */
+  syncedAt: number
   /** The epoch new frames are encrypted under. */
   epoch: number
   /** The payload waiting for its acknowledgement. */
@@ -45,7 +61,16 @@ export interface RoomCursor {
 }
 
 export function memoryCursor(): RoomCursor {
-  return { lastSeq: 0, epoch: 0, sending: null, outbox: null, persist: () => undefined }
+  return {
+    lastSeq: 0,
+    lastHash: null,
+    held: false,
+    syncedAt: 0,
+    epoch: 0,
+    sending: null,
+    outbox: null,
+    persist: () => undefined
+  }
 }
 
 export interface RoomOptions {
@@ -54,6 +79,10 @@ export interface RoomOptions {
   awareness?: Awareness | null
   /** The server refuses changes; they stay out of the outbox. */
   readOnly?: boolean
+  /** Every change seen, received or acknowledged, for the device's own history. */
+  history?: ((entry: HistoryEntry) => void) | null
+  /** Whether a room the server does not have is created. Only for rooms this account owns. */
+  create?: boolean
 }
 
 export interface SocketHandlers {
@@ -61,6 +90,18 @@ export interface SocketHandlers {
   /** Access to a room was taken away - also answered to a later subscribe. */
   revoked?(room: string): void
   denied?(room: string, reason: string): void
+  /**
+   * The server's log of a room is not the one this device knew - it lost
+   * data or was rolled back. The room is caught up with what the server has,
+   * merged into the local state, and held until `keepLocal` or a reset.
+   */
+  diverged?(room: string): void
+}
+
+type Verification = 'none' | 'pending' | 'match' | 'mismatch'
+
+async function fingerprint(data: Uint8Array): Promise<string> {
+  return toHex(await sha256(bytes(data))).slice(0, 32)
 }
 
 interface Registration {
@@ -73,6 +114,14 @@ interface Registration {
   /** Incoming messages of this room, applied strictly in order. */
   chain: Promise<void>
   inflight: number | null
+  /** What is in flight: its author time, payload and fingerprint, for the ack. */
+  inflightFrame: { authorTs: number; payload: Uint8Array; hash: string } | null
+  /** Old changes sent again after the server lost them, each as its own frame. */
+  replay: HistoryEntry[]
+  /** The author time of a replayed change being sent, so its history keeps its time. */
+  sendingTs: number | null
+  /** Whether the frame the cursor ends at came back unchanged in this catch-up. */
+  verify: { seq: number; hash: string | null; state: Verification }
   sendTimer: number | null
   dead: boolean
   onDocUpdate: (update: Uint8Array, origin: unknown) => void
@@ -188,12 +237,29 @@ export class VaultSocket {
     }
   }
 
+  /**
+   * Asks for one frame more than needed: the one the cursor ends at. It has
+   * to come back exactly as this device saw it, or the server's log is not
+   * the one the cursor points into.
+   */
   private subscribe(registration: Registration): void {
+    const cursor = registration.options.cursor
+    const lastSeq = cursor.lastSeq
+    registration.verify =
+      lastSeq > 0 && cursor.lastHash
+        ? { seq: lastSeq, hash: cursor.lastHash, state: 'pending' }
+        : { seq: 0, hash: null, state: 'none' }
     this.send((encoder) => {
       encoding.writeVarUint(encoder, MUX.subscribe)
       encoding.writeVarString(encoder, registration.room)
-      encoding.writeVarUint(encoder, registration.options.cursor.lastSeq)
+      encoding.writeVarUint(encoder, registration.verify.state === 'pending' ? lastSeq - 1 : lastSeq)
+      encoding.writeVarUint(encoder, registration.options.create === false ? 0 : 1)
     })
+  }
+
+  private checkVerification(registration: Registration, seq: number, hash: string): void {
+    const verify = registration.verify
+    if (verify.state === 'pending' && seq === verify.seq) verify.state = hash === verify.hash ? 'match' : 'mismatch'
   }
 
   // --- incoming ------------------------------------------------------------------
@@ -247,13 +313,31 @@ export class VaultSocket {
         decoding.readVarUint(decoder) // headSeq
         const epoch = decoding.readVarUint(decoder)
         this.enqueue(registration, async () => {
-          registration.options.cursor.epoch = epoch
-          registration.options.cursor.persist()
+          const cursor = registration.options.cursor
+          const verify = registration.verify
+          if (verify.state === 'pending' || verify.state === 'mismatch') {
+            // The frame the cursor ends at is gone or different. Everything the
+            // server has is fetched and merged in - nothing local is dropped -
+            // and the room waits for the user's decision.
+            cursor.held = true
+            cursor.lastSeq = 0
+            cursor.lastHash = null
+            cursor.persist(true)
+            this.subscribe(registration)
+            return
+          }
+          cursor.epoch = epoch
+          if (!cursor.held) cursor.syncedAt = Date.now()
+          cursor.persist()
           if (!registration.synced) {
             registration.synced = true
             registration.markSynced()
           }
           this.announcePresence(registration)
+          if (cursor.held) {
+            this.handlers.diverged?.(registration.room)
+            return
+          }
           this.scheduleSend(registration)
         })
         return
@@ -264,11 +348,18 @@ export class VaultSocket {
         this.enqueue(registration, async () => {
           if (registration.inflight !== ref) return
           const cursor = registration.options.cursor
+          const frame = registration.inflightFrame
           registration.inflight = null
+          registration.inflightFrame = null
+          registration.sendingTs = null
           cursor.sending = null
           // Everything the server sent before this acknowledgement has been
           // applied - the chain keeps that order - so nothing below seq is missing.
-          cursor.lastSeq = Math.max(cursor.lastSeq, seq)
+          if (seq > cursor.lastSeq) {
+            cursor.lastSeq = seq
+            cursor.lastHash = frame?.hash ?? null
+          }
+          if (frame) registration.options.history?.({ authorTs: frame.authorTs, update: frame.payload })
           cursor.persist()
           this.scheduleSend(registration)
         })
@@ -298,7 +389,9 @@ export class VaultSocket {
         return
       case MUX.denied: {
         const reason = decoding.readVarString(decoder)
-        registration.dead = true
+        // Missing is not final: the server lost a note someone else owns, and
+        // it may come back once they reconnect. Asked again on every connect.
+        if (reason !== 'missing') registration.dead = true
         console.error(`[obsidian-connect] the server refused ${room}: ${reason}`)
         this.handlers.denied?.(room, reason)
         return
@@ -319,22 +412,38 @@ export class VaultSocket {
 
   private async applyFrame(registration: Registration, seq: number, epoch: number, data: Uint8Array): Promise<void> {
     const cursor = registration.options.cursor
-    // The catch-up and the live stream can overlap by a frame or two.
+    const hash = await fingerprint(data)
+    this.checkVerification(registration, seq, hash)
+    // The catch-up and the live stream can overlap by a frame or two, and the
+    // catch-up starts one frame early on purpose.
     if (seq <= cursor.lastSeq) return
     const plaintext = await this.open(registration, epoch, data, frameAad(registration.room, epoch))
     // Unreadable: leave lastSeq where it is, so the next catch-up brings it again.
     if (!plaintext || registration.dead) return
-    Y.applyUpdate(registration.doc, unpackFrame(plaintext).update, this)
+    const frame = unpackFrame(plaintext)
+    Y.applyUpdate(registration.doc, frame.update, this)
+    registration.options.history?.({ authorTs: frame.authorTs, update: frame.update })
     cursor.lastSeq = seq
+    cursor.lastHash = hash
     cursor.persist()
   }
 
   private async applySnapshot(registration: Registration, uptoSeq: number, epoch: number, data: Uint8Array): Promise<void> {
+    const hash = `snapshot:${await fingerprint(data)}`
+    this.checkVerification(registration, uptoSeq, hash)
+    // Folded past where this device stood: the frames it knew are inside, and
+    // can no longer be compared one by one.
+    if (registration.verify.state === 'pending' && uptoSeq > registration.verify.seq) registration.verify.state = 'match'
     const plaintext = await this.open(registration, epoch, data, snapshotAad(registration.room, epoch))
     if (!plaintext || registration.dead) return
-    Y.applyUpdate(registration.doc, unpackFrame(plaintext).update, this)
+    const snapshot = unpackFrame(plaintext)
+    Y.applyUpdate(registration.doc, snapshot.update, this)
+    registration.options.history?.({ authorTs: snapshot.authorTs, update: snapshot.update })
     const cursor = registration.options.cursor
-    cursor.lastSeq = Math.max(cursor.lastSeq, uptoSeq)
+    if (uptoSeq >= cursor.lastSeq) {
+      cursor.lastSeq = uptoSeq
+      cursor.lastHash = hash
+    }
     cursor.persist()
   }
 
@@ -353,9 +462,9 @@ export class VaultSocket {
 
   private scheduleSend(registration: Registration): void {
     const cursor = registration.options.cursor
-    if (registration.dead || registration.options.readOnly || !registration.synced) return
+    if (registration.dead || registration.options.readOnly || !registration.synced || cursor.held) return
     if (registration.inflight !== null || registration.sendTimer !== null) return
-    if (!cursor.sending && !cursor.outbox) return
+    if (!cursor.sending && !cursor.outbox && registration.replay.length === 0) return
     registration.sendTimer = window.setTimeout(() => {
       registration.sendTimer = null
       void this.sendNext(registration).catch((error) => {
@@ -365,26 +474,35 @@ export class VaultSocket {
   }
 
   private async sendNext(registration: Registration): Promise<void> {
-    if (!this.connected || !registration.synced || registration.inflight !== null || registration.dead) return
     const cursor = registration.options.cursor
+    if (!this.connected || !registration.synced || registration.inflight !== null || registration.dead || cursor.held) return
     if (!cursor.sending) {
-      if (!cursor.outbox) return
-      cursor.sending = cursor.outbox
-      cursor.outbox = null
+      if (cursor.outbox) {
+        cursor.sending = cursor.outbox
+        cursor.outbox = null
+      } else {
+        const replayed = registration.replay.shift()
+        if (!replayed) return
+        cursor.sending = replayed.update
+        registration.sendingTs = replayed.authorTs
+      }
       cursor.persist()
     }
     const payload = cursor.sending
+    const authorTs = registration.sendingTs ?? Date.now()
     const epoch = cursor.epoch
     const key = await registration.options.crypto.key(epoch)
     if (!key) {
       console.error(`[obsidian-connect] no key to send ${registration.room} under epoch ${epoch}`)
       return
     }
-    const data = await encrypt(key, packFrame(Date.now(), payload), frameAad(registration.room, epoch))
+    const data = await encrypt(key, packFrame(authorTs, payload), frameAad(registration.room, epoch))
+    const hash = await fingerprint(data)
     if (this.registrations.get(registration.room) !== registration || !this.connected || registration.inflight !== null) return
     const ref = this.nextRef
     this.nextRef += 1
     registration.inflight = ref
+    registration.inflightFrame = { authorTs, payload, hash }
     this.send((encoder) => {
       encoding.writeVarUint(encoder, MUX.push)
       encoding.writeVarString(encoder, registration.room)
@@ -434,6 +552,10 @@ export class VaultSocket {
       whenSynced,
       chain: Promise.resolve(),
       inflight: null,
+      inflightFrame: null,
+      replay: [],
+      sendingTs: null,
+      verify: { seq: 0, hash: null, state: 'none' },
       sendTimer: null,
       dead: false,
       onDocUpdate: (update, origin) => {
@@ -478,6 +600,34 @@ export class VaultSocket {
       awareness.on('update', registration.onAwarenessUpdate)
       this.announcePresence(registration)
     }
+  }
+
+  /** Whether a room waits for the user to decide whose state is right. */
+  isHeld(room: string): boolean {
+    return this.registrations.get(room)?.options.cursor.held ?? false
+  }
+
+  /** When a room was last caught up with a log this device recognised; 0 if never. */
+  syncedAtOf(room: string): number {
+    return this.registrations.get(room)?.options.cursor.syncedAt ?? 0
+  }
+
+  /**
+   * This device's state is right: all of it goes to the server - the whole
+   * document first, so nothing is missing there even if sending stops half
+   * way, then the old changes one by one with their own times, for the
+   * history.
+   */
+  keepLocal(room: string, history: HistoryEntry[] = []): void {
+    const registration = this.registrations.get(room)
+    if (!registration || !registration.options.cursor.held) return
+    const cursor = registration.options.cursor
+    const state = Y.encodeStateAsUpdate(registration.doc)
+    cursor.outbox = cursor.outbox ? Y.mergeUpdates([cursor.outbox, state]) : state
+    cursor.held = false
+    cursor.persist(true)
+    registration.replay = history.slice()
+    this.scheduleSend(registration)
   }
 
   setReadOnly(room: string, readOnly: boolean): void {

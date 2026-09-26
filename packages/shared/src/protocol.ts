@@ -1,6 +1,7 @@
-// Version 3: the server stores an ordered log of encrypted frames and can no
-// longer read a document. Version 2 relayed plaintext Yjs sync messages.
-export const PROTOCOL_VERSION = 3
+// Version 4: a subscribe says whether the room may be created. Version 3: the
+// server stores an ordered log of encrypted frames and can no longer read a
+// document. Version 2 relayed plaintext Yjs sync messages.
+export const PROTOCOL_VERSION = 4
 export const DEFAULT_SERVER_PORT = 1234
 
 export type ShareRole = 'read' | 'write'
@@ -66,7 +67,10 @@ export function isHexId(value: string): boolean {
  */
 export const MUX = {
   // client -> server
-  /** room, varUint afterSeq */
+  /**
+   * room, varUint afterSeq, varUint create (1: a missing room is created and
+   * owned by the caller; 0: it is answered with `denied` "missing")
+   */
   subscribe: 1,
   /** room */
   unsubscribe: 2,

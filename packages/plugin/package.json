@@ -12,7 +12,8 @@
     "test:socket": "tsx --tsconfig scripts/tsconfig.json scripts/socket-selftest.mts",
     "test:sync": "tsx --tsconfig scripts/tsconfig.json scripts/binding-selftest.mts",
     "test:load": "node scripts/load-selftest.mjs",
-    "test:vault": "tsx --tsconfig scripts/tsconfig.json scripts/vault-selftest.mts"
+    "test:vault": "tsx --tsconfig scripts/tsconfig.json scripts/vault-selftest.mts",
+    "test:recovery": "tsx --tsconfig scripts/tsconfig.json scripts/recovery-selftest.mts"
   },
   "dependencies": {
     "@obsidian-connect/shared": "*",

@@ -24,7 +24,10 @@ const rangeProto = dom.window.Range.prototype as unknown as { getClientRects?: (
 rangeProto.getClientRects ??= () => []
 
 // Imported after the DOM globals exist; CodeMirror reads them at module scope.
-const { userColor } = await import('@obsidian-connect/shared')
+const { settingsRoom, userColor } = await import('@obsidian-connect/shared')
+const { AccountSettings } = await import('../src/sync/AccountSettings.js')
+const { LocalCursor } = await import('../src/sync/DocHandle.js')
+const { Recovery } = await import('../src/sync/Recovery.js')
 const { ConnectApi, fetchHttp } = await import('../src/account/api.js')
 const { Session } = await import('../src/account/Session.js')
 const { KeyRing } = await import('../src/account/KeyRing.js')
@@ -104,8 +107,16 @@ export class Device {
   keys: InstanceType<typeof KeyRing> | null = null
   sharing: InstanceType<typeof Sharing> | null = null
   compactor: InstanceType<typeof Compactor> | null = null
+  settings: InstanceType<typeof AccountSettings> | null = null
+  recovery: InstanceType<typeof Recovery> | null = null
   retentionDays = 30
-  private socket: InstanceType<typeof VaultSocket> | null = null
+  /** What the user answers when the server turns out to have other data. */
+  recoveryAnswer: 'device' | 'server' | null = null
+  /** How many times this device had to ask. */
+  asked = 0
+  private settingsStore: { destroy(): unknown } | null = null
+  private settingsCursor: InstanceType<typeof LocalCursor> | null = null
+  socket: InstanceType<typeof VaultSocket> | null = null
   private refs: Array<{ name: string; listener: (...args: unknown[]) => void }> = []
   private indexTimer: ReturnType<typeof setTimeout> | null = null
   readonly views: ViewT[] = []
@@ -132,8 +143,15 @@ export class Device {
     const index = new VaultIndex(openVault.vaultId, (path, generation) => keys.docId(path, generation))
     const socket = new VaultSocket(serverUrl, openVault.vaultId, () => this.token ?? '', {
       notify: (kind, payload) => void this.sharing?.onNotify(kind, payload).then(() => this.editors.refresh()),
-      revoked: (room) => void this.sharing?.onRevoked(room).then(() => this.editors.refresh())
+      revoked: (room) => void this.sharing?.onRevoked(room).then(() => this.editors.refresh()),
+      diverged: (room) => this.recovery?.diverged(room)
     })
+    const settings = new AccountSettings()
+    const settingsStore = this.locals.open(`obsidian-connect/${openVault.vaultId}/set`, settings.doc)
+    this.settingsCursor = await LocalCursor.load(settingsStore)
+    this.settingsStore = settingsStore
+    this.settings = settings
+    socket.register(settingsRoom(openVault.vaultId), settings.doc, { crypto: keys.settingsCrypto(), cursor: this.settingsCursor })
     const user = { id: this.username, name: this.username, ...userColor(this.username) }
     const store = new DocStore(
       app as never,
@@ -154,8 +172,20 @@ export class Device {
         indexCrypto: keys.indexCrypto(),
         docCrypto: (docId, entry) => (entry?.owner ? keys.sharedDocCrypto(docId) : keys.ownDocCrypto(docId))
       },
-      this.locals.open
+      this.locals.open,
+      this.locals.history
     )
+    this.recovery = new Recovery({
+      socket,
+      store,
+      settings,
+      settingsReady: () => Promise.race([socket.whenSynced(settingsRoom(openVault.vaultId)), delay(4_000)]),
+      ask: async () => {
+        this.asked += 1
+        return this.recoveryAnswer
+      },
+      onResolved: () => this.editors.refresh()
+    })
     const sharing = new Sharing(this.api, keys, store, { folder: () => 'Shared', syncTimeoutMs: 4_000, autoAccept: () => true })
     this.store = store
     this.index = index
@@ -199,11 +229,18 @@ export class Device {
     if (this.indexTimer) clearTimeout(this.indexTimer)
     for (const ref of this.refs) this.vault.offref(ref)
     this.refs = []
+    this.recovery?.stop()
+    this.recovery = null
     const store = this.store
     this.store = null
     await store?.stop()
+    await this.settingsCursor?.flush()
+    this.settingsStore?.destroy()
+    this.settingsStore = null
     this.socket?.destroy()
     this.index?.destroy()
+    this.settings?.destroy()
+    this.settings = null
   }
 
   open(path: string): ViewT {
