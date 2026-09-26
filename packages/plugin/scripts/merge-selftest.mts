@@ -546,5 +546,39 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(broken.state === 'incompatible', 'a server that answers but refuses its own settings is not called unreachable', broken)
 }
 
+// --- emptying the trash ------------------------------------------------------------------
+{
+  const { Trash } = await import('../src/sync/Trash.js')
+  const { ApiError } = await import('../src/account/api.js')
+  const answers: Record<string, () => Promise<unknown>> = {
+    'doc:gone': async () => ({ ok: true }),
+    'doc:shared': async () => Promise.reject(new ApiError(409, 'the note is still shared')),
+    'doc:missing': async () => Promise.reject(new ApiError(404, 'no such room')),
+    'doc:offline': async () => Promise.reject(new ApiError(0, 'unreachable'))
+  }
+  const asked: string[] = []
+  const forgotten: string[] = []
+  const api = {
+    purge: (room: string) => {
+      asked.push(room)
+      return (answers[room] as () => Promise<unknown>)()
+    }
+  }
+  const store = {
+    expiredDeleted: () => ['gone', 'shared', 'missing', 'offline'].map((docId) => ({ docId, path: `${docId}.md`, deletedAt: 0 })),
+    forgetDeleted: async (docId: string) => {
+      forgotten.push(docId)
+    }
+  }
+  let days = 0
+  const trash = new Trash(api as never, store as never, () => days)
+  check((await trash.purge()) === 0 && asked.length === 0, 'with no retention limit, the trash is never emptied')
+  days = 30
+  const purged = await trash.purge()
+  check(purged === 2 && forgotten.join() === 'gone,missing', 'a note goes once the server let go of it, or never had it', forgotten)
+  check(!forgotten.includes('shared'), 'one still shared stays in the trash, to be asked about again')
+  check(!forgotten.includes('offline'), 'and so does one the server could not be asked about')
+}
+
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)
 process.exit(failures.length === 0 ? 0 : 1)

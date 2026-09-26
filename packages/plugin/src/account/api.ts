@@ -222,6 +222,11 @@ export class ConnectApi {
     return this.call('POST', `${API.log}/${room(roomName)}/snapshot`, request)
   }
 
+  /** Lets the server delete a note of this account that was deleted longer ago than the retention. */
+  purge(roomName: string): Promise<unknown> {
+    return this.call('POST', `${API.log}/${room(roomName)}/purge`, {})
+  }
+
   importFrames(roomName: string, vaultId: string, request: ImportRequest): Promise<{ headSeq: number }> {
     return this.call('POST', `${API.log}/${room(roomName)}/import?vaultId=${vaultId}`, request)
   }

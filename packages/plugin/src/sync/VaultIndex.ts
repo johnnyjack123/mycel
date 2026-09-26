@@ -30,7 +30,7 @@ export async function stableDocId(vaultId: string, path: string, generation = 0)
 
 /** The entry without its tombstone, keeping everything else - notably `shared`. */
 function live(entry: IndexEntry): IndexEntry {
-  const { deletedAt: _deletedAt, forkedTo: _forkedTo, ...rest } = entry
+  const { deletedAt: _deletedAt, forkedTo: _forkedTo, purgedAt: _purgedAt, ...rest } = entry
   return rest
 }
 
@@ -207,6 +207,15 @@ export class VaultIndex {
     if (!entry || entry.deletedAt) return
     this.doc.transact(() => {
       this.files.set(docId, { ...entry, deletedAt: Date.now(), updatedAt: Date.now() })
+    }, 'local')
+  }
+
+  /** The server let go of a deleted note; no device offers it for restoring any more. */
+  markPurged(docId: string): void {
+    const entry = this.files.get(docId)
+    if (!entry?.deletedAt || entry.purgedAt) return
+    this.doc.transact(() => {
+      this.files.set(docId, { ...entry, purgedAt: Date.now(), updatedAt: Date.now() })
     }, 'local')
   }
 

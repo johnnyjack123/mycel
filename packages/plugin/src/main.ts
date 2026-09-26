@@ -34,6 +34,8 @@ import { indexedDbHistory, type HistoryStore } from './sync/History'
 import { Recovery } from './sync/Recovery'
 import { RecoveryModal } from './history/RecoveryModal'
 import { StateStore } from './sync/StateStore'
+import { Trash } from './sync/Trash'
+import { TrashModal } from './history/TrashModal'
 import { VaultIndex } from './sync/VaultIndex'
 import { VaultSocket, type SocketStatus } from './sync/VaultSocket'
 import { ObsidianConnectSettingTab, DEFAULT_SETTINGS, type ObsidianConnectSettings } from './settings'
@@ -111,6 +113,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   private sharing: Sharing | null = null
   private contacts: Contacts | null = null
   private compactor: Compactor | null = null
+  private trash: Trash | null = null
   private history: HistoryStore | null = null
   private recovery: Recovery | null = null
   private movedSettings: Partial<SharedSettings> | null = null
@@ -143,6 +146,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       callback: () => this.openHistory()
     })
     this.addCommand({ id: 'open-backups', name: 'Browse backups', callback: () => this.openBackups() })
+    this.addCommand({ id: 'deleted-notes', name: 'Deleted notes…', callback: () => this.openTrash() })
     this.addCommand({ id: 'resync-note', name: 'Force resync of this note', callback: () => void this.resyncActive() })
     this.addCommand({
       id: 'restart-sync',
@@ -383,6 +387,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       this.contacts
     )
     this.compactor = new Compactor(this.api, keys, () => this.shared().historyRetentionDays)
+    this.trash = new Trash(this.api, store, () => this.shared().historyRetentionDays)
 
     // Editors bind as soon as the index is there, not after the whole vault
     // has been scanned: an open note is settled on its own, first.
@@ -470,6 +475,21 @@ export default class ObsidianConnectPlugin extends Plugin {
         console.warn('[obsidian-connect] pruning the local history failed', error)
       })
     }
+    // And so do deleted notes: restorable within it, gone after.
+    try {
+      const purged = (await this.trash?.purge()) ?? 0
+      if (purged > 0) console.info(`[obsidian-connect] let go of ${purged} note(s) deleted more than ${days} days ago`)
+    } catch (error) {
+      console.warn('[obsidian-connect] emptying the trash failed', error)
+    }
+  }
+
+  private openTrash(): void {
+    if (!this.trash || !this.store?.ready) {
+      new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
+      return
+    }
+    new TrashModal(this.app, this.trash, this.shared().historyRetentionDays).open()
   }
 
   private async stopSync(): Promise<void> {
@@ -511,6 +531,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.settingsCursor = null
     this.sharing = null
     this.compactor = null
+    this.trash = null
     this.keys = null
     this.vault = null
     this.statusBar?.setText('')

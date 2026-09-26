@@ -37,6 +37,13 @@ export interface DocAccess {
   docCrypto(docId: string, entry: IndexEntry | undefined): RoomCrypto
 }
 
+/** A note of this vault in the trash. */
+export interface DeletedNote {
+  docId: string
+  path: string
+  deletedAt: number
+}
+
 /** A note someone shared with this account. */
 export interface AcceptedShare {
   docId: string
@@ -1086,6 +1093,67 @@ export class DocStore {
     if (!(file instanceof TFile)) return null
     await this.syncFile(file)
     return file
+  }
+
+  // --- the trash --------------------------------------------------------------
+
+  /** Whether a tombstone is one of this vault's own notes the server still keeps. */
+  private isTrashed(entry: IndexEntry): boolean {
+    return Boolean(entry.deletedAt) && !entry.owner && !entry.forkedTo && !entry.purgedAt
+  }
+
+  /** Notes of this vault deleted since `since` and still restorable, newest first. */
+  deletedNotes(since: number): DeletedNote[] {
+    return this.index
+      .deleted()
+      .filter(({ entry }) => this.isTrashed(entry) && (entry.deletedAt as number) >= since)
+      .map(({ docId, entry }) => ({ docId, path: entry.path, deletedAt: entry.deletedAt as number }))
+      .sort((a, b) => b.deletedAt - a.deletedAt)
+  }
+
+  /** Deleted before `before`: what the server may let go of. */
+  expiredDeleted(before: number): DeletedNote[] {
+    return this.index
+      .deleted()
+      .filter(({ entry }) => this.isTrashed(entry) && (entry.deletedAt as number) < before)
+      .map(({ docId, entry }) => ({ docId, path: entry.path, deletedAt: entry.deletedAt as number }))
+  }
+
+  /**
+   * Brings a deleted note back, from its document - on this device and,
+   * through the index, on every other one. Its old place may have been taken
+   * meanwhile; it then comes back next to it. Null while its text cannot be
+   * had: the file follows once the server answers.
+   */
+  async restoreDeleted(docId: string): Promise<TFile | null> {
+    const entry = this.index.entry(docId)
+    if (!entry || !this.isTrashed(entry)) return null
+    const path = this.freeRestorePath(entry.path)
+    await this.withLock(docId, async () => {
+      this.index.revive(docId, path)
+      await this.pull(docId)
+    })
+    const file = this.app.vault.getAbstractFileByPath(path)
+    return file instanceof TFile ? file : null
+  }
+
+  private freeRestorePath(path: string): string {
+    const taken = (candidate: string): boolean =>
+      Boolean(this.app.vault.getAbstractFileByPath(candidate) || this.index.docIdForPath(candidate))
+    if (!taken(path)) return path
+    const stem = path.replace(/\.md$/, '')
+    let candidate = `${stem} (restored).md`
+    for (let n = 2; taken(candidate); n += 1) candidate = `${stem} (restored ${n}).md`
+    return candidate
+  }
+
+  /** The server let go of a deleted note: this device does too, and none offers it for restoring any more. */
+  async forgetDeleted(docId: string): Promise<void> {
+    await this.withLock(docId, async () => {
+      await this.localState(docId, true)
+      await this.history.clear(docRoom(docId))
+      this.index.markPurged(docId)
+    })
   }
 
   /** Rolls the live document back to `text`; it travels like any other edit. */

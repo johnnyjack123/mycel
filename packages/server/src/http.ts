@@ -354,6 +354,13 @@ export function createHttpApp(
     return { ok: true }
   })
 
+  app.post<{ Params: RoomParams }>(`${API.log}/:room/purge`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    await hub.purge(accountId, request.params.room)
+    return { ok: true }
+  })
+
   app.post<{ Params: RoomParams; Querystring: { vaultId?: string } }>(
     `${API.log}/:room/import`,
     async (request, reply) => {

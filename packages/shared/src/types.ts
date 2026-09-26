@@ -33,6 +33,11 @@ export interface IndexEntry {
    * merges what it still holds of the old note into it instead of dropping it.
    */
   forkedTo?: string
+  /**
+   * On the tombstone of a note deleted longer ago than the history retention:
+   * the server let go of it, so it can no longer be restored.
+   */
+  purgedAt?: number
 }
 
 // --- accounts ------------------------------------------------------------------

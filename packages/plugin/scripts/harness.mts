@@ -38,6 +38,7 @@ const { BackupStore } = await import('../src/sync/BackupStore.js')
 const { VaultIndex } = await import('../src/sync/VaultIndex.js')
 const { VaultSocket } = await import('../src/sync/VaultSocket.js')
 const { Compactor } = await import('../src/sync/Compactor.js')
+const { Trash } = await import('../src/sync/Trash.js')
 const { EditorSync } = await import('../src/editor/EditorSync.js')
 const { Sharing } = await import('../src/share/Sharing.js')
 const { Contacts } = await import('../src/share/Contacts.js')
@@ -116,6 +117,7 @@ export class Device {
   keys: InstanceType<typeof KeyRing> | null = null
   sharing: InstanceType<typeof Sharing> | null = null
   compactor: InstanceType<typeof Compactor> | null = null
+  trash: InstanceType<typeof Trash> | null = null
   settings: InstanceType<typeof AccountSettings> | null = null
   contacts: InstanceType<typeof Contacts> | null = null
   recovery: InstanceType<typeof Recovery> | null = null
@@ -214,6 +216,7 @@ export class Device {
     this.keys = keys
     this.sharing = sharing
     this.compactor = new Compactor(this.api, keys, () => this.retentionDays)
+    this.trash = new Trash(this.api, store, () => this.retentionDays)
 
     // What main.ts wires up.
     store.onReady(() => this.editors.refresh())

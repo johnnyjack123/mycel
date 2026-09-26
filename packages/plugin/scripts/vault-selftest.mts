@@ -286,6 +286,50 @@ try {
     { a: A.vault.text('Gone.md'), b: B.vault.text('Gone.md') }
   )
 
+  // --- the trash -----------------------------------------------------------------
+  {
+    const trashed = (device: typeof A): string[] => (device.trash?.list() ?? []).map((note) => note.path)
+    check(
+      trashed(A).includes('Doomed.md') && trashed(A).includes('Gone.md') && trashed(B).includes('Gone.md'),
+      'deleted notes wait in the trash, on every device, whoever deleted them',
+      { a: trashed(A), b: trashed(B) }
+    )
+    // The old Gone.md, whose name a new note has taken since.
+    const oldGone = B.trash?.list().find((note) => note.path === 'Gone.md')?.docId as string
+    const restored = await B.trash?.restore(oldGone)
+    check(restored?.path === 'Gone (restored).md', 'a deleted note comes back next to the one that took its name', restored?.path)
+    check(
+      await eventually(
+        () =>
+          A.vault.text('Gone (restored).md') === 'content of a note that was deleted\n' &&
+          B.vault.text('Gone (restored).md') === 'content of a note that was deleted\n' &&
+          A.vault.text('Gone.md') === 'a new note\n'
+      ),
+      'with its text, on every device, leaving the new one alone',
+      { a: A.vault.paths(), b: B.vault.paths() }
+    )
+    check(!trashed(A).includes('Gone.md'), 'and leaves the trash')
+
+    // Past the retention, the server lets go of what is still in the trash.
+    const doomedId = A.trash?.list().find((note) => note.path === 'Doomed.md')?.docId as string
+    A.retentionDays = 1e-9
+    const purged = (await A.trash?.purge()) ?? 0
+    A.retentionDays = 30
+    check(purged > 0, 'after the retention the trash is emptied', purged)
+    check(
+      (await A.api.log(docRoom(doomedId)).then(
+        () => 'still there',
+        (error: { status?: number }) => error.status
+      )) === 404,
+      'the server has let go of the note'
+    )
+    check(await eventually(() => !trashed(B).includes('Doomed.md')), 'and no device offers it any more', trashed(B))
+    check(
+      A.vault.text('Gone (restored).md') === 'content of a note that was deleted\n' && A.vault.text('Gone.md') === 'a new note\n',
+      'while the notes that live are untouched'
+    )
+  }
+
   // Opening a new note in a leaf that showed another one. For a moment the
   // view already names the new note while the buffer still holds the old
   // text; binding then took that text for edits to the new note.

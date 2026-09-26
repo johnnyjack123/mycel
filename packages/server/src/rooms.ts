@@ -647,6 +647,28 @@ export class RoomHub {
     await open.log.compact(request.uptoSeq, request.epoch, fromBase64(request.data, 'the snapshot'))
   }
 
+  /**
+   * The owner lets go of a note deleted longer ago than the history
+   * retention. Refused while it is shared: the others keep what was shared
+   * with them, and the owner deleting it only removed it from their vault. A
+   * share that ended does not hold it up - what its participant could read
+   * was copied to them when it ended.
+   */
+  async purge(account: string, room: string): Promise<void> {
+    if (roomKind(room) !== 'doc' || !isHexId(roomSubject(room))) throw new HubError(400, 'only notes are purged')
+    const open = await this.load(room)
+    if (!open) throw new HubError(404, 'no such room')
+    const meta = open.log.meta
+    if (meta.owner !== account) throw new HubError(403, 'only the owner can do that')
+    if (Object.keys(meta.members).length > 0) throw new HubError(409, 'the note is still shared')
+    for (const subscriber of open.subscribers) subscriber.sendDenied(room, 'purged')
+    open.subscribers.clear()
+    if (open.idleTimer) clearTimeout(open.idleTimer)
+    this.rooms.delete(room)
+    this.metas.delete(room)
+    await open.log.remove()
+  }
+
   /** Fills a brand-new room with frames, oldest first - a detached note's history. */
   async importFrames(
     account: string,

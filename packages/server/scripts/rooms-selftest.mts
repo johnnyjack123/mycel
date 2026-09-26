@@ -485,6 +485,25 @@ try {
     check((await status(() => hub.detachShare(carol, docId))) === 200, 'a second device detaching too is no error')
   }
 
+  // --- purging a deleted note ------------------------------------------------------------------
+  {
+    const owner = new Client(alice, aliceVault.vaultId)
+    hub.attach(owner)
+    const doc3 = hexId()
+    const room3 = `doc:${doc3}`
+    await hub.subscribe(owner, room3, 0)
+    await hub.push(owner, room3, 1, 0, bytes('deleted text'))
+    await hub.share(alice, { docId: doc3, account: bob, role: 'read', withHistory: true, keys: { '0': 'k' }, title: 't' })
+    check((await status(() => hub.purge(bob, room3))) === 403, 'only the owner lets a note go')
+    check((await status(() => hub.purge(alice, room3))) === 409, 'and not while it is shared: the others keep it')
+    await hub.leave(bob, doc3)
+    check((await status(() => hub.purge(alice, room3))) === 200, 'once nobody else has it, it goes')
+    check((await status(() => hub.log(alice, room3))) === 404, 'the room is gone')
+    check(!existsSync(join(dataDir, 'users', alice, aliceVault.vaultId, 'notes', doc3)), 'from disk too')
+    check((await status(() => hub.purge(alice, room3))) === 404, 'and a second device asking finds nothing')
+    check((await status(() => hub.purge(alice, `idx:${aliceVault.vaultId}`))) === 400, 'a vault index is never purged')
+  }
+
   // --- removed accounts ----------------------------------------------------------------------
   {
     const ownerDevice = new Client(alice, aliceVault.vaultId)
