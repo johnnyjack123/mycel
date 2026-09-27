@@ -30,8 +30,21 @@ docker compose exec obsidian-connect obsidian-connect invite
 
 `invite` prints a code that lets one person create one account. With
 `OBSIDIAN_CONNECT_REGISTRATION=open` in `.env`, people can create accounts
-themselves instead. Everything else — without Docker, the other account
-commands, what the server can and cannot see — is in `docs/SERVER.md`.
+themselves instead. Everything else — the other account commands, what the
+server can and cannot see — is in `docs/SERVER.md`.
+
+Without Docker, with npm, from the repository root:
+
+```bash
+npm install
+npm run start:server          # reads the .env in the repository root, if there is one
+npm run cli -- invite         # in a second terminal: a code for one new account
+```
+
+The running server accepts the code at once. Server and CLI keep their data in
+`packages/server/data` - set `OBSIDIAN_CONNECT_DATA_DIR` for both, or neither.
+The other account commands work the same way: `npm run cli -- user list`,
+`npm run cli -- user remove <accountId>`.
 
 ## Build the plugin
 
