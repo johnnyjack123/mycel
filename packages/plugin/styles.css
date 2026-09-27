@@ -73,3 +73,112 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* The cloud in the status bar: where the active note stands. */
+.connect-note-status {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.connect-note-status svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.connect-note-status.is-synced {
+  color: var(--color-green);
+}
+
+.connect-note-status.is-unsent {
+  color: var(--color-red);
+}
+
+.connect-note-status.is-waiting {
+  color: var(--text-muted);
+}
+
+.connect-note-status.is-held {
+  color: var(--color-orange);
+}
+
+.connect-code {
+  font-family: var(--font-monospace);
+  user-select: all;
+}
+
+/* Comparing the two versions of a note. */
+.connect-review-modal {
+  width: min(900px, 95vw);
+}
+
+.connect-review-list {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 0.5em 0 1em;
+}
+
+.connect-review-list pre,
+.connect-review-same {
+  margin: 0;
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.connect-review-same {
+  padding: 0.25em 0.6em;
+  color: var(--text-muted);
+}
+
+.connect-review-hunk {
+  margin: 0.4em 0;
+  padding: 0.5em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+
+.connect-review-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5em;
+}
+
+.connect-review-side {
+  padding: 0.4em 0.6em;
+  border-radius: 4px;
+  background-color: var(--background-secondary);
+}
+
+.connect-review-side.is-mine {
+  border-left: 3px solid var(--color-blue);
+}
+
+.connect-review-side.is-theirs {
+  border-left: 3px solid var(--color-purple);
+}
+
+.connect-review-label,
+.connect-review-heading {
+  margin-bottom: 0.25em;
+  color: var(--text-muted);
+  font-size: 0.8em;
+  font-weight: 600;
+}
+
+.connect-review-choices {
+  display: flex;
+  gap: 0.4em;
+  margin-top: 0.5em;
+}
+
+.connect-review-choices button.is-active {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+@media (max-width: 600px) {
+  .connect-review-sides {
+    grid-template-columns: 1fr;
+  }
+}

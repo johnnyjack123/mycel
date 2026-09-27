@@ -126,6 +126,8 @@ export class Device {
   recoveryAnswer: 'device' | 'server' | null = null
   /** How many times this device had to ask. */
   asked = 0
+  /** Notes kept in two versions, waiting for someone to choose. */
+  readonly reviews: Array<{ docId: string; path: string; kind: string; mine: string; theirs: string; merged: string }> = []
   private settingsStore: { destroy(): unknown } | null = null
   private settingsCursor: InstanceType<typeof LocalCursor> | null = null
   socket: InstanceType<typeof VaultSocket> | null = null
@@ -221,6 +223,7 @@ export class Device {
     // What main.ts wires up.
     store.onReady(() => this.editors.refresh())
     store.onLeave((docId) => void sharing.leave(docId))
+    store.onReview((review) => this.reviews.push(review))
     index.onChange(() => {
       if (this.indexTimer) clearTimeout(this.indexTimer)
       this.indexTimer = setTimeout(() => {

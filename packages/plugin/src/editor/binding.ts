@@ -20,6 +20,7 @@ import {
 } from '@codemirror/view'
 import { applyTextEdits, textEdits, type CollabUser, type TextEdit } from '@obsidian-connect/shared'
 import { EDITOR_ORIGIN } from '../sync/origin.js'
+import { log } from '../log.js'
 
 // Keeps one Obsidian editor and one note's Y.Text identical, keystroke by
 // keystroke. Installed into every Markdown editor through
@@ -171,6 +172,13 @@ export class EditorBinding implements PluginValue {
     this.applyRemote(event)
   }
 
+  /** Bumped whenever someone else's caret changed; the carets drawn are of `drawnCursors`. */
+  private cursorsVersion = 0
+  private drawnCursors = -1
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null
+  /** The caret last announced, so an unchanged one is not sent again. */
+  private published = ''
+
   private readonly onAwarenessChange = (
     changes: { added: number[]; updated: number[]; removed: number[] },
     origin: unknown
@@ -181,12 +189,28 @@ export class EditorBinding implements PluginValue {
       .concat(changes.updated, changes.removed)
       .some((client) => client !== awareness.clientID)
     if (!others && origin !== 'unshare') return
-    // Awareness changes arrive from the socket, but also from our own update
-    // handler; a dispatch from there would be one inside an update.
-    queueMicrotask(() => {
-      if (this.destroyed || !this.view.dom.isConnected) return
-      this.view.dispatch({ effects: refreshCursors.of(null) })
-    })
+    this.cursorsVersion += 1
+    this.scheduleCursorRefresh()
+  }
+
+  /**
+   * Redraws the carets soon. Awareness changes arrive from the socket, but also
+   * from our own update handler, where a dispatch would be one inside an
+   * update; later, and again if the editor was busy. Any update in between
+   * draws them too - the version tells it they are stale.
+   */
+  private scheduleCursorRefresh(delay = 0): void {
+    if (this.refreshTimer !== null) return
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null
+      if (this.destroyed || !this.view.dom.isConnected || this.drawnCursors === this.cursorsVersion) return
+      try {
+        this.view.dispatch({ effects: refreshCursors.of(null) })
+      } catch (error) {
+        log.warn('redrawing the carets failed; trying again', error)
+        this.scheduleCursorRefresh(50)
+      }
+    }, delay)
   }
 
   constructor(
@@ -253,18 +277,17 @@ export class EditorBinding implements PluginValue {
     if (local) this.applyLocalChanges(update, session)
 
     if (session.awareness) {
-      const refreshed = update.transactions.some((transaction) =>
-        transaction.effects.some((effect) => effect.is(refreshCursors))
-      )
-      if (update.docChanged || refreshed) this.decorations = this.buildCursors(session)
+      if (update.docChanged || this.drawnCursors !== this.cursorsVersion) this.drawCursors(session)
       // Remote changes move the caret only in absolute terms; its relative
       // position is still right, so there is nothing new to announce.
-      if (update.selectionSet || local) this.publishSelection(session)
+      if (update.selectionSet || local || update.focusChanged) this.publishSelection(session)
     }
   }
 
   destroy(): void {
     this.destroyed = true
+    if (this.refreshTimer !== null) clearTimeout(this.refreshTimer)
+    this.refreshTimer = null
     this.endCooldown()
     this.unbind()
     this.host.detached(this)
@@ -284,6 +307,7 @@ export class EditorBinding implements PluginValue {
       session.awareness.off('change', this.onAwarenessChange)
       session.awareness.setLocalStateField('cursor', null)
     }
+    this.published = ''
     this.decorations = Decoration.none
     if (session.readOnly) this.setReadOnly(false)
     session.release()
@@ -322,10 +346,11 @@ export class EditorBinding implements PluginValue {
       if (session.awareness) {
         session.awareness.on('change', this.onAwarenessChange)
         this.publishSelection(session)
+        this.cursorsVersion += 1
         this.view.dispatch({ effects: refreshCursors.of(null) })
       }
     } catch (error) {
-      console.error('[obsidian-connect] binding the editor failed', error)
+      log.error('binding the editor failed', error)
     } finally {
       this.connecting = false
     }
@@ -357,7 +382,7 @@ export class EditorBinding implements PluginValue {
       this.contentPending = false
       return true
     }
-    console.warn('[obsidian-connect] the editor kept changing while it was being bound; retrying later')
+    log.warn('the editor kept changing while it was being bound; retrying later')
     return false
   }
 
@@ -391,7 +416,7 @@ export class EditorBinding implements PluginValue {
     } catch (error) {
       // The delta is relative to a Y.Text state the editor may have drifted
       // from. Recovering the whole text is always correct, just coarser.
-      console.error('[obsidian-connect] applying a remote delta failed, resyncing', error)
+      log.error('applying a remote delta failed, resyncing', error)
       this.realign()
       return
     }
@@ -452,10 +477,38 @@ export class EditorBinding implements PluginValue {
     }, EDITOR_ORIGIN)
   }
 
+  /**
+   * Never throws: an exception out of `update` makes CodeMirror switch this
+   * plugin off for good, and with it the whole binding.
+   */
   private publishSelection(session: EditorSession): void {
+    try {
+      this.announceSelection(session)
+    } catch (error) {
+      log.error('announcing the caret failed', error)
+    }
+  }
+
+  private drawCursors(session: EditorSession): void {
+    this.drawnCursors = this.cursorsVersion
+    try {
+      this.decorations = this.buildCursors(session)
+    } catch (error) {
+      // A caret from another client that cannot be placed; the others still are.
+      log.error('drawing the carets failed', error)
+      this.decorations = Decoration.none
+    }
+  }
+
+  private announceSelection(session: EditorSession): void {
     const awareness = session.awareness
     if (!awareness || !session.ytext.doc) return
     const range = this.view.state.selection.main
+    // Keyed by the text around it too: the same offsets after an edit are another place.
+    const key = `${range.anchor}:${range.head}:${session.ytext.length}`
+    if (key === this.published) return
+    this.published = key
+    log.debug(`caret announced at ${range.head}`)
     // The editor can be ahead of Y.Text while an update is still settling;
     // an out-of-range index would throw out of the update handler.
     const limit = session.ytext.length
@@ -502,6 +555,7 @@ export class EditorBinding implements PluginValue {
       }
       ranges.push(Decoration.widget({ widget: new CaretWidget(user), side: 1 }).range(head))
     })
+    log.debug(`carets drawn: ${ranges.filter((range) => range.value.spec.widget).length} of ${awareness.getStates().size - 1} other(s)`)
     return Decoration.set(ranges, true)
   }
 }

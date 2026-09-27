@@ -404,6 +404,8 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     contactInboxDone: async (ids: string[]) => {
       inbox.set(me, (inbox.get(me) ?? []).filter((item) => !ids.includes(item.id)))
     },
+    // Deletes nothing: the device must not rely on the server to refuse a revoked code.
+    revokeContactCode: async () => ({}),
     removeContact: async () => ({})
   })
   const person = async (name: string) => {
@@ -488,6 +490,29 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   deliver(carl.me.accountId, { kind: 'reply', from: anna.me.accountId, codeId: [...codes.keys()].at(-1) as string, sealed: namedAnswer })
   await carl.contacts.processInbox()
   check(carl.contacts.name(anna.me.accountId) !== 'not anna', 'nor does one with the right key but without the code')
+
+  // The list of codes handed out and not redeemed yet.
+  {
+    const dora = await person('dora')
+    const open = async (): Promise<string[]> => (await dora.contacts.openCodes()).map((entry) => entry.code)
+    const first = await dora.contacts.createCode()
+    const second = await dora.contacts.createCode()
+    check((await open()).join() === [first, second].join(), 'every code made waits in the list, oldest first, as it was handed out')
+    const frank = await person('frank')
+    await frank.contacts.redeem(first)
+    await dora.contacts.processInbox()
+    check((await open()).join() === second, 'a redeemed code leaves the list')
+    const secondId = (await dora.contacts.openCodes())[0]?.codeId as string
+    await dora.contacts.revokeCode(secondId)
+    check((await open()).length === 0, 'so does a deleted one')
+    const gina = await person('gina')
+    await gina.contacts.redeem(second)
+    await dora.contacts.processInbox()
+    check(!dora.contacts.isContact(gina.me.accountId), "and a deleted code redeemed anyway - the server let it through - is refused by the creator's device")
+    const later = Date.now() + 8 * 24 * 60 * 60 * 1000
+    await dora.contacts.createCode()
+    check((await dora.contacts.openCodes(later)).length === 0, 'a code past its seven days is no longer offered')
+  }
 }
 
 // --- passwords -------------------------------------------------------------------------
@@ -544,6 +569,30 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(invite.state === 'ok' && invite.registration === 'invite', 'or only with an invite', invite)
   const broken = await probeWith({ [API.health]: ok(current) })
   check(broken.state === 'incompatible', 'a server that answers but refuses its own settings is not called unreachable', broken)
+}
+
+// --- comparing two versions of a note ----------------------------------------------------
+{
+  const { assemble, compare } = await import('../src/sync/Reviews.js')
+  const mine = 'title\nshared line\nchanged here\nkept\nonly here\n'
+  const theirs = 'title\nshared line\nchanged there\nkept\n'
+  const hunks = compare(mine, theirs)
+  const differing = hunks.filter((hunk) => !hunk.same).length
+  check(differing === 2, 'the passages that differ are found, in whole lines', hunks)
+  check(assemble(hunks, Array(differing).fill('mine')) === mine, "taking this device's side everywhere gives this device's version")
+  check(assemble(hunks, Array(differing).fill('theirs')) === theirs, 'taking the other side everywhere gives the other version')
+  const merged = reconcile({ base: null, local: mine, remote: theirs, pristine: false, markers: false })
+  check(
+    merged.kind === 'merge' && assemble(hunks, []) === merged.text,
+    'keeping both everywhere is exactly what the merge without a base kept',
+    { merged: merged.kind === 'merge' ? merged.text : merged.kind, both: assemble(hunks, []) }
+  )
+  check(
+    assemble(hunks, ['theirs', 'mine']) === 'title\nshared line\nchanged there\nkept\nonly here\n',
+    'and each passage can go its own way'
+  )
+  const noNewline = compare('a\nb', 'a\nc')
+  check(assemble(noNewline, ['both']) === 'a\nc\nb', 'a last line without a line break still keeps both apart', assemble(noNewline, ['both']))
 }
 
 // --- emptying the trash ------------------------------------------------------------------

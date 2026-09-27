@@ -20,6 +20,7 @@ import {
 } from '@obsidian-connect/shared/crypto'
 import type { ConnectApi } from '../account/api.js'
 import type { AccountSettings, Contact } from '../sync/AccountSettings.js'
+import { log } from '../log.js'
 
 // Contacts, made with a one-time code. The server knows no names, so this is
 // where names come from: each side tells the other its own, sealed to the
@@ -33,8 +34,24 @@ import type { AccountSettings, Contact } from '../sync/AccountSettings.js'
 
 export type ContactApi = Pick<
   ConnectApi,
-  'addContactCode' | 'contactCode' | 'redeemContact' | 'replyContact' | 'contactInbox' | 'contactInboxDone' | 'removeContact'
+  | 'addContactCode'
+  | 'revokeContactCode'
+  | 'contactCode'
+  | 'redeemContact'
+  | 'replyContact'
+  | 'contactInbox'
+  | 'contactInboxDone'
+  | 'removeContact'
 >
+
+/** A code handed out and not redeemed yet. */
+export interface OpenCode {
+  codeId: string
+  /** What the other person enters. */
+  code: string
+  createdAt: number
+  expiresAt: number
+}
 
 export interface Me {
   accountId: string
@@ -105,7 +122,39 @@ export class Contacts {
     const expiresAt = now + CODE_LIFETIME_MS
     await this.api.addContactCode({ codeId: keys.codeId, redeemHash: toHex(await sha256(keys.redeemKey)), expiresAt })
     this.settings.setCode(keys.codeId, { secret: toBase64(secret), createdAt: now, expiresAt })
+    log.info(`contact code ${keys.codeId.slice(0, 8)} created`)
     return encodeContactCode(secret, await keyFingerprint(this.me.publicKey))
+  }
+
+  /** Codes this account handed out that nobody has redeemed yet, oldest first - on every device. */
+  async openCodes(now = Date.now()): Promise<OpenCode[]> {
+    const fingerprint = await keyFingerprint(this.me.publicKey)
+    return this.settings
+      .codes()
+      .filter(({ code }) => !code.usedBy && !code.revokedAt && code.expiresAt > now)
+      .sort((a, b) => a.code.createdAt - b.code.createdAt)
+      .map(({ codeId, code }) => ({
+        codeId,
+        code: encodeContactCode(fromBase64(code.secret), fingerprint),
+        createdAt: code.createdAt,
+        expiresAt: code.expiresAt
+      }))
+  }
+
+  /** Takes a code back before anyone redeemed it. */
+  async revokeCode(codeId: string, now = Date.now()): Promise<void> {
+    const code = this.settings.code(codeId)
+    if (!code || code.usedBy) return
+    await this.api.revokeContactCode(codeId)
+    this.settings.setCode(codeId, { ...code, revokedAt: now })
+    log.info(`contact code ${codeId.slice(0, 8)} deleted`)
+  }
+
+  /** Codes long past their end: neither the server nor anyone holding them can use them any more. */
+  private pruneCodes(now: number): void {
+    for (const { codeId, code } of this.settings.codes()) {
+      if (code.expiresAt + CODE_LIFETIME_MS < now) this.settings.setCode(codeId, null)
+    }
   }
 
   /**
@@ -142,15 +191,17 @@ export class Contacts {
     for (const item of items) {
       try {
         const outcome = item.kind === 'request' ? await this.handleRequest(item) : await this.handleReply(item)
+        log.info(`contact ${item.kind} from ${item.from} for code ${item.codeId.slice(0, 8)}: ${outcome}`)
         if (outcome === 'wait' && now - item.at < CODE_LIFETIME_MS) continue
         if (outcome === 'added') changed += 1
       } catch (error) {
         // Unreadable or forged: dropped, never acted on.
-        console.warn('[obsidian-connect] a contact message could not be verified', error)
+        log.warn('a contact message could not be verified', error)
       }
       done.push(item.id)
     }
     if (done.length > 0) await this.api.contactInboxDone(done)
+    this.pruneCodes(now)
     return changed
   }
 
@@ -164,7 +215,7 @@ export class Contacts {
     const code = this.settings.code(item.codeId)
     // The code may not have reached this device's settings yet.
     if (!code) return 'wait'
-    if (code.usedBy && code.usedBy !== item.from) return 'dropped'
+    if (code.revokedAt || (code.usedBy && code.usedBy !== item.from)) return 'dropped'
     const keys = await contactKeys(fromBase64(code.secret))
     const intro = await this.open(item)
     if (intro.account !== item.from) return 'dropped'

@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, TFolder, editorInfoField, requestUrl, type TAbstractFile } from 'obsidian'
+import { Notice, Platform, Plugin, TFile, TFolder, editorInfoField, requestUrl, setIcon, type Menu, type TAbstractFile } from 'obsidian'
 import {
   docRoom,
   settingsRoom,
@@ -23,22 +23,25 @@ import { NoteHistory } from './history/NoteHistory'
 import { AccessModal } from './share/AccessModal'
 import { IncomingModal } from './share/IncomingModal'
 import { ShareModal } from './share/ShareModal'
-import { Contacts } from './share/Contacts'
+import { Contacts, type OpenCode } from './share/Contacts'
 import { Sharing } from './share/Sharing'
 import { AccountSettings, DEFAULT_SHARED_SETTINGS, type Contact, type SharedSettings } from './sync/AccountSettings'
 import { BackupStore } from './sync/BackupStore'
 import { Compactor } from './sync/Compactor'
 import { LocalCursor, openIndexedDb, type LocalStore } from './sync/DocHandle'
-import { DocStore, type DocStoreOptions } from './sync/DocStore'
+import { DocStore, type DocStoreOptions, type NoteSyncState } from './sync/DocStore'
 import { indexedDbHistory, type HistoryStore } from './sync/History'
 import { Recovery } from './sync/Recovery'
 import { RecoveryModal } from './history/RecoveryModal'
 import { StateStore } from './sync/StateStore'
 import { Trash } from './sync/Trash'
 import { TrashModal } from './history/TrashModal'
+import { ReviewStore, type Review } from './sync/Reviews'
+import { ReviewListModal, ReviewModal } from './history/ReviewModal'
 import { VaultIndex } from './sync/VaultIndex'
 import { VaultSocket, type SocketStatus } from './sync/VaultSocket'
 import { ObsidianConnectSettingTab, DEFAULT_SETTINGS, type ObsidianConnectSettings } from './settings'
+import { log } from './log'
 
 // Settings of earlier versions that moved to the account, and are handed over
 // once to its settings document.
@@ -46,6 +49,14 @@ const MOVED_TO_ACCOUNT = ['excludeGlobs', 'conflictMarkers', 'backupRetentionDay
 const COMPACT_EVERY_MS = 6 * 60 * 60 * 1000
 const COMPACT_DELAY_MS = 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
+const NOTE_STATUS_MS = 400
+
+const NOTE_STATUS_TEXT: Record<Exclude<NoteSyncState, 'untracked'>, string> = {
+  synced: 'This note is synced: everything written here has reached the server.',
+  unsent: 'This note has changes the server has not confirmed yet.',
+  waiting: 'Not known yet whether this note is up to date: the server has not answered.',
+  held: "The server's copy of this note differs from what this device knew. It waits for your decision."
+}
 
 /** Obsidian's own request function: no CORS, works on mobile. */
 const obsidianHttp: HttpClient = async (request) => {
@@ -114,11 +125,14 @@ export default class ObsidianConnectPlugin extends Plugin {
   private contacts: Contacts | null = null
   private compactor: Compactor | null = null
   private trash: Trash | null = null
+  private reviews: ReviewStore | null = null
   private history: HistoryStore | null = null
   private recovery: Recovery | null = null
   private movedSettings: Partial<SharedSettings> | null = null
   private settingTab: ObsidianConnectSettingTab | null = null
   private statusBar!: HTMLElement
+  private noteStatus!: HTMLElement
+  private noteStatusKey = ''
   private status: SocketStatus = 'disconnected'
   private unwatchIndex: (() => void) | null = null
   private unwatchSocket: (() => void) | null = null
@@ -130,8 +144,24 @@ export default class ObsidianConnectPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings()
+    log.verbose = this.settings.verboseLog
+    await log.attach(this.app.vault.adapter, `${this.pluginDir()}/logs`)
+    log.info(`loaded ${this.manifest.version}${Platform.isMobile ? ' on mobile' : ''}`)
 
     this.statusBar = this.addStatusBarItem()
+    this.noteStatus = this.addStatusBarItem()
+    this.noteStatus.addClass('connect-note-status')
+    this.noteStatus.addEventListener('click', () => this.explainNoteStatus())
+    // Cheap - a few lookups for one note - and it catches every way a note
+    // changes state without wiring each of them up.
+    this.registerInterval(window.setInterval(() => this.renderNoteStatus(), NOTE_STATUS_MS))
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.renderNoteStatus()))
+    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => this.noteMenu(menu, file)))
+    this.registerEvent(
+      this.app.workspace.on('editor-menu', (menu, _editor, info) => {
+        if (info.file) this.noteMenu(menu, info.file)
+      })
+    )
     this.settingTab = new ObsidianConnectSettingTab(this.app, this)
     this.addSettingTab(this.settingTab)
     // Obsidian adds this to every Markdown editor and keeps it there across
@@ -147,6 +177,9 @@ export default class ObsidianConnectPlugin extends Plugin {
     })
     this.addCommand({ id: 'open-backups', name: 'Browse backups', callback: () => this.openBackups() })
     this.addCommand({ id: 'deleted-notes', name: 'Deleted notes…', callback: () => this.openTrash() })
+    this.addCommand({ id: 'copy-log', name: 'Copy the log (for a bug report)', callback: () => void this.copyLog() })
+    this.addCommand({ id: 'compare-versions', name: 'Compare the two versions of this note', callback: () => void this.openReview() })
+    this.addCommand({ id: 'review-notes', name: 'Notes with two versions…', callback: () => void this.openReviews() })
     this.addCommand({ id: 'resync-note', name: 'Force resync of this note', callback: () => void this.resyncActive() })
     this.addCommand({
       id: 'restart-sync',
@@ -174,11 +207,20 @@ export default class ObsidianConnectPlugin extends Plugin {
 
   async onunload(): Promise<void> {
     await this.stopSync()
+    log.info('unloaded')
+    await log.detach()
   }
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings)
+    log.verbose = this.settings.verboseLog
     this.store?.setOptions(this.storeOptions())
+  }
+
+  /** The recent log, onto the clipboard - for a bug report. */
+  async copyLog(): Promise<void> {
+    await navigator.clipboard.writeText(await log.recent())
+    new Notice('Obsidian Connect: the log of today and yesterday is on the clipboard.')
   }
 
   private async loadSettings(): Promise<void> {
@@ -314,7 +356,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     try {
       vault = await this.session.openVault(unlocked, this.vaultName())
     } catch (error) {
-      console.error('[obsidian-connect] opening the vault failed', error)
+      log.error('opening the vault failed', error)
       new Notice(`Obsidian Connect could not open the vault "${this.vaultName()}". Is the server reachable?`, 10_000)
       return
     }
@@ -325,11 +367,14 @@ export default class ObsidianConnectPlugin extends Plugin {
     const root = this.pluginDir()
     this.state = new StateStore(this.app.vault.adapter, root)
     this.backups = new BackupStore(this.app.vault.adapter, root)
+    const reviews = new ReviewStore(this.app.vault.adapter, root)
+    this.reviews = reviews
+    void reviews.list()
     this.index = new VaultIndex(vault.vaultId, (path, generation) => keys.docId(path, generation))
     const socket = new VaultSocket(this.settings.serverUrl, vault.vaultId, () => this.settings.token, {
       notify: (kind, payload) => this.onNotify(kind, payload),
       revoked: (room) => void this.sharing?.onRevoked(room).then(() => this.editors.refresh()),
-      denied: (room, reason) => console.error(`[obsidian-connect] ${room} was refused: ${reason}`),
+      denied: (room, reason) => log.error(`${room} was refused: ${reason}`),
       diverged: (room) => this.recovery?.diverged(room)
     })
     this.socket = socket
@@ -393,6 +438,9 @@ export default class ObsidianConnectPlugin extends Plugin {
     // has been scanned: an open note is settled on its own, first.
     store.onReady(() => this.editors.refresh())
     store.onLeave((docId) => void this.sharing?.leave(docId))
+    store.onReview((review) => {
+      void reviews.add(review).catch((error: unknown) => log.error(`keeping the review of ${review.path} failed`, error))
+    })
     this.unwatchSettings = accountSettings.onChange(() => this.store?.setOptions(this.storeOptions()))
     this.unwatchSocket = socket.onStatus((status) => {
       this.status = status
@@ -439,19 +487,19 @@ export default class ObsidianConnectPlugin extends Plugin {
             if (forked > 0) new Notice(`${forked} shared note(s) ended while this device was away. Your copies are kept as notes of your own.`, 10_000)
             this.editors.refresh()
           },
-          (error: unknown) => console.warn('[obsidian-connect] checking for ended shares failed', error)
+          (error: unknown) => log.warn('checking for ended shares failed', error)
         )
         void this.sharing?.checkIncoming().then(
           (waiting) => {
             if (waiting > 0) new Notice(`${waiting} note(s) were shared with you. Run "Notes shared with me".`, 10_000)
             this.editors.refresh()
           },
-          (error: unknown) => console.warn('[obsidian-connect] checking for shared notes failed', error)
+          (error: unknown) => log.warn('checking for shared notes failed', error)
         )
         window.setTimeout(() => void this.compact(), COMPACT_DELAY_MS)
       }
     } catch (error) {
-      console.error('[obsidian-connect] starting sync failed', error)
+      log.error('starting sync failed', error)
       new Notice('Obsidian Connect could not start; see the console.')
     } finally {
       this.starting = false
@@ -464,23 +512,23 @@ export default class ObsidianConnectPlugin extends Plugin {
     if (!this.started || !this.compactor) return
     try {
       const compacted = await this.compactor.run()
-      if (compacted > 0) console.info(`[obsidian-connect] folded old history of ${compacted} note(s)`)
+      if (compacted > 0) log.info(`folded old history of ${compacted} note(s)`)
     } catch (error) {
-      console.warn('[obsidian-connect] compacting history failed', error)
+      log.warn('compacting history failed', error)
     }
     // The device's own copy of the history follows the same retention.
     const days = this.shared().historyRetentionDays
     if (days > 0) {
       await this.history?.prune(Date.now() - days * DAY_MS).catch((error: unknown) => {
-        console.warn('[obsidian-connect] pruning the local history failed', error)
+        log.warn('pruning the local history failed', error)
       })
     }
     // And so do deleted notes: restorable within it, gone after.
     try {
       const purged = (await this.trash?.purge()) ?? 0
-      if (purged > 0) console.info(`[obsidian-connect] let go of ${purged} note(s) deleted more than ${days} days ago`)
+      if (purged > 0) log.info(`let go of ${purged} note(s) deleted more than ${days} days ago`)
     } catch (error) {
-      console.warn('[obsidian-connect] emptying the trash failed', error)
+      log.warn('emptying the trash failed', error)
     }
   }
 
@@ -515,7 +563,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       await this.settingsCursor?.flush()
       await this.settingsStore?.destroy()
     } catch (error) {
-      console.error('[obsidian-connect] closing the account settings failed', error)
+      log.error('closing the account settings failed', error)
     }
     this.socket?.destroy()
     this.index?.destroy()
@@ -532,6 +580,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.sharing = null
     this.compactor = null
     this.trash = null
+    this.reviews = null
     this.keys = null
     this.vault = null
     this.statusBar?.setText('')
@@ -584,9 +633,8 @@ export default class ObsidianConnectPlugin extends Plugin {
 
   // --- sharing -------------------------------------------------------------
 
-  /** The active note and its id, or a notice saying why there is none. */
-  private activeNote(): { file: TFile; docId: string } | null {
-    const file = this.activeFile()
+  /** A note and its id - the active one unless given - or a notice saying why there is none. */
+  private activeNote(file: TFile | null = this.activeFile()): { file: TFile; docId: string } | null {
     if (!this.store?.ready) {
       new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
       return null
@@ -603,21 +651,82 @@ export default class ObsidianConnectPlugin extends Plugin {
     return { file, docId }
   }
 
-  private openShare(): void {
-    const note = this.activeNote()
+  private openShare(file?: TFile): void {
+    const note = this.activeNote(file)
     if (!note || !this.sharing || !this.store) return
     const owner = this.store.entry(note.docId)?.owner
     if (owner) {
-      new Notice(`This note belongs to ${owner}; only they can share it.`)
+      new Notice(`This note belongs to ${this.sharing.nameOf(owner)}; only they can share it.`)
       return
     }
     new ShareModal(this.app, this.sharing, note.file, note.docId, this.contactList()).open()
   }
 
-  private openAccess(): void {
-    const note = this.activeNote()
+  private openAccess(file?: TFile): void {
+    const note = this.activeNote(file)
     if (!note || !this.sharing) return
     new AccessModal(this.app, this.sharing, note.file, note.docId).open()
+  }
+
+  /**
+   * The note's own menus - its "..." menu, the file explorer's, the editor's
+   * right click - carry what the command palette does for the active note.
+   */
+  private noteMenu(menu: Menu, file: TAbstractFile): void {
+    const store = this.store
+    if (!(file instanceof TFile) || file.extension !== 'md' || !store?.ready) return
+    const docId = store.docIdForPath(file.path)
+    if (!docId) return
+    const entry = store.entry(docId)
+    if (entry?.owner) {
+      menu.addItem((item) => item.setTitle('Who has access').setIcon('users').onClick(() => this.openAccess(file)))
+      menu.addItem((item) => item.setTitle('Make my own copy').setIcon('copy').onClick(() => void this.detachActive(file)))
+    } else {
+      menu.addItem((item) => item.setTitle('Share…').setIcon('share-2').onClick(() => this.openShare(file)))
+      if (entry?.shared) menu.addItem((item) => item.setTitle('Who has access').setIcon('users').onClick(() => this.openAccess(file)))
+    }
+    menu.addItem((item) => item.setTitle('Version history').setIcon('history').onClick(() => this.openHistory(file)))
+    if (this.reviews?.pendingFor(docId)) {
+      menu.addItem((item) => item.setTitle('Compare versions').setIcon('git-compare').onClick(() => void this.openReview(file)))
+    }
+  }
+
+  /** The two versions of a note that were merged, to choose from. */
+  private async openReview(file?: TFile): Promise<void> {
+    const note = this.activeNote(file)
+    const reviews = this.reviews
+    if (!note || !reviews) return
+    const review = (await reviews.list()).find((candidate) => candidate.docId === note.docId)
+    if (!review) {
+      new Notice(`${note.file.basename} has one version on all your devices; there is nothing to compare.`)
+      return
+    }
+    this.showReview(review)
+  }
+
+  private async openReviews(): Promise<void> {
+    const reviews = this.reviews
+    if (!reviews) {
+      new Notice('Sign in to Obsidian Connect first.')
+      return
+    }
+    new ReviewListModal(this.app, await reviews.list(), (review) => this.showReview(review)).open()
+  }
+
+  private showReview(review: Review): void {
+    const store = this.store
+    const reviews = this.reviews
+    if (!store || !reviews) return
+    new ReviewModal(
+      this.app,
+      review,
+      async (text) => {
+        const outcome = await store.applyReview(review.docId, review.merged, text)
+        await reviews.remove(review.id)
+        return outcome
+      },
+      () => reviews.remove(review.id)
+    ).open()
   }
 
   private openIncoming(): void {
@@ -628,8 +737,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     new IncomingModal(this.app, this.sharing, this.vault?.name ?? this.vaultName()).open()
   }
 
-  private async detachActive(): Promise<void> {
-    const note = this.activeNote()
+  private async detachActive(file?: TFile): Promise<void> {
+    const note = this.activeNote(file)
     if (!note || !this.sharing || !this.store) return
     if (!this.store.entry(note.docId)?.owner) {
       new Notice('This note is already yours.')
@@ -640,7 +749,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       this.editors.refresh()
       new Notice(`${note.file.basename} is now a note of your own. The share ended for you; the others keep theirs.`)
     } catch (error) {
-      console.error('[obsidian-connect] detaching failed', error)
+      log.error('detaching failed', error)
       new Notice(`Making a copy failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
@@ -668,7 +777,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         this.settingTab?.display()
       }
     } catch (error) {
-      console.warn('[obsidian-connect] reading the contact inbox failed', error)
+      log.warn('reading the contact inbox failed', error)
     }
   }
 
@@ -685,6 +794,15 @@ export default class ObsidianConnectPlugin extends Plugin {
   async createContactCode(): Promise<string> {
     if (!this.contacts) throw new Error('Sign in first.')
     return this.contacts.createCode()
+  }
+
+  async contactCodes(): Promise<OpenCode[]> {
+    return (await this.contacts?.openCodes()) ?? []
+  }
+
+  async revokeContactCode(codeId: string): Promise<void> {
+    if (!this.contacts) throw new Error('Sign in first.')
+    await this.contacts.revokeCode(codeId)
   }
 
   async redeemContactCode(code: string): Promise<void> {
@@ -727,6 +845,37 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.statusBar.setText(`Connect: ${label} · ${this.store.loadedCount()}/${this.store.trackedCount()}`)
   }
 
+  private activeNoteState(): NoteSyncState {
+    const file = this.activeFile()
+    return file && this.store ? this.store.noteState(file) : 'untracked'
+  }
+
+  /** The cloud next to the connection status: where the note in front of you stands. */
+  private renderNoteStatus(): void {
+    const state = this.activeNoteState()
+    const offline = this.status !== 'connected'
+    const key = `${state}:${offline}`
+    if (key === this.noteStatusKey) return
+    this.noteStatusKey = key
+    const el = this.noteStatus
+    el.empty()
+    el.removeClass('is-synced', 'is-unsent', 'is-waiting', 'is-held')
+    if (state === 'untracked') {
+      el.hide()
+      return
+    }
+    el.show()
+    el.addClass(`is-${state}`)
+    setIcon(el, state === 'waiting' && offline ? 'cloud-off' : 'cloud')
+    el.setAttribute('aria-label', NOTE_STATUS_TEXT[state])
+    el.setAttribute('data-tooltip-position', 'top')
+  }
+
+  private explainNoteStatus(): void {
+    const state = this.activeNoteState()
+    if (state !== 'untracked') new Notice(NOTE_STATUS_TEXT[state], 8_000)
+  }
+
   private showStatus(): void {
     if (!this.store) {
       new Notice(
@@ -756,8 +905,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     return file instanceof TFile && file.extension === 'md' ? file : null
   }
 
-  private openHistory(): void {
-    const note = this.activeNote()
+  private openHistory(file?: TFile): void {
+    const note = this.activeNote(file)
     const store = this.store
     const keys = this.keys
     if (!note || !store || !keys) return
@@ -788,7 +937,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       await this.store.syncFile(file)
       new Notice(`${file.basename} resynced.`)
     } catch (error) {
-      console.error('[obsidian-connect] resync failed', error)
+      log.error('resync failed', error)
       new Notice('Resync failed; see the console.')
     }
   }

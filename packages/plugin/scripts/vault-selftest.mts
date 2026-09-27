@@ -378,6 +378,61 @@ try {
     await D.shutdown()
   }
 
+  // --- a device joining with its own, different version of a note ---------------------
+  // Nothing tells which side changed what, so both are kept - and the user
+  // gets to choose.
+  await A.vault.userCreate('Pairing.md', 'line one\nline two\n')
+  check(await eventually(() => A.docText('Pairing.md') === 'line one\nline two\n'), 'A has a note')
+  {
+    // The cloud in the status bar.
+    const state = (): string => A.store?.noteState(A.vault.file('Pairing.md')) ?? 'none'
+    check(await eventually(() => state() === 'synced'), 'a note the server has confirmed shows as synced', state())
+    const socket = (A.socket as unknown as { ws: { send(data: Uint8Array): void; close(): void } }).ws
+    const send = socket.send.bind(socket)
+    socket.send = (data: Uint8Array) => {
+      if (data[0] !== 3) send(data)
+    }
+    await A.vault.userWrite('Pairing.md', 'line one\nline two\nnot sent yet\n')
+    // Past the moment the file is being taken in: only the unconfirmed edit is left.
+    await eventually(() => A.docText('Pairing.md') === 'line one\nline two\nnot sent yet\n')
+    await delay(1_000)
+    check(state() === 'unsent', 'an edit the server has not confirmed shows as unsent', state())
+    socket.send = send
+    socket.close()
+    check(await eventually(() => state() === 'synced', 15_000), 'and as synced once it has', state())
+    await A.vault.userWrite('Pairing.md', 'line one\nline two\n')
+    check(await eventually(() => A.docText('Pairing.md') === 'line one\nline two\n' && state() === 'synced'), 'back to where it was')
+  }
+  const E = new Device(alice, false, { 'Pairing.md': 'line one\nline 2, as E has it\n' })
+  try {
+    check(await E.boot(), 'a device with an older copy of the vault joins')
+    const both = 'line one\nline two\nline 2, as E has it\n'
+    check(
+      await eventually(() => E.vault.text('Pairing.md') === both && A.vault.text('Pairing.md') === both),
+      'both versions are kept, on both devices',
+      { a: A.vault.text('Pairing.md'), e: E.vault.text('Pairing.md') }
+    )
+    const review = E.reviews.find((candidate) => candidate.path === 'Pairing.md')
+    check(
+      review?.kind === 'no-base' && review.mine === 'line one\nline 2, as E has it\n' && review.theirs === 'line one\nline two\n' && review.merged === both,
+      'and E keeps both versions for the user to compare',
+      review
+    )
+    if (review) {
+      const { assemble, compare } = await import('../src/sync/Reviews.js')
+      const hunks = compare(review.mine, review.theirs)
+      await E.store?.applyReview(review.docId, review.merged, assemble(hunks, ['mine']))
+    }
+    check(
+      await eventually(() => A.vault.text('Pairing.md') === 'line one\nline 2, as E has it\n' && E.vault.text('Pairing.md') === 'line one\nline 2, as E has it\n'),
+      "choosing E's version makes it the note everywhere",
+      { a: A.vault.text('Pairing.md'), e: E.vault.text('Pairing.md') }
+    )
+    check(E.vault.adapter.backups().length > 0, 'after a backup of what it said')
+  } finally {
+    await E.shutdown()
+  }
+
   // --- sharing one note with a person ------------------------------------------------
   // The history view merges edits less than a minute apart into one version;
   // here the draft lives for well under a second.
@@ -490,6 +545,17 @@ try {
       check(cTogether.view.state.selection.main.head === carolAt, "Carol's own caret stays in front of it")
       await delay(300)
       check(carolOnA() === carolAt, 'and A sees it there too, not pushed past the new text', carolOnA())
+
+      // Carets that only move, nobody typing: typing redraws the carets
+      // anyway, so the checks above could not tell.
+      const aliceOnC = (): number => {
+        const caret = cTogether.view.dom.querySelector('.connect-remote-caret')
+        return caret ? cTogether.view.posAtDOM(caret) : -1
+      }
+      cTogether.view.dispatch({ selection: { anchor: 2 } })
+      check(await eventually(() => carolOnA() === 2), "A follows Carol's caret when she only moves it", carolOnA())
+      aTogether.view.dispatch({ selection: { anchor: 5 } })
+      check(await eventually(() => aliceOnC() === 5), "and Carol follows Alice's", aliceOnC())
     }
     check(await eventually(() => B.store?.isShared(docId) === true), "A's other device learns the note is shared")
 

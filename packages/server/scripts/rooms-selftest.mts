@@ -225,6 +225,16 @@ try {
       (await status(() => contacts.redeem(bob, late, lateKey.toString('base64'), 'sealed', Date.now() + 8 * 24 * 60 * 60 * 1000))) === 403,
       'a code expires after at most seven days'
     )
+    const taken = hexId()
+    const takenKey = randomBytes(32)
+    await contacts.addCode(alice, taken, createHash('sha256').update(takenKey).digest('hex'), Date.now() + 60_000)
+    await contacts.revokeCode(bob, taken)
+    check((await contacts.codeOwner(taken)) === alice, "nobody takes back someone else's code")
+    await contacts.revokeCode(alice, taken)
+    check(
+      (await status(() => contacts.redeem(bob, taken, takenKey.toString('base64'), 'sealed'))) === 403,
+      'a code its creator took back can no longer be redeemed'
+    )
     check(await contacts.unpair(alice, dave), 'contacts can part')
     check(!(await contacts.connected(alice, dave)), 'and are no longer connected')
   }

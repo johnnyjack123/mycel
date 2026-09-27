@@ -27,6 +27,7 @@ import type { KeyRing } from '../account/KeyRing.js'
 import type { DocStore } from '../sync/DocStore.js'
 import { entryKey, type HistoryEntry } from '../sync/History.js'
 import type { Contacts } from './Contacts.js'
+import { log } from '../log.js'
 
 // Sharing a note with a person, and everything that follows from it: the
 // keys they get, the epoch that moves when someone loses access, and what
@@ -80,7 +81,7 @@ export class Sharing {
   private async publicKey(account: string): Promise<Bytes> {
     const pinned = this.contacts?.publicKey(account)
     if (pinned) return pinned
-    console.warn(`[obsidian-connect] ${account} is not a contact; using the key the server has for them`)
+    log.warn(`${account} is not a contact; using the key the server has for them`)
     return fromBase64((await this.api.accountKey(account)).publicKey)
   }
 
@@ -99,7 +100,7 @@ export class Sharing {
           if (members.some((member) => member.account === account)) await this.revoke(docId, account)
         }
       } catch (error) {
-        console.error(`[obsidian-connect] ending the share of ${docId} failed`, error)
+        log.error(`ending the share of ${docId} failed`, error)
       }
     }
   }
@@ -173,6 +174,7 @@ export class Sharing {
       }
     }
     this.store.share(docId, true)
+    log.info(`${entry.path}: shared with ${account} to ${role}, ${withHistory ? 'with' : 'without'} history`)
   }
 
   /** Takes access away and moves the note to an epoch the person never gets. */
@@ -186,6 +188,7 @@ export class Sharing {
       keys[member.account] = sealed[String(epoch)] as string
     }
     await this.api.revoke({ docId, account, rotation: { epoch, keys } })
+    log.info(`${this.store.entry(docId)?.path ?? docId}: access of ${account} revoked, now epoch ${epoch}`)
     // Nobody left to see a caret.
     if (Object.keys(keys).length === 0) this.store.share(docId, false)
   }
@@ -207,6 +210,7 @@ export class Sharing {
     )
     if (!file) return null
     await this.api.accept({ docId: share.docId, vaultId: this.keys.vaultId })
+    log.info(`${file.path}: shared by ${share.owner} to ${share.role}, added`)
     new Notice(
       `${share.owner} shared "${title}" with you${share.role === 'read' ? ' to read' : ''}. It is in ${file.path}.`,
       10_000
@@ -222,7 +226,7 @@ export class Sharing {
       try {
         await this.accept(share)
       } catch (error) {
-        console.error(`[obsidian-connect] accepting ${share.docId} failed`, error)
+        log.error(`accepting ${share.docId} failed`, error)
       }
     }
     return 0
@@ -267,7 +271,7 @@ export class Sharing {
     try {
       await this.api.leave(docId)
     } catch (error) {
-      console.error(`[obsidian-connect] leaving the share of ${docId} failed`, error)
+      log.error(`leaving the share of ${docId} failed`, error)
     }
   }
 
@@ -292,7 +296,7 @@ export class Sharing {
         if (entry?.deletedAt && entry.forkedTo) await this.api.forkDone(fork.docId, entry.forkedTo)
         else if (entry?.owner && (await this.endShare(fork.docId))) forked += 1
       } catch (error) {
-        console.error(`[obsidian-connect] carrying on the ended share of ${fork.docId} failed`, error)
+        log.error(`carrying on the ended share of ${fork.docId} failed`, error)
       }
     }
     return forked
@@ -326,11 +330,14 @@ export class Sharing {
       if (!(error instanceof ApiError) || error.status !== 404) throw error
     }
     const target = kept?.forkedTo ?? (await this.store.nextDocId(entry.path))
+    log.info(
+      `${entry.path}: share with ${entry.owner} ended (${kept?.reason ?? 'nothing kept on the server'})${kept?.forkedTo ? ', another device forked it already' : `, ${kept?.log?.frames.length ?? 0} kept change(s)`}`
+    )
     if (!kept?.forkedTo) await this.importHistory(docId, target, kept)
     const file = await this.store.forkInto(docId, target)
     if (kept && !kept.forkedTo) {
       await this.api.forkDone(docId, target).catch((error: unknown) => {
-        console.warn(`[obsidian-connect] reporting the fork of ${docId} failed; it is reported on the next start`, error)
+        log.warn(`reporting the fork of ${docId} failed; it is reported on the next start`, error)
       })
     }
     this.keys.forgetShared(docId)
@@ -373,7 +380,7 @@ export class Sharing {
         const key = await crypto.key(epoch)
         return key ? unpackFrame(await decrypt(key, fromBase64(data), aad)) : null
       } catch (error) {
-        console.warn(`[obsidian-connect] a kept change of ${docId} could not be read`, error)
+        log.warn(`a kept change of ${docId} could not be read`, error)
         return null
       }
     }

@@ -135,6 +135,10 @@ export class ConnectApi {
     return this.call('POST', `${API.contacts}/codes`, request)
   }
 
+  revokeContactCode(codeId: string): Promise<unknown> {
+    return this.call('POST', `${API.contacts}/codes/${encodeURIComponent(codeId)}/revoke`, {})
+  }
+
   contactCode(codeId: string): Promise<ContactCodeInfo> {
     return this.call('GET', `${API.contacts}/codes/${encodeURIComponent(codeId)}`)
   }

@@ -41,6 +41,7 @@ const adapter = {
   mkdir: async (path) => void adapterFiles.set(path, ''),
   read: async (path) => adapterFiles.get(path) ?? '',
   write: async (path, data) => void adapterFiles.set(path, data),
+  append: async (path, data) => void adapterFiles.set(path, (adapterFiles.get(path) ?? '') + data),
   remove: async (path) => void adapterFiles.delete(path),
   list: async () => ({ files: [], folders: [] }),
   rmdir: async () => undefined
@@ -66,7 +67,7 @@ const obsidian = {
       this.manifest = { id: 'obsidian-connect', dir: '.obsidian/plugins/obsidian-connect' }
     }
     addStatusBarItem() {
-      return { setText: fn }
+      return { setText: fn, addClass: fn, removeClass: fn, addEventListener: fn, empty: fn, hide: fn, show: fn, setAttribute: fn }
     }
     registerView = fn
     addSettingTab = fn
@@ -109,6 +110,9 @@ const obsidian = {
   TFile: Stub,
   TFolder: Stub,
   TAbstractFile: Stub,
+  Platform: { isMobile: false },
+  setIcon: fn,
+  Menu: Stub,
   editorInfoField: {},
   MarkdownView: Stub,
   normalizePath: (value) => value,

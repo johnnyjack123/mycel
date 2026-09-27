@@ -49,6 +49,11 @@ export interface ContactCode {
   createdAt: number
   expiresAt: number
   usedBy?: string
+  /**
+   * Deleted before anyone redeemed it. Kept, like a used code, so a
+   * redemption the server let through anyway is still refused.
+   */
+  revokedAt?: number
 }
 
 /** A code this account redeemed, waiting for the other side to answer with its name. */
@@ -154,6 +159,14 @@ export class AccountSettings {
 
   setContact(accountId: string, contact: Contact | null): void {
     this.put(`${CONTACT}${accountId}`, contact)
+  }
+
+  codes(): Array<{ codeId: string; code: ContactCode }> {
+    const found: Array<{ codeId: string; code: ContactCode }> = []
+    this.map.forEach((value, key) => {
+      if (key.startsWith(CODE) && value && typeof value === 'object') found.push({ codeId: key.slice(CODE.length), code: value as ContactCode })
+    })
+    return found
   }
 
   code(codeId: string): ContactCode | null {

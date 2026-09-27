@@ -1,7 +1,9 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian'
 import { generatePassword } from './account/password'
 import type { ServerProbe } from './account/probe'
+import { PasswordReveal } from './account/reveal'
 import type ObsidianConnectPlugin from './main'
+import type { OpenCode } from './share/Contacts'
 import type { SharedSettings } from './sync/AccountSettings'
 
 /**
@@ -19,6 +21,8 @@ export interface ObsidianConnectSettings {
   maxLoadedDocuments: number
   writeDebounceMs: number
   syncTimeoutMs: number
+  /** Log every detail to the plugin's log file, not just what matters. */
+  verboseLog: boolean
 }
 
 export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
@@ -29,19 +33,21 @@ export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
   syncEnabled: true,
   maxLoadedDocuments: 500,
   writeDebounceMs: 700,
-  syncTimeoutMs: 5_000
+  syncTimeoutMs: 5_000,
+  verboseLog: false
 }
 
+/** Signed out, the account box leads to one of two forms, each a screen of its own. */
+type Screen = 'overview' | 'sign-in' | 'create'
+
 export class ObsidianConnectSettingTab extends PluginSettingTab {
-  private mode: 'sign-in' | 'create' = 'sign-in'
+  private screen: Screen = 'overview'
   private username = ''
   private password = ''
   private repeat = ''
-  private revealed = false
+  private reveal = new PasswordReveal()
   private invite = ''
   private contactCode = ''
-  /** A code this device just made, shown until the settings close. */
-  private shownCode = ''
   private removing: string | null = null
   private busy = false
 
@@ -65,11 +71,20 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     containerEl.empty()
     this.gated = []
     this.serverStatus = null
-    this.account(containerEl)
-    this.contactsSection(containerEl)
-    this.device(containerEl)
-    this.shared(containerEl)
-    if (!this.plugin.settings.username) {
+    // The fields are built anew; whether passwords show carries over.
+    this.reveal = new PasswordReveal(this.reveal.revealed)
+    const signedIn = Boolean(this.plugin.settings.username)
+    if (signedIn) this.screen = 'overview'
+
+    if (this.screen === 'overview') {
+      this.account(containerEl)
+      this.contactsSection(containerEl)
+      this.device(containerEl)
+      this.shared(containerEl)
+    } else {
+      this.accountForm(containerEl)
+    }
+    if (!signedIn) {
       if (this.probe === undefined && this.probing === 0) void this.checkServer()
       else this.showProbe()
     }
@@ -81,8 +96,8 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     this.probeTimer = null
     this.probing = 0
     this.probe = undefined
-    this.shownCode = ''
     this.removing = null
+    this.forgetPasswords()
   }
 
   private async checkServer(): Promise<void> {
@@ -93,7 +108,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     if (run !== this.probing) return
     this.probing = 0
     const inviteFieldChanges =
-      this.mode === 'create' && (probe.state === 'ok' && probe.registration === 'open') !== this.inviteHidden()
+      this.screen === 'create' && (probe.state === 'ok' && probe.registration === 'open') !== this.inviteHidden()
     this.probe = probe
     // Rebuilding would take the focus from whatever is being typed; only the
     // invite field appearing or going away needs it.
@@ -144,6 +159,18 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       this.busy = false
       this.display()
     }
+  }
+
+  private go(screen: Screen): void {
+    this.screen = screen
+    this.forgetPasswords()
+    this.display()
+  }
+
+  private serverStatusRow(containerEl: HTMLElement, name: string): void {
+    this.serverStatus = new Setting(containerEl)
+      .setName(name)
+      .addButton((button) => button.setButtonText('Check again').onClick(() => void this.checkServer()))
   }
 
   private account(containerEl: HTMLElement): void {
@@ -213,20 +240,37 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       return
     }
 
-    this.serverStatus = new Setting(containerEl)
-      .setName('Server')
-      .addButton((button) => button.setButtonText('Check again').onClick(() => void this.checkServer()))
+    this.serverStatusRow(containerEl, 'Server')
+    new Setting(containerEl)
+      .setName('Your account')
+      .setDesc('Sign in with the name and password of an existing account, or create a new one on this server.')
+      .addButton((button) => button.setButtonText('Sign in…').setCta().onClick(() => this.go('sign-in')))
+      .addButton((button) => button.setButtonText('Create account…').onClick(() => this.go('create')))
+  }
 
-    if (this.mode === 'create') this.createForm(containerEl)
+  /** The screen for signing in or creating an account. */
+  private accountForm(containerEl: HTMLElement): void {
+    const creating = this.screen === 'create'
+    new Setting(containerEl)
+      .setName(creating ? 'Create an account' : 'Sign in')
+      .setHeading()
+      .addExtraButton((button) =>
+        button
+          .setIcon('arrow-left')
+          .setTooltip('Back')
+          .onClick(() => this.go('overview'))
+      )
+    this.serverStatusRow(containerEl, this.plugin.settings.serverUrl || 'Server')
+    if (creating) this.createForm(containerEl)
     else this.signInForm(containerEl)
   }
 
   private passwordField(containerEl: HTMLElement, name: string, desc: string, value: string, set: (value: string) => void): void {
-    const setting = new Setting(containerEl).setName(name).addText((text) => {
-      // Shown once the generator made it, so it can be copied into a password manager.
-      text.inputEl.type = this.revealed ? 'text' : 'password'
+    const setting = new Setting(containerEl).setName(name)
+    setting.addText((text) => {
       text.setValue(value).onChange(set)
       this.gated.push(text)
+      this.reveal.attach(setting, text.inputEl)
     })
     if (desc) setting.setDesc(desc)
   }
@@ -243,7 +287,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private forgetPasswords(): void {
     this.password = ''
     this.repeat = ''
-    this.revealed = false
+    this.reveal.set(false)
   }
 
   private signInForm(containerEl: HTMLElement): void {
@@ -261,17 +305,12 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
               void this.run(async () => {
                 await this.plugin.signIn(this.username, this.password)
                 this.forgetPasswords()
+                this.screen = 'overview'
               })
           )
         this.gated.push(button)
       })
-      .addButton((button) =>
-        button.setButtonText('Create a new account…').onClick(() => {
-          this.mode = 'create'
-          this.forgetPasswords()
-          this.display()
-        })
-      )
+      .addButton((button) => button.setButtonText('No account yet? Create one').onClick(() => this.go('create')))
   }
 
   private createForm(containerEl: HTMLElement): void {
@@ -295,7 +334,8 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           const generated = generatePassword()
           this.password = generated
           this.repeat = generated
-          this.revealed = true
+          // Shown, so it can go into a password manager; the eye hides it again.
+          this.reveal.set(true)
           this.display()
         })
         this.gated.push(button)
@@ -327,18 +367,12 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
               void this.run(async () => {
                 await this.plugin.createAccount(this.username, this.password, this.repeat, this.invite)
                 this.forgetPasswords()
-                this.mode = 'sign-in'
+                this.screen = 'overview'
               })
           )
         this.gated.push(button)
       })
-      .addButton((button) =>
-        button.setButtonText('I already have an account').onClick(() => {
-          this.mode = 'sign-in'
-          this.forgetPasswords()
-          this.display()
-        })
-      )
+      .addButton((button) => button.setButtonText('I already have an account').onClick(() => this.go('sign-in')))
   }
 
   private contactsSection(containerEl: HTMLElement): void {
@@ -352,22 +386,23 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Invite someone')
       .setDesc(
-        this.shownCode
-          ? `${this.shownCode} - works once, for seven days. Send it any way but through this server, to one person.`
-          : 'A code for one person. Whoever enters it becomes your contact, without you having to confirm.'
+        'Creates a code for one person. Whoever enters it becomes your contact, without you having to confirm. A code works once, for seven days - send it any way but through this server.'
       )
       .addButton((button) =>
-        button.setButtonText(this.shownCode ? 'Copy' : 'Create a code').onClick(() => {
-          if (this.shownCode) {
-            void navigator.clipboard.writeText(this.shownCode)
-            new Notice('Copied.')
-            return
-          }
-          void this.run(async () => {
-            this.shownCode = await this.plugin.createContactCode()
-          })
-        })
+        button
+          .setButtonText('Create a code')
+          .setCta()
+          .onClick(
+            () =>
+              void this.run(async () => {
+                const code = await this.plugin.createContactCode()
+                await navigator.clipboard.writeText(code).catch(() => undefined)
+                new Notice('Code created and copied.')
+              })
+          )
       )
+    const codes = containerEl.createDiv({ cls: 'connect-open-codes' })
+    void this.plugin.contactCodes().then((open) => this.renderCodes(codes, open))
 
     new Setting(containerEl)
       .setName('Add a contact')
@@ -421,6 +456,32 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     }
   }
 
+  /** Every code handed out and not redeemed yet, on whichever device it was made. */
+  private renderCodes(containerEl: HTMLElement, codes: OpenCode[]): void {
+    containerEl.empty()
+    for (const open of codes) {
+      const setting = new Setting(containerEl)
+        .setName(open.code)
+        .setDesc(`Not redeemed yet · valid until ${new Date(open.expiresAt).toLocaleString()}`)
+        .addExtraButton((button) =>
+          button
+            .setIcon('copy')
+            .setTooltip('Copy')
+            .onClick(() => {
+              void navigator.clipboard.writeText(open.code)
+              new Notice('Copied.')
+            })
+        )
+        .addExtraButton((button) =>
+          button
+            .setIcon('trash')
+            .setTooltip('Delete: nobody can redeem it any more')
+            .onClick(() => void this.run(() => this.plugin.revokeContactCode(open.codeId)))
+        )
+      setting.nameEl.addClass('connect-code')
+    }
+  }
+
   private device(containerEl: HTMLElement): void {
     const settings = this.plugin.settings
     new Setting(containerEl).setName('This device').setHeading()
@@ -447,6 +508,22 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings()
         })
       )
+
+    new Setting(containerEl)
+      .setName('Log')
+      .setDesc(
+        'What the plugin does is written to a log in its folder - never the text of a note. Detailed logging also records every change sent and received, and every caret.'
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setTooltip('Detailed logging')
+          .setValue(settings.verboseLog)
+          .onChange(async (value) => {
+            settings.verboseLog = value
+            await this.plugin.saveSettings()
+          })
+      )
+      .addButton((button) => button.setButtonText('Copy log').onClick(() => void this.plugin.copyLog()))
   }
 
   private shared(containerEl: HTMLElement): void {
@@ -498,7 +575,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Keep history for')
       .setDesc(
-        'Days of individually restorable versions. Older ones are folded together, nothing is deleted. Also applies to notes you share.'
+        'Days of individually restorable versions, and how long deleted notes can be restored. After that, versions are folded together and deleted notes are removed from the server. 0 keeps everything. Also applies to notes you share.'
       )
       .addText((text) =>
         text.setValue(String(current.historyRetentionDays)).onChange((value) => {

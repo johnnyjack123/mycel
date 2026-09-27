@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting, TextComponent } from 'obsidian'
 import { generatePassword, judgePassword } from './password'
+import { PasswordReveal } from './reveal'
 
 /** Asks for the current and a new password. The change itself happens on this device. */
 export class PasswordModal extends Modal {
@@ -17,10 +18,12 @@ export class PasswordModal extends Modal {
 
   onOpen(): void {
     this.titleEl.setText('Change password')
+    const reveal = new PasswordReveal()
     const field = (name: string, set: (value: string) => void): HTMLInputElement => {
-      const text = new TextComponent(new Setting(this.contentEl).setName(name).controlEl)
-      text.inputEl.type = 'password'
+      const setting = new Setting(this.contentEl).setName(name)
+      const text = new TextComponent(setting.controlEl)
       text.onChange(set)
+      reveal.attach(setting, text.inputEl)
       return text.inputEl
     }
     field('Current password', (value) => {
@@ -39,10 +42,8 @@ export class PasswordModal extends Modal {
           const generated = generatePassword()
           this.next = generated
           this.repeat = generated
-          for (const input of [nextInput, repeatInput]) {
-            input.value = generated
-            input.type = 'text'
-          }
+          for (const input of [nextInput, repeatInput]) input.value = generated
+          reveal.set(true)
         })
       )
     this.contentEl.createEl('p', {

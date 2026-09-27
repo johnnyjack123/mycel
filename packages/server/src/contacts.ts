@@ -96,6 +96,16 @@ export class ContactStore {
     })
   }
 
+  /** The creator takes back a code nobody has redeemed. */
+  revokeCode(owner: string, codeId: unknown): Promise<void> {
+    if (typeof codeId !== 'string') return Promise.reject(new AccountError(400, 'not a code id'))
+    return this.update((data) => {
+      const code = data.codes[codeId]
+      if (!code || code.owner !== owner || code.usedBy) return
+      delete data.codes[codeId]
+    })
+  }
+
   /** The creator of a code still open, for the holder to check the creator's key against the code. */
   async codeOwner(codeId: unknown, now = Date.now()): Promise<string | null> {
     if (typeof codeId !== 'string') return null

@@ -209,6 +209,13 @@ export function createHttpApp(
     return info
   })
 
+  app.post<{ Params: { codeId: string } }>(`${API.contacts}/codes/:codeId/revoke`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    await contacts.revokeCode(accountId, request.params.codeId)
+    return { ok: true }
+  })
+
   app.post(`${API.contacts}/redeem`, async (request, reply) => {
     const accountId = await user(request, reply)
     if (!accountId) return undefined

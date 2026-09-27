@@ -5,6 +5,7 @@ import {
   docRoom,
   indexRoom,
   textEdits,
+  threeWayMerge,
   type CollabUser,
   type IndexEntry,
   type ShareRole
@@ -15,10 +16,12 @@ import { FORK_ORIGIN, RESTORE_ORIGIN, SYNC_ORIGIN } from './origin.js'
 import { seedUpdate } from './seed.js'
 import { memoryHistory, type HistoryEntry, type HistoryStore } from './History.js'
 import type { BackupStore } from './BackupStore.js'
+import type { Review, ReviewKind } from './Reviews.js'
 import { DocHandle, LocalCursor, openIndexedDb, type LocalStore, type OpenLocalStore } from './DocHandle.js'
 import type { StateStore } from './StateStore.js'
 import type { VaultIndex } from './VaultIndex.js'
 import type { RoomCrypto, VaultSocket } from './VaultSocket.js'
+import { log } from '../log.js'
 
 export interface DocStoreOptions {
   vaultId: string
@@ -36,6 +39,8 @@ export interface DocAccess {
   /** Derived for a note this vault owns, sealed for one someone else owns. */
   docCrypto(docId: string, entry: IndexEntry | undefined): RoomCrypto
 }
+
+export type NoteSyncState = 'synced' | 'unsent' | 'waiting' | 'held' | 'untracked'
 
 /** A note of this vault in the trash. */
 export interface DeletedNote {
@@ -100,6 +105,7 @@ export class DocStore {
   private readonly agreed = new Set<string>()
   private readonly readyListeners = new Set<() => void>()
   private readonly leaveListeners = new Set<(docId: string) => void>()
+  private readonly reviewListeners = new Set<(review: Omit<Review, 'id'>) => void>()
   /** Renames and deletes that happened before the index arrived. */
   private readonly early: Array<() => Promise<void>> = []
   private indexWork: Promise<void> = Promise.resolve()
@@ -272,9 +278,10 @@ export class DocStore {
       )
     ])
     if (!indexSynced) {
-      console.warn('[obsidian-connect] the vault index did not sync; waiting for the server')
+      log.warn('the vault index did not sync; waiting for the server')
       return false
     }
+    log.info(`vault index arrived: ${this.index.live().length} notes, ${this.index.deleted().length} deleted`)
     this.indexReady = true
     for (const replay of this.early.splice(0)) await replay()
     for (const listener of this.readyListeners) listener()
@@ -330,7 +337,7 @@ export class DocStore {
       await this.indexCursor?.flush()
       await this.indexStore?.destroy()
     } catch (error) {
-      console.error('[obsidian-connect] closing the local index failed', error)
+      log.error('closing the local index failed', error)
     }
     await this.state.close()
   }
@@ -344,7 +351,7 @@ export class DocStore {
         try {
           await task(item)
         } catch (error) {
-          console.error('[obsidian-connect] syncing a note failed', error)
+          log.error('syncing a note failed', error)
         }
       }
     }
@@ -515,7 +522,7 @@ export class DocStore {
       await this.writeFile(docId, file, text)
       await this.recordAgreement(docId, file, text)
     } catch (error) {
-      console.error(`[obsidian-connect] writing ${file.path} failed`, error)
+      log.error(`writing ${file.path} failed`, error)
     }
   }
 
@@ -616,7 +623,7 @@ export class DocStore {
     // work, so only an exact match is safe to act on.
     if (!remoteKnown && remote.length === 0) {
       if (local.length > 0) {
-        console.warn(`[obsidian-connect] server unreachable, leaving ${file.path} untouched`)
+        log.warn(`server unreachable, leaving ${file.path} untouched`)
       }
       return
     }
@@ -650,6 +657,11 @@ export class DocStore {
     base: string | null,
     outcome: ReconcileOutcome
   ): Promise<void> {
+    if (outcome.kind === 'agree') log.debug(`${file.path}: file and note agree`)
+    else {
+      const detail = outcome.kind === 'merge' ? ` (${outcome.additiveOnly ? 'no common base, union' : `${outcome.conflicts} conflict(s)`})` : ''
+      log.info(`${file.path}: ${outcome.kind}${detail}, file ${local.length} chars, note ${remote.length}, base ${base === null ? 'none' : `${base.length}`}`)
+    }
     switch (outcome.kind) {
       case 'agree':
         await this.recordAgreement(docId, file, local)
@@ -676,6 +688,10 @@ export class DocStore {
         }
         await this.writeFile(docId, file, remote)
         await this.recordAgreement(docId, file, remote)
+        // Without a base, this device's version was only a part of the other
+        // one - nothing of it was lost, but the other side's lines came in
+        // unasked. Worth a look like any merge of two unrelated versions.
+        if (base === null && local.length > 0) this.review(docId, file.path, 'no-base', local, remote, remote)
         return
 
       case 'merge': {
@@ -685,6 +701,9 @@ export class DocStore {
         await this.writeFile(docId, file, outcome.text)
         await this.recordAgreement(docId, file, outcome.text)
         this.announceMerge(file, outcome)
+        if (outcome.additiveOnly || outcome.conflicts > 0) {
+          this.review(docId, file.path, outcome.additiveOnly ? 'no-base' : 'conflict', local, remote, outcome.text)
+        }
         return
       }
     }
@@ -693,12 +712,12 @@ export class DocStore {
   private announceMerge(file: TFile, outcome: ReconcileOutcome & { kind: 'merge' }): void {
     if (outcome.conflicts > 0) {
       new Notice(
-        `${file.basename}: ${outcome.conflicts} conflicting change(s) kept side by side. Backups are in the plugin folder.`,
+        `${file.basename}: ${outcome.conflicts} conflicting change(s) kept side by side. Choose what to keep with "Compare versions" in the note's menu.`,
         10_000
       )
     } else if (outcome.additiveOnly) {
       new Notice(
-        `${file.basename}: merged without a known base, so nothing was deleted. Check for duplicates.`,
+        `${file.basename} differed between your devices, so both versions were kept. Choose what to keep with "Compare versions" in the note's menu.`,
         10_000
       )
     }
@@ -732,8 +751,43 @@ export class DocStore {
         await this.backups.captureBoth(path, local, remote)
         await this.backups.write(path, 'merged', outcome.text)
         if (file) this.announceMerge(file, outcome)
+        if (outcome.additiveOnly || outcome.conflicts > 0) {
+          this.review(docId, path, outcome.additiveOnly ? 'no-base' : 'conflict', local, remote, outcome.text)
+        }
         return outcome.text
     }
+  }
+
+  /** Two versions were kept side by side; the user may want to choose. */
+  onReview(listener: (review: Omit<Review, 'id'>) => void): () => void {
+    this.reviewListeners.add(listener)
+    return () => this.reviewListeners.delete(listener)
+  }
+
+  private review(docId: string, path: string, kind: ReviewKind, mine: string, theirs: string, merged: string): void {
+    if (mine === theirs) return
+    log.info(`${path}: two versions kept (${kind}); waiting for a review`)
+    for (const listener of this.reviewListeners) listener({ docId, path, at: Date.now(), kind, mine, theirs, merged })
+  }
+
+  /**
+   * The user chose what a note that was merged should say. Backed up first.
+   * If the note changed since the merge, the choice is merged into what it
+   * says now, keeping both where the two disagree, rather than overwriting it.
+   */
+  async applyReview(docId: string, merged: string, chosen: string): Promise<'applied' | 'merged'> {
+    return this.withLock(docId, async () => {
+      const handle = await this.handleFor(docId)
+      const current = handle.text()
+      const path = this.index.pathFor(docId) ?? docId
+      await this.backups.write(path, 'local', current)
+      const target = current === merged ? chosen : threeWayMerge(merged, current, chosen, { markers: this.options.conflictMarkers }).text
+      const edits = textEdits(current, target)
+      // Not from the file: the file follows, like a restore.
+      if (edits.length > 0) handle.doc.transact(() => applyTextEdits(handle.ytext, edits), RESTORE_ORIGIN)
+      log.info(`${path}: review applied${current === merged ? '' : ', merged into what the note said since'}`)
+      return current === merged ? 'applied' : 'merged'
+    })
   }
 
   // --- vault events ----------------------------------------------------------
@@ -793,6 +847,7 @@ export class DocStore {
       this.index.markDeleted(docId)
       this.forget(docId)
     })
+    log.info(`${path}: deleted here${foreign ? ', leaving its share' : ''}`)
     // Deleting a note someone else owns only removes it from this vault. The
     // document stays theirs; this account just leaves the share.
     if (foreign) for (const listener of this.leaveListeners) listener(docId)
@@ -831,7 +886,7 @@ export class DocStore {
         await this.pullMissing()
         this.applySharing()
       } catch (error) {
-        console.error('[obsidian-connect] applying index changes failed', error)
+        log.error('applying index changes failed', error)
       }
     })
     return this.indexWork
@@ -863,7 +918,7 @@ export class DocStore {
           this.forget(loserId)
         }
       })
-      console.info(`[obsidian-connect] merged ${losers.length} duplicate(s) of ${path}`)
+      log.info(`merged ${losers.length} duplicate(s) of ${path}`)
     }
   }
 
@@ -898,6 +953,7 @@ export class DocStore {
       // Changed here after this device last agreed with the document. A
       // delete elsewhere does not get to discard that, so the note stays -
       // for every device.
+      log.info(`${known.path}: deleted elsewhere but changed here, kept`)
       this.index.revive(docId, known.path)
       new Notice(`${file.basename} was deleted on another device but changed here, so it was kept.`, 10_000)
       return
@@ -905,10 +961,11 @@ export class DocStore {
     await this.backups.write(known.path, 'local', local)
     await this.dropHandle(docId)
     this.forget(docId)
+    log.info(`${known.path}: deleted on another device, moved to the trash here`)
     try {
       await this.app.fileManager.trashFile(file)
     } catch (error) {
-      console.error(`[obsidian-connect] deleting ${entry.path} failed`, error)
+      log.error(`deleting ${entry.path} failed`, error)
     }
   }
 
@@ -926,8 +983,9 @@ export class DocStore {
           await this.ensureFolder(parentOf(target))
           await this.app.fileManager.renameFile(current, target)
           this.state.set(docId, { ...known, path: target })
+          log.info(`${known.path}: renamed on another device to ${target}`)
         } catch (error) {
-          console.error(`[obsidian-connect] renaming ${known.path} to ${target} failed`, error)
+          log.error(`renaming ${known.path} to ${target} failed`, error)
         }
       })
     }
@@ -960,6 +1018,7 @@ export class DocStore {
     this.rememberOwnWrite(docId, text)
     const file = await this.app.vault.create(path, text)
     await this.recordAgreement(docId, file, text)
+    log.info(`${path}: created from the server, ${text.length} chars`)
   }
 
   private async ensureFolder(path: string): Promise<void> {
@@ -1081,6 +1140,7 @@ export class DocStore {
     })
     if (!moved?.path) return null
     const { path, state } = moved
+    log.info(`${path}: the share ended; carries on as ${newDocId.slice(0, 8)}, ${state ? `${state.length} B held here` : 'nothing held here'}`)
     if (state) {
       await this.withLock(newDocId, async () => {
         const handle = await this.handleFor(newDocId)
@@ -1129,6 +1189,7 @@ export class DocStore {
     const entry = this.index.entry(docId)
     if (!entry || !this.isTrashed(entry)) return null
     const path = this.freeRestorePath(entry.path)
+    log.info(`${entry.path}: restored from the trash${path === entry.path ? '' : ` as ${path}`}`)
     await this.withLock(docId, async () => {
       this.index.revive(docId, path)
       await this.pull(docId)
@@ -1192,6 +1253,28 @@ export class DocStore {
   private async scanVault(): Promise<void> {
     const files = this.app.vault.getMarkdownFiles().filter((file) => !this.isExcluded(file.path))
     await this.pool(files, (file) => this.syncFile(file))
+  }
+
+  /**
+   * Where one note stands, for the cloud in the status bar: `unsent` while
+   * this device holds something the server has not confirmed - edits in the
+   * outbox, a file change not taken in yet, a note not registered yet;
+   * `waiting` while the server's state is not known (offline, catching up);
+   * `held` while a server that lost data waits for the user's decision.
+   */
+  noteState(file: TFile): NoteSyncState {
+    if (!this.ready || file.extension !== 'md' || this.isExcluded(file.path) || !this.exists(file)) return 'untracked'
+    const docId = this.index.docIdForPath(file.path)
+    if (!docId) return 'unsent'
+    const room = docRoom(docId)
+    if (this.socket.isHeld(room)) return 'held'
+    if (!this.socket.isSettled(room) || this.writeTimers.has(docId) || this.locks.has(docId) || this.inFlight.has(docId)) {
+      return 'unsent'
+    }
+    // Not loaded: it agreed with the server when it was, and nothing changed it since.
+    if (!this.handles.has(docId)) return this.agreed.has(docId) ? 'synced' : 'waiting'
+    if (!this.socket.isSynced(room)) return 'waiting'
+    return this.agreed.has(docId) || this.editorOwned.has(docId) ? 'synced' : 'unsent'
   }
 
   loadedCount(): number {

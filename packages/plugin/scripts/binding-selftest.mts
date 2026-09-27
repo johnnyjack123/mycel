@@ -34,6 +34,7 @@ const Y = await import('yjs')
 const { deltaToChanges, editorSyncExtension } = await import('../src/editor/binding.js')
 const { reconcile } = await import('../src/sync/Reconciler.js')
 const { noteField, noteOf, showNote } = await import('./stubs/fake-vault.js')
+const { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } = await import('y-protocols/awareness')
 
 type Binding = import('../src/editor/binding.js').EditorBinding
 type Session = import('../src/editor/binding.js').EditorSession
@@ -123,6 +124,7 @@ class Host {
   acquired = 0
   recent: string | null = null
   readOnly = false
+  awareness: InstanceType<typeof Awareness> | null = null
 
   constructor(
     readonly note: NoteRef,
@@ -142,7 +144,7 @@ class Host {
     this.acquired += 1
     return {
       ytext: this.ytext,
-      awareness: null,
+      awareness: this.awareness,
       readOnly: this.readOnly,
       isUnedited: (text: string) => text === this.base || text === this.recent,
       recentWrite: () => this.recent,
@@ -331,6 +333,45 @@ check(
   b.type(' more')
   check(await eventually(() => reader.text() === `${shared} more`), 'while what the others write still arrives')
   relay.leave(reader.doc)
+}
+
+// Presence on a shared note: carets that only move, without anyone typing.
+// Typing rebuilds the carets anyway, which is why that alone proved nothing.
+{
+  const shared = b.ytext.toString()
+  const p = client('P', shared, shared)
+  const q = client('Q', shared, shared)
+  const presence = [p, q].map((side) => {
+    const awareness = new Awareness(side.doc)
+    awareness.setLocalStateField('user', { id: side.label, name: side.label, color: '#f00', colorLight: '#fcc' })
+    side.host.awareness = awareness
+    return awareness
+  })
+  // The socket's part: every update of one side reaches the other a moment later.
+  presence.forEach((awareness, index) => {
+    const other = presence[1 - index] as InstanceType<typeof Awareness>
+    awareness.on('update', ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
+      if (origin === 'relay') return
+      const update = encodeAwarenessUpdate(awareness, added.concat(updated, removed))
+      setTimeout(() => applyAwarenessUpdate(other, update, 'relay'), 5)
+    })
+  })
+  await Promise.all([p.synced, q.synced])
+  check(await eventually(() => p.host.acquired === 1 && q.host.acquired === 1), 'two editors of a shared note bind')
+  const caretOn = (side: typeof p): number => {
+    const caret = side.view.dom.querySelector('.connect-remote-caret')
+    return caret ? side.view.posAtDOM(caret) : -1
+  }
+  p.view.dispatch({ selection: { anchor: 3 } })
+  check(await eventually(() => caretOn(q) === 3), "Q sees P's caret", caretOn(q))
+  p.view.dispatch({ selection: { anchor: 9 } })
+  check(await eventually(() => caretOn(q) === 9), "and follows it when P only moves it, typing nothing", caretOn(q))
+  q.view.dispatch({ selection: { anchor: 5 } })
+  check(await eventually(() => caretOn(p) === 5), "P sees Q's caret move too", caretOn(p))
+  for (const side of [p, q]) {
+    side.view.destroy()
+    relay.leave(side.doc)
+  }
 }
 
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)
