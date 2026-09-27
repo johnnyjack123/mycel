@@ -203,6 +203,27 @@ to a file this device agreed on and that is unchanged since — an edit here win
 over a delete there and revives the note. Renames and deletes that happen before
 the index arrives are queued and replayed.
 
+A merge without a base (typically two existing vaults meeting for the first
+time), a base-less adopt that pulled the other side's lines in, and a merge that
+kept conflicts are recorded as a **review** (`sync/Reviews.ts`, device-local in
+the plugin folder): "Compare versions" in the note's menu shows the two
+versions passage by passage and lets the user keep this device's, the other's
+or both. `DocStore.applyReview` backs up, then applies the choice as an edit —
+merged three ways into the note if it changed since. Choosing "both"
+everywhere is exactly the merge that happened (checked in `test:merge`).
+
+### Around the notes
+
+- **The log** (`src/log.ts`): every `log.*` call also goes to a file per day in
+  the plugin folder's `logs/`, a week of them; "Copy the log" puts two days on
+  the clipboard. Never note text — paths, ids, sizes, outcomes. `log.debug`
+  (every frame, every caret) only with "Detailed logging" on.
+- **The cloud** in the status bar is `DocStore.noteState` for the active note,
+  polled: `unsent` while anything this device holds is unconfirmed, `waiting`
+  while the server's state is unknown, `held` during a recovery.
+- **The note's menus** (its "…" menu, the file explorer, the editor's right
+  click) carry sharing, access, detaching, history and "Compare versions".
+
 ### Editor
 
 One ViewPlugin (`editor/binding.ts`), installed through
@@ -216,7 +237,11 @@ wrote just before is recognised and not taken as an edit (`recentWrite`).
 Remote carets are anchored the way CodeMirror maps a selection — a caret stays
 in front of text inserted exactly at it — so everyone sees a caret where its
 owner has it. A caret moving along with text typed *before* it is correct. A
-note shared to read only gets a read-only editor.
+note shared to read only gets a read-only editor. Remote carets are redrawn on
+any update once their version moved, not only by the refresh the awareness
+change dispatches — typing redraws them anyway, which is why only carets that
+merely move showed the difference. Announcing and drawing carets never throw
+out of `update` (invariant 6's reason applies to every exception there).
 
 ### Sharing
 
@@ -391,6 +416,18 @@ names what is known and left for later (signatures per author).
 Recovery codes, 2FA, notes beyond `maxLoadedDocuments` staying live,
 attachments (they need an encrypted blob store of their own; today the plugin
 ignores every non-Markdown file, it does not break on them).
+
+**Syncing plugins and their settings (wanted, optional).** Not through the
+CRDT: a plugin's `data.json` is JSON, not text two people edit, many plugins
+rewrite it on every start (ping-pong between devices), a merge of two edits
+can be invalid JSON, and some of it is per device (paths, window state, our
+own token). Instead snapshots with an explicit source: "take the plugins and
+settings of *this* device" uploads them encrypted; another device shows what
+differs and applies it on request, after a backup of its own. Per plugin
+opt-in, this plugin's own `data.json` never included, plugin code and its
+settings only together (a `data.json` for another version can break it). An
+edit on two devices before either applied the other's is then a choice
+between two snapshots, never a merge.
 
 **Backup API (wanted).** A secured endpoint a backup tool such as restic can
 pull snapshots from on a schedule, in two forms:

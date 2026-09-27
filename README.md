@@ -90,8 +90,23 @@ Settings under *All your devices* (exclusions, conflict markers, retention, shar
 folder) are the same on every device; the ones under *This device* are not.
 
 Commands: *Show sync status*, *Open version history for this note*,
-*Browse backups*, *Deleted notes…*, *Force resync of this note*, *Reconnect and
-rescan the vault*, and the sharing commands below.
+*Browse backups*, *Deleted notes…*, *Notes with two versions…*, *Force resync of
+this note*, *Reconnect and rescan the vault*, *Copy the log*, and the sharing
+commands below. Sharing, access, history and comparing versions are also in the
+note's "…" menu and its right-click menu.
+
+The cloud in the status bar shows where the note in front of you stands: green
+when the server has everything written here, red while it does not yet, grey
+while the server has not answered.
+
+**Two versions of a note.** When two devices meet with different copies of the
+same note — two existing vaults paired for the first time — nothing tells which
+side changed what, so both versions are kept. *Compare versions* shows them side
+by side, passage by passage: keep this device's, the other one's, or both.
+
+**The log** lives in the plugin folder (`logs/`, a week of it) and never contains
+the text of a note. *Copy the log* is for bug reports; *Detailed logging* in the
+settings adds every change sent and received.
 
 **Deleted notes…** lists what was deleted on any of your devices and brings a
 note back. Deleted notes stay restorable for the history retention; after that
