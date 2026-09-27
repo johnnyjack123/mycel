@@ -75,6 +75,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     this.reveal = new PasswordReveal(this.reveal.revealed)
     const signedIn = Boolean(this.plugin.settings.username)
     if (signedIn) this.screen = 'overview'
+    containerEl.createEl('p', { cls: 'setting-item-description', text: `Obsidian Connect ${this.plugin.manifest.version}` })
 
     if (this.screen === 'overview') {
       this.account(containerEl)
@@ -107,8 +108,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     const probe = await this.plugin.probeServer()
     if (run !== this.probing) return
     this.probing = 0
-    const inviteFieldChanges =
-      this.screen === 'create' && (probe.state === 'ok' && probe.registration === 'open') !== this.inviteHidden()
+    const inviteFieldChanges = this.screen === 'create' && this.inviteNeeded(probe) !== this.inviteNeeded()
     this.probe = probe
     // Rebuilding would take the focus from whatever is being typed; only the
     // invite field appearing or going away needs it.
@@ -127,8 +127,12 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     }, 700)
   }
 
-  private inviteHidden(): boolean {
-    return this.probe?.state === 'ok' && this.probe.registration === 'open'
+  /**
+   * Shown only once the server said it wants one. Until it answered the form
+   * cannot be sent anyway, and a field that disappears again is noise.
+   */
+  private inviteNeeded(probe = this.probe): boolean {
+    return probe?.state === 'ok' && probe.registration === 'invite'
   }
 
   private showProbe(): void {
@@ -341,14 +345,10 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
         this.gated.push(button)
       })
 
-    if (!this.inviteHidden()) {
+    if (this.inviteNeeded()) {
       new Setting(containerEl)
         .setName('Invite code')
-        .setDesc(
-          this.probe?.state === 'ok'
-            ? 'This server creates accounts only with a code from its admin (obsidian-connect invite).'
-            : 'Only if the server asks for one.'
-        )
+        .setDesc('This server creates accounts only with a code from its admin (obsidian-connect invite).')
         .addText((text) => {
           text.setValue(this.invite).onChange((value) => {
             this.invite = value.trim()
