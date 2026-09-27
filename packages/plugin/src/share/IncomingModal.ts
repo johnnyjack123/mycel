@@ -1,6 +1,7 @@
 import { App, Modal, Notice, Setting } from 'obsidian'
 import type { IncomingShare } from '@obsidian-connect/shared'
 import type { Sharing } from './Sharing.js'
+import { log } from '../log.js'
 
 /** Notes other people shared with this account that no vault has taken in yet. */
 export class IncomingModal extends Modal {
@@ -20,7 +21,7 @@ export class IncomingModal extends Modal {
     try {
       this.shares = await this.sharing.incoming()
     } catch (error) {
-      console.error('[obsidian-connect] listing incoming shares failed', error)
+      log.error('listing incoming shares failed', error)
       this.contentEl.empty()
       this.contentEl.createEl('p', { text: 'Could not reach the server.' })
       return

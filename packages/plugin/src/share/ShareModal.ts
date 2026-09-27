@@ -2,6 +2,7 @@ import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
 import type { ShareRole } from '@obsidian-connect/shared'
 import type { Contact } from '../sync/AccountSettings.js'
 import type { Sharing } from './Sharing.js'
+import { log } from '../log.js'
 
 /** Share this note: with whom, what they may do, and whether they see the past. */
 export class ShareModal extends Modal {
@@ -90,7 +91,7 @@ export class ShareModal extends Modal {
       new Notice(`${this.file.basename} is shared with ${this.sharing.nameOf(this.person)}.`)
       this.close()
     } catch (error) {
-      console.error('[obsidian-connect] sharing failed', error)
+      log.error('sharing failed', error)
       new Notice(`Sharing failed: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       this.busy = false

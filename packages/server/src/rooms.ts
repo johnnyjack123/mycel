@@ -667,6 +667,7 @@ export class RoomHub {
     this.rooms.delete(room)
     this.metas.delete(room)
     await open.log.remove()
+    console.info(`[obsidian-connect] ${room} of ${account} purged, deleted longer ago than the retention`)
   }
 
   /** Fills a brand-new room with frames, oldest first - a detached note's history. */
@@ -724,11 +725,13 @@ export class RoomHub {
       try {
         await this.clearAccount(account, now)
         await this.accounts.settleRemoval(account)
+        console.info(`[obsidian-connect] removed account ${account}: its shares ended and its data is deleted`)
       } catch (error) {
         console.error(`[obsidian-connect] clearing the removed account ${account} failed; trying again later`, error)
       }
     }
-    await this.forks.expire(now)
+    const expired = await this.forks.expire(now)
+    if (expired > 0) console.info(`[obsidian-connect] ${expired} kept share history(s) expired, 90 days after their owner's account went`)
   }
 
   private async clearAccount(account: string, now: number): Promise<void> {

@@ -5,6 +5,7 @@ import { CONTENT_FIELD, docRoom, type CollabUser } from '@obsidian-connect/share
 import { fromBase64, toBase64 } from '@obsidian-connect/shared/crypto'
 import type { HistoryStore } from './History.js'
 import type { RoomCrypto, RoomCursor, VaultSocket } from './VaultSocket.js'
+import { log } from '../log.js'
 
 // One note. The document is persisted locally before anything touches the
 // network, so edits made offline survive closing Obsidian. Next to it lives
@@ -82,7 +83,7 @@ export class LocalCursor implements RoomCursor {
       }
     } catch (error) {
       // Starting from zero only costs a full catch-up.
-      console.error('[obsidian-connect] the local log position is unreadable', error)
+      log.error('the local log position is unreadable', error)
     }
     return cursor
   }
@@ -113,7 +114,7 @@ export class LocalCursor implements RoomCursor {
     }
     this.writes = this.writes
       .then(() => this.store.set(CURSOR_KEY, JSON.stringify(saved)))
-      .catch((error) => console.error('[obsidian-connect] saving the local log position failed', error))
+      .catch((error) => log.error('saving the local log position failed', error))
     return this.writes
   }
 }
@@ -266,7 +267,7 @@ export class DocHandle {
         await this.persistence.destroy()
       }
     } catch (error) {
-      console.error(`[obsidian-connect] closing local storage for ${this.docId} failed`, error)
+      log.error(`closing local storage for ${this.docId} failed`, error)
     }
     this.doc.destroy()
   }

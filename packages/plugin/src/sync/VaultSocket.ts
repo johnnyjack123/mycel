@@ -10,6 +10,7 @@ import * as encoding from 'lib0/encoding'
 import { MUX, awarenessAad, frameAad, snapshotAad, type Notice, type NotifyKind } from '@obsidian-connect/shared'
 import { bytes, decrypt, encrypt, packFrame, sha256, toHex, unpackFrame } from '@obsidian-connect/shared/crypto'
 import type { HistoryEntry } from './History.js'
+import { log } from '../log.js'
 
 // One WebSocket carries every document of the vault, end-to-end encrypted.
 // The server keeps an ordered log per room and cannot read it, so there is no
@@ -173,7 +174,7 @@ export class VaultSocket {
     try {
       socket = new WebSocket(this.url())
     } catch (error) {
-      console.error('[obsidian-connect] opening the vault socket failed', error)
+      log.error('opening the vault socket failed', error)
       this.scheduleReconnect()
       return
     }
@@ -182,13 +183,15 @@ export class VaultSocket {
 
     socket.onopen = () => {
       this.retries = 0
+      log.info(`connected to ${this.serverUrl}, ${this.registrations.size} room(s)`)
       this.emit('connected')
       for (const registration of this.registrations.values()) this.subscribe(registration)
     }
     socket.onmessage = (event: MessageEvent) => {
       this.receive(new Uint8Array(event.data as ArrayBuffer))
     }
-    socket.onclose = () => {
+    socket.onclose = (event: CloseEvent) => {
+      if (!this.closed) log.info(`disconnected (${event.code}${event.reason ? ` ${event.reason}` : ''}), retry ${this.retries + 1}`)
       this.ws = null
       for (const registration of this.registrations.values()) this.resetSync(registration)
       this.emit('disconnected')
@@ -233,7 +236,7 @@ export class VaultSocket {
     try {
       this.ws?.send(encoding.toUint8Array(encoder))
     } catch (error) {
-      console.error('[obsidian-connect] sending on the vault socket failed', error)
+      log.error('sending on the vault socket failed', error)
     }
   }
 
@@ -266,7 +269,7 @@ export class VaultSocket {
 
   private enqueue(registration: Registration, task: () => Promise<void>): void {
     registration.chain = registration.chain.then(task).catch((error) => {
-      console.error(`[obsidian-connect] handling a message for ${registration.room} failed`, error)
+      log.error(`handling a message for ${registration.room} failed`, error)
     })
   }
 
@@ -280,12 +283,12 @@ export class VaultSocket {
       try {
         this.handlers.notify?.(kind, JSON.parse(decoding.readVarString(decoder)) as Notice)
       } catch (error) {
-        console.error('[obsidian-connect] a notification could not be read', error)
+        log.error('a notification could not be read', error)
       }
       return
     }
     if (type === MUX.error) {
-      console.error(`[obsidian-connect] server error: ${decoding.readVarString(decoder)}`)
+      log.error(`server error: ${decoding.readVarString(decoder)}`)
       return
     }
 
@@ -319,6 +322,7 @@ export class VaultSocket {
             // The frame the cursor ends at is gone or different. Everything the
             // server has is fetched and merged in - nothing local is dropped -
             // and the room waits for the user's decision.
+            log.warn(`${registration.room}: the server's log is not the one this device knew (${verify.state} at #${verify.seq}); holding it`)
             cursor.held = true
             cursor.lastSeq = 0
             cursor.lastHash = null
@@ -384,6 +388,7 @@ export class VaultSocket {
         return
       }
       case MUX.revoked:
+        log.info(`${room}: access ended (${decoding.readVarString(decoder)})`)
         registration.dead = true
         this.handlers.revoked?.(room)
         return
@@ -392,7 +397,7 @@ export class VaultSocket {
         // Missing is not final: the server lost a note someone else owns, and
         // it may come back once they reconnect. Asked again on every connect.
         if (reason !== 'missing') registration.dead = true
-        console.error(`[obsidian-connect] the server refused ${room}: ${reason}`)
+        log.error(`the server refused ${room}: ${reason}`)
         this.handlers.denied?.(room, reason)
         return
       }
@@ -404,7 +409,7 @@ export class VaultSocket {
   private async open(registration: Registration, epoch: number, data: Uint8Array, aad: string): Promise<Uint8Array | null> {
     const key = await registration.options.crypto.key(epoch)
     if (!key) {
-      console.error(`[obsidian-connect] no key for ${registration.room} epoch ${epoch}`)
+      log.error(`no key for ${registration.room} epoch ${epoch}`)
       return null
     }
     return decrypt(key, data, aad)
@@ -421,6 +426,7 @@ export class VaultSocket {
     // Unreadable: leave lastSeq where it is, so the next catch-up brings it again.
     if (!plaintext || registration.dead) return
     const frame = unpackFrame(plaintext)
+    log.debug(`${registration.room}: frame #${seq}, ${frame.update.length} B, epoch ${epoch}`)
     Y.applyUpdate(registration.doc, frame.update, this)
     registration.options.history?.({ authorTs: frame.authorTs, update: frame.update })
     cursor.lastSeq = seq
@@ -449,12 +455,20 @@ export class VaultSocket {
 
   private async applyAwareness(registration: Registration, epoch: number, data: Uint8Array): Promise<void> {
     const awareness = registration.options.awareness
-    if (!awareness) return
+    if (!awareness) {
+      log.debug(`${registration.room}: presence received for a room that shows none`)
+      return
+    }
     try {
       const plaintext = await this.open(registration, epoch, data, awarenessAad(registration.room, epoch))
-      if (plaintext && registration.options.awareness === awareness) applyAwarenessUpdate(awareness, plaintext, this)
+      if (!plaintext || registration.options.awareness !== awareness) {
+        log.debug(`${registration.room}: presence under epoch ${epoch} dropped`)
+        return
+      }
+      applyAwarenessUpdate(awareness, plaintext, this)
+      log.debug(`${registration.room}: presence received, epoch ${epoch}, ${awareness.getStates().size} present`)
     } catch (error) {
-      console.warn(`[obsidian-connect] presence for ${registration.room} could not be read`, error)
+      log.warn(`presence for ${registration.room} could not be read`, error)
     }
   }
 
@@ -468,7 +482,7 @@ export class VaultSocket {
     registration.sendTimer = window.setTimeout(() => {
       registration.sendTimer = null
       void this.sendNext(registration).catch((error) => {
-        console.error(`[obsidian-connect] sending ${registration.room} failed`, error)
+        log.error(`sending ${registration.room} failed`, error)
       })
     }, SEND_DELAY_MS)
   }
@@ -493,7 +507,7 @@ export class VaultSocket {
     const epoch = cursor.epoch
     const key = await registration.options.crypto.key(epoch)
     if (!key) {
-      console.error(`[obsidian-connect] no key to send ${registration.room} under epoch ${epoch}`)
+      log.error(`no key to send ${registration.room} under epoch ${epoch}`)
       return
     }
     const data = await encrypt(key, packFrame(authorTs, payload), frameAad(registration.room, epoch))
@@ -503,6 +517,7 @@ export class VaultSocket {
     this.nextRef += 1
     registration.inflight = ref
     registration.inflightFrame = { authorTs, payload, hash }
+    log.debug(`${registration.room}: push ${ref}, ${payload.length} B, epoch ${epoch}`)
     this.send((encoder) => {
       encoding.writeVarUint(encoder, MUX.push)
       encoding.writeVarString(encoder, registration.room)
@@ -519,10 +534,17 @@ export class VaultSocket {
   }
 
   private async sendAwareness(registration: Registration, update: Uint8Array): Promise<void> {
-    if (!this.connected || !registration.synced || registration.dead) return
+    if (!this.connected || !registration.synced || registration.dead) {
+      log.debug(`${registration.room}: presence not sent (${this.connected ? (registration.dead ? 'room ended' : 'not caught up') : 'offline'})`)
+      return
+    }
     const epoch = registration.options.cursor.epoch
     const key = await registration.options.crypto.key(epoch)
-    if (!key) return
+    if (!key) {
+      log.warn(`${registration.room}: no key to send presence under epoch ${epoch}`)
+      return
+    }
+    log.debug(`${registration.room}: presence sent, epoch ${epoch}`)
     const data = await encrypt(key, bytes(update), awarenessAad(registration.room, epoch))
     this.send((encoder) => {
       encoding.writeVarUint(encoder, MUX.awareness)

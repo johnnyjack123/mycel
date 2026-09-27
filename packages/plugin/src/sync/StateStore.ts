@@ -1,4 +1,5 @@
 import type { DataAdapter } from 'obsidian'
+import { log } from '../log.js'
 
 // Per-device bookkeeping that must not travel through the CRDT: what this
 // machine last agreed on with the shared document.
@@ -48,7 +49,7 @@ export class StateStore {
         if (state && typeof state.path === 'string') this.entries.set(docId, state)
       }
     } catch (error) {
-      console.error('[obsidian-connect] the local state file is unreadable, starting fresh', error)
+      log.error('the local state file is unreadable, starting fresh', error)
     }
   }
 
@@ -104,7 +105,7 @@ export class StateStore {
         await this.adapter.write(this.path(STATE_FILE), JSON.stringify(plain))
       })
       .catch((error) => {
-        console.error('[obsidian-connect] writing the local state failed', error)
+        log.error('writing the local state failed', error)
       })
     return this.writes
   }

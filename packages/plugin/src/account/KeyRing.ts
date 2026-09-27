@@ -15,6 +15,7 @@ import {
 import type { RoomCrypto } from '../sync/VaultSocket.js'
 import type { ConnectApi } from './api.js'
 import type { OpenVault, SecretStore, Unlocked } from './Session.js'
+import { log } from '../log.js'
 
 const SEALED_PREFIX = 'obsidian-connect:sealed:'
 
@@ -132,7 +133,7 @@ export class KeyRing {
       this.secrets.save(`${SEALED_PREFIX}${room}`, JSON.stringify(merged))
       return merged
     } catch (error) {
-      console.warn(`[obsidian-connect] fetching the keys of ${room} failed`, error)
+      log.warn(`fetching the keys of ${room} failed`, error)
       return this.sealed(room)
     }
   }

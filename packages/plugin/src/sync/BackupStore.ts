@@ -1,4 +1,5 @@
 import type { DataAdapter } from 'obsidian'
+import { log } from '../log.js'
 
 // Copies taken before anything that could delete text. They live in the plugin
 // folder rather than the vault so they stay out of search, graph and tags - and
@@ -115,7 +116,7 @@ export class BackupStore {
         await this.adapter.rmdir(dayPath, true)
         removed += 1
       } catch (error) {
-        console.error(`[obsidian-connect] removing old backups in ${dayPath} failed`, error)
+        log.error(`removing old backups in ${dayPath} failed`, error)
       }
     }
     return removed

@@ -2,6 +2,7 @@ import type { TFile } from 'obsidian'
 import { docRoom } from '@obsidian-connect/shared'
 import { ApiError, type ConnectApi } from '../account/api.js'
 import type { DeletedNote, DocStore } from './DocStore.js'
+import { log } from '../log.js'
 
 // A deleted note stays restorable as long as the history retention keeps its
 // versions: the server still has its document, so restoring it is pulling it
@@ -43,7 +44,7 @@ export class Trash {
         // note never reached the server.
         if (!(error instanceof ApiError && error.status === 404)) {
           if (!(error instanceof ApiError && error.status === 409)) {
-            console.warn(`[obsidian-connect] letting go of the deleted ${note.path} failed`, error)
+            log.warn(`letting go of the deleted ${note.path} failed`, error)
           }
           continue
         }

@@ -7,6 +7,8 @@
 // text anyway, and a device that lost its credentials can still recover every
 // version from here.
 
+import { log } from '../log.js'
+
 export interface HistoryEntry {
   /** The author's clock when the change was made. */
   authorTs: number
@@ -107,7 +109,7 @@ export function indexedDbHistory(vaultId: string): HistoryStore {
       const stored: StoredEntry = { key: `${room}|${entryKey(entry)}`, room, authorTs: entry.authorTs, update: entry.update.slice() }
       void transaction('readwrite')
         .then((store) => request(store.put(stored)))
-        .catch((error) => console.error('[obsidian-connect] keeping a change in the local history failed', error))
+        .catch((error) => log.error('keeping a change in the local history failed', error))
     },
     async entries(room) {
       const store = await transaction('readonly')

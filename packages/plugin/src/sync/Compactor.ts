@@ -4,6 +4,7 @@ import { decrypt, encrypt, fromBase64, packFrame, toBase64, unpackFrame } from '
 import type { ConnectApi } from '../account/api.js'
 import type { KeyRing } from '../account/KeyRing.js'
 import type { RoomCrypto } from './VaultSocket.js'
+import { log } from '../log.js'
 
 // History retention, done by the owner's client because only it can read the
 // log. Frames older than the retention are folded into one snapshot; the
@@ -33,7 +34,7 @@ export class Compactor {
       try {
         if (await this.compact(room, cutoff)) compacted += 1
       } catch (error) {
-        console.warn(`[obsidian-connect] compacting ${room} failed`, error)
+        log.warn(`compacting ${room} failed`, error)
       }
     }
     return compacted

@@ -1,6 +1,7 @@
 import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
 import type { ShareMembersResponse, ShareRole } from '@obsidian-connect/shared'
 import type { Sharing } from './Sharing.js'
+import { log } from '../log.js'
 
 /** Who has access to a note of yours: change what they may do, or take access away. */
 export class AccessModal extends Modal {
@@ -26,7 +27,7 @@ export class AccessModal extends Modal {
     try {
       this.members = await this.sharing.members(this.docId)
     } catch (error) {
-      console.error('[obsidian-connect] listing access failed', error)
+      log.error('listing access failed', error)
       this.contentEl.empty()
       this.contentEl.createEl('p', { text: 'Could not reach the server, or this note was never synced.' })
       return

@@ -2,6 +2,7 @@ import { roomKind, roomSubject } from '@obsidian-connect/shared'
 import type { AccountSettings, RecoveryDecision } from './AccountSettings.js'
 import type { DocStore } from './DocStore.js'
 import type { VaultSocket } from './VaultSocket.js'
+import { log } from '../log.js'
 
 // A server whose log of a room is not the one a device knew lost data or was
 // rolled back. Nothing about that is decided automatically: uploading
@@ -41,7 +42,7 @@ export class Recovery {
     this.timer = setTimeout(() => {
       this.timer = null
       this.running = this.running.then(() => this.resolve()).catch((error) => {
-        console.error('[obsidian-connect] resolving a server with other data failed', error)
+        log.error('resolving a server with other data failed', error)
       })
     }, GATHER_MS)
   }
@@ -77,8 +78,12 @@ export class Recovery {
     // someone already answered for exactly this situation.
     const lastSeen = Math.min(...notes.map((room) => socket.syncedAtOf(room)))
     let choice: RecoveryChoice | null = decision && decision.at > lastSeen ? decision.choice : null
-    if (!choice) {
+    if (choice) {
+      log.info(`${notes.length} note(s) differ from the server's log; following the decision "${choice}" made on ${new Date(decision?.at ?? 0).toISOString()}`)
+    } else {
+      log.warn(`${notes.length} note(s) differ from the server's log; asking`)
       choice = await this.options.ask(notes.length)
+      log.info(`recovery answer: ${choice ?? 'none yet'}`)
       if (!choice || this.stopped) return
       settings.decideRecovery({ choice, at: Date.now() })
     }

@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
 import type { NoteHistory, Version } from './NoteHistory.js'
+import { log } from '../log.js'
 
 // Point-in-time rollback for a single note. The log is decrypted and replayed
 // on this device, so this shows what the note actually said at that moment.
@@ -35,7 +36,7 @@ export class HistoryModal extends Modal {
       await this.options.history.load()
       this.versions = this.options.history.versions()
     } catch (error) {
-      console.error('[obsidian-connect] loading history failed', error)
+      log.error('loading history failed', error)
       this.contentEl.empty()
       this.contentEl.createEl('p', {
         text: 'Could not reach the server. History lives there, so it is unavailable offline.'
@@ -60,7 +61,7 @@ export class HistoryModal extends Modal {
       )
       this.close()
     } catch (error) {
-      console.error('[obsidian-connect] restoring failed', error)
+      log.error('restoring failed', error)
       new Notice('Restoring failed; see the console.')
     }
   }
