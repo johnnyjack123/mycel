@@ -319,7 +319,7 @@ covered, and all of it must stay green.
 
 ```bash
 npm run test:merge     # merge/reconcile/identity and the crypto — no server, no DOM
-npm run test:load      # the built bundle imports, onload/start/unload run, Obsidian stubbed
+npm run test:load      # the built bundle imports, onload/start/unload run, Obsidian stubbed; current and versioned
 npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart — in-process
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
 npm run test:recovery  # a server that lost its data, and one restored from a backup — in-process server
@@ -443,5 +443,28 @@ pull snapshots from on a schedule, in two forms:
 
 - Commit messages, comments and identifiers in English; the user writes German.
 - Conventional Commits, `Co-Authored-By` trailer — see the `git-flow` skill.
-- Never push without being asked.
+- **Push right after every commit** — the user asked for that (2026-09-27);
+  it replaces "never push without being asked" for this repository.
 - Comments explain *why*, never narrate *what*.
+- **Every change the user installs gets a new version**, so the version
+  Obsidian shows tells whether a device is current. One version for
+  everything: `manifest.json`, `versions.json` (plus its entry), and every
+  `package.json` via `npm version <v> --workspaces --include-workspace-root
+  --no-git-tag-version`; `test:load` fails when they differ. A fix is a patch
+  (`0.4.1`), a milestone below the minor:
+
+  | Version | Milestone |
+  |---|---|
+  | 0.1 | Phase 1: vault sync (before versions were kept) |
+  | 0.2 | Phase 2: accounts, end-to-end encryption, sharing |
+  | 0.3 | Phase 3: surviving the server, accounts without names, contacts, forks, trash |
+  | 0.4 | the first device run: comparing versions, the log, the note cloud, menus |
+  | 0.5 | attachments, in an encrypted blob store |
+  | 0.6 | recovery codes and 2FA |
+  | 0.7 | syncing plugins and their settings |
+  | 0.8 | the backup API |
+  | 0.9 | hardening: signatures per author, every note live, a name without "Obsidian" |
+  | 1.0.0 | all of the above done and verified on devices |
+- **Rebuild after anything that swaps the sources.** A bundle built during a
+  `git stash` check held the older settings screen and went to the user as
+  the new one; `test:load` now fails when a source is newer than `main.js`.

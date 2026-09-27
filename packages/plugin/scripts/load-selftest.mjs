@@ -6,7 +6,7 @@
 //   npm run build:plugin && npm run test:load -w @obsidian-connect/plugin
 import Module from 'node:module'
 import { createRequire } from 'node:module'
-import { copyFileSync, mkdtempSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -269,6 +269,40 @@ if (exported) {
   } catch (error) {
     check(false, 'the plugin can be constructed', error?.stack ?? String(error))
   }
+}
+
+// A bundle built from other sources than the ones here - once from a stash that
+// held an older state - passes every other check and ships the old plugin.
+{
+  const bundleTime = statSync(source).mtimeMs
+  const newer = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) walk(path)
+      else if (statSync(path).mtimeMs > bundleTime) newer.push(path.slice(join(here, '..').length + 1))
+    }
+  }
+  walk(join(here, '..', 'src'))
+  for (const file of ['styles.css', 'manifest.json']) {
+    if (statSync(join(here, '..', file)).mtimeMs > bundleTime) newer.push(file)
+  }
+  check(newer.length === 0, 'main.js is built from the sources as they are now', `rebuild; newer: ${newer.join(', ')}`)
+}
+
+// The version Obsidian shows is the manifest's; everything else must say the same.
+{
+  const read = (path) => JSON.parse(readFileSync(join(here, '..', path), 'utf8'))
+  const manifest = read('manifest.json')
+  const versions = read('versions.json')
+  const pkg = read('package.json')
+  const root = JSON.parse(readFileSync(join(here, '..', '..', '..', 'package.json'), 'utf8'))
+  check(
+    manifest.version === pkg.version && manifest.version === root.version,
+    'manifest and packages carry the same version',
+    `${manifest.version} / ${pkg.version} / ${root.version}`
+  )
+  check(versions[manifest.version] === manifest.minAppVersion, 'and versions.json knows it', manifest.version)
 }
 
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)
