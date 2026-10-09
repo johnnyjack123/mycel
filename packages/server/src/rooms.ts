@@ -488,6 +488,15 @@ export class RoomHub {
       open.subscribers.delete(subscriber)
     }
     this.notify(account, 'share-removed', { docId: subject, owner: meta.owner })
+    this.memberLeft(meta)
+  }
+
+  /**
+   * Tells the owner someone left, so a note nobody else has any more stops
+   * being treated as shared - carets and all - on the owner's devices.
+   */
+  private memberLeft(meta: RoomMeta): void {
+    this.notify(meta.owner, 'share-changed', { docId: roomSubject(meta.room), owner: meta.owner })
   }
 
   async forksOf(account: string): Promise<ForkSummary[]> {
@@ -521,6 +530,7 @@ export class RoomHub {
     for (const subscriber of Array.from(open.subscribers)) {
       if (subscriber.account === account) open.subscribers.delete(subscriber)
     }
+    this.memberLeft(meta)
   }
 
   async setRole(owner: string, request: RoleRequest): Promise<void> {

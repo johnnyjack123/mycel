@@ -193,6 +193,15 @@ export class Sharing {
     if (Object.keys(keys).length === 0) this.store.share(docId, false)
   }
 
+  /** Someone left a note of this account's: it is shared only while anyone else is still in it. */
+  async refreshShared(docId: string): Promise<void> {
+    const { members } = await this.api.members(docId)
+    if (members.length === 0 && this.store.isShared(docId)) {
+      this.store.share(docId, false)
+      log.info(`${this.store.entry(docId)?.path ?? docId}: nobody else has it any more; no longer shared`)
+    }
+  }
+
   async setRole(docId: string, account: string, role: ShareRole): Promise<void> {
     await this.api.setRole({ docId, account, role })
   }
@@ -241,12 +250,16 @@ export class Sharing {
         }
         return
       }
-      case 'share-changed':
-        if (notice.role && this.store.entry(notice.docId)?.owner) {
+      case 'share-changed': {
+        const entry = this.store.entry(notice.docId)
+        if (notice.role && entry?.owner) {
           this.store.setShareRole(notice.docId, notice.role)
           new Notice(`${notice.owner} changed your access to a shared note: you can now ${notice.role === 'read' ? 'only read' : 'edit'} it.`)
+        } else if (entry && !entry.owner && !entry.deletedAt) {
+          await this.refreshShared(notice.docId)
         }
         return
+      }
       case 'share-removed':
         await this.onRevoked(docRoom(notice.docId))
         return

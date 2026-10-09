@@ -1,7 +1,7 @@
 {
   "id": "obsidian-connect",
   "name": "Obsidian Connect",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "minAppVersion": "1.7.2",
   "description": "Syncs your vault across your devices and lets you share single notes for live collaboration, using CRDTs.",
   "author": "johnnyjack123",

@@ -556,6 +556,15 @@ try {
       check(await eventually(() => carolOnA() === 2), "A follows Carol's caret when she only moves it", carolOnA())
       aTogether.view.dispatch({ selection: { anchor: 5 } })
       check(await eventually(() => aliceOnC() === 5), "and Carol follows Alice's", aliceOnC())
+
+      // Alice's other device in the same shared note: Carol's caret, never Alice's own.
+      const bTogether = B.open('Together.md')
+      const labelsOnB = (): string[] =>
+        Array.from(bTogether.view.dom.querySelectorAll('.connect-remote-caret-label')).map((label) => label.textContent ?? '')
+      cTogether.view.dispatch({ selection: { anchor: 3 } })
+      aTogether.view.dispatch({ selection: { anchor: 6 } })
+      check(await eventually(() => labelsOnB().join() === carol), "Alice's other device shows Carol's caret, not Alice's own", labelsOnB())
+      B.close(bTogether)
     }
     check(await eventually(() => B.store?.isShared(docId) === true), "A's other device learns the note is shared")
 
@@ -688,6 +697,11 @@ try {
       )
     }
     check((await A.sharing?.members(handoutId))?.members.length === 0, 'and A sees her gone')
+    check(
+      await eventually(() => A.store?.isShared(handoutId) === false && B.store?.isShared(handoutId) === false),
+      "A's note is no longer treated as shared - no carets between A's own devices",
+      { a: A.store?.isShared(handoutId), b: B.store?.isShared(handoutId) }
+    )
     await C.vault.userWrite('Shared/Handout.md', "handout v1\nCarol's notes\n")
     await A.vault.userWrite('Handout.md', 'handout v2\n')
     await delay(1_000)

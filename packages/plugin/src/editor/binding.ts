@@ -535,11 +535,13 @@ export class EditorBinding implements PluginValue {
     }
 
     const ranges: Range<ReturnType<typeof Decoration.mark>>[] = []
+    const me = (awareness.getLocalState()?.user as CollabUser | undefined)?.id
     awareness.getStates().forEach((state, clientId) => {
       if (clientId === awareness.clientID) return
       const cursor = state.cursor as AwarenessCursor | null | undefined
       const user = state.user as CollabUser | undefined
-      if (!cursor || !user) return
+      // The same account on another device: presence is for the others.
+      if (!cursor || !user || user.id === me) return
       const anchor = toIndex(cursor.anchor)
       const head = toIndex(cursor.head)
       if (anchor === null || head === null) return

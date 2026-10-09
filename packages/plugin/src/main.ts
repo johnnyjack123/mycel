@@ -248,9 +248,10 @@ export default class ObsidianConnectPlugin extends Plugin {
     return this.settings.vaultName || this.app.vault.getName()
   }
 
+  /** The account id, not the name: names are not unique, and a caret of one's own other device is told apart by it. */
   private user(): CollabUser {
     const name = this.unlocked?.username ?? 'me'
-    return { id: name, name, ...userColor(name) }
+    return { id: this.unlocked?.accountId ?? name, name, ...userColor(name) }
   }
 
   private pluginDir(): string {

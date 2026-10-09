@@ -260,7 +260,11 @@ adds the note to its own index under the share folder.
   between the two.
 Presence (cursors, selections) follows from a note being shared: the `shared`
 flag on the index entry, and `DocHandle` only registers awareness while it is
-set. Syncing your own devices never broadcasts a caret. There is no global
+set. Syncing your own devices never shows a caret: a note nobody else is in
+is not shared (the server tells the owner when the last one leaves, and
+`Sharing.refreshShared` clears the flag), and in a shared note a caret of the
+same account — the user's id in the awareness state is the account id, not
+the name, which is not unique — is never drawn. There is no global
 "collaboration on/off" switch — that was built once and was wrong.
 
 - A share folder is only a **default landing spot**. Moving a note out keeps it
