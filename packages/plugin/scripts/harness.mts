@@ -122,6 +122,8 @@ export class Device {
   attachmentIndex: InstanceType<typeof AttachmentIndex> | null = null
   /** This device's download limit for attachments, in bytes; null fetches everything. */
   downloadLimit: number | null = null
+  /** Files shown in a view that is not a Markdown editor, such as a canvas. */
+  readonly openFiles = new Set<string>()
   private maxFileBytes = 0
   index: InstanceType<typeof VaultIndex> | null = null
   keys: InstanceType<typeof KeyRing> | null = null
@@ -163,7 +165,14 @@ export class Device {
     const openVault = await this.session.openVault(unlocked, VAULT)
     const keys = new KeyRing(openVault, unlocked, this.api, this.secrets)
     const vault = this.vault
-    const app = { vault, fileManager: this.fileManager, metadataCache: new FakeMetadataCache(vault) }
+    // Leaves showing files that are not notes - a canvas, a PDF - as far as
+    // attachments care: which file each one shows.
+    const workspace = {
+      iterateAllLeaves: (visit: (leaf: { view: { file: unknown } }) => void): void => {
+        for (const path of this.openFiles) visit({ view: { file: vault.getAbstractFileByPath(path) } })
+      }
+    }
+    const app = { vault, fileManager: this.fileManager, metadataCache: new FakeMetadataCache(vault), workspace }
     const state = new StateStore(vault.adapter as never, 'plugin')
     const backups = new BackupStore(vault.adapter as never, 'plugin')
     const index = new VaultIndex(openVault.vaultId, (path, generation) => keys.docId(path, generation))
@@ -313,7 +322,7 @@ export class Device {
   }
 
   private attachmentOptions(): ConstructorParameters<typeof AttachmentStore>[4] {
-    return { excludeGlobs: [], downloadLimitBytes: this.downloadLimit, maxFileBytes: this.maxFileBytes, settleMs: 100 }
+    return { excludeGlobs: [], downloadLimitBytes: this.downloadLimit, maxFileBytes: this.maxFileBytes, settleMs: 100, rescanMs: 1_000 }
   }
 
   /** What the settings tab does when the limit is changed. */

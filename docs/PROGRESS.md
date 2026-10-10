@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-10 · **0.5.0 on `feat/accounts`: attachments between one's own devices (step 1 of `docs/PHASE4.md`). Next: step 2, the trash and earlier versions of files.**_
+_Last updated: 2026-10-10 · **0.5.1 on `feat/accounts`: attachments between one's own devices (step 1 of `docs/PHASE4.md`), hardened after the canvas report. Next: step 2, the trash and earlier versions of files.**_
 
 ## Where we are
 
@@ -20,6 +20,11 @@ On the user's devices (2026-10-09): sign-in and account creation, sync, sharing 
 live editing work. The account screens of 0.4.0 are confirmed. Carets between one's
 own devices were the last thing reported; 0.4.1 fixes them, not confirmed yet.
 
+2026-10-10, 0.5.0 on devices: attachments sync, canvas conflicts give two files. Seen:
+a canvas card named right after it was created arrived without its name until the
+next change; once a conflict copy lacked a card's name typed offline. 0.5.1 fixes the
+causes found (see PHASE4, "Hardened in 0.5.1"); not confirmed on devices yet.
+
 **0.5.0 needs the server restarted with the new code** (blob routes) - the user's
 server on 1234 runs whatever they started last. An old server makes the plugin sync
 notes only (it logs "the server does not store attachments"). Behind nginx, request
@@ -29,8 +34,9 @@ bodies need at least 8 MB (`docs/SERVER.md`).
 
 **Milestone 0.5: attachments**, spec in **`docs/PHASE4.md`**, three steps:
 
-1. **Own devices - built, 0.5.0.** To confirm on devices: images and PDFs arrive,
-   a conflict copy appears, the phone's 10 MB limit and "Download attachments".
+1. **Own devices - built, 0.5.0, hardened in 0.5.1.** Confirmed on devices: files
+   arrive, conflict copies. Still to confirm: canvas card names (0.5.1), the phone's
+   10 MB limit and "Download attachments".
 2. **Trash and earlier versions - next.** "Deleted notes…" becomes "Deleted files…"
    (`DocStore.deletedNotes` + `AttachmentIndex.deleted`), "Earlier versions…" in an
    attachment's menu (`AttachmentIndex.versions`, download by hash with `Blobs`),
@@ -99,19 +105,26 @@ their path, and which file wins when two share a name.
 
 ## Verification state
 
-2026-10-10, 0.5.0: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
+2026-10-10, 0.5.1: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
 `test:rooms` (142), `test:sync` (26), `test:recovery` (46), and against a scratch
-server on 1235 `test:socket` (19) and `test:vault` (175) - all pass. Checked by putting
+server on 1235 `test:socket` (19) and `test:vault` (183) - all pass. Checked by putting
 the bug back: the link doubling of 0.4.2 (`[[RenamedRenamed]]`), two racing writes of
 one attachment without the lineage rule (one version lost), healing only on start
-(the server's lost blob never came back), a note renamed to `.txt` (pulled back in).
-Not verified: anything on a device, and the Docker image (built by CI only on `main`).
+(the server's lost blob never came back), a note renamed to `.txt` (pulled back in);
+and for 0.5.1 all five old behaviours at once - each of its five new checks failed,
+nothing else. Not verified: anything on a device beyond what the user reported, and
+the Docker image (built by CI only on `main`).
 
 ---
 
 ## Log
 
 ### 2026-10-10
+- 0.5.1: canvas card names that never left the device, and a conflict copy without
+  the latest save - the base recorded the stat after the upload, and a conflict
+  overwrote a file without checking it was still what had been read. Events now always
+  read, a scan every minute catches missed events, and a view saving over another
+  device's version keeps that version as a second file.
 - 0.5.0: attachments between one's own devices - blobs encrypted in chunks, the
   server's blob store, `AttachmentStore`, conflicts as two files, the download limit,
   self-healing; a note renamed to another extension no longer comes back.

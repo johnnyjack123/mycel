@@ -242,6 +242,23 @@ plugin then syncs notes only and says so in the log.
 
 **The status bar** shows transfers while they run, for example `↑2 ↓1`.
 
+**Hardened in 0.5.1,** after canvas cards arrived without their names on the user's
+devices *(as built)*:
+
+- mtime and size never decide anything; they only let a scan skip a file. A base
+  records the stat the file had when it was read. Recording the stat after the upload
+  instead made a canvas that saved its card's name during the upload look sent.
+- A modify event always reads the file. A scan every 60 s (`rescanMs`) compares
+  every file with its base, for changes no event reported.
+- Right before a file is overwritten, made a conflict copy of, or trashed, the device
+  checks it still holds what was read (`stillHolds`: the stat, else the content). A
+  canvas that saved while the other version downloaded lost that save.
+- A view showing the file may save what it held just after another device's version
+  was written into it. A change within 5 s of such a write, to a file open in a leaf,
+  is therefore not an edit on top of that version: this device's content stays at the
+  path, and the other version is kept next to it (`keepTheirsAside`) - not the other
+  way round, which would make the view save again.
+
 ## Step 2: the trash and earlier versions
 
 - **"Deleted notes…" becomes "Deleted files…"** and lists notes and attachments, with

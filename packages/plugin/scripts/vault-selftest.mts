@@ -237,6 +237,106 @@ try {
       { a: A.vault.attachmentPaths(), b: B.vault.attachmentPaths() }
     )
 
+    // --- a canvas, saved the way Obsidian saves one -------------------------------
+    {
+      const BOARD = 'Boards/plan.canvas'
+      const canvas = (...texts: string[]): Uint8Array =>
+        new TextEncoder().encode(
+          JSON.stringify(
+            { nodes: texts.map((text, i) => ({ id: `n${i}`, type: 'text', text, x: i * 300, y: 0, width: 250, height: 60 })), edges: [] },
+            null,
+            '\t'
+          )
+        )
+      const copies = (device: Device): string[] => device.vault.attachmentPaths().filter((path) => path.startsWith('Boards/plan (conflict'))
+      await A.vault.userCreateBinary(BOARD, canvas())
+      check(await eventually(() => same(B.vault.bytes(BOARD), canvas())), 'B has a new canvas')
+
+      // A card is created and named right away: the canvas saves its name
+      // while the version with the empty card is still being uploaded.
+      const put = A.api.putBlobChunk.bind(A.api)
+      let naming = true
+      A.api.putBlobChunk = async (...args: Parameters<typeof put>) => {
+        if (naming) {
+          naming = false
+          await A.vault.userWriteBinary(BOARD, canvas('Ideas'))
+        }
+        return put(...args)
+      }
+      await A.vault.userWriteBinary(BOARD, canvas(''))
+      check(
+        await eventually(() => same(B.vault.bytes(BOARD), canvas('Ideas'))),
+        "a canvas saved again during an upload reaches B with the card's name",
+        new TextDecoder().decode(B.vault.bytes(BOARD))
+      )
+      A.api.putBlobChunk = put
+
+      // Obsidian giving the file a new mtime, its content the same.
+      B.vault.touch(BOARD)
+      await A.vault.userWriteBinary(BOARD, canvas('Ideas', 'Plans'))
+      check(
+        await eventually(() => same(B.vault.bytes(BOARD), canvas('Ideas', 'Plans'))),
+        "a file whose mtime moved but not its content still takes another device's version"
+      )
+
+      // B adds a card while away, A changes the canvas meanwhile. While B
+      // fetches A's version to keep both, B's canvas saves the card's name.
+      await B.shutdown()
+      B.vault.offlineWriteBinary(BOARD, canvas('Ideas', 'Plans', ''))
+      const fromA = canvas('Ideas', 'Plans', 'From A')
+      await A.vault.userWriteBinary(BOARD, fromA)
+      await delay(600)
+      const named = canvas('Ideas', 'Plans', 'Named while away')
+      const chunk = B.api.blobChunk.bind(B.api)
+      let saving = true
+      B.api.blobChunk = async (...args: Parameters<typeof chunk>) => {
+        if (saving) {
+          saving = false
+          await B.vault.userWriteBinary(BOARD, named)
+        }
+        return chunk(...args)
+      }
+      check(await B.boot(), 'B comes back after both changed the canvas')
+      check(
+        await eventually(() =>
+          [A, B].every((device) => same(device.vault.bytes(BOARD), fromA) && copies(device).some((path) => same(device.vault.bytes(path), named)))
+        ),
+        'what B saved while fetching the other version is in the conflict copy, not lost',
+        { a: copies(A).map((path) => new TextDecoder().decode(A.vault.bytes(path))), b: copies(B).map((path) => new TextDecoder().decode(B.vault.bytes(path))) }
+      )
+      B.api.blobChunk = chunk
+      await delay(800)
+
+      // The canvas is open on B. A's next version is written into it, and
+      // the view saves what it still held - over A's version, which nobody saw.
+      B.openFiles.add(BOARD)
+      const held = canvas('Ideas', 'Plans', 'From A', 'held by the view')
+      let viewSaves = true
+      const view = B.vault.on('modify', (file) => {
+        if (!viewSaves || (file as { path: string }).path !== BOARD) return
+        viewSaves = false
+        setTimeout(() => void B.vault.userWriteBinary(BOARD, held), 300)
+      })
+      const again = canvas('Ideas', 'Plans', 'From A', 'A again')
+      await A.vault.userWriteBinary(BOARD, again)
+      check(
+        await eventually(() =>
+          [A, B].every((device) => same(device.vault.bytes(BOARD), held) && copies(device).some((path) => same(device.vault.bytes(path), again)))
+        ),
+        "a view saving over another device's version keeps that version as a second file",
+        { a: A.vault.attachmentPaths(), b: B.vault.attachmentPaths() }
+      )
+      B.vault.offref(view)
+      B.openFiles.delete(BOARD)
+    }
+
+    // A change no event reported: the regular comparison finds it.
+    await A.vault.userCreateBinary('Assets/quiet.bin', binary(37))
+    check(await eventually(() => same(B.vault.bytes('Assets/quiet.bin'), binary(37))), 'B has a file')
+    await delay(300)
+    B.vault.offlineWriteBinary('Assets/quiet.bin', binary(41))
+    check(await eventually(() => same(A.vault.bytes('Assets/quiet.bin'), binary(41))), 'a change that raised no event is found and sent all the same')
+
     // A note renamed into another kind of file is a file from then on.
     await A.vault.userCreate('Draft.md', 'plain text after all\n')
     check(await eventually(() => B.vault.text('Draft.md') === 'plain text after all\n'), 'B has a note')

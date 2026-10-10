@@ -14,10 +14,15 @@ import { log } from '../log.js'
 // saw file and index agree on - and three rules:
 //
 // - An entry names only content the server has confirmed: upload, then index.
-// - A file is overwritten or trashed only while it still has the base's
-//   content, and only once the server holds that content: the blob is the
-//   backup.
+// - A file is overwritten or trashed only while it still has the content it
+//   was read with - checked right before, never assumed from earlier - and
+//   only once the server holds that content: the blob is the backup.
 // - Without a base, or when both sides changed, both are kept - as two files.
+//
+// mtime and size only ever save work: an unchanged stat lets the scan skip a
+// file. They never decide anything. A canvas that saved again while its
+// previous version was being uploaded looked unchanged that way, and its
+// newest content was never sent.
 
 export interface AttachmentOptions {
   excludeGlobs: string[]
@@ -27,6 +32,8 @@ export interface AttachmentOptions {
   maxFileBytes: number
   /** How long a file must stay unchanged before it is taken in: programs write in pieces. */
   settleMs: number
+  /** How often the vault is compared against what was last agreed, for changes no event reported. */
+  rescanMs: number
 }
 
 export interface Transfers {
@@ -34,10 +41,26 @@ export interface Transfers {
   downloads: number
 }
 
+interface Stat {
+  mtime: number
+  size: number
+}
+
+/** A file's content as read, with the stat it had while being read. */
+interface Read {
+  data: Bytes
+  hash: string
+  stat: Stat
+}
+
 // Fewer than notes: each one can be a large file in memory.
 const CONCURRENCY = 4
 const RETRY_MS = 30_000
 const STOP_DRAIN_MS = 2_000
+// A view that had the file open may save what it held right after another
+// device's version was written into it. Obsidian saves an edited view about
+// 2 s after the last change; this leaves room for that.
+const STALE_SAVE_MS = 5_000
 
 function parentOf(path: string): string {
   const slash = path.lastIndexOf('/')
@@ -100,8 +123,12 @@ export class AttachmentStore {
   /** Renames and deletes that happened before the index arrived. */
   private readonly early: Array<() => Promise<void>> = []
   private readonly transfers: Transfers = { uploads: 0, downloads: 0 }
+  /** fileId -> when this device last wrote another device's version into the file. */
+  private readonly written = new Map<string, number>()
   private applying: Promise<void> = Promise.resolve()
+  private scanning: Promise<void> | null = null
   private retryTimer: number | null = null
+  private rescanTimer: number | null = null
   private ready = false
   private stopped = false
 
@@ -220,8 +247,54 @@ export class AttachmentStore {
     return this.transfer('downloads', () => this.blobs.download(hash))
   }
 
-  private agree(fileId: string, file: TFile, hash: string): void {
-    this.state.setAttachment(fileId, { path: file.path, mtime: file.stat.mtime, size: file.stat.size, hash })
+  /**
+   * File and index agree on `hash`. `stat` must be the one the file had when
+   * that content was read or written - not the one it has by now, which may
+   * belong to a newer save.
+   */
+  private agree(fileId: string, path: string, stat: Stat, hash: string): void {
+    this.state.setAttachment(fileId, { path, mtime: stat.mtime, size: stat.size, hash })
+  }
+
+  /** The content with the stat it had while being read; null if it changed meanwhile. */
+  private async read(file: TFile): Promise<Read | null> {
+    const stat = { mtime: file.stat.mtime, size: file.stat.size }
+    const data = new Uint8Array(await this.app.vault.readBinary(file))
+    if (file.stat.mtime !== stat.mtime || file.stat.size !== stat.size || data.length !== stat.size) return null
+    return { data, hash: await contentHash(data), stat }
+  }
+
+  /** Whether the file still has what was read: by its stat, or failing that by its content. */
+  private async stillHolds(file: TFile, read: Read): Promise<boolean> {
+    if (this.stopped || !this.exists(file)) return false
+    if (file.stat.mtime === read.stat.mtime && file.stat.size === read.stat.size) return true
+    const now = await this.read(file)
+    return now !== null && now.hash === read.hash
+  }
+
+  /** Whether the scan may skip the file: it looks exactly as when this device last agreed on it. */
+  private looksUnchanged(file: TFile, fileId = this.state.attachmentAt(file.path)): boolean {
+    if (!fileId) return false
+    const known = this.state.attachment(fileId)
+    const entry = this.index.entry(fileId)
+    return Boolean(
+      known &&
+        entry &&
+        !entry.deletedAt &&
+        known.path === file.path &&
+        entry.hash === known.hash &&
+        known.mtime === file.stat.mtime &&
+        known.size === file.stat.size
+    )
+  }
+
+  /** Whether a view on this device shows the file - and may save what it holds. */
+  private isOpen(file: TFile): boolean {
+    let open = false
+    this.app.workspace?.iterateAllLeaves((leaf) => {
+      if ((leaf.view as { file?: TFile | null }).file === file) open = true
+    })
+    return open
   }
 
   private async ensureFolder(path: string): Promise<void> {
@@ -248,6 +321,8 @@ export class AttachmentStore {
     await this.applyRemoteChanges()
     log.info(`attachments: ${this.index.live().length} known, ${this.index.deleted().length} deleted`)
     await this.heal()
+    // Not every write reaches a plugin as an event; this catches what did not.
+    this.rescanTimer = window.setInterval(() => void this.scan(), this.options.rescanMs)
   }
 
   /**
@@ -268,6 +343,8 @@ export class AttachmentStore {
     this.settling.clear()
     if (this.retryTimer !== null) window.clearTimeout(this.retryTimer)
     this.retryTimer = null
+    if (this.rescanTimer !== null) window.clearInterval(this.rescanTimer)
+    this.rescanTimer = null
     await Promise.race([
       Promise.all(Array.from(this.locks.values())),
       new Promise((resolve) => window.setTimeout(resolve, STOP_DRAIN_MS))
@@ -275,9 +352,20 @@ export class AttachmentStore {
     this.listeners.clear()
   }
 
-  private async scan(): Promise<void> {
-    const files = this.app.vault.getFiles().filter((file) => file.extension !== 'md' && !this.isExcluded(file.path))
-    await this.pool(files, (file) => this.syncLocal(file))
+  /** Every file that does not look as last agreed. One scan at a time. */
+  private scan(): Promise<void> {
+    if (this.scanning) return this.scanning
+    const run = async (): Promise<void> => {
+      if (!this.isReady) return
+      const files = this.app.vault
+        .getFiles()
+        .filter((file) => file.extension !== 'md' && !this.isExcluded(file.path) && !this.looksUnchanged(file))
+      await this.pool(files, (file) => this.syncLocal(file))
+    }
+    this.scanning = run().finally(() => {
+      this.scanning = null
+    })
+    return this.scanning
   }
 
   /**
@@ -334,21 +422,24 @@ export class AttachmentStore {
       path,
       window.setTimeout(() => {
         this.settling.delete(path)
-        void this.syncLocal(file).catch((error: unknown) => this.failed(error))
+        void this.syncLocal(file, true).catch((error: unknown) => this.failed(error))
       }, this.options.settleMs)
     )
   }
 
-  /** Brings one file into agreement with the index. */
-  async syncLocal(file: TFile): Promise<void> {
+  /**
+   * Brings one file into agreement with the index. `changed`: an event said
+   * its content changed, so it is read whatever its stat says.
+   */
+  async syncLocal(file: TFile, changed = false): Promise<void> {
     if (!this.tracks(file)) return
     const path = file.path
     const fileId = this.index.idForPath(path) ?? this.state.attachmentAt(path) ?? (await this.index.nextId(path))
     const bytes = Math.max(file.stat.size, this.index.entry(fileId)?.size ?? 0)
-    await this.guarded(fileId, bytes, () => this.takeIn(fileId, file, path))
+    await this.guarded(fileId, bytes, () => this.takeIn(fileId, file, path, changed))
   }
 
-  private async takeIn(fileId: string, file: TFile, path: string): Promise<void> {
+  private async takeIn(fileId: string, file: TFile, path: string, changed = false): Promise<void> {
     if (this.stopped || file.path !== path || !this.exists(file)) return
     // A live entry appeared at this path while this waited: the file is
     // that one's now, and is taken in under its id - after this lock is let go.
@@ -357,19 +448,23 @@ export class AttachmentStore {
       this.settle(file)
       return
     }
-    const known = this.state.attachment(fileId)
-    let entry = this.index.entry(fileId)
-    const stat = file.stat
-    if (known && entry && !entry.deletedAt && known.path === path && known.mtime === stat.mtime && known.size === stat.size && entry.hash === known.hash) return
-    if (stat.size > this.options.maxFileBytes) {
-      if (!this.tooLarge.has(path)) log.warn(`${path}: ${stat.size} bytes, larger than the server takes; it stays on this device`)
+    if (!changed && this.looksUnchanged(file, fileId)) return
+    if (file.stat.size > this.options.maxFileBytes) {
+      if (!this.tooLarge.has(path)) log.warn(`${path}: ${file.stat.size} bytes, larger than the server takes; it stays on this device`)
       this.tooLarge.add(path)
       return
     }
     this.tooLarge.delete(path)
 
-    const data = new Uint8Array(await this.app.vault.readBinary(file))
-    const hash = await contentHash(data)
+    const read = await this.read(file)
+    if (!read) {
+      // Written to while being read: the write's own event brings it back.
+      this.settle(file)
+      return
+    }
+    const { data, hash } = read
+    const known = this.state.attachment(fileId)
+    let entry = this.index.entry(fileId)
     const base = known?.hash ?? null
     // Unchanged here: whatever the index says now came from elsewhere - if it
     // came from someone who knew this version. Of two writes racing, one is
@@ -383,10 +478,10 @@ export class AttachmentStore {
         return
       }
     } else if (entry?.hash === hash) {
-      this.agree(fileId, file, hash)
+      this.agree(fileId, path, read.stat, hash)
       return
     } else if (entry && unchanged) {
-      await this.replace(fileId, file, entry, data)
+      await this.replace(fileId, file, entry, read)
       return
     }
 
@@ -402,72 +497,132 @@ export class AttachmentStore {
         this.settle(file)
         return
       }
-      this.agree(id, file, hash)
+      this.agree(id, path, read.stat, hash)
       log.info(`${path}: new attachment, ${data.length} bytes`)
       return
     }
     if (entry.deletedAt) {
       this.index.revive(fileId, path, hash, data.length)
-      this.agree(fileId, file, hash)
+      this.agree(fileId, path, read.stat, hash)
       log.info(`${path}: deleted elsewhere but changed here, kept`)
       new Notice(`${nameOf(path)} was deleted on another device but changed here, so it was kept.`, 10_000)
       return
     }
     if (entry.hash === hash) {
-      this.agree(fileId, file, hash)
+      this.agree(fileId, path, read.stat, hash)
       return
     }
     if (base !== null && entry.hash === base) {
+      if (this.staleSave(fileId, file)) {
+        await this.keepTheirsAside(fileId, file, read, entry)
+        return
+      }
       this.index.setContent(fileId, hash, data.length)
-      this.agree(fileId, file, hash)
+      this.agree(fileId, path, read.stat, hash)
       log.debug(`${path}: changed here, ${data.length} bytes`)
       return
     }
-    await this.conflict(fileId, file, data, hash, entry)
+    await this.conflict(fileId, file, read, entry)
   }
 
-  private async reviveLocal(fileId: string, file: TFile, data: Bytes, hash: string): Promise<void> {
-    await this.upload(data, hash)
+  private async reviveLocal(fileId: string, file: TFile, read: Read): Promise<void> {
+    await this.upload(read.data, read.hash)
     if (this.stopped || !this.exists(file)) return
-    this.index.revive(fileId, file.path, hash, data.length)
-    this.agree(fileId, file, hash)
+    this.index.revive(fileId, file.path, read.hash, read.data.length)
+    this.agree(fileId, file.path, read.stat, read.hash)
     log.info(`${file.path}: deleted elsewhere but changed here, kept`)
     new Notice(`${file.name} was deleted on another device but changed here, so it was kept.`, 10_000)
+  }
+
+  private freeConflictPath(path: string, when: Date): string {
+    let candidate = conflictName(path, when, 1)
+    for (let n = 2; this.app.vault.getAbstractFileByPath(candidate) || this.index.idForPath(candidate); n += 1) {
+      candidate = conflictName(path, when, n)
+    }
+    return candidate
+  }
+
+  /** Writes another device's version into a file, remembering when - see `staleSave`. */
+  private async overwrite(fileId: string, file: TFile, data: Bytes, hash: string): Promise<void> {
+    await this.app.vault.modifyBinary(file, buffer(data))
+    this.written.set(fileId, Date.now())
+    this.agree(fileId, file.path, { mtime: file.stat.mtime, size: data.length }, hash)
   }
 
   /**
    * Both sides changed the file - or there is no base to tell. This device's
    * version becomes a file of its own next to it; the path takes the index's.
    * The other version is fetched first: if that fails nothing has changed,
-   * and trying again later does not leave a second copy behind.
+   * and trying again later does not leave a second copy behind. And the
+   * file must still hold what was read - a save while this downloaded is
+   * newer than the copy would be, and overwriting it lost it.
    */
-  private async conflict(fileId: string, file: TFile, data: Bytes, hash: string, entry: AttachmentEntry): Promise<void> {
+  private async conflict(fileId: string, file: TFile, read: Read, entry: AttachmentEntry): Promise<void> {
     const theirs = await this.download(entry.hash)
-    if (this.stopped || !this.exists(file)) return
-    const when = new Date()
-    let copyPath = conflictName(file.path, when, 1)
-    for (let n = 2; this.app.vault.getAbstractFileByPath(copyPath) || this.index.idForPath(copyPath); n += 1) {
-      copyPath = conflictName(file.path, when, n)
+    if (!(await this.stillHolds(file, read))) {
+      this.settle(file)
+      return
     }
-    const copy = await this.app.vault.createBinary(copyPath, buffer(data))
-    const copyId = await this.index.add(copyPath, hash, data.length)
-    this.agree(copyId, copy, hash)
-    await this.app.vault.modifyBinary(file, buffer(theirs))
-    this.agree(fileId, file, entry.hash)
+    const copyPath = this.freeConflictPath(file.path, new Date())
+    const copy = await this.app.vault.createBinary(copyPath, buffer(read.data))
+    const copyId = await this.index.add(copyPath, read.hash, read.data.length)
+    this.agree(copyId, copyPath, { mtime: copy.stat.mtime, size: read.data.length }, read.hash)
+    // Saved in the moment the copy took: that save is a change of its own,
+    // and gets a copy of its own rather than being overwritten.
+    if (!(await this.stillHolds(file, read))) {
+      this.settle(file)
+      return
+    }
+    await this.overwrite(fileId, file, theirs, entry.hash)
     log.info(`${file.path}: changed here and elsewhere; this device's version kept as ${copyPath}`)
     new Notice(`${file.name} was changed here and on another device. Both are kept: this device's version is ${nameOf(copyPath)}.`, 12_000)
   }
 
+  /**
+   * A view showing the file saved what it held, just after another device's
+   * version was written into it - that version would be gone without anyone
+   * having seen it.
+   */
+  private staleSave(fileId: string, file: TFile): boolean {
+    const at = this.written.get(fileId)
+    return at !== undefined && Date.now() - at < STALE_SAVE_MS && this.isOpen(file)
+  }
+
+  /**
+   * Keeps the other device's version next to the file, and this device's at
+   * the path - not the other way round: writing into the open view again
+   * would only make it save once more.
+   */
+  private async keepTheirsAside(fileId: string, file: TFile, read: Read, entry: AttachmentEntry): Promise<void> {
+    const theirs = await this.download(entry.hash)
+    if (!(await this.stillHolds(file, read))) {
+      this.settle(file)
+      return
+    }
+    const copyPath = this.freeConflictPath(file.path, new Date())
+    const copy = await this.app.vault.createBinary(copyPath, buffer(theirs))
+    const copyId = await this.index.add(copyPath, entry.hash, theirs.length)
+    this.agree(copyId, copyPath, { mtime: copy.stat.mtime, size: theirs.length }, entry.hash)
+    this.index.setContent(fileId, read.hash, read.data.length)
+    this.agree(fileId, file.path, read.stat, read.hash)
+    this.written.delete(fileId)
+    log.info(`${file.path}: saved by its open view over another device's version; that version kept as ${copyPath}`)
+    new Notice(
+      `${file.name} was saved here just as another device's version arrived. Both are kept: the other version is ${nameOf(copyPath)}.`,
+      12_000
+    )
+  }
+
   /** The index's version into a file that still has the base's content. */
-  private async replace(fileId: string, file: TFile, entry: AttachmentEntry, local: Bytes): Promise<void> {
-    const known = this.state.attachment(fileId)
-    if (known && !(await this.blobs.has(known.hash))) await this.upload(local, known.hash)
+  private async replace(fileId: string, file: TFile, entry: AttachmentEntry, read: Read): Promise<void> {
+    if (!(await this.blobs.has(read.hash))) await this.upload(read.data, read.hash)
     const data = await this.download(entry.hash)
-    if (this.stopped || !this.exists(file)) return
     // Changed while this was downloading: that change gets its own turn.
-    if (known && (file.stat.mtime !== known.mtime || file.stat.size !== known.size)) return
-    await this.app.vault.modifyBinary(file, buffer(data))
-    this.agree(fileId, file, entry.hash)
+    if (!(await this.stillHolds(file, read))) {
+      this.settle(file)
+      return
+    }
+    await this.overwrite(fileId, file, data, entry.hash)
     log.info(`${file.path}: changed on another device, ${data.length} bytes`)
   }
 
@@ -600,15 +755,22 @@ export class AttachmentStore {
       this.state.forgetAttachment(fileId)
       return
     }
-    const data = new Uint8Array(await this.app.vault.readBinary(file))
-    const hash = await contentHash(data)
-    const seen = hash === entry.hash || this.index.replaced(fileId, hash)
-    if (hash !== known.hash || !seen) {
-      // Revived with this device's content.
-      await this.reviveLocal(fileId, file, data, hash)
+    const read = await this.read(file)
+    if (!read) {
+      this.settle(file)
       return
     }
-    if (!(await this.blobs.has(hash))) await this.upload(data, hash)
+    const seen = read.hash === entry.hash || this.index.replaced(fileId, read.hash)
+    if (read.hash !== known.hash || !seen) {
+      // Revived with this device's content.
+      await this.reviveLocal(fileId, file, read)
+      return
+    }
+    if (!(await this.blobs.has(read.hash))) await this.upload(read.data, read.hash)
+    if (!(await this.stillHolds(file, read))) {
+      this.settle(file)
+      return
+    }
     this.state.forgetAttachment(fileId)
     log.info(`${known.path}: attachment deleted on another device, moved to the trash here`)
     await this.app.fileManager.trashFile(file)
@@ -675,7 +837,7 @@ export class AttachmentStore {
     if (this.stopped || !now || now.deletedAt || now.path !== entry.path || this.app.vault.getAbstractFileByPath(entry.path)) return
     await this.ensureFolder(parentOf(entry.path))
     const file = await this.app.vault.createBinary(entry.path, buffer(data))
-    this.agree(fileId, file, entry.hash)
+    this.agree(fileId, file.path, { mtime: file.stat.mtime, size: data.length }, entry.hash)
     log.info(`${entry.path}: ${again ? 'fetched again' : 'created from the server'}, ${data.length} bytes`)
   }
 

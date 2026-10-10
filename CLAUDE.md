@@ -146,7 +146,12 @@ someone's notes. Treat them as rules, not preferences.
     file is replaced or trashed only once the server holds its own content.**
     Upload, then write the entry; before overwriting or trashing a file, ask
     whether the server has its blob and upload it if not. The blob is the
-    backup — invariant 2 for files.
+    backup — invariant 2 for files. And check right before writing that the
+    file still holds what was read (`stillHolds`): a canvas saving while the
+    other version downloaded was overwritten and lost. mtime and size only
+    ever let a scan skip work; they decide nothing, and a base records the
+    stat the file had *when read* — recording the later one made a canvas
+    saved during its upload look sent, and its card names never left.
 24. **Take another device's version of a file only if it knew yours.** An
     attachment entry is replaced whole, so of two devices writing at once one
     write simply vanishes from the index, and its device would take the other
@@ -257,6 +262,10 @@ and the server holds immutable blobs of its versions:
   (`fetchFor`, on `file-open`).
 - Every start and reconnect sends one `have` for all held files and uploads
   what the server lost. At most 64 MB of file content is in memory at once.
+- An event always means "read it"; a scan every minute catches what raised no
+  event. A view that saves what it held right after another device's version
+  was written into it (within 5 s, file open in a leaf) is not taken as an
+  edit on top: that version is kept next to it (`keepTheirsAside`).
 - Built: own devices (step 1). Not yet: the trash and earlier versions in the
   UI and cleaning up blobs (step 2), attachments of shared notes (step 3).
 

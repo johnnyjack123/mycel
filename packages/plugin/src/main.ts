@@ -56,6 +56,8 @@ const NOTE_STATUS_MS = 400
 const MB = 1024 * 1024
 // Programs write a file in pieces; it is taken in once it stayed unchanged this long.
 const ATTACHMENT_SETTLE_MS = 2_000
+// How often attachments are compared against what was last agreed, for changes no event reported.
+const ATTACHMENT_RESCAN_MS = 60_000
 
 const NOTE_STATUS_TEXT: Record<Exclude<NoteSyncState, 'untracked'>, string> = {
   synced: 'This note is synced: everything written here has reached the server.',
@@ -309,7 +311,8 @@ export default class ObsidianConnectPlugin extends Plugin {
       excludeGlobs: this.shared().excludeGlobs,
       downloadLimitBytes: limit < 0 ? null : Math.round(limit * MB),
       maxFileBytes: this.maxFileBytes,
-      settleMs: ATTACHMENT_SETTLE_MS
+      settleMs: ATTACHMENT_SETTLE_MS,
+      rescanMs: ATTACHMENT_RESCAN_MS
     }
   }
 

@@ -303,6 +303,13 @@ export class FakeVault {
     else this.putBinary(path, data)
   }
 
+  /** A new mtime and nothing else - no event, the content unchanged. */
+  touch(path: string): void {
+    const entry = this.entries.get(path)
+    const data = this.binaries.get(path)
+    if (entry instanceof TFile && data) this.setBytes(entry, data)
+  }
+
   offlineDelete(path: string): void {
     this.entries.delete(path)
     this.contents.delete(path)
