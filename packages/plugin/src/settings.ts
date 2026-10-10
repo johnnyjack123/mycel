@@ -622,6 +622,11 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
         })
       )
 
+    new Setting(containerEl)
+      .setName('Deleted notes and files')
+      .setDesc('Restore what was deleted on any of your devices, within the time above. Also in a folder\'s menu, and as a command.')
+      .addButton((button) => button.setButtonText('Open the trash').onClick(() => this.plugin.openTrash()))
+
     const usage = new Setting(containerEl)
       .setName('Attachments on the server')
       .setDesc('Asking the server…')

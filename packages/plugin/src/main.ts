@@ -628,12 +628,13 @@ export default class ObsidianConnectPlugin extends Plugin {
     }
   }
 
-  private openTrash(): void {
+  /** Everything deleted - or only what was deleted in `folder`. */
+  openTrash(folder: string | null = null): void {
     if (!this.trash || !this.store?.ready) {
       new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
       return
     }
-    new TrashModal(this.app, this.trash, this.shared().historyRetentionDays).open()
+    new TrashModal(this.app, this.trash, this.shared().historyRetentionDays, folder).open()
   }
 
   /** Earlier versions of a file that is not a note - the active one unless given. */
@@ -818,6 +819,12 @@ export default class ObsidianConnectPlugin extends Plugin {
    */
   private noteMenu(menu: Menu, file: TAbstractFile): void {
     const store = this.store
+    // Where a deleted note or picture was is where one looks for it.
+    if (file instanceof TFolder && store?.ready) {
+      const folder = file.isRoot() ? null : file.path
+      menu.addItem((item) => item.setTitle('Deleted notes and files…').setIcon('trash-2').onClick(() => this.openTrash(folder)))
+      return
+    }
     if (file instanceof TFile && file.extension !== 'md' && this.attachments?.knows(file)) {
       menu.addItem((item) => item.setTitle('Earlier versions').setIcon('history').onClick(() => this.openFileVersions(file)))
       return
@@ -1075,11 +1082,19 @@ export default class ObsidianConnectPlugin extends Plugin {
     const keys = this.keys
     if (!note || !store || !keys) return
     const crypto = store.entry(note.docId)?.owner ? keys.sharedDocCrypto(note.docId) : keys.ownDocCrypto(note.docId)
+    const attachments = this.attachments
     new HistoryModal(this.app, {
       history: new NoteHistory(this.api, docRoom(note.docId), crypto),
       file: note.file,
       canRestore: !store.isReadOnly(note.docId),
-      restore: (text) => store.restore(note.docId, text)
+      restore: (text) => store.restore(note.docId, text),
+      embeds: attachments?.isReady
+        ? {
+            target: (link) => attachments.embedTarget(link),
+            content: (hash) => attachments.contentOf(hash),
+            restore: (fileId) => attachments.restoreDeleted(fileId)
+          }
+        : undefined
     }).open()
   }
 

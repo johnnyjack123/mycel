@@ -1,27 +1,24 @@
 import { App, Modal, Notice, Setting } from 'obsidian'
 import type { DeletedItem, Trash } from '../sync/Trash.js'
+import { formatSize as size } from './media.js'
 
-function size(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
-
-/** Deleted notes and files of this vault that can still be brought back. */
+/** Deleted notes and files of this vault - or of one folder of it - that can still be brought back. */
 export class TrashModal extends Modal {
   private items: DeletedItem[] = []
 
   constructor(
     app: App,
     private readonly trash: Trash,
-    private readonly retentionDays: number
+    private readonly retentionDays: number,
+    private readonly folder: string | null = null
   ) {
     super(app)
   }
 
   onOpen(): void {
-    this.titleEl.setText('Deleted notes and files')
-    this.items = this.trash.list()
+    this.titleEl.setText(this.folder ? `Deleted in ${this.folder}` : 'Deleted notes and files')
+    const prefix = this.folder ? `${this.folder}/` : ''
+    this.items = this.trash.list().filter((item) => item.path.startsWith(prefix))
     this.render()
   }
 

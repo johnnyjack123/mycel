@@ -115,6 +115,12 @@ const obsidian = {
   Menu: Stub,
   editorInfoField: {},
   MarkdownView: Stub,
+  MarkdownRenderer: { render: async () => undefined },
+  Component: class extends Stub {
+    load = fn
+    unload = fn
+  },
+  getLinkpath: (value) => value,
   normalizePath: (value) => value,
   requestUrl: async () => ({ status: 503, json: {} })
 }

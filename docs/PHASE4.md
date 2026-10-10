@@ -284,6 +284,11 @@ devices *(as built)*:
   another device cleaning up just then would delete it underneath. The purge answers
   what it kept, and that is asked about again next time.
 - **The settings show** what the account stores (`GET /blobs/:account/usage`).
+- *0.5.3, after the user's first look:* the trash is also in every folder's menu
+  (showing what was deleted in that folder) and in the settings, not only a command.
+  A note's version history renders a version as Markdown; a picture it embeds that
+  the vault no longer has - deleted since, or never downloaded here - is shown from
+  the server (`AttachmentStore.embedTarget`), a deleted one with a Restore button.
 - *Left:* content uploaded but never named - a crash between upload and index - is
   never cleaned up; healing would put it back only if a device held the file.
 

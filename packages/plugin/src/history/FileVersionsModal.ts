@@ -1,27 +1,11 @@
 import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
 import type { AttachmentStore, FileVersion } from '../sync/AttachmentStore.js'
+import { formatSize as size, imageType, imageUrl } from './media.js'
 import { log } from '../log.js'
 
 // Earlier contents of a file that is not a note - an image, a PDF, a canvas.
 // They live on the server as blobs; a preview is fetched only when one is
 // selected.
-
-const IMAGE_TYPES: Readonly<Record<string, string>> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-  bmp: 'image/bmp',
-  avif: 'image/avif'
-}
-
-function size(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
 
 export class FileVersionsModal extends Modal {
   private versions: FileVersion[] = []
@@ -54,12 +38,12 @@ export class FileVersionsModal extends Modal {
     this.selected = version
     this.dropPreview()
     this.render()
-    const type = IMAGE_TYPES[this.file.extension.toLowerCase()]
+    const type = imageType(this.file.extension)
     if (!type) return
     try {
       const data = await this.attachments.contentOf(version.hash)
       if (this.selected !== version) return
-      this.previewUrl = URL.createObjectURL(new Blob([data.slice().buffer], { type }))
+      this.previewUrl = imageUrl(data, type)
       this.render()
     } catch (error) {
       log.warn(`loading a version of ${this.file.path} failed`, error)
@@ -93,7 +77,7 @@ export class FileVersionsModal extends Modal {
     if (!selected) return
     if (this.previewUrl) {
       contentEl.createEl('img', { cls: 'connect-version-preview', attr: { src: this.previewUrl, alt: this.file.name } })
-    } else if (!IMAGE_TYPES[this.file.extension.toLowerCase()]) {
+    } else if (!imageType(this.file.extension)) {
       contentEl.createEl('p', { cls: 'setting-item-description', text: 'No preview for this kind of file. Save it as a copy to open it.' })
     }
     new Setting(contentEl)

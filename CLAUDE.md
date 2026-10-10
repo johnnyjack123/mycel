@@ -266,9 +266,11 @@ and the server holds immutable blobs of its versions:
   event. A view that saves what it held right after another device's version
   was written into it (within 5 s, file open in a leaf) is not taken as an
   edit on top: that version is kept next to it (`keepTheirsAside`).
-- The trash lists notes and files; a file's menu has "Earlier versions". The
-  trash pass also cleans up: content no live entry, recent tombstone or lasting
-  version names goes, and only what the server confirms gone leaves the index.
+- The trash lists notes and files (command, settings, every folder's menu); a
+  file's menu has "Earlier versions"; a note's history renders each version,
+  pictures deleted since shown from the trash. The trash pass also cleans up:
+  content no live entry, recent tombstone or lasting version names goes, and
+  only what the server confirms gone leaves the index.
   The server keeps a blob 10 minutes past its last upload whatever it is asked.
 - Built: own devices (step 1), the trash and versions (step 2). Not yet:
   attachments of shared notes (step 3).

@@ -374,6 +374,9 @@ try {
       check(await eventually(() => B.vault.bytes(PIC) === undefined), 'A deletes the picture, B follows')
       const inTrash = await eventually(() => Boolean(B.trash?.list().some((item) => item.kind === 'file' && item.path === PIC)))
       check(inTrash, 'it waits in the trash on the other device too', B.trash?.list().map((item) => item.path))
+      // An old version of a note embedding it shows it from the trash.
+      const target = B.attachments?.embedTarget('versions.png')
+      check(target?.deleted === true && target.path === PIC && target.hash === firstHash, 'a link to it finds it in the trash', target)
       const item = B.trash?.list().find((candidate) => candidate.kind === 'file' && candidate.path === PIC)
       const back = item ? await B.trash?.restore(item) : null
       check(
@@ -404,6 +407,10 @@ try {
     check(await eventually(() => B.vault.text('Reading.md') === 'see ![[scan.pdf]]\n'), 'B gets a note that embeds a large file')
     await delay(800)
     check(B.vault.bytes('Papers/scan.pdf') === undefined, 'the file over its download limit stays on the server')
+    {
+      const target = B.attachments?.embedTarget('scan.pdf')
+      check(target?.deleted === false && target.path === 'Papers/scan.pdf', 'a link to it finds it there', target)
+    }
     const fetched = await B.attachments?.fetchFor(B.vault.file('Reading.md'))
     check(fetched === 1 && same(B.vault.bytes('Papers/scan.pdf'), scan), 'until the note that embeds it is opened', fetched)
     B.setDownloadLimit(null)

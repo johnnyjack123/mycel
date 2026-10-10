@@ -50,6 +50,15 @@ export interface DeletedFile {
   size: number
 }
 
+/** A file a link points at that is not in the vault: on the server only, or in the trash. */
+export interface EmbedTarget {
+  fileId: string
+  path: string
+  hash: string
+  size: number
+  deleted: boolean
+}
+
 /** An earlier content of a file, still on the server. */
 export interface FileVersion {
   hash: string
@@ -944,6 +953,24 @@ export class AttachmentStore {
     log.info(`${entry.path}: restored from the trash${path === entry.path ? '' : ` as ${path}`}`)
     const file = this.app.vault.getAbstractFileByPath(path)
     return file instanceof TFile ? file : null
+  }
+
+  /**
+   * What a link in a note points at when no file in the vault answers it: a
+   * file this device left on the server, or one in the trash - the newest
+   * deleted first. Matched the way Obsidian resolves a link.
+   */
+  embedTarget(link: string): EmbedTarget | null {
+    if (!this.isReady || !link) return null
+    const matches = (path: string): boolean => path === link || path.endsWith(`/${link}`) || nameOf(path) === link
+    const live = this.index.live().find(({ entry }) => matches(entry.path) && !this.app.vault.getAbstractFileByPath(entry.path))
+    if (live) return { fileId: live.fileId, path: live.entry.path, hash: live.entry.hash, size: live.entry.size, deleted: false }
+    const deleted = this.index
+      .deleted()
+      .filter(({ entry }) => !entry.purgedAt && matches(entry.path))
+      .sort((a, b) => (b.entry.deletedAt ?? 0) - (a.entry.deletedAt ?? 0))[0]
+    if (!deleted) return null
+    return { fileId: deleted.fileId, path: deleted.entry.path, hash: deleted.entry.hash, size: deleted.entry.size, deleted: true }
   }
 
   /** Whether the file is one this store syncs and the index knows. */

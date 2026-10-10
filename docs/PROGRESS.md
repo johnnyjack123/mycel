@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-11 · **0.5.2 on `feat/accounts`: attachments between one's own devices, the trash and earlier versions of files (steps 1-2 of `docs/PHASE4.md`). Next: step 3, attachments of shared notes.**_
+_Last updated: 2026-10-11 · **0.5.3 on `feat/accounts`: attachments between one's own devices, the trash and earlier versions of files (steps 1-2 of `docs/PHASE4.md`). Next: step 3, attachments of shared notes.**_
 
 ## Where we are
 
@@ -37,9 +37,11 @@ bodies need at least 8 MB (`docs/SERVER.md`).
 1. **Own devices - built, 0.5.0, hardened in 0.5.1.** Confirmed on devices: files
    arrive, conflict copies. Still to confirm: canvas card names (0.5.1), the phone's
    10 MB limit and "Download attachments".
-2. **Trash and earlier versions - built, 0.5.2.** To confirm on devices: "Deleted
-   notes and files…", "Earlier versions" in a file's menu (image preview, restore,
-   save as a copy), the usage line in the settings.
+2. **Trash and earlier versions - built, 0.5.2; 0.5.3 after the first look.** Seen
+   on devices: the trash was hard to find, a version preview showed pictures as text.
+   To confirm: the trash from a folder's menu and the settings, the rendered version
+   preview with deleted pictures, "Earlier versions" in a file's menu (image
+   preview, restore, save as a copy), the usage line in the settings.
 3. **Shared notes - next.** The attachment list in the note's document, attach records on
    the server, delivering to `<share folder>/Attachments/`, declining by deleting,
    the fork copy, the share dialog (attachments toggle, sharing linked notes).
@@ -103,9 +105,9 @@ their path, and which file wins when two share a name.
 
 ## Verification state
 
-2026-10-11, 0.5.2: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
+2026-10-11, 0.5.3: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
 `test:rooms` (147), `test:sync` (26), `test:recovery` (56), and against a scratch
-server on 1235 `test:socket` (19) and `test:vault` (194) - all pass. Checked by putting
+server on 1235 `test:socket` (19) and `test:vault` (196) - all pass. Checked by putting
 the bug back: the link doubling of 0.4.2 (`[[RenamedRenamed]]`), two racing writes of
 one attachment without the lineage rule (one version lost), healing only on start
 (the server's lost blob never came back), a note renamed to `.txt` (pulled back in);
@@ -120,6 +122,9 @@ image (built by CI only on `main`).
 ## Log
 
 ### 2026-10-11
+- 0.5.3: the trash in every folder's menu and in the settings; a note's version
+  history renders each version, pictures deleted since shown from the trash with a
+  Restore button.
 - 0.5.2: the trash and earlier versions of files - "Deleted notes and files…",
   "Earlier versions" with an image preview, restore and save as a copy, cleaning up
   the server's blobs in the trash pass (with a 10-minute grace on the server), the

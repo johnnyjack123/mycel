@@ -63,6 +63,30 @@
   white-space: nowrap;
 }
 
+/* A version of a note, rendered: room for its pictures, no code-block wrapping. */
+.connect-history-preview.connect-history-rendered {
+  max-height: 50vh;
+  white-space: normal;
+  font-size: inherit;
+}
+
+.connect-history-rendered img {
+  max-width: 100%;
+}
+
+.connect-embed-from-server {
+  display: block;
+  margin: 0.5em 0;
+}
+
+.connect-embed-note {
+  display: flex;
+  align-items: center;
+  gap: 0.75em;
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
 .connect-version-preview {
   display: block;
   max-width: 100%;
