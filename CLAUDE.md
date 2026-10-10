@@ -134,6 +134,12 @@ someone's notes. Treat them as rules, not preferences.
     lists the account under `removed` in `accounts.json`; the sweep clears
     exactly those. An account that is merely missing — a damaged or
     half-restored file — must never take its folder with it.
+22. **Another device's rename is applied with `vault.rename`, never
+    `fileManager.renameFile`.** The latter rewrites the links in other notes,
+    which the renaming device has already done and sent along with those
+    notes. When both rewrote before seeing each other's edit, every link came
+    out twice (`[[RenamedRenamed]]`, reproduced in `test:vault`). Applying the
+    rename plainly also keeps the renaming user's choice about links.
 
 ## Architecture
 

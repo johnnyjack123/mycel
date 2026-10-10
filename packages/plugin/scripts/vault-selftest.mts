@@ -72,6 +72,60 @@ try {
     B.vault.paths()
   )
 
+  // Obsidian rewrites the links to a renamed note. Those edits are the
+  // renaming device's and travel with the linking notes; the other device
+  // rewriting them as well inserted every link twice whenever both did so
+  // before seeing the other's - a slow phone and a fast desktop, say. Holding
+  // back both devices' note changes until then makes that moment certain.
+  {
+    const PUSH = 3
+    const holdNoteChanges = (device: typeof A): (() => void) => {
+      const ws = (device.socket as unknown as { ws: { send(data: Uint8Array): void; close(): void } }).ws
+      const send = ws.send.bind(ws)
+      ws.send = (data: Uint8Array) => {
+        // [type][varString room]...: room names are short enough for a one-byte length.
+        const room = new TextDecoder().decode(data.subarray(2, 2 + (data[1] ?? 0)))
+        if (data[0] !== PUSH || !room.startsWith('doc:')) send(data)
+      }
+      return () => {
+        ws.send = send
+        // The outbox goes out again on the new connection.
+        ws.close()
+      }
+    }
+    const linking = 'see [[Target]] and [[Target]]\n'
+    await A.vault.userCreate('Target.md', 'the target\n')
+    await A.vault.userCreate('Linker.md', linking)
+    check(
+      await eventually(() => B.vault.text('Linker.md') === linking && B.vault.text('Target.md') === 'the target\n'),
+      'B has a note and one linking to it'
+    )
+    const releaseA = holdNoteChanges(A)
+    const releaseB = holdNoteChanges(B)
+    await A.fileManager.renameFile(A.vault.file('Target.md'), 'Renamed.md')
+    check(await eventually(() => B.vault.text('Renamed.md') === 'the target\n'), 'B applies the rename')
+    // Time for B to rewrite the links too, if it does.
+    await delay(800)
+    releaseA()
+    releaseB()
+    const synced = (device: typeof A): boolean => device.store?.noteState(device.vault.file('Linker.md')) === 'synced'
+    check(await eventually(() => synced(A) && synced(B), 15_000), 'both devices send what they held back')
+    // Each one's changes reach the other, and the files follow.
+    await delay(1_000)
+    const relinked = 'see [[Renamed]] and [[Renamed]]\n'
+    const linkers = (): Record<string, string | undefined> => ({
+      a: A.vault.text('Linker.md'),
+      b: B.vault.text('Linker.md'),
+      aDoc: A.docText('Linker.md'),
+      bDoc: B.docText('Linker.md')
+    })
+    check(
+      [A.vault.text('Linker.md'), B.vault.text('Linker.md'), A.docText('Linker.md'), B.docText('Linker.md')].every((text) => text === relinked),
+      'renaming a linked note rewrites each link once, on both devices',
+      linkers()
+    )
+  }
+
   const backupsBeforeDelete = B.vault.adapter.backups().length
   await A.vault.trash(A.vault.file('Ideas.md'))
   check(await eventually(() => B.vault.text('Ideas.md') === undefined), 'a delete on A removes the note on B')

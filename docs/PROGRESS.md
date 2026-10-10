@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-10 · **0.4.1 on `feat/accounts`: Phases 1-3 plus the fixes from the first device run. Next milestone: 0.5, attachments - designed in `docs/PHASE4.md`, build step 1 next.**_
+_Last updated: 2026-10-10 · **0.4.2 on `feat/accounts`: Phases 1-3 plus the fixes from the first device run. Next milestone: 0.5, attachments - designed in `docs/PHASE4.md`, step 1 in progress.**_
 
 ## Where we are
 
@@ -74,12 +74,6 @@ their path, and which file wins when two share a name.
 
 ## Known issues / debt
 
-- **Suspected, not checked:** `DocStore.applyRemoteRenames` applies another device's
-  rename with `fileManager.renameFile`, which - depending on Obsidian's "update internal
-  links" setting - rewrites links in other notes. The renaming device already sent
-  those edits through the CRDT, so arriving concurrently they could insert a link
-  twice. The fake vault's `renameFile` is a plain rename, so the tests cannot show it.
-  Attachments use `vault.rename` (PHASE4); for notes, check and decide separately.
 - **On a device only:** the caret fix of 0.4.1, the review dialog, the note cloud, the
   note menus, the trash dialog, the log file - all untestable headless.
 - Notes beyond `maxLoadedDocuments` (500) stop receiving live updates until opened (0.9).
@@ -104,7 +98,11 @@ beyond what the user reported, and the Docker image (built by CI only on `main`)
 ## Log
 
 ### 2026-10-10
-- Attachments (0.5) designed with the user: `docs/PHASE4.md`. Nothing built yet.
+- Attachments (0.5) designed with the user: `docs/PHASE4.md`.
+- 0.4.2: another device's rename is applied with `vault.rename` (invariant 22).
+  `fileManager.renameFile` rewrote the links a second time, and when both devices did
+  so before seeing each other's edit every link came out twice - reproduced in
+  `test:vault` by holding back both devices' note changes, failing with the old code.
 
 ### 2026-10-09
 - 0.4.1: carets only of other people - the owner is told when the last participant

@@ -981,7 +981,11 @@ export class DocStore {
         if (this.app.vault.getAbstractFileByPath(target)) return
         try {
           await this.ensureFolder(parentOf(target))
-          await this.app.fileManager.renameFile(current, target)
+          // Not `fileManager.renameFile`: that rewrites the links to the note
+          // in other notes, which the renaming device has already done - and
+          // sent along with those notes. Both edits arriving concurrently put
+          // every rewritten link in twice.
+          await this.app.vault.rename(current, target)
           this.state.set(docId, { ...known, path: target })
           log.info(`${known.path}: renamed on another device to ${target}`)
         } catch (error) {

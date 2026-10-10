@@ -227,8 +227,17 @@ export class FakeVault {
 export class FakeFileManager {
   constructor(private readonly vault: FakeVault) {}
 
+  /** Like Obsidian with "Automatically update internal links" on. */
   async renameFile(file: TFile, newPath: string): Promise<void> {
+    const oldBase = file.basename
     await this.vault.rename(file, newPath)
+    if (file.basename === oldBase) return
+    for (const note of this.vault.getMarkdownFiles()) {
+      if (note === file) continue
+      const text = this.vault.text(note.path) ?? ''
+      const updated = text.split(`[[${oldBase}]]`).join(`[[${file.basename}]]`)
+      if (updated !== text) await this.vault.modify(note, updated)
+    }
   }
 
   async trashFile(file: TFile): Promise<void> {
