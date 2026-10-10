@@ -40,6 +40,44 @@ export interface IndexEntry {
   purgedAt?: number
 }
 
+/**
+ * A file of the vault that is not a note, in the index document. Its content
+ * is a blob named after the content's hash, so two devices holding the same
+ * bytes agree without comparing anything else.
+ */
+export interface AttachmentEntry {
+  path: string
+  /** SHA-256 of the content, hex. */
+  hash: string
+  size: number
+  updatedAt: number
+  /**
+   * The content this one replaced, as its writer knew it. An entry is
+   * replaced whole, so of two devices writing at once one write is simply
+   * gone; this is how the other device tells "replaced mine knowingly" from
+   * "never saw mine".
+   */
+  prev?: string
+  deletedAt?: number
+  /** The server let go of its content, so it can no longer be restored. */
+  purgedAt?: number
+}
+
+/**
+ * A content an attachment had before. Recorded for every replacement, as
+ * the file's lineage; the content itself is kept for the history retention
+ * unless it was current only briefly.
+ */
+export interface AttachmentVersion {
+  fileId: string
+  hash: string
+  size: number
+  /** When it became current. */
+  since: number
+  /** When it was replaced. */
+  at: number
+}
+
 // --- accounts ------------------------------------------------------------------
 
 export type RegistrationMode = 'open' | 'invite'
@@ -56,6 +94,8 @@ export interface AuthConfigResponse {
   protocol: number
   /** Random, made once by the server; part of every account's salt. */
   serverId: string
+  /** The largest file the server takes. Absent: a server from before attachments. */
+  maxFileBytes?: number
 }
 
 export interface RegisterRequest {
@@ -336,4 +376,31 @@ export interface ImportRequest {
 
 export interface CompactableResponse {
   rooms: string[]
+}
+
+// --- blobs -------------------------------------------------------------------------
+
+/**
+ * A blob as the server has it. `size` counts ciphertext. While an upload is
+ * under way, its owner sees how many chunks arrived, so it can resume.
+ */
+export interface BlobInfo {
+  complete: boolean
+  count: number
+  /** Chunks the server has, in order. Equal to `count` once complete. */
+  received: number
+  size: number
+}
+
+export interface BlobIdsRequest {
+  ids: string[]
+}
+
+export interface BlobHaveResponse {
+  /** The blobs of the request that are complete on the server. */
+  have: string[]
+}
+
+export interface BlobPurgeResponse {
+  purged: string[]
 }

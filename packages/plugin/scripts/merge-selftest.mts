@@ -337,6 +337,47 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   )
 }
 
+// --- blobs: the encrypted content of attachments ---------------------------------------
+{
+  const { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, blobChunkCount } = await import('@obsidian-connect/shared')
+  const vaultKey = e2e.randomBytes(32)
+  const fileId = await e2e.deriveFileId(vaultKey, 'Assets/diagram.png', 0)
+  check(
+    fileId === (await e2e.deriveFileId(vaultKey, 'Assets/diagram.png', 0)) &&
+      fileId !== (await e2e.deriveFileId(vaultKey, 'Assets/diagram.png', 1)) &&
+      fileId !== (await e2e.deriveDocId(vaultKey, 'Assets/diagram.png', 0)),
+    "a file's id is derived like a note's, under a label of its own"
+  )
+
+  // WebCrypto hands out at most 64 KiB of randomness at a time.
+  const data = new Uint8Array(BLOB_CHUNK_BYTES * 2 + 1234).map((_byte, index) => (index * 31 + 7) & 255)
+  const hash = await e2e.contentHash(data)
+  const idKey = await e2e.vaultKeys.blobId(vaultKey)
+  const blobId = await e2e.blobIdFor(idKey, hash)
+  check(
+    /^[0-9a-f]{32}$/.test(blobId) && blobId === (await e2e.blobIdFor(idKey, hash)) && blobId !== (await e2e.blobIdFor(await e2e.vaultKeys.blobId(e2e.randomBytes(32)), hash)),
+    'a blob is named after its content, under a key of the vault'
+  )
+  check(blobId !== hash.slice(0, 32), "and the name is not the content's plain hash, which the server could look up")
+
+  const key = await e2e.aesKey(await e2e.vaultKeys.blob(vaultKey, blobId))
+  const chunks = await e2e.encryptBlob(key, data, blobId)
+  check(
+    chunks.length === 3 && blobChunkCount(data.length) === 3 && chunks[0]?.length === BLOB_CHUNK_BYTES + BLOB_CHUNK_OVERHEAD && chunks[2]?.length === 1234 + BLOB_CHUNK_OVERHEAD,
+    'a file is encrypted in chunks of a fixed size, the last one shorter',
+    chunks.map((chunk) => chunk.length)
+  )
+  const back = await e2e.decryptBlob(key, chunks, blobId)
+  check(back.length === data.length && (await e2e.contentHash(back)) === hash, 'and decrypts to the same bytes')
+  check(await rejects(() => e2e.decryptBlob(key, [chunks[1], chunks[0], chunks[2]] as Uint8Array[], blobId)), 'chunks in another order do not open')
+  check(await rejects(() => e2e.decryptBlob(key, chunks.slice(0, 2), blobId)), 'nor with the last chunk dropped')
+  check(await rejects(() => e2e.decryptBlob(key, [chunks[0], chunks[2]] as Uint8Array[], blobId)), 'nor with one in the middle dropped')
+  const otherId = `${blobId.slice(0, 31)}${blobId.endsWith('0') ? '1' : '0'}`
+  check(await rejects(() => e2e.decryptBlob(key, chunks, otherId)), 'nor under the name of another blob')
+  const empty = await e2e.encryptBlob(key, new Uint8Array(0), blobId)
+  check(empty.length === 1 && (await e2e.decryptBlob(key, empty, blobId)).length === 0, 'an empty file is one empty chunk')
+}
+
 // --- seeding an empty document from its file ------------------------------------------
 {
   const { seedUpdate } = await import('../src/sync/seed.js')

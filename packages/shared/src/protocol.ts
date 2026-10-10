@@ -20,6 +20,31 @@ export const CONTENT_FIELD = 'content'
 export const INDEX_FIELD = 'files'
 // The Y.Map in the account settings document.
 export const SETTINGS_FIELD = 'settings'
+// The Y.Maps in the vault index document for files that are not notes:
+// fileId -> AttachmentEntry, and `${fileId}:${hash}` -> AttachmentVersion.
+// Maps of their own, because a device on 0.4 takes every entry of
+// INDEX_FIELD for a note.
+export const ATTACHMENTS_FIELD = 'attachments'
+export const VERSIONS_FIELD = 'versions'
+
+/**
+ * Blobs are encrypted in chunks of this much plaintext, each with its own IV
+ * and tag. On the server they lie end to end, so chunk i starts at
+ * `i * (BLOB_CHUNK_BYTES + BLOB_CHUNK_OVERHEAD)`.
+ */
+export const BLOB_CHUNK_BYTES = 4 * 1024 * 1024
+/** IV and GCM tag of one chunk. */
+export const BLOB_CHUNK_OVERHEAD = 12 + 16
+
+/** How many chunks a file of this size takes. An empty file is one empty chunk. */
+export function blobChunkCount(plainBytes: number): number {
+  return Math.max(1, Math.ceil(plainBytes / BLOB_CHUNK_BYTES))
+}
+
+/** Associated data of one chunk: a chunk moved, dropped or swapped no longer decrypts. */
+export function blobChunkAad(blobId: string, index: number, count: number): string {
+  return `blob:${blobId}#${index}/${count}`
+}
 
 // Rooms are keyed by a stable id, never by a path, so renaming a note keeps
 // its history and its collaborators. Note rooms are global: two vaults hold the
@@ -120,7 +145,9 @@ export const API = {
   forks: '/forks',
   keys: '/keys',
   log: '/log',
-  compactable: '/compactable'
+  compactable: '/compactable',
+  /** `/blobs/:account/:vaultId/...`: the encrypted contents of a vault's files. */
+  blobs: '/blobs'
 } as const
 
 /** Associated data for a frame: binds the ciphertext to its room and epoch. */

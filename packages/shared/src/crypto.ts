@@ -5,6 +5,7 @@
 // Kept out of the package index on purpose: the server never encrypts or
 // decrypts anything, and does not compile against the DOM's crypto types.
 
+import { BLOB_CHUNK_BYTES, blobChunkAad, blobChunkCount } from './protocol.js'
 import type { KdfParams } from './types.js'
 
 /** What WebCrypto's types accept: bytes backed by a plain ArrayBuffer. */
@@ -86,6 +87,11 @@ export function toHex(data: Uint8Array): string {
 
 export async function sha256(data: Bytes): Promise<Bytes> {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', data))
+}
+
+/** What an attachment's content is known by: in the index, and to name its blob. */
+export async function contentHash(data: Bytes): Promise<string> {
+  return toHex(await sha256(data))
 }
 
 export async function hkdf(secret: Bytes, info: string, length = 32): Promise<Bytes> {
@@ -175,8 +181,28 @@ export async function deriveDocId(vaultKey: Bytes, path: string, generation: num
   return toHex((await hmac(vaultKey, `doc::${path}::${generation}`)).subarray(0, 16))
 }
 
+/**
+ * An attachment's id, derived like a note's under a label of its own, so the
+ * same file gets the same id on every device of the account.
+ */
+export async function deriveFileId(vaultKey: Bytes, path: string, generation: number): Promise<string> {
+  return toHex((await hmac(vaultKey, `file::${path}::${generation}`)).subarray(0, 16))
+}
+
+/**
+ * A blob's name: keyed, so the server cannot tell whether a vault holds a file
+ * it knows, yet the same content on every device of the vault - uploading it
+ * twice changes nothing.
+ */
+export async function blobIdFor(blobIdKey: Bytes, hash: string): Promise<string> {
+  return toHex((await hmac(blobIdKey, `blob::${hash}`)).subarray(0, 16))
+}
+
 /** Everything the owner encrypts with comes from the vault key. */
 export const vaultKeys = {
+  blobId: (vaultKey: Bytes): Promise<Bytes> => hkdf(vaultKey, 'obsidian-connect blob-id'),
+  /** Derived, so a blob's key is never stored; it leaves the vault only inside a shared note. */
+  blob: (vaultKey: Bytes, blobId: string): Promise<Bytes> => hkdf(vaultKey, `obsidian-connect blob:${blobId}`),
   index: (vaultKey: Bytes): Promise<Bytes> => hkdf(vaultKey, 'obsidian-connect idx'),
   settings: (vaultKey: Bytes): Promise<Bytes> => hkdf(vaultKey, 'obsidian-connect set'),
   /**
@@ -301,6 +327,39 @@ export function packFrame(authorTs: number, update: Uint8Array): Bytes {
 export function unpackFrame(data: Uint8Array): { authorTs: number; update: Bytes } {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
   return { authorTs: view.getFloat64(0), update: bytes(data.subarray(8)) }
+}
+
+// --- blobs -------------------------------------------------------------------------
+
+/** Chunk `index` of a file's plaintext. */
+export function blobChunk(plaintext: Uint8Array, index: number): Bytes {
+  return bytes(plaintext.subarray(index * BLOB_CHUNK_BYTES, (index + 1) * BLOB_CHUNK_BYTES))
+}
+
+export function encryptBlobChunk(key: CryptoKey, chunk: Bytes, blobId: string, index: number, count: number): Promise<Bytes> {
+  return encrypt(key, chunk, blobChunkAad(blobId, index, count))
+}
+
+export function decryptBlobChunk(key: CryptoKey, data: Uint8Array, blobId: string, index: number, count: number): Promise<Bytes> {
+  return decrypt(key, data, blobChunkAad(blobId, index, count))
+}
+
+/** Every chunk of a file, encrypted. For tests and small files; transfers go chunk by chunk. */
+export async function encryptBlob(key: CryptoKey, plaintext: Uint8Array, blobId: string): Promise<Bytes[]> {
+  const count = blobChunkCount(plaintext.length)
+  const chunks: Bytes[] = []
+  for (let index = 0; index < count; index += 1) {
+    chunks.push(await encryptBlobChunk(key, blobChunk(plaintext, index), blobId, index, count))
+  }
+  return chunks
+}
+
+export async function decryptBlob(key: CryptoKey, chunks: Uint8Array[], blobId: string): Promise<Bytes> {
+  const plain: Bytes[] = []
+  for (let index = 0; index < chunks.length; index += 1) {
+    plain.push(await decryptBlobChunk(key, chunks[index] as Uint8Array, blobId, index, chunks.length))
+  }
+  return concat(...plain)
 }
 
 /** What a sealed epoch key is for; binds it to the room and the epoch. */
