@@ -5,6 +5,7 @@ import { WebSocketServer } from 'ws'
 import { isHexId } from '@obsidian-connect/shared'
 import { AccountStore } from './accounts.js'
 import { TokenService } from './auth.js'
+import { BlobStore } from './blobs.js'
 import { ContactStore } from './contacts.js'
 import { ForkStore } from './forks.js'
 import type { ServerConfig } from './config.js'
@@ -44,7 +45,8 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
   const contacts = new ContactStore(config.dataDir)
   const forks = new ForkStore(config.dataDir)
   const hub = new RoomHub({ dataDir: config.dataDir, logUpdates: config.logUpdates }, accounts, contacts, forks)
-  const app = createHttpApp(config, tokens, accounts, hub, contacts, { logger: options.logger ?? true, paceMs: options.paceMs })
+  const blobs = new BlobStore(config.dataDir, { maxFileBytes: config.maxFileBytes, quotaBytes: config.quotaBytes })
+  const app = createHttpApp(config, tokens, accounts, hub, contacts, blobs, { logger: options.logger ?? true, paceMs: options.paceMs })
   // The CLI only marks an account as removed; its shares end and its folder
   // goes here, where the rooms are.
   const sweep = (): void => {

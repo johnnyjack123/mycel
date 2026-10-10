@@ -34,6 +34,9 @@ password means losing access to the encrypted notes (the devices keep their file
 Data lives in the `obsidian-connect-data` volume. Everything in it is ciphertext or a
 random id. What the server can tell: which account ids exist, which note ids, who is
 whose contact and who shares with whom by id, and when and how much was written.
+Attachments - images, PDFs, every file that is not a note - lie encrypted under
+`users/<account>/<vault>/blobs/`, named by a keyed hash of their content: the server
+sees how many there are and how large, never a name or a byte of them.
 `contacts.json` holds the contact pairs, open friend codes (as a hash) and messages
 waiting for a device; without it, contacts would have to exchange codes again.
 
@@ -51,6 +54,8 @@ A template sits in `docs/server.env`:
 | `OBSIDIAN_CONNECT_REGISTRATION` | `invite` | `invite`: accounts only with a code from `invite`. `open`: anyone who reaches the server can create one. |
 | `OBSIDIAN_CONNECT_TOKEN_TTL` | `2592000` | Seconds a device stays signed in without being used. |
 | `OBSIDIAN_CONNECT_LOG_UPDATES` | `false` | A log line per document frame. |
+| `OBSIDIAN_CONNECT_MAX_FILE_MB` | `100` | The largest attachment taken. Larger files stay on their device. |
+| `OBSIDIAN_CONNECT_QUOTA_MB` | none | What one account may store in attachments. Worth setting with open registration. |
 | `PORT` | `1234` | Published port. |
 
 ## Accounts
@@ -90,4 +95,7 @@ startup — fine on a laptop, never on a reachable server. `HOST` defaults to
 `0.0.0.0`.
 
 Put TLS in front of it (a reverse proxy) as soon as it leaves your own network:
-the notes are encrypted either way, but the access token is not.
+the notes are encrypted either way, but the access token is not. Let the proxy pass
+request bodies of at least 8 MB - attachments travel in chunks of 4 MB, and nginx
+refuses anything over 1 MB unless told otherwise (`client_max_body_size 64m;`, which
+also covers large note snapshots).

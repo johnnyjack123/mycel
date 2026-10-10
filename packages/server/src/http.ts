@@ -1,9 +1,15 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import {
   API,
+  BLOB_CHUNK_BYTES,
+  BLOB_CHUNK_OVERHEAD,
   PROTOCOL_VERSION,
   isHexId,
   type AcceptRequest,
+  type BlobHaveResponse,
+  type BlobIdsRequest,
+  type BlobInfo,
+  type BlobPurgeResponse,
   type AccountKeyResponse,
   type AuthConfigResponse,
   type CompactableResponse,
@@ -31,6 +37,7 @@ import {
 } from '@obsidian-connect/shared'
 import { AccountError, isAccountId, type AccountStore } from './accounts.js'
 import type { TokenService } from './auth.js'
+import { BlobError, type BlobStore } from './blobs.js'
 import type { ServerConfig } from './config.js'
 import type { ContactStore } from './contacts.js'
 import { HubError, type RoomHub } from './rooms.js'
@@ -48,6 +55,20 @@ interface DocParams {
   docId: string
 }
 
+/** Whose store, which vault: every blob route names both, so reading someone else's store later needs no new routes. */
+interface StoreParams {
+  account: string
+  vaultId: string
+}
+
+interface BlobParams extends StoreParams {
+  blobId: string
+}
+
+interface ChunkParams extends BlobParams {
+  chunk: string
+}
+
 // Snapshots and imported histories travel as base64 JSON.
 const BODY_LIMIT = 64 * 1024 * 1024
 
@@ -63,13 +84,21 @@ export function createHttpApp(
   accounts: AccountStore,
   hub: RoomHub,
   contacts: ContactStore,
+  blobs: BlobStore,
   options: HttpOptions = {}
 ): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? true, bodyLimit: BODY_LIMIT })
   const guard = new AddressGuard()
 
+  // Blob chunks travel raw: base64 in JSON would add a third to every file.
+  app.addContentTypeParser(
+    'application/octet-stream',
+    { parseAs: 'buffer', bodyLimit: BLOB_CHUNK_BYTES + BLOB_CHUNK_OVERHEAD },
+    (_request, body, done) => done(null, body)
+  )
+
   app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof AccountError || error instanceof HubError) {
+    if (error instanceof AccountError || error instanceof HubError || error instanceof BlobError) {
       return reply.code(error.status).send({ error: error.message })
     }
     app.log.error(error)
@@ -132,7 +161,8 @@ export function createHttpApp(
   app.get(API.config, async (): Promise<AuthConfigResponse> => ({
     registration: config.registration,
     protocol: PROTOCOL_VERSION,
-    serverId: await accounts.serverId()
+    serverId: await accounts.serverId(),
+    maxFileBytes: blobs.limits.maxFileBytes
   }))
 
   app.post(API.register, async (request, reply) =>
@@ -380,6 +410,56 @@ export function createHttpApp(
       return { headSeq }
     }
   )
+
+  // --- blobs -----------------------------------------------------------------------
+
+  /** The caller, if the store named is one of their own vaults; otherwise the refusal is sent. */
+  async function ownStore(request: FastifyRequest<{ Params: StoreParams }>, reply: FastifyReply): Promise<string | null> {
+    const accountId = await user(request, reply)
+    if (!accountId) return null
+    const { account, vaultId } = request.params
+    if (account !== accountId || !isHexId(vaultId) || !(await accounts.get(accountId))?.vaults[vaultId]) {
+      await reply.code(403).send({ error: 'not your vault' })
+      return null
+    }
+    return accountId
+  }
+
+  app.get<{ Params: BlobParams }>(`${API.blobs}/:account/:vaultId/:blobId`, async (request, reply): Promise<BlobInfo | undefined> => {
+    if (!(await ownStore(request, reply))) return undefined
+    const info = await blobs.info(request.params.account, request.params.vaultId, request.params.blobId)
+    if (!info) return reply.code(404).send({ error: 'no such blob' })
+    return info
+  })
+
+  app.get<{ Params: ChunkParams }>(`${API.blobs}/:account/:vaultId/:blobId/:chunk`, async (request, reply) => {
+    if (!(await ownStore(request, reply))) return undefined
+    const { account, vaultId, blobId, chunk } = request.params
+    const data = await blobs.readChunk(account, vaultId, blobId, Number(chunk))
+    return reply.type('application/octet-stream').send(data)
+  })
+
+  app.put<{ Params: ChunkParams; Querystring: { count?: string } }>(
+    `${API.blobs}/:account/:vaultId/:blobId/:chunk`,
+    async (request, reply): Promise<BlobInfo | undefined> => {
+      if (!(await ownStore(request, reply))) return undefined
+      if (!Buffer.isBuffer(request.body)) return reply.code(415).send({ error: 'a chunk is sent as application/octet-stream' })
+      const { account, vaultId, blobId, chunk } = request.params
+      return blobs.putChunk(account, vaultId, blobId, Number(chunk), Number(request.query.count), request.body)
+    }
+  )
+
+  app.post<{ Params: StoreParams }>(`${API.blobs}/:account/:vaultId/have`, async (request, reply): Promise<BlobHaveResponse | undefined> => {
+    if (!(await ownStore(request, reply))) return undefined
+    const body = (request.body ?? {}) as Partial<BlobIdsRequest>
+    return { have: await blobs.have(request.params.account, request.params.vaultId, body.ids) }
+  })
+
+  app.post<{ Params: StoreParams }>(`${API.blobs}/:account/:vaultId/purge`, async (request, reply): Promise<BlobPurgeResponse | undefined> => {
+    if (!(await ownStore(request, reply))) return undefined
+    const body = (request.body ?? {}) as Partial<BlobIdsRequest>
+    return { purged: await blobs.purge(request.params.account, request.params.vaultId, body.ids) }
+  })
 
   app.get<{ Querystring: { vaultId?: string; before?: string } }>(API.compactable, async (request, reply) => {
     const accountId = await user(request, reply)

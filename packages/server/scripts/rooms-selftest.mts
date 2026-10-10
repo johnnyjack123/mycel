@@ -7,10 +7,13 @@ import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Notice, NotifyKind } from '@obsidian-connect/shared'
+import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, type Notice, type NotifyKind } from '@obsidian-connect/shared'
 import { AccountStore } from '../src/accounts.js'
+import { TokenService } from '../src/auth.js'
+import { BlobStore } from '../src/blobs.js'
 import { ContactStore } from '../src/contacts.js'
-import { loadEnvFile } from '../src/config.js'
+import { loadConfig, loadEnvFile } from '../src/config.js'
+import { createHttpApp } from '../src/http.js'
 import { ForkStore } from '../src/forks.js'
 import { AddressGuard, paced } from '../src/throttle.js'
 import type { Frame } from '../src/log.js'
@@ -240,6 +243,82 @@ try {
   }
   await contacts.pair(alice, bob)
   await contacts.pair(alice, carol)
+
+  // --- blobs: the encrypted contents of attachments -------------------------------------
+  {
+    const CHUNK = BLOB_CHUNK_BYTES + BLOB_CHUNK_OVERHEAD
+    const full = (fill: number): Uint8Array => new Uint8Array(CHUNK).fill(fill)
+    const tail = new Uint8Array(BLOB_CHUNK_OVERHEAD + 10).fill(9)
+    const vault = aliceVault.vaultId
+    const store = new BlobStore(dataDir, { maxFileBytes: 3 * BLOB_CHUNK_BYTES, quotaBytes: null })
+    const id = hexId()
+
+    check((await store.info(alice, vault, id)) === null, 'a blob nobody uploaded does not exist')
+    check((await status(() => store.putChunk(alice, vault, id, 1, 3, full(1)))) === 409, 'an upload starts with its first chunk')
+    await store.putChunk(alice, vault, id, 0, 3, full(1))
+    const resent = await store.putChunk(alice, vault, id, 0, 3, full(1))
+    check(resent.received === 1 && !resent.complete, 'a chunk sent twice is taken once', resent)
+    check((await status(() => store.putChunk(alice, vault, id, 2, 3, tail))) === 409, 'chunks arrive in order')
+    check((await status(() => store.putChunk(alice, vault, id, 1, 3, tail))) === 400, 'every chunk but the last is full')
+    check((await store.have(alice, vault, [id])).length === 0, 'a blob does not exist before its last chunk')
+
+    // The server restarts in the middle of an upload.
+    const again = new BlobStore(dataDir, store.limits)
+    check((await again.info(alice, vault, id))?.received === 1, 'an upload survives a restart and says how far it got')
+    await again.putChunk(alice, vault, id, 1, 3, full(2))
+    const done = await again.putChunk(alice, vault, id, 2, 3, tail)
+    check(done.complete && done.size === 2 * CHUNK + tail.length, 'the last chunk completes it', done)
+    check((await again.have(alice, vault, [id, hexId()])).join() === id, 'the server says which blobs it has')
+    const middle = await again.readChunk(alice, vault, id, 1)
+    check(middle.length === CHUNK && middle.every((byte) => byte === 2), 'and hands out each chunk as it was stored')
+    check((await again.readChunk(alice, vault, id, 2)).length === tail.length, 'the last one shorter')
+    check((await again.putChunk(alice, vault, id, 0, 3, full(7))).complete, 'uploading a blob it has is answered at once')
+    check((await again.readChunk(alice, vault, id, 0)).every((byte) => byte === 1), 'and changes nothing')
+    check(existsSync(join(dataDir, 'users', alice, vault, 'blobs', id)), "blobs live in their owner's vault folder")
+    check((await status(() => again.putChunk(alice, vault, hexId(), 0, 4, full(1)))) === 413, 'a file over the limit is refused at its first chunk')
+
+    const tight = new BlobStore(dataDir, { maxFileBytes: 3 * BLOB_CHUNK_BYTES, quotaBytes: 3 * CHUNK })
+    check((await status(() => tight.putChunk(alice, vault, hexId(), 0, 2, full(3)))) === 507, 'an account that used up its storage can add no more')
+    check((await status(() => tight.putChunk(bob, bobVault.vaultId, hexId(), 0, 1, tail))) === 200, 'while another account still can')
+
+    // Over HTTP: raw chunks, and nobody in someone else's store.
+    const tokens = new TokenService('rooms-selftest', 3_600)
+    const httpHub = new RoomHub({ dataDir }, accounts, contacts, new ForkStore(dataDir))
+    const app = createHttpApp(loadConfig({}), tokens, accounts, httpHub, contacts, again, { logger: false, paceMs: 0 })
+    const auth = async (account: string): Promise<Record<string, string>> => ({ authorization: `Bearer ${(await tokens.issue(account)).token}` })
+    const octets = { 'content-type': 'application/octet-stream' }
+    const small = hexId()
+    const put = await app.inject({
+      method: 'PUT',
+      url: `/blobs/${alice}/${vault}/${small}/0?count=1`,
+      headers: { ...(await auth(alice)), ...octets },
+      payload: Buffer.from(tail)
+    })
+    check(put.statusCode === 200 && (put.json() as { complete?: boolean }).complete === true, 'a chunk travels raw over HTTP', put.body)
+    const got = await app.inject({ method: 'GET', url: `/blobs/${alice}/${vault}/${small}/0`, headers: await auth(alice) })
+    check(got.statusCode === 200 && got.rawPayload.equals(Buffer.from(tail)), 'and comes back the same way')
+    const peek = await app.inject({ method: 'GET', url: `/blobs/${alice}/${vault}/${small}/0`, headers: await auth(bob) })
+    check(peek.statusCode === 403, "nobody reads another account's store")
+    const plant = await app.inject({
+      method: 'PUT',
+      url: `/blobs/${bob}/${vault}/${hexId()}/0?count=1`,
+      headers: { ...(await auth(bob)), ...octets },
+      payload: Buffer.from(tail)
+    })
+    check(plant.statusCode === 403, 'nor writes into a vault that is not theirs')
+    const have = await app.inject({ method: 'POST', url: `/blobs/${alice}/${vault}/have`, headers: await auth(alice), payload: { ids: [small, id] } })
+    check((have.json() as { have?: string[] }).have?.length === 2, 'asking for several blobs at once', have.body)
+    const config = await app.inject({ method: 'GET', url: '/auth/config' })
+    check((config.json() as { maxFileBytes?: number }).maxFileBytes === again.limits.maxFileBytes, 'the server tells devices how large a file may be')
+    const purge = await app.inject({ method: 'POST', url: `/blobs/${alice}/${vault}/purge`, headers: await auth(alice), payload: { ids: [id, hexId()] } })
+    check((purge.json() as { purged?: string[] }).purged?.join() === id, 'purging answers what went', purge.body)
+    check(
+      (await again.info(alice, vault, id)) === null && !existsSync(join(dataDir, 'users', alice, vault, 'blobs', id)),
+      'and the blob is gone'
+    )
+    await app.close()
+    await httpHub.shutdown()
+  }
 
   // --- rooms -------------------------------------------------------------------
   let hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts, contacts, new ForkStore(dataDir))

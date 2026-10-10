@@ -42,10 +42,16 @@ export interface ServerConfig {
   accessTokenTtlSeconds: number
   /** Log every document frame. Off by default: one line per keystroke. */
   logUpdates: boolean
+  /** The largest attachment taken, in bytes. */
+  maxFileBytes: number
+  /** What one account may store in attachments, in bytes; null for no limit. */
+  quotaBytes: number | null
 }
 
 const DEV_SECRET = 'dev-insecure-secret-change-me'
 const THIRTY_DAYS = 30 * 24 * 60 * 60
+const MB = 1024 * 1024
+const DEFAULT_MAX_FILE_MB = 100
 
 function parseIntFallback(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10)
@@ -62,6 +68,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     dataDir: resolve(env.OBSIDIAN_CONNECT_DATA_DIR ?? './data'),
     registration: env.OBSIDIAN_CONNECT_REGISTRATION === 'open' ? 'open' : 'invite',
     accessTokenTtlSeconds: parseIntFallback(env.OBSIDIAN_CONNECT_TOKEN_TTL, THIRTY_DAYS),
-    logUpdates: env.OBSIDIAN_CONNECT_LOG_UPDATES === 'true'
+    logUpdates: env.OBSIDIAN_CONNECT_LOG_UPDATES === 'true',
+    maxFileBytes: Math.max(1, parseIntFallback(env.OBSIDIAN_CONNECT_MAX_FILE_MB, DEFAULT_MAX_FILE_MB)) * MB,
+    // With open registration, this is what keeps a stranger from filling the disk.
+    quotaBytes: env.OBSIDIAN_CONNECT_QUOTA_MB ? Math.max(0, parseIntFallback(env.OBSIDIAN_CONNECT_QUOTA_MB, 0)) * MB : null
   }
 }
