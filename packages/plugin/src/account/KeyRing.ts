@@ -1,7 +1,9 @@
 import { docRoom, indexRoom, settingsRoom } from '@obsidian-connect/shared'
 import {
   aesKey,
+  blobIdFor,
   deriveDocId,
+  deriveFileId,
   epochKeyContext,
   fromBase64,
   fromUtf8,
@@ -27,6 +29,7 @@ const SEALED_PREFIX = 'obsidian-connect:sealed:'
 export class KeyRing {
   private readonly keys = new Map<string, Promise<CryptoKey>>()
   private readonly sealedByRoom = new Map<string, Record<string, string>>()
+  private blobIdKey: Promise<Bytes> | null = null
 
   constructor(
     private readonly vault: OpenVault,
@@ -43,9 +46,29 @@ export class KeyRing {
     return this.vault.vaultId
   }
 
+  get accountId(): string {
+    return this.account.accountId
+  }
+
   /** A note's id in this vault: stable on every device, unguessable elsewhere. */
   docId(path: string, generation: number): Promise<string> {
     return deriveDocId(this.vault.key, path, generation)
+  }
+
+  /** An attachment's id in this vault, derived like a note's. */
+  fileId(path: string, generation: number): Promise<string> {
+    return deriveFileId(this.vault.key, path, generation)
+  }
+
+  /** The name of the blob holding this content, in this vault's store. */
+  blobId(hash: string): Promise<string> {
+    this.blobIdKey ??= vaultKeys.blobId(this.vault.key)
+    return this.blobIdKey.then((key) => blobIdFor(key, hash))
+  }
+
+  /** The key of one blob of this vault. */
+  blobKey(blobId: string): Promise<CryptoKey> {
+    return this.cached(`blob:${blobId}`, () => vaultKeys.blob(this.vault.key, blobId))
   }
 
   private cached(id: string, make: () => Promise<Bytes>): Promise<CryptoKey> {

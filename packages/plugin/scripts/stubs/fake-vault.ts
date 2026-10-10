@@ -70,11 +70,16 @@ export class FakeVault {
   readonly configDir = '.obsidian'
   private readonly entries = new Map<string, TAbstractFile>()
   private readonly contents = new Map<string, string>()
+  /** Files that are not text: images, PDFs. */
+  private readonly binaries = new Map<string, Uint8Array>()
   private readonly listeners = new Map<string, Set<Listener>>()
   private clock = 1_000
 
-  constructor(initial: Record<string, string> = {}) {
-    for (const [path, text] of Object.entries(initial)) this.put(path, text)
+  constructor(initial: Record<string, string | Uint8Array> = {}) {
+    for (const [path, content] of Object.entries(initial)) {
+      if (typeof content === 'string') this.put(path, content)
+      else this.putBinary(path, content)
+    }
   }
 
   on(name: string, listener: Listener): { name: string; listener: Listener } {
@@ -102,8 +107,7 @@ export class FakeVault {
     this.entries.set(parent, folder)
   }
 
-  /** Puts a file in place without any event: the vault as it was before Obsidian started. */
-  private put(path: string, text: string): TFile {
+  private newFile(path: string): TFile {
     this.ensureParents(path)
     const file = new TFile()
     file.path = path
@@ -111,7 +115,19 @@ export class FakeVault {
     file.extension = file.name.includes('.') ? (file.name.split('.').pop() ?? '') : ''
     file.basename = file.extension ? file.name.slice(0, -(file.extension.length + 1)) : file.name
     this.entries.set(path, file)
+    return file
+  }
+
+  /** Puts a file in place without any event: the vault as it was before Obsidian started. */
+  private put(path: string, text: string): TFile {
+    const file = this.newFile(path)
     this.setText(file, text)
+    return file
+  }
+
+  private putBinary(path: string, data: Uint8Array): TFile {
+    const file = this.newFile(path)
+    this.setBytes(file, data)
     return file
   }
 
@@ -121,10 +137,42 @@ export class FakeVault {
     file.stat = { ctime: file.stat.ctime || this.clock, mtime: this.clock, size: text.length }
   }
 
+  private setBytes(file: TFile, data: Uint8Array): void {
+    this.binaries.set(file.path, new Uint8Array(data))
+    this.clock += 1
+    file.stat = { ctime: file.stat.ctime || this.clock, mtime: this.clock, size: data.length }
+  }
+
   getMarkdownFiles(): TFile[] {
     return Array.from(this.entries.values()).filter(
       (entry): entry is TFile => entry instanceof TFile && entry.extension === 'md'
     )
+  }
+
+  getFiles(): TFile[] {
+    return Array.from(this.entries.values()).filter((entry): entry is TFile => entry instanceof TFile)
+  }
+
+  async readBinary(file: TFile): Promise<ArrayBuffer> {
+    if (this.entries.get(file.path) !== file) throw new Error(`ENOENT: ${file.path}`)
+    const data = this.binaries.get(file.path) ?? new TextEncoder().encode(this.contents.get(file.path) ?? '')
+    return data.slice().buffer
+  }
+
+  async createBinary(path: string, data: ArrayBuffer): Promise<TFile> {
+    if (this.entries.has(path)) throw new Error('File already exists.')
+    const parent = parentOf(path)
+    if (parent && !(this.entries.get(parent) instanceof TFolder)) throw new Error(`Folder does not exist: ${parent}`)
+    const file = this.putBinary(path, new Uint8Array(data))
+    this.emit('create', file)
+    return file
+  }
+
+  async modifyBinary(file: TFile, data: ArrayBuffer): Promise<void> {
+    if (this.entries.get(file.path) !== file) throw new Error(`ENOENT: ${file.path}`)
+    this.contents.delete(file.path)
+    this.setBytes(file, new Uint8Array(data))
+    this.emit('modify', file)
   }
 
   getAbstractFileByPath(path: string): TAbstractFile | null {
@@ -170,14 +218,18 @@ export class FakeVault {
     const parent = parentOf(newPath)
     if (parent && !(this.entries.get(parent) instanceof TFolder)) throw new Error(`Folder does not exist: ${parent}`)
     const oldPath = file.path
-    const text = this.contents.get(oldPath) ?? ''
+    const text = this.contents.get(oldPath)
+    const data = this.binaries.get(oldPath)
     this.entries.delete(oldPath)
     this.contents.delete(oldPath)
+    this.binaries.delete(oldPath)
     file.path = newPath
     file.name = newPath.split('/').pop() ?? newPath
+    file.extension = file.name.includes('.') ? (file.name.split('.').pop() ?? '') : ''
     file.basename = file.extension ? file.name.slice(0, -(file.extension.length + 1)) : file.name
     this.entries.set(newPath, file)
-    this.contents.set(newPath, text)
+    if (data) this.binaries.set(newPath, data)
+    else this.contents.set(newPath, text ?? '')
     this.emit('rename', file, oldPath)
   }
 
@@ -185,6 +237,7 @@ export class FakeVault {
     if (this.entries.get(file.path) !== file) return
     this.entries.delete(file.path)
     this.contents.delete(file.path)
+    this.binaries.delete(file.path)
     this.emit('delete', file)
   }
 
@@ -221,6 +274,70 @@ export class FakeVault {
     const entry = this.entries.get(path)
     if (entry instanceof TFile) this.setText(entry, text)
     else this.put(path, text)
+  }
+
+  bytes(path: string): Uint8Array | undefined {
+    return this.binaries.get(path)
+  }
+
+  /** Every file that is not a note, sorted. */
+  attachmentPaths(): string[] {
+    return this.getFiles()
+      .filter((file) => file.extension !== 'md')
+      .map((file) => file.path)
+      .sort()
+  }
+
+  async userCreateBinary(path: string, data: Uint8Array): Promise<TFile> {
+    this.ensureParents(path)
+    return this.createBinary(path, data.slice().buffer)
+  }
+
+  async userWriteBinary(path: string, data: Uint8Array): Promise<void> {
+    await this.modifyBinary(this.file(path), data.slice().buffer)
+  }
+
+  offlineWriteBinary(path: string, data: Uint8Array): void {
+    const entry = this.entries.get(path)
+    if (entry instanceof TFile) this.setBytes(entry, data)
+    else this.putBinary(path, data)
+  }
+
+  offlineDelete(path: string): void {
+    this.entries.delete(path)
+    this.contents.delete(path)
+    this.binaries.delete(path)
+  }
+}
+
+/**
+ * Obsidian's link index, as far as attachments need it: the embeds and links
+ * in a note, and which file a link resolves to - the whole path, the end of
+ * it, or the name.
+ */
+export class FakeMetadataCache {
+  constructor(private readonly vault: FakeVault) {}
+
+  getFileCache(file: TFile): { embeds: Array<{ link: string }>; links: Array<{ link: string }> } | null {
+    const text = this.vault.text(file.path)
+    if (text === undefined) return null
+    const embeds: Array<{ link: string }> = []
+    const links: Array<{ link: string }> = []
+    for (const match of text.matchAll(/(!?)\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/g)) {
+      const target = { link: match[2] as string }
+      if (match[1]) embeds.push(target)
+      else links.push(target)
+    }
+    return { embeds, links }
+  }
+
+  getFirstLinkpathDest(link: string, _source: string): TFile | null {
+    const files = this.vault.getFiles()
+    return (
+      files.find((file) => file.path === link || file.path === `${link}.md`) ??
+      files.find((file) => file.path.endsWith(`/${link}`) || file.name === link || file.basename === link) ??
+      null
+    )
   }
 }
 

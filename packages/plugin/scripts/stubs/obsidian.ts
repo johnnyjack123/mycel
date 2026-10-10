@@ -27,3 +27,9 @@ export class Notice {
 export function normalizePath(path: string): string {
   return path
 }
+
+/** A link's target without its heading or block reference. */
+export function getLinkpath(linktext: string): string {
+  const cut = linktext.search(/[#^]/)
+  return cut < 0 ? linktext : linktext.slice(0, cut)
+}

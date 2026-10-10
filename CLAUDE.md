@@ -8,7 +8,9 @@ Obsidian plugin plus a small self-hosted server. Two features, one mechanism:
 Both run on Yjs CRDTs, end-to-end encrypted: the server stores and relays
 ciphertext and cannot read a note. Every markdown note is CRDT-backed
 permanently — there is no per-note on/off switch, because leaving CRDT territory
-is what makes merging impossible and destroys data.
+is what makes merging impossible and destroys data. Every other file of the
+vault (images, PDFs, `.canvas`) is an **attachment**: an encrypted, immutable
+blob per version, named in the vault index (`docs/PHASE4.md`).
 
 ```
 packages/
@@ -140,6 +142,18 @@ someone's notes. Treat them as rules, not preferences.
     notes. When both rewrote before seeing each other's edit, every link came
     out twice (`[[RenamedRenamed]]`, reproduced in `test:vault`). Applying the
     rename plainly also keeps the renaming user's choice about links.
+23. **An attachment entry names only content the server has confirmed, and a
+    file is replaced or trashed only once the server holds its own content.**
+    Upload, then write the entry; before overwriting or trashing a file, ask
+    whether the server has its blob and upload it if not. The blob is the
+    backup — invariant 2 for files.
+24. **Take another device's version of a file only if it knew yours.** An
+    attachment entry is replaced whole, so of two devices writing at once one
+    write simply vanishes from the index, and its device would take the other
+    version for news and overwrite its own file. Every entry names what it
+    replaced (`prev`), every replacement leaves a version record, and
+    `AttachmentIndex.replaced` decides: a version that never saw this device's
+    content is a conflict, and both files are kept. The same for a delete.
 
 ## Architecture
 
@@ -217,6 +231,34 @@ versions passage by passage and lets the user keep this device's, the other's
 or both. `DocStore.applyReview` backs up, then applies the choice as an edit —
 merged three ways into the note if it changed since. Choosing "both"
 everywhere is exactly the merge that happened (checked in `test:merge`).
+
+### Attachments
+
+Every file that is not Markdown (`sync/AttachmentStore.ts`, `AttachmentIndex.ts`,
+`Blobs.ts`; spec in `docs/PHASE4.md`). Here the **file is the source of truth**
+and the server holds immutable blobs of its versions:
+
+- The index document has two more maps: `attachments` (`fileId -> { path, hash,
+  size, prev, deletedAt? }`, ids derived like docIds under the label `file::`)
+  and `versions` (`fileId:hash`, the lineage and the earlier versions). Maps of
+  their own, because 0.4 devices take every entry of `files` for a note.
+- A blob is named `HMAC(vault-derived key, SHA-256 of the content)` and keyed
+  from the vault key, so the same content is one blob and nothing is stored. It
+  is encrypted in 4 MiB chunks bound to blob, index and count, and travels raw
+  over REST (`/blobs/:account/:vaultId/...`), resumable; the server keeps it under
+  `users/<account>/<vault>/blobs/`.
+- The device keeps a **base** per file (`StateStore.attachment`: path, mtime,
+  size, hash): what file and index last agreed on. Changed here and there, or no
+  base, means both are kept as two files (`name (conflict <date time>).ext`).
+- Remote renames use `vault.rename` (invariant 22); a remote delete trashes only
+  an unchanged file whose content the deleter had seen (invariant 24).
+- A per-device download limit (`attachmentDownloadLimitMb`, 10 MB on a phone)
+  leaves larger files on the server until a note that needs them is opened
+  (`fetchFor`, on `file-open`).
+- Every start and reconnect sends one `have` for all held files and uploads
+  what the server lost. At most 64 MB of file content is in memory at once.
+- Built: own devices (step 1). Not yet: the trash and earlier versions in the
+  UI and cleaning up blobs (step 2), attachments of shared notes (step 3).
 
 ### Around the notes
 
@@ -335,7 +377,7 @@ npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-proces
 npm run test:recovery  # a server that lost its data, and one restored from a backup — in-process server
 # needs a server that lets tests create accounts:
 npm run test:socket    # the encrypted transport, two devices of one account
-npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing
+npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing, attachments
 ```
 
 The end-to-end tests share their devices through `scripts/harness.mts`.
@@ -351,8 +393,9 @@ reproducible; a fake that saves instantly passes with the bug in place. `obsidia
 is replaced through `paths` in `scripts/tsconfig.json`.
 
 **Still only verifiable on a device:** `editorInfoField` and the real timing of
-Obsidian's saves and reloads, IndexedDB, `requestUrl`, `localStorage`, the
-modals and the settings tab.
+Obsidian's saves and reloads, IndexedDB, `requestUrl` (binary bodies too, on
+mobile), `localStorage`, the modals and the settings tab, Obsidian's binary
+file events and link resolution, memory with large files on a phone.
 
 ## Gotchas
 
@@ -425,11 +468,11 @@ names what is known and left for later (signatures per author).
 
 Recovery codes, 2FA, notes beyond `maxLoadedDocuments` staying live.
 
-**Attachments (0.5, designed, being built).** Specified in **`docs/PHASE4.md`**:
-content-addressed encrypted blobs, entries in the vault index, conflicts kept as
-two files, trash and earlier versions, and attachments travelling with shared
-notes in both directions. Until it is built the plugin ignores every
-non-Markdown file; it does not break on them.
+**Attachments, steps 2 and 3 (0.5.x).** Specified in **`docs/PHASE4.md`**: the
+trash and earlier versions for files, cleaning up blobs, and attachments
+travelling with shared notes in both directions, plus sharing the notes a note
+links to. Step 1 (own devices) is built; until step 3, a shared note's
+recipient does not get the files it embeds.
 
 **Sharing a folder (wanted, later).** Share a whole folder with someone instead
 of note by note, including what is added to it later. Not designed yet.

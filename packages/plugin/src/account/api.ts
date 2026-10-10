@@ -4,6 +4,10 @@ import {
   type AccountBundle,
   type AccountKeyResponse,
   type AuthConfigResponse,
+  type BlobHaveResponse,
+  type BlobIdsRequest,
+  type BlobInfo,
+  type BlobPurgeResponse,
   type CompactableResponse,
   type ContactCodeInfo,
   type ContactCodeRequest,
@@ -33,15 +37,22 @@ import {
 } from '@obsidian-connect/shared'
 
 export interface HttpRequest {
-  method: 'GET' | 'POST'
+  method: 'GET' | 'POST' | 'PUT'
   url: string
+  /** Sent as JSON. */
   body?: unknown
+  /** Sent as it is, `application/octet-stream`, instead of `body`. */
+  bytes?: Uint8Array
+  /** The answer is bytes, not JSON - unless it is an error. */
+  binary?: boolean
   token?: string | null
 }
 
 export interface HttpResponse {
   status: number
   json: unknown
+  /** For a `binary` request that succeeded. */
+  bytes?: Uint8Array
 }
 
 /** Obsidian's `requestUrl` in the plugin, `fetch` in the tests. */
@@ -75,22 +86,21 @@ export class ConnectApi {
     private readonly token: () => string | null
   ) {}
 
-  private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, auth = true): Promise<T> {
+  private async send(request: Omit<HttpRequest, 'url' | 'token'>, path: string, auth = true): Promise<HttpResponse> {
     let response: HttpResponse
     try {
-      response = await this.http({
-        method,
-        url: `${httpBase(this.serverUrl())}${path}`,
-        body,
-        token: auth ? this.token() : null
-      })
+      response = await this.http({ ...request, url: `${httpBase(this.serverUrl())}${path}`, token: auth ? this.token() : null })
     } catch (error) {
       // Unreachable is not a refusal; callers treat status 0 as "try later".
       throw new ApiError(0, error instanceof Error ? error.message : String(error))
     }
-    if (response.status >= 200 && response.status < 300) return response.json as T
+    if (response.status >= 200 && response.status < 300) return response
     const message = (response.json as { error?: string } | null)?.error ?? `HTTP ${response.status}`
     throw new ApiError(response.status, message)
+  }
+
+  private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, auth = true): Promise<T> {
+    return (await this.send({ method, body }, path, auth)).json as T
   }
 
   /** Answered by every server version, so an old one can be told apart from none. */
@@ -238,18 +248,50 @@ export class ConnectApi {
   compactable(vaultId: string, before: number): Promise<CompactableResponse> {
     return this.call('GET', `${API.compactable}?vaultId=${vaultId}&before=${Math.floor(before)}`)
   }
+
+  // --- blobs ---------------------------------------------------------------------
+
+  private blobPath(account: string, vaultId: string, rest: string): string {
+    return `${API.blobs}/${encodeURIComponent(account)}/${encodeURIComponent(vaultId)}/${rest}`
+  }
+
+  blobInfo(account: string, vaultId: string, blobId: string): Promise<BlobInfo> {
+    return this.call('GET', this.blobPath(account, vaultId, blobId))
+  }
+
+  async putBlobChunk(account: string, vaultId: string, blobId: string, index: number, count: number, data: Uint8Array): Promise<BlobInfo> {
+    const response = await this.send({ method: 'PUT', bytes: data }, this.blobPath(account, vaultId, `${blobId}/${index}?count=${count}`))
+    return response.json as BlobInfo
+  }
+
+  async blobChunk(account: string, vaultId: string, blobId: string, index: number): Promise<Uint8Array> {
+    const response = await this.send({ method: 'GET', binary: true }, this.blobPath(account, vaultId, `${blobId}/${index}`))
+    return response.bytes ?? new Uint8Array(0)
+  }
+
+  haveBlobs(account: string, vaultId: string, ids: string[]): Promise<BlobHaveResponse> {
+    const request: BlobIdsRequest = { ids }
+    return this.call('POST', this.blobPath(account, vaultId, 'have'), request)
+  }
+
+  purgeBlobs(account: string, vaultId: string, ids: string[]): Promise<BlobPurgeResponse> {
+    const request: BlobIdsRequest = { ids }
+    return this.call('POST', this.blobPath(account, vaultId, 'purge'), request)
+  }
 }
 
 /** A `fetch`-based client, for tests and anything outside Obsidian. */
 export const fetchHttp: HttpClient = async (request) => {
   const headers: Record<string, string> = {}
-  if (request.body !== undefined) headers['Content-Type'] = 'application/json'
+  if (request.bytes) headers['Content-Type'] = 'application/octet-stream'
+  else if (request.body !== undefined) headers['Content-Type'] = 'application/json'
   if (request.token) headers.Authorization = `Bearer ${request.token}`
   const response = await fetch(request.url, {
     method: request.method,
     headers,
-    body: request.body === undefined ? undefined : JSON.stringify(request.body)
+    body: request.bytes ? new Uint8Array(request.bytes) : request.body === undefined ? undefined : JSON.stringify(request.body)
   })
+  if (request.binary && response.ok) return { status: response.status, json: null, bytes: new Uint8Array(await response.arrayBuffer()) }
   let json: unknown = null
   try {
     json = await response.json()

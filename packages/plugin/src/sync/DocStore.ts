@@ -801,7 +801,14 @@ export class DocStore {
   }
 
   async onRename(file: TFile, oldPath: string): Promise<void> {
-    if (file.extension !== 'md' || this.stopped) return
+    if (this.stopped) return
+    if (file.extension !== 'md') {
+      // A note renamed into another kind of file is no longer a note. Left
+      // in the index, it would be pulled back in at its old path, next to
+      // the file it became.
+      if (oldPath.endsWith('.md')) await this.onDelete(oldPath)
+      return
+    }
     if (!this.ready) {
       // Lost, the index would keep the old path and the old note would be
       // pulled back in next to the renamed one.

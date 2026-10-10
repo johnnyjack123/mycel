@@ -26,7 +26,10 @@ import { ShareModal } from './share/ShareModal'
 import { Contacts, type OpenCode } from './share/Contacts'
 import { Sharing } from './share/Sharing'
 import { AccountSettings, DEFAULT_SHARED_SETTINGS, type Contact, type SharedSettings } from './sync/AccountSettings'
+import { AttachmentIndex } from './sync/AttachmentIndex'
+import { AttachmentStore, type AttachmentOptions } from './sync/AttachmentStore'
 import { BackupStore } from './sync/BackupStore'
+import { Blobs } from './sync/Blobs'
 import { Compactor } from './sync/Compactor'
 import { LocalCursor, openIndexedDb, type LocalStore } from './sync/DocHandle'
 import { DocStore, type DocStoreOptions, type NoteSyncState } from './sync/DocStore'
@@ -40,7 +43,7 @@ import { ReviewStore, type Review } from './sync/Reviews'
 import { ReviewListModal, ReviewModal } from './history/ReviewModal'
 import { VaultIndex } from './sync/VaultIndex'
 import { VaultSocket, type SocketStatus } from './sync/VaultSocket'
-import { ObsidianConnectSettingTab, DEFAULT_SETTINGS, type ObsidianConnectSettings } from './settings'
+import { ObsidianConnectSettingTab, DEFAULT_SETTINGS, MOBILE_DOWNLOAD_LIMIT_MB, type ObsidianConnectSettings } from './settings'
 import { log } from './log'
 
 // Settings of earlier versions that moved to the account, and are handed over
@@ -50,6 +53,9 @@ const COMPACT_EVERY_MS = 6 * 60 * 60 * 1000
 const COMPACT_DELAY_MS = 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 const NOTE_STATUS_MS = 400
+const MB = 1024 * 1024
+// Programs write a file in pieces; it is taken in once it stayed unchanged this long.
+const ATTACHMENT_SETTLE_MS = 2_000
 
 const NOTE_STATUS_TEXT: Record<Exclude<NoteSyncState, 'untracked'>, string> = {
   synced: 'This note is synced: everything written here has reached the server.',
@@ -62,14 +68,19 @@ const NOTE_STATUS_TEXT: Record<Exclude<NoteSyncState, 'untracked'>, string> = {
 const obsidianHttp: HttpClient = async (request) => {
   const headers: Record<string, string> = {}
   if (request.token) headers.Authorization = `Bearer ${request.token}`
+  const bytes = request.bytes
   const response = await requestUrl({
     url: request.url,
     method: request.method,
     headers,
-    contentType: request.body === undefined ? undefined : 'application/json',
-    body: request.body === undefined ? undefined : JSON.stringify(request.body),
+    contentType: bytes ? 'application/octet-stream' : request.body === undefined ? undefined : 'application/json',
+    // A copy, so the body is exactly the chunk and not the buffer it was cut from.
+    body: bytes ? bytes.slice().buffer : request.body === undefined ? undefined : JSON.stringify(request.body),
     throw: false
   })
+  if (request.binary && response.status >= 200 && response.status < 300) {
+    return { status: response.status, json: null, bytes: new Uint8Array(response.arrayBuffer) }
+  }
   let json: unknown = null
   try {
     json = response.json
@@ -116,6 +127,10 @@ export default class ObsidianConnectPlugin extends Plugin {
   private socket: VaultSocket | null = null
   private index: VaultIndex | null = null
   private store: DocStore | null = null
+  private attachmentIndex: AttachmentIndex | null = null
+  private attachments: AttachmentStore | null = null
+  /** What the server takes, from its config; 0 until it answered. */
+  private maxFileBytes = 0
   private state: StateStore | null = null
   private backups: BackupStore | null = null
   private accountSettings: AccountSettings | null = null
@@ -156,6 +171,12 @@ export default class ObsidianConnectPlugin extends Plugin {
     // changes state without wiring each of them up.
     this.registerInterval(window.setInterval(() => this.renderNoteStatus(), NOTE_STATUS_MS))
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.renderNoteStatus()))
+    // Files over this device's download limit come when a note needs them.
+    this.registerEvent(
+      this.app.workspace.on('file-open', (file) => {
+        if (file?.extension === 'md') void this.attachments?.fetchFor(file)
+      })
+    )
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => this.noteMenu(menu, file)))
     this.registerEvent(
       this.app.workspace.on('editor-menu', (menu, _editor, info) => {
@@ -215,6 +236,15 @@ export default class ObsidianConnectPlugin extends Plugin {
     await this.saveData(this.settings)
     log.verbose = this.settings.verboseLog
     this.store?.setOptions(this.storeOptions())
+    this.attachments?.setOptions(this.attachmentOptions())
+    // A higher limit may let files in that waited.
+    void this.attachments?.applyRemoteChanges()
+  }
+
+  /** Everything still only on the server, whatever this device's limit. */
+  async downloadAllAttachments(): Promise<number> {
+    if (!this.attachments?.isReady) throw new Error('Obsidian Connect is not connected yet.')
+    return this.attachments.fetchAll()
   }
 
   /** The recent log, onto the clipboard - for a bug report. */
@@ -230,6 +260,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       const value = stored[key]
       if (typeof value === typeof DEFAULT_SETTINGS[key]) (settings as Record<string, unknown>)[key] = value
     }
+    if (stored.attachmentDownloadLimitMb === undefined && Platform.isMobile) settings.attachmentDownloadLimitMb = MOBILE_DOWNLOAD_LIMIT_MB
     this.settings = settings
     const moved: Partial<SharedSettings> = {}
     for (const key of MOVED_TO_ACCOUNT) {
@@ -269,6 +300,17 @@ export default class ObsidianConnectPlugin extends Plugin {
   updateSharedSettings(patch: Partial<SharedSettings>): void {
     this.accountSettings?.set(patch)
     this.store?.setOptions(this.storeOptions())
+    this.attachments?.setOptions(this.attachmentOptions())
+  }
+
+  private attachmentOptions(): AttachmentOptions {
+    const limit = this.settings.attachmentDownloadLimitMb
+    return {
+      excludeGlobs: this.shared().excludeGlobs,
+      downloadLimitBytes: limit < 0 ? null : Math.round(limit * MB),
+      maxFileBytes: this.maxFileBytes,
+      settleMs: ATTACHMENT_SETTLE_MS
+    }
   }
 
   private storeOptions(): DocStoreOptions {
@@ -407,6 +449,9 @@ export default class ObsidianConnectPlugin extends Plugin {
       this.history
     )
     this.store = store
+    const attachmentIndex = new AttachmentIndex(this.index.doc, (path, generation) => keys.fileId(path, generation))
+    this.attachmentIndex = attachmentIndex
+    this.attachments = new AttachmentStore(this.app, attachmentIndex, this.state, new Blobs(this.api, keys), this.attachmentOptions())
     this.recovery = new Recovery({
       socket,
       store,
@@ -442,7 +487,10 @@ export default class ObsidianConnectPlugin extends Plugin {
     store.onReview((review) => {
       void reviews.add(review).catch((error: unknown) => log.error(`keeping the review of ${review.path} failed`, error))
     })
-    this.unwatchSettings = accountSettings.onChange(() => this.store?.setOptions(this.storeOptions()))
+    this.unwatchSettings = accountSettings.onChange(() => {
+      this.store?.setOptions(this.storeOptions())
+      this.attachments?.setOptions(this.attachmentOptions())
+    })
     this.unwatchSocket = socket.onStatus((status) => {
       this.status = status
       this.renderStatus()
@@ -451,9 +499,19 @@ export default class ObsidianConnectPlugin extends Plugin {
       // reconnecting is the moment to try again, otherwise a server that was
       // down at startup leaves the vault untracked until Obsidian restarts.
       if (!this.started) void this.runStart()
-      else void store.resume().then(() => this.editors.refresh())
+      else {
+        void store.resume().then(() => this.editors.refresh())
+        void this.resumeAttachments()
+      }
     })
-    this.unwatchIndex = this.index.onChange(() => this.scheduleIndexApply())
+    const unwatchNotes = this.index.onChange(() => this.scheduleIndexApply())
+    const unwatchFiles = attachmentIndex.onChange(() => this.scheduleIndexApply())
+    const unwatchTransfers = this.attachments.onTransfer(() => this.renderStatus())
+    this.unwatchIndex = () => {
+      unwatchNotes()
+      unwatchFiles()
+      unwatchTransfers()
+    }
 
     socket.connect()
     await Promise.race([socket.whenSynced(settingsRoom(vault.vaultId)), delay(this.settings.syncTimeoutMs)])
@@ -481,6 +539,8 @@ export default class ObsidianConnectPlugin extends Plugin {
           if (this.store === store) void this.runStart()
         })
       } else {
+        // In the background: a first scan may have gigabytes to upload.
+        void this.startAttachments()
         // Contacts first: a share may come from someone who became a contact while this device was away.
         await this.processContacts()
         void this.sharing?.checkEnded().then(
@@ -507,6 +567,33 @@ export default class ObsidianConnectPlugin extends Plugin {
     }
     this.editors.refresh()
     this.renderStatus()
+  }
+
+  /**
+   * Attachments need to know how large a file the server takes. A server
+   * from before attachments does not say, and its vaults sync notes only.
+   */
+  private async startAttachments(): Promise<void> {
+    const attachments = this.attachments
+    if (!attachments || attachments.isReady) return
+    try {
+      const config = await this.api.config()
+      if (config.maxFileBytes === undefined) {
+        log.warn('the server does not store attachments; only notes are synced')
+        return
+      }
+      this.maxFileBytes = config.maxFileBytes
+      attachments.setOptions(this.attachmentOptions())
+      await attachments.start()
+    } catch (error) {
+      log.warn('starting to sync attachments failed; trying again on the next connection', error)
+    }
+    this.renderStatus()
+  }
+
+  private async resumeAttachments(): Promise<void> {
+    if (this.attachments?.isReady) await this.attachments.resume()
+    else await this.startAttachments()
   }
 
   private async compact(): Promise<void> {
@@ -557,6 +644,12 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.unwatchSettings = null
     this.recovery?.stop()
     this.recovery = null
+    // Before the notes: stopping those closes the state both write to.
+    const attachments = this.attachments
+    this.attachments = null
+    await attachments?.stop()
+    this.attachmentIndex?.destroy()
+    this.attachmentIndex = null
     const store = this.store
     this.store = null
     await store?.stop()
@@ -595,25 +688,37 @@ export default class ObsidianConnectPlugin extends Plugin {
   // --- vault events --------------------------------------------------------
 
   private registerVaultEvents(): void {
+    // Both stores hear every event; each takes the files that are its own.
     this.registerEvent(
       this.app.vault.on('modify', (file: TAbstractFile) => {
-        if (file instanceof TFile) void this.store?.onModify(file)
+        if (!(file instanceof TFile)) return
+        void this.store?.onModify(file)
+        this.attachments?.onModify(file)
       })
     )
     this.registerEvent(
       this.app.vault.on('create', (file: TAbstractFile) => {
-        if (file instanceof TFile) void this.store?.onCreate(file)
+        if (!(file instanceof TFile)) return
+        void this.store?.onCreate(file)
+        this.attachments?.onCreate(file)
       })
     )
     this.registerEvent(
       this.app.vault.on('delete', (file: TAbstractFile) => {
-        if (file instanceof TFile) void this.store?.onDelete(file.path)
-        else if (file instanceof TFolder) void this.store?.onDeleteFolder(file.path)
+        if (file instanceof TFile) {
+          void this.store?.onDelete(file.path)
+          void this.attachments?.onDelete(file.path)
+        } else if (file instanceof TFolder) {
+          void this.store?.onDeleteFolder(file.path)
+          void this.attachments?.onDeleteFolder(file.path)
+        }
       })
     )
     this.registerEvent(
       this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
-        if (file instanceof TFile) void this.store?.onRename(file, oldPath)
+        if (!(file instanceof TFile)) return
+        void this.store?.onRename(file, oldPath)
+        void this.attachments?.onRename(file, oldPath)
       })
     )
   }
@@ -629,6 +734,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         this.editors.refresh()
         this.renderStatus()
       })
+      void this.attachments?.applyRemoteChanges()
     }, 500)
   }
 
@@ -687,6 +793,17 @@ export default class ObsidianConnectPlugin extends Plugin {
       if (entry?.shared) menu.addItem((item) => item.setTitle('Who has access').setIcon('users').onClick(() => this.openAccess(file)))
     }
     menu.addItem((item) => item.setTitle('Version history').setIcon('history').onClick(() => this.openHistory(file)))
+    if (this.attachments?.isReady && this.settings.attachmentDownloadLimitMb >= 0) {
+      menu.addItem((item) =>
+        item
+          .setTitle('Download attachments')
+          .setIcon('download')
+          .onClick(async () => {
+            const fetched = (await this.attachments?.fetchFor(file)) ?? 0
+            new Notice(fetched > 0 ? `${fetched} attachment(s) of ${file.basename} downloaded.` : `${file.basename} has everything it embeds or links.`)
+          })
+      )
+    }
     if (this.reviews?.pendingFor(docId)) {
       menu.addItem((item) => item.setTitle('Compare versions').setIcon('git-compare').onClick(() => void this.openReview(file)))
     }
@@ -843,7 +960,11 @@ export default class ObsidianConnectPlugin extends Plugin {
     }
     const label =
       this.status === 'connected' ? 'synced' : this.status === 'connecting' ? 'connecting' : 'offline'
-    this.statusBar.setText(`Connect: ${label} · ${this.store.loadedCount()}/${this.store.trackedCount()}`)
+    const transfers = this.attachments?.activeTransfers()
+    const moving = [transfers?.uploads ? `↑${transfers.uploads}` : '', transfers?.downloads ? `↓${transfers.downloads}` : '']
+      .filter(Boolean)
+      .join(' ')
+    this.statusBar.setText(`Connect: ${label} · ${this.store.loadedCount()}/${this.store.trackedCount()}${moving ? ` · ${moving}` : ''}`)
   }
 
   private activeNoteState(): NoteSyncState {
@@ -893,6 +1014,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         `Account: ${this.settings.username}`,
         `Vault: ${this.vault?.name ?? '-'}`,
         `Notes tracked: ${this.store.trackedCount()}`,
+        `Attachments tracked: ${this.attachments?.isReady ? this.attachments.trackedCount() : 'not yet'}`,
         `Shared notes: ${this.store.sharedCount()}`,
         `Documents in memory: ${this.store.loadedCount()}`,
         `Editors bound: ${this.editors.boundCount()}`

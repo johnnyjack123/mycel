@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-10 · **0.4.2 on `feat/accounts`: Phases 1-3 plus the fixes from the first device run. Next milestone: 0.5, attachments - designed in `docs/PHASE4.md`, step 1 in progress.**_
+_Last updated: 2026-10-10 · **0.5.0 on `feat/accounts`: attachments between one's own devices (step 1 of `docs/PHASE4.md`). Next: step 2, the trash and earlier versions of files.**_
 
 ## Where we are
 
@@ -20,16 +20,23 @@ On the user's devices (2026-10-09): sign-in and account creation, sync, sharing 
 live editing work. The account screens of 0.4.0 are confirmed. Carets between one's
 own devices were the last thing reported; 0.4.1 fixes them, not confirmed yet.
 
+**0.5.0 needs the server restarted with the new code** (blob routes) - the user's
+server on 1234 runs whatever they started last. An old server makes the plugin sync
+notes only (it logs "the server does not store attachments"). Behind nginx, request
+bodies need at least 8 MB (`docs/SERVER.md`).
+
 ## Next step
 
-**Milestone 0.5: attachments.** Designed with the user on 2026-10-10:
-**`docs/PHASE4.md`** is the spec. Build it in its three steps, each with tests and a
-commit; the first build the user installs is 0.5.0.
+**Milestone 0.5: attachments**, spec in **`docs/PHASE4.md`**, three steps:
 
-1. **Own devices:** blob encryption and ids in `shared/crypto` (+ `test:merge`), the
-   server's blob store and routes (+ `test:rooms`), `sync/AttachmentStore.ts` with the
-   fake vault learning binary files (+ `test:vault`), self-healing (+ `test:recovery`).
-2. **Trash and earlier versions:** "Deleted files…", "Earlier versions…", cleaning up.
+1. **Own devices - built, 0.5.0.** To confirm on devices: images and PDFs arrive,
+   a conflict copy appears, the phone's 10 MB limit and "Download attachments".
+2. **Trash and earlier versions - next.** "Deleted notes…" becomes "Deleted files…"
+   (`DocStore.deletedNotes` + `AttachmentIndex.deleted`), "Earlier versions…" in an
+   attachment's menu (`AttachmentIndex.versions`, download by hash with `Blobs`),
+   cleaning up in `Trash.purge`: blobs no live entry, recent tombstone or kept version
+   names go via `Blobs.purge`; versions current for less than 10 min
+   (`at - since`) keep no content; old version records leave the map.
 3. **Shared notes:** the attachment list in the note's document, attach records on
    the server, delivering to `<share folder>/Attachments/`, declining by deleting,
    the fork copy, the share dialog (attachments toggle, sharing linked notes).
@@ -57,6 +64,10 @@ Attachments (2026-10-10, details in `docs/PHASE4.md`):
 - Deleting a file a shared note brings means leaving that file: it never comes back
   by itself, not even with a new version; restoring it from the trash rejoins.
 - Sharing a whole folder: wanted for later, noted in `CLAUDE.md`.
+- Found while building, decided without asking (invariant 24): an attachment entry is
+  replaced whole, so two devices writing at once lose one write silently. Entries name
+  what they replaced (`prev`) and every replacement leaves a version record; a version
+  that never saw a device's content is a conflict there, both files kept.
 
 Earlier:
 - Plugin and settings sync (0.7) only as snapshots from a chosen device, never through
@@ -75,7 +86,11 @@ their path, and which file wins when two share a name.
 ## Known issues / debt
 
 - **On a device only:** the caret fix of 0.4.1, the review dialog, the note cloud, the
-  note menus, the trash dialog, the log file - all untestable headless.
+  note menus, the trash dialog, the log file - all untestable headless. For 0.5.0:
+  `readBinary`/`createBinary`/`modifyBinary` and their events, `requestUrl` with binary
+  bodies on mobile, `file-open` fetching, memory with large files on a phone.
+- A file over the server's limit is only logged; no mark in its menu yet.
+- Attachment blobs are never deleted from the server yet - cleaning up is step 2.
 - Notes beyond `maxLoadedDocuments` (500) stop receiving live updates until opened (0.9).
 - No password recovery, no 2FA (0.6).
 - Frames authenticated by the note's key, not signed per author (0.9, `docs/PHASE3.md`).
@@ -84,20 +99,22 @@ their path, and which file wins when two share a name.
 
 ## Verification state
 
-2026-10-09, 0.4.1: `typecheck` and `build` pass; `test:merge` (120), `test:load` (12),
-`test:rooms` (117), `test:sync` (26), `test:recovery` (42), and against a scratch
-server on 1235 `test:socket` (19) and `test:vault` (150) - all pass. Every fix since
-0.4.0 was also checked by putting its bug back and seeing its check fail (a deleted
-contact code honoured, redeemed codes listed, "both" in the wrong order, carets drawn
-only on text changes, the cloud ignoring unsent edits, merges without a review, own
-carets drawn, the owner not told someone left). Not verified: anything on a device
-beyond what the user reported, and the Docker image (built by CI only on `main`).
+2026-10-10, 0.5.0: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
+`test:rooms` (142), `test:sync` (26), `test:recovery` (46), and against a scratch
+server on 1235 `test:socket` (19) and `test:vault` (175) - all pass. Checked by putting
+the bug back: the link doubling of 0.4.2 (`[[RenamedRenamed]]`), two racing writes of
+one attachment without the lineage rule (one version lost), healing only on start
+(the server's lost blob never came back), a note renamed to `.txt` (pulled back in).
+Not verified: anything on a device, and the Docker image (built by CI only on `main`).
 
 ---
 
 ## Log
 
 ### 2026-10-10
+- 0.5.0: attachments between one's own devices - blobs encrypted in chunks, the
+  server's blob store, `AttachmentStore`, conflicts as two files, the download limit,
+  self-healing; a note renamed to another extension no longer comes back.
 - Attachments (0.5) designed with the user: `docs/PHASE4.md`.
 - 0.4.2: another device's rename is applied with `vault.rename` (invariant 22).
   `fileManager.renameFile` rewrote the links a second time, and when both devices did

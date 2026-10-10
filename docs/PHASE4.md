@@ -23,8 +23,8 @@ belong to which shared note. It sees no names, paths or content.
 - Not synced: what the exclude globs match (the same list as for notes), Obsidian's
   config folder and everything else Obsidian hides (dot folders; plugins and their
   settings are 0.7), and files over the server's limit.
-- A file over the limit stays on the device. The log says so, and the file's menu
-  shows "too large to sync".
+- A file over the limit stays on the device, and the log says so once. *(A mark in
+  the file's menu is not built yet.)*
 
 ## Identity: the vault index
 
@@ -39,9 +39,11 @@ interface AttachmentEntry {
   hash: string
   size: number
   updatedAt: number
+  /** The content this one replaced, as its writer knew it. */
+  prev?: string
   deletedAt?: number
   purgedAt?: number
-  /** The file came in through a shared note, under this link. Absent for the vault's own. */
+  /** The file came in through a shared note, under this link. Absent for the vault's own. (step 3) */
   via?: { docId: string; ref: string }
   /**
    * Where the content lives while it is someone else's blob: until the file is
@@ -50,7 +52,7 @@ interface AttachmentEntry {
   remote?: { account: string; vault: string; blob: string; key: string }
 }
 
-// VERSIONS_FIELD: `${fileId}:${hash}` -> { fileId, hash, size, at }
+// VERSIONS_FIELD: `${fileId}:${hash}` -> { fileId, hash, size, since, at }
 ```
 
 - **`fileId`** = HMAC(vaultKey, `file::<path>::<generation>`), taking the first
@@ -63,10 +65,18 @@ interface AttachmentEntry {
 - **Earlier versions** are kept in a map of their own, with one key per version and
   nothing else written there. Two devices recording versions at once therefore never
   overwrite each other, which they would if the versions were a list inside the
-  entry. When a version is replaced, the device that replaced it records it, with
-  `at` = the moment it was replaced. Replacements by one device within 10 minutes of
-  each other record no version for the states in between, so a file that a program
-  rewrites every few seconds does not fill the store.
+  entry. Every replacement is recorded by the device that made it, with `since` (when
+  that content became current) and `at` (when it was replaced). Whether its content
+  is kept is step 2's business: a version that was current for less than 10 minutes
+  is not, so a file a program rewrites every few seconds does not fill the store.
+- **An entry is replaced whole.** Of two devices writing the same file at once, one
+  write is simply gone from the index, and its device would take the other version
+  for news and overwrite its own. So every entry names what it replaced (`prev`), and
+  the version records double as the file's lineage: a device takes another version
+  only if that version replaced its base knowingly - `prev` or a version record says
+  so. Otherwise both are kept. The same holds for a delete: a file goes only if
+  whoever deleted it had seen this device's content. *(As built; found while
+  building, checked in `test:vault` by holding back both devices' index changes.)*
 - Deleting writes a tombstone, as for notes.
 
 ## Blobs
@@ -92,7 +102,8 @@ blobKey  = HKDF(vaultKey, "obsidian-connect blob:<blobId>")
   (or, for a shared one, against the list).
 - **Memory:** Obsidian reads a file whole, and WebCrypto hashes it whole, so a file
   sits in memory a few times over while it is hashed and encrypted. That is one
-  reason for the size limit. Downloads and re-encryption go chunk by chunk.
+  reason for the size limit. Downloads and re-encryption go chunk by chunk, and at
+  most 64 MB of file content is in hand at once; a larger file runs on its own.
 
 ### New invariants
 
@@ -114,28 +125,28 @@ users/<account>/<vault>/blobs/<blobId>.json      size, created, the rooms it is 
 users/<account>/<vault>/blobs/.upload/<blobId>   an upload in progress
 ```
 
-Routes. They all need a token, and the vault must be the caller's unless stated
-otherwise:
+Routes. They all need a token, and every one names whose store and which vault, so
+reading someone else's store in step 3 needs no new ones. The vault must be the
+caller's unless stated otherwise *(as built)*:
 
-- `POST /blobs/:vaultId/have {ids}`: which of these are complete.
-- `GET /blobs/:vaultId/:blobId/upload`: how many chunks of an upload have arrived, so
-  an upload can resume.
-- `PUT /blobs/:vaultId/:blobId/:chunk?count=n`: one chunk, raw
-  `application/octet-stream` (not base64 JSON). Chunks arrive in order. Every chunk
-  but the last has exactly the full size, which keeps the offsets computable. The
-  last chunk completes the blob. If the blob is already complete, the first chunk is
-  answered "complete" and nothing more is sent.
-- `GET /blobs/:account/:vaultId/:blobId` (size and chunk count) and `…/:chunk` (one
-  chunk). Allowed to the owning account, and with `?room=doc:<docId>` to anyone who
-  may read that room, if the blob is attached to it. Allowed also to someone whose
-  share of that room ended and who has not forked yet.
+- `POST /blobs/:account/:vaultId/have {ids}`: which of these are complete.
+- `GET /blobs/:account/:vaultId/:blobId`: `{ complete, count, received, size }` - for
+  an upload under way, how many chunks arrived, so it can resume.
+- `PUT /blobs/:account/:vaultId/:blobId/:chunk?count=n`: one chunk, raw
+  `application/octet-stream` (not base64 JSON). Chunks arrive in order; one the
+  server has already is acknowledged again. Every chunk but the last has exactly the
+  full size, which keeps the offsets computable. The last chunk completes the blob.
+  If the blob is already complete, the first chunk is answered "complete".
+- `GET /blobs/:account/:vaultId/:blobId/:chunk`: one chunk. With `?room=doc:<docId>`
+  allowed to anyone who may read that room, if the blob is attached to it, and to
+  someone whose share of that room ended and who has not forked yet (step 3).
 - `POST /log/:room/attachments {attach, detach}`, each a list of
   `{ account, vault, blob }`: which blobs a shared note's list names. Attaching is
   allowed for one's own blobs in a room the caller may write to. Detaching is allowed
   to the blob's account and to the room's owner. The room's `meta.json` and the
   blob's `.json` both record it.
-- `POST /blobs/:vaultId/purge {ids}`: deletes those blobs and keeps every one still
-  attached to a room. Answers which ones went.
+- `POST /blobs/:account/:vaultId/purge {ids}`: deletes those blobs and keeps every one
+  still attached to a room. Answers which ones went.
 - `.env`:
   - `OBSIDIAN_CONNECT_MAX_FILE_MB`: default 100, shown in `/auth/config` so the
     plugin does not try larger files.
@@ -146,10 +157,12 @@ otherwise:
 - Purging a room detaches its blobs. The account sweep deletes the folder with
   everything in it, and invariant 21 is unchanged.
 
-## Step 1: one's own devices
+## Step 1: one's own devices *(built, 0.5.0)*
 
-`sync/AttachmentStore.ts`, next to `DocStore` and not inside it. It has one lock per
-`fileId`, the way `DocStore` has one per note.
+`sync/AttachmentStore.ts`, next to `DocStore` and not inside it, with
+`sync/AttachmentIndex.ts` (the two maps) and `sync/Blobs.ts` (transfers). It has one
+lock per `fileId`, the way `DocStore` has one per note, and takes memory only after
+the lock and never nested.
 
 **Per device,** `StateStore` keeps `fileId -> { path, mtime, size, hash }`: the
 version this device last saw its file and the index agree on. This is the **base**,
@@ -165,13 +178,14 @@ state):
 2. Upload it, unless the server already has it.
 3. Under the lock, look at the entry again:
    - **No entry:** `ensure` a `fileId` and write the entry.
-   - **The entry still has the base's hash:** write the new hash, and record the
-     replaced version.
-   - **The entry moved on** (another device changed the file too): this is a
-     conflict. This device's content becomes a new file
-     `<name> (conflict <YYYY-MM-DD HHmm>).<ext>` next to the original, with an entry
-     of its own; it is uploaded already. The original path then gets the index's
-     version. A notice names both files.
+   - **The entry still has the base's hash:** write the new hash with `prev`, and
+     record the replaced version.
+   - **The entry moved on** (another device changed the file too), or there is no
+     base: this is a conflict. The index's version is downloaded first - if that
+     fails, nothing has changed and nothing is left behind to duplicate. Then this
+     device's content becomes a new file `<name> (conflict <YYYY-MM-DD HHmm>).<ext>`
+     next to the original, with an entry of its own (it is uploaded already), and the
+     original path gets the index's version. A notice names both files.
    - **The entry is a tombstone:** an edit here wins over a delete there, as for
      notes, so the entry is revived with this content.
 
@@ -181,9 +195,11 @@ state):
   device's download limit, otherwise leave it until a note needs it (below). A file
   that is not here was not deleted, as with notes today.
 - **The entry's hash differs from the base:**
-  - The file here still has the base's hash: download the new version, check it,
-    `modifyBinary`, record the new base.
-  - The file changed here too: the same conflict as above.
+  - The file here still has the base's hash, and the new version replaced that base
+    knowingly: download the new version, check it, `modifyBinary`, record the new
+    base.
+  - The file changed here too, or the new version never saw this device's: the same
+    conflict as above.
 - **A rename:** `vault.rename`, never `fileManager.renameFile`. The links in notes
   have already been rewritten on the device that renamed the file, and those edits
   travel with the notes. Rewriting them here again would insert them twice.
@@ -197,10 +213,16 @@ state):
   sorted-first id stays and the other gets a tombstone; with different hashes, the
   other becomes a conflict copy.
 - **A deleted folder** sweeps its attachments, like `onDeleteFolder` for notes.
+- **A file gone without an event** - deleted while Obsidian was closed - is fetched
+  again, as a note is, rather than deleted everywhere.
+- **A note renamed to another extension** (`Draft.md` to `Draft.txt`) is a deleted
+  note and a new file. Before, the note's entry stayed and was pulled back in next to
+  the file. *(As built; `DocStore.onRename`.)*
 
 **The download limit** is set per device in `data.json` as
-`attachmentDownloadLimitMb`: empty means everything. The default is everything on
-desktop and 10 MB on a phone (`Platform.isMobile`).
+`attachmentDownloadLimitMb` - in the settings an empty field, stored as -1, means
+everything, and 0 only what a note needs. The default is everything on desktop and
+10 MB on a phone (`Platform.isMobile`).
 
 - Larger files come when a note that embeds or links them is opened. The note's
   unresolved links are matched against the index by exact path, path suffix and name.
@@ -208,12 +230,17 @@ desktop and 10 MB on a phone (`Platform.isMobile`).
   everything now".
 - Files created on a device are always uploaded, whatever its limit.
 
-**Self-healing:** on start, and after a recovery, each device sends one `have` with
-the blobs of every file it holds, and uploads what the server lacks. A server that
-lost blobs therefore gets them back from any device that still has the file.
-Invariant 19 is unchanged: while a vault is held, attachments are held with it.
+**Self-healing:** on start and on every reconnect - a server that comes back may be
+one restored from a backup - each device sends one `have` with the blobs of every
+file it holds, and uploads what the server lacks. A server that lost blobs therefore
+gets them back from any device that still has the file (`test:recovery`). A download
+that finds no blob is tried again 30 s later. Invariant 19 is unchanged for the
+index: structure keeps the union.
 
-**The status bar** shows transfers while they run, for example "↑ 3 files, 12 MB".
+**A server from before attachments** says no `maxFileBytes` in `/auth/config`; the
+plugin then syncs notes only and says so in the log.
+
+**The status bar** shows transfers while they run, for example `↑2 ↓1`.
 
 ## Step 2: the trash and earlier versions
 

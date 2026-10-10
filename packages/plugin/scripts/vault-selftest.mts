@@ -11,7 +11,8 @@ import { check, delay, Device, eventually, failures, useServer } from './harness
 
 // Imported after the harness set up the DOM; CodeMirror reads it at module scope.
 const { Notice } = await import('obsidian')
-const { docRoom } = await import('@obsidian-connect/shared')
+const { BLOB_CHUNK_BYTES, docRoom } = await import('@obsidian-connect/shared')
+const { contentHash } = await import('@obsidian-connect/shared/crypto')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
 
@@ -23,9 +24,37 @@ const alice = `alice${run}`
 const carol = `carol${run}`
 console.log(`server=${serverUrl} accounts=${alice},${carol}`)
 
+/** Bytes standing in for an image or a PDF; a different seed, a different file. */
+const binary = (seed: number, length = 3_000): Uint8Array => new Uint8Array(length).map((_byte, index) => (index * seed + 11) & 255)
+const same = (a: Uint8Array | undefined, b: Uint8Array | undefined): boolean =>
+  a !== undefined && b !== undefined && a.length === b.length && a.every((byte, index) => byte === b[index])
+
+/**
+ * Holds back what a device pushes into rooms whose name starts with
+ * `prefix`, until released - the moment two devices change something before
+ * either has seen the other's change.
+ */
+const PUSH = 3
+function holdPushes(device: Device, prefix: string): () => void {
+  const ws = (device.socket as unknown as { ws: { send(data: Uint8Array): void; close(): void } }).ws
+  const send = ws.send.bind(ws)
+  ws.send = (data: Uint8Array) => {
+    // [type][varString room]...: room names are short enough for a one-byte length.
+    const room = new TextDecoder().decode(data.subarray(2, 2 + (data[1] ?? 0)))
+    if (data[0] !== PUSH || !room.startsWith(prefix)) send(data)
+  }
+  return () => {
+    ws.send = send
+    // The outbox goes out again on the new connection.
+    ws.close()
+  }
+}
+
+const logo = binary(3)
 const A = new Device(alice, true, {
   'Welcome.md': 'Hello from A\n',
-  'Projects/Plan.md': 'step 1\nstep 2\n'
+  'Projects/Plan.md': 'step 1\nstep 2\n',
+  'Assets/logo.png': logo
 })
 const B = new Device(alice, false)
 
@@ -78,21 +107,6 @@ try {
   // before seeing the other's - a slow phone and a fast desktop, say. Holding
   // back both devices' note changes until then makes that moment certain.
   {
-    const PUSH = 3
-    const holdNoteChanges = (device: typeof A): (() => void) => {
-      const ws = (device.socket as unknown as { ws: { send(data: Uint8Array): void; close(): void } }).ws
-      const send = ws.send.bind(ws)
-      ws.send = (data: Uint8Array) => {
-        // [type][varString room]...: room names are short enough for a one-byte length.
-        const room = new TextDecoder().decode(data.subarray(2, 2 + (data[1] ?? 0)))
-        if (data[0] !== PUSH || !room.startsWith('doc:')) send(data)
-      }
-      return () => {
-        ws.send = send
-        // The outbox goes out again on the new connection.
-        ws.close()
-      }
-    }
     const linking = 'see [[Target]] and [[Target]]\n'
     await A.vault.userCreate('Target.md', 'the target\n')
     await A.vault.userCreate('Linker.md', linking)
@@ -100,8 +114,8 @@ try {
       await eventually(() => B.vault.text('Linker.md') === linking && B.vault.text('Target.md') === 'the target\n'),
       'B has a note and one linking to it'
     )
-    const releaseA = holdNoteChanges(A)
-    const releaseB = holdNoteChanges(B)
+    const releaseA = holdPushes(A, 'doc:')
+    const releaseB = holdPushes(B, 'doc:')
     await A.fileManager.renameFile(A.vault.file('Target.md'), 'Renamed.md')
     check(await eventually(() => B.vault.text('Renamed.md') === 'the target\n'), 'B applies the rename')
     // Time for B to rewrite the links too, if it does.
@@ -124,6 +138,128 @@ try {
       'renaming a linked note rewrites each link once, on both devices',
       linkers()
     )
+  }
+
+  // --- attachments ---------------------------------------------------------------
+  {
+    const fileIdOf = (device: Device, path: string): string => device.attachmentIndex?.idForPath(path) ?? ''
+    check(await eventually(() => same(B.vault.bytes('Assets/logo.png'), logo)), 'an attachment that was there before the plugin reaches the other device')
+
+    // More than one chunk, so it travels in pieces.
+    const photo = binary(7, BLOB_CHUNK_BYTES + 5_000)
+    await A.vault.userCreateBinary('Assets/photo.jpg', photo)
+    check(await eventually(() => same(B.vault.bytes('Assets/photo.jpg'), photo), 15_000), 'a new attachment larger than one chunk reaches B')
+
+    const edited = binary(9, 4_000)
+    await A.vault.userWriteBinary('Assets/photo.jpg', edited)
+    check(await eventually(() => same(B.vault.bytes('Assets/photo.jpg'), edited)), 'a changed attachment reaches B')
+    {
+      const versions = A.attachmentIndex?.versions(fileIdOf(A, 'Assets/photo.jpg')) ?? []
+      check(versions.some((version) => version.size === photo.length), 'and what it replaced is recorded as an earlier version', versions)
+    }
+
+    await A.vault.createFolder('Holiday')
+    await A.vault.rename(A.vault.file('Assets/photo.jpg'), 'Holiday/photo.jpg')
+    check(
+      await eventually(() => same(B.vault.bytes('Holiday/photo.jpg'), edited) && !B.vault.bytes('Assets/photo.jpg')),
+      'a rename on A is a rename on B, into a folder B did not have',
+      B.vault.attachmentPaths()
+    )
+
+    await A.vault.trash(A.vault.file('Holiday/photo.jpg'))
+    check(await eventually(() => B.vault.bytes('Holiday/photo.jpg') === undefined), 'a delete on A removes the file on B')
+    await delay(600)
+    check(A.vault.bytes('Holiday/photo.jpg') === undefined, 'and it does not come back')
+
+    // Both change the same file while B is away.
+    await B.shutdown()
+    const fromA = binary(13)
+    const fromB = binary(17)
+    await A.vault.userWriteBinary('Assets/logo.png', fromA)
+    B.vault.offlineWriteBinary('Assets/logo.png', fromB)
+    await delay(600)
+    check(await B.boot(), 'B comes back after both devices changed the same attachment')
+    const copyOf = (device: Device): string | undefined =>
+      device.vault.attachmentPaths().find((path) => /^Assets\/logo \(conflict \d{4}-\d{2}-\d{2} \d{4}\)\.png$/.test(path))
+    check(
+      await eventually(() => {
+        const onA = copyOf(A)
+        const onB = copyOf(B)
+        return Boolean(onA && onB) && same(A.vault.bytes(onA as string), fromB) && same(B.vault.bytes(onB as string), fromB)
+      }),
+      "B's version is kept as a second file, on both devices",
+      { a: A.vault.attachmentPaths(), b: B.vault.attachmentPaths() }
+    )
+    check(same(A.vault.bytes('Assets/logo.png'), fromA) && same(B.vault.bytes('Assets/logo.png'), fromA), "and the file itself is A's, on both")
+    check(Notice.shown.some((notice) => notice.includes('Both are kept')), 'B says so')
+
+    // Deleted on A while B changed it.
+    await B.shutdown()
+    await A.vault.trash(A.vault.file('Assets/logo.png'))
+    const kept = binary(19)
+    B.vault.offlineWriteBinary('Assets/logo.png', kept)
+    await delay(600)
+    check(await B.boot(), 'B comes back after A deleted an attachment B changed')
+    check(
+      await eventually(() => same(A.vault.bytes('Assets/logo.png'), kept) && same(B.vault.bytes('Assets/logo.png'), kept)),
+      'the change wins over the delete and comes back to A'
+    )
+
+    // Two devices writing the same file at once, neither seeing the other's
+    // entry. One entry replaces the other whole; the device whose write is
+    // gone must keep its version rather than take the other one for news.
+    await A.vault.userCreateBinary('Assets/race.bin', binary(21))
+    check(await eventually(() => same(B.vault.bytes('Assets/race.bin'), binary(21))), 'B has a file')
+    await delay(300)
+    const releaseA = holdPushes(A, 'idx:')
+    const releaseB = holdPushes(B, 'idx:')
+    const raceA = binary(23)
+    const raceB = binary(29)
+    await A.vault.userWriteBinary('Assets/race.bin', raceA)
+    await B.vault.userWriteBinary('Assets/race.bin', raceB)
+    // Both have uploaded and written their entry, unseen by the other.
+    await eventually(async () => {
+      const id = fileIdOf(A, 'Assets/race.bin')
+      return A.attachmentIndex?.entry(id)?.hash === (await contentHash(raceA)) && B.attachmentIndex?.entry(id)?.hash === (await contentHash(raceB))
+    })
+    releaseA()
+    releaseB()
+    const contents = (device: Device): Uint8Array[] =>
+      device.vault
+        .attachmentPaths()
+        .filter((path) => path.startsWith('Assets/race'))
+        .map((path) => device.vault.bytes(path) as Uint8Array)
+    const both = (device: Device): boolean =>
+      contents(device).length === 2 && contents(device).some((data) => same(data, raceA)) && contents(device).some((data) => same(data, raceB))
+    check(
+      await eventually(() => both(A) && both(B), 15_000),
+      'two writes racing keep both versions, on both devices',
+      { a: A.vault.attachmentPaths(), b: B.vault.attachmentPaths() }
+    )
+
+    // A note renamed into another kind of file is a file from then on.
+    await A.vault.userCreate('Draft.md', 'plain text after all\n')
+    check(await eventually(() => B.vault.text('Draft.md') === 'plain text after all\n'), 'B has a note')
+    await A.vault.rename(A.vault.file('Draft.md'), 'Draft.txt')
+    check(
+      await eventually(() => B.vault.bytes('Draft.txt') !== undefined && B.vault.text('Draft.md') === undefined),
+      'renamed to .txt, it reaches B as a file and the note goes',
+      B.vault.attachmentPaths()
+    )
+    await delay(800)
+    check(A.vault.text('Draft.md') === undefined && B.vault.text('Draft.md') === undefined, 'and the note does not come back next to it')
+
+    // A phone with a download limit.
+    B.setDownloadLimit(1_000)
+    const scan = binary(31, 5_000)
+    await A.vault.userCreateBinary('Papers/scan.pdf', scan)
+    await A.vault.userCreate('Reading.md', 'see ![[scan.pdf]]\n')
+    check(await eventually(() => B.vault.text('Reading.md') === 'see ![[scan.pdf]]\n'), 'B gets a note that embeds a large file')
+    await delay(800)
+    check(B.vault.bytes('Papers/scan.pdf') === undefined, 'the file over its download limit stays on the server')
+    const fetched = await B.attachments?.fetchFor(B.vault.file('Reading.md'))
+    check(fetched === 1 && same(B.vault.bytes('Papers/scan.pdf'), scan), 'until the note that embeds it is opened', fetched)
+    B.setDownloadLimit(null)
   }
 
   const backupsBeforeDelete = B.vault.adapter.backups().length

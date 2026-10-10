@@ -33,6 +33,9 @@ const { Session } = await import('../src/account/Session.js')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { hashWasmArgon2id } = await import('../src/account/argon2.js')
 const { DocStore } = await import('../src/sync/DocStore.js')
+const { AttachmentIndex } = await import('../src/sync/AttachmentIndex.js')
+const { AttachmentStore } = await import('../src/sync/AttachmentStore.js')
+const { Blobs } = await import('../src/sync/Blobs.js')
 const { StateStore } = await import('../src/sync/StateStore.js')
 const { BackupStore } = await import('../src/sync/BackupStore.js')
 const { VaultIndex } = await import('../src/sync/VaultIndex.js')
@@ -42,7 +45,7 @@ const { Trash } = await import('../src/sync/Trash.js')
 const { EditorSync } = await import('../src/editor/EditorSync.js')
 const { Sharing } = await import('../src/share/Sharing.js')
 const { Contacts } = await import('../src/share/Contacts.js')
-const { FakeVault, FakeFileManager, FakeMarkdownView, MemoryLocalStores, noteOf } = await import(
+const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
 )
 
@@ -115,6 +118,11 @@ export class Device {
   // its editors while sync is stopped and started again.
   readonly editors = new EditorSync(() => this.store, noteOf)
   store: DocStoreT | null = null
+  attachments: InstanceType<typeof AttachmentStore> | null = null
+  attachmentIndex: InstanceType<typeof AttachmentIndex> | null = null
+  /** This device's download limit for attachments, in bytes; null fetches everything. */
+  downloadLimit: number | null = null
+  private maxFileBytes = 0
   index: InstanceType<typeof VaultIndex> | null = null
   keys: InstanceType<typeof KeyRing> | null = null
   sharing: InstanceType<typeof Sharing> | null = null
@@ -140,7 +148,7 @@ export class Device {
   constructor(
     readonly username: string,
     private readonly signUp: boolean,
-    files: Record<string, string> = {}
+    files: Record<string, string | Uint8Array> = {}
   ) {
     this.vault = new FakeVault(files)
     this.fileManager = new FakeFileManager(this.vault)
@@ -155,7 +163,7 @@ export class Device {
     const openVault = await this.session.openVault(unlocked, VAULT)
     const keys = new KeyRing(openVault, unlocked, this.api, this.secrets)
     const vault = this.vault
-    const app = { vault, fileManager: this.fileManager }
+    const app = { vault, fileManager: this.fileManager, metadataCache: new FakeMetadataCache(vault) }
     const state = new StateStore(vault.adapter as never, 'plugin')
     const backups = new BackupStore(vault.adapter as never, 'plugin')
     const index = new VaultIndex(openVault.vaultId, (path, generation) => keys.docId(path, generation))
@@ -215,6 +223,11 @@ export class Device {
     )
     this.contacts = contacts
     const sharing = new Sharing(this.api, keys, store, { folder: () => 'Shared', syncTimeoutMs: 4_000, autoAccept: () => true }, contacts)
+    const attachmentIndex = new AttachmentIndex(index.doc, (path, generation) => keys.fileId(path, generation))
+    this.maxFileBytes = (await this.api.config()).maxFileBytes ?? 0
+    const attachments = new AttachmentStore(app as never, attachmentIndex, state, new Blobs(this.api, keys), this.attachmentOptions())
+    this.attachments = attachments
+    this.attachmentIndex = attachmentIndex
     this.store = store
     this.index = index
     this.socket = socket
@@ -227,27 +240,45 @@ export class Device {
     store.onReady(() => this.editors.refresh())
     store.onLeave((docId) => void sharing.leave(docId))
     store.onReview((review) => this.reviews.push(review))
-    index.onChange(() => {
+    const applyIndex = (): void => {
       if (this.indexTimer) clearTimeout(this.indexTimer)
       this.indexTimer = setTimeout(() => {
         this.indexTimer = null
         void store.applyRemoteIndexChanges().then(() => this.editors.refresh())
+        void attachments.applyRemoteChanges()
       }, 100)
-    })
+    }
+    index.onChange(applyIndex)
+    attachmentIndex.onChange(applyIndex)
     let started = false
     socket.onStatus((status) => {
-      if (status === 'connected' && started) void store.resume().then(() => this.editors.refresh())
+      if (status === 'connected' && started) {
+        void store.resume().then(() => this.editors.refresh())
+        void attachments.resume()
+      }
     })
     this.refs = [
-      vault.on('modify', (file) => void store.onModify(file as never)),
-      vault.on('create', (file) => {
-        if ((file as { extension?: string }).extension !== undefined) void store.onCreate(file as never)
+      vault.on('modify', (file) => {
+        void store.onModify(file as never)
+        attachments.onModify(file as never)
       }),
-      vault.on('delete', (file) => void store.onDelete((file as { path: string }).path)),
-      vault.on('rename', (file, oldPath) => void store.onRename(file as never, oldPath as string))
+      vault.on('create', (file) => {
+        if ((file as { extension?: string }).extension === undefined) return
+        void store.onCreate(file as never)
+        attachments.onCreate(file as never)
+      }),
+      vault.on('delete', (file) => {
+        void store.onDelete((file as { path: string }).path)
+        void attachments.onDelete((file as { path: string }).path)
+      }),
+      vault.on('rename', (file, oldPath) => {
+        void store.onRename(file as never, oldPath as string)
+        void attachments.onRename(file as never, oldPath as string)
+      })
     ]
     socket.connect()
     started = await store.start()
+    if (started) await attachments.start()
     if (started) {
       await contacts.processInbox()
       await sharing.checkEnded()
@@ -265,6 +296,10 @@ export class Device {
     this.refs = []
     this.recovery?.stop()
     this.recovery = null
+    const attachments = this.attachments
+    this.attachments = null
+    await attachments?.stop()
+    this.attachmentIndex?.destroy()
     const store = this.store
     this.store = null
     await store?.stop()
@@ -275,6 +310,16 @@ export class Device {
     this.index?.destroy()
     this.settings?.destroy()
     this.settings = null
+  }
+
+  private attachmentOptions(): ConstructorParameters<typeof AttachmentStore>[4] {
+    return { excludeGlobs: [], downloadLimitBytes: this.downloadLimit, maxFileBytes: this.maxFileBytes, settleMs: 100 }
+  }
+
+  /** What the settings tab does when the limit is changed. */
+  setDownloadLimit(bytes: number | null): void {
+    this.downloadLimit = bytes
+    this.attachments?.setOptions(this.attachmentOptions())
   }
 
   open(path: string): ViewT {

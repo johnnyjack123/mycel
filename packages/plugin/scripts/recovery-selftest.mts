@@ -40,12 +40,28 @@ const run = Date.now().toString(36)
 const live = join(root, 'live')
 let server = await serve(live)
 
-const A1 = new Device(`anna${run}`, true, { 'One.md': 'first\n', 'Two.md': 'second\n' })
+const PHOTO = 'Pictures/Secret photo.png'
+const photo = new TextEncoder().encode('attachment-secret-content '.repeat(200))
+const samePhoto = (data: Uint8Array | undefined): boolean => data !== undefined && data.length === photo.length && data.every((byte, index) => byte === photo[index])
+/** Complete blobs in an account's folder on the server. */
+const blobsOnServer = (dataDir: string, account: string): string[] => {
+  const files: string[] = []
+  const users = join(dataDir, 'users', account)
+  if (!existsSync(users)) return files
+  for (const vault of readdirSync(users)) {
+    const dir = join(users, vault, 'blobs')
+    if (existsSync(dir)) files.push(...readdirSync(dir).filter((name) => name.endsWith('.json')))
+  }
+  return files
+}
+
+const A1 = new Device(`anna${run}`, true, { 'One.md': 'first\n', 'Two.md': 'second\n', [PHOTO]: photo })
 const A2 = new Device(`anna${run}`, false)
 try {
   check(await A1.boot(), 'A1 creates the account')
   check(await A2.boot(), 'A2 signs in')
   check(await eventually(() => A2.vault.text('One.md') === 'first\n' && A2.vault.text('Two.md') === 'second\n'), 'A2 has both notes')
+  check(await eventually(() => samePhoto(A2.vault.bytes(PHOTO))), 'and the attachment')
   // Changes spread over time, so the history has versions of its own.
   await delay(250)
   await A1.vault.userWrite('One.md', 'first\nmore\n')
@@ -77,9 +93,13 @@ try {
       }
     }
     walk(live)
-    const secrets = [`anna${run}`, VAULT, 'first', 'second', 'One.md', 'Two.md']
+    const secrets = [`anna${run}`, VAULT, 'first', 'second', 'One.md', 'Two.md', 'Secret photo', 'Pictures', 'attachment-secret-content']
     const leaks = secrets.filter((secret) => files.some((file) => file.includes(secret)))
-    check(files.length > 0 && leaks.length === 0, 'the server stores no name, vault name, note name or text', leaks)
+    check(
+      files.length > 0 && blobsOnServer(live, A1.accountId).length === 1 && leaks.length === 0,
+      'the server stores no name, vault name, note name, text, file name or file content',
+      leaks
+    )
   }
 
   // --- the server loses every note, keeps the accounts ---------------------------------
@@ -95,6 +115,11 @@ try {
   check(await eventually(() => A1.asked === 1, 20_000), 'A1 notices the server has other data and asks', A1.asked)
   await A1.recovery?.settled()
   check(A1.vault.text('One.md') === 'first\nmore\n' && A1.vault.text('Two.md') === 'second\n', 'and its notes are untouched')
+  check(samePhoto(A1.vault.bytes(PHOTO)), 'as is its attachment')
+  check(
+    await eventually(() => blobsOnServer(empty, A1.accountId).length === 1, 15_000),
+    'which it uploads again by itself: the server had lost its content'
+  )
 
   const A3 = new Device(`anna${run}`, false)
   try {
@@ -104,6 +129,7 @@ try {
       'and gets every note A1 uploaded again',
       A3.vault.paths().map((path) => [path, A3.vault.text(path)])
     )
+    check(await eventually(() => samePhoto(A3.vault.bytes(PHOTO)), 15_000), 'and the attachment')
     const docId = A3.index?.docIdForPath('One.md') as string
     const history = new NoteHistory(A3.api, docRoom(docId), (A3.keys as InstanceType<typeof KeyRing>).ownDocCrypto(docId), 100)
     await history.load()

@@ -23,6 +23,11 @@ export interface ObsidianConnectSettings {
   syncTimeoutMs: number
   /** Log every detail to the plugin's log file, not just what matters. */
   verboseLog: boolean
+  /**
+   * Attachments up to this many MB are downloaded as they come; larger ones
+   * when a note needs them. Negative: everything. A phone starts at 10.
+   */
+  attachmentDownloadLimitMb: number
 }
 
 export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
@@ -34,8 +39,12 @@ export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
   maxLoadedDocuments: 500,
   writeDebounceMs: 700,
   syncTimeoutMs: 5_000,
-  verboseLog: false
+  verboseLog: false,
+  attachmentDownloadLimitMb: -1
 }
+
+/** Where a phone starts: its storage and data plan are not a desktop's. */
+export const MOBILE_DOWNLOAD_LIMIT_MB = 10
 
 /** Signed out, the account box leads to one of two forms, each a screen of its own. */
 type Screen = 'overview' | 'sign-in' | 'create'
@@ -488,7 +497,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Sync this vault')
-      .setDesc('Keep every markdown note backed by a CRDT. Turning this off stops all syncing on this device.')
+      .setDesc('Notes, and every other file of the vault - images, PDFs. Turning this off stops all syncing on this device.')
       .addToggle((toggle) =>
         toggle.setValue(settings.syncEnabled).onChange(async (value) => {
           settings.syncEnabled = value
@@ -506,6 +515,35 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           if (!Number.isFinite(parsed) || parsed < 1) return
           settings.maxLoadedDocuments = parsed
           await this.plugin.saveSettings()
+        })
+      )
+
+    new Setting(containerEl)
+      .setName('Download attachments up to')
+      .setDesc(
+        'MB. Larger images, PDFs and other files stay on the server until a note that embeds or links them is opened. Empty downloads everything; 0 downloads only what a note needs.'
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder('everything')
+          .setValue(settings.attachmentDownloadLimitMb < 0 ? '' : String(settings.attachmentDownloadLimitMb))
+          .onChange(async (value) => {
+            const trimmed = value.trim()
+            const parsed = Number.parseFloat(trimmed)
+            if (trimmed !== '' && (!Number.isFinite(parsed) || parsed < 0)) return
+            settings.attachmentDownloadLimitMb = trimmed === '' ? -1 : parsed
+            await this.plugin.saveSettings()
+          })
+      )
+      .addButton((button) =>
+        button.setButtonText('Download everything now').onClick(async () => {
+          button.setDisabled(true)
+          try {
+            const fetched = await this.plugin.downloadAllAttachments()
+            new Notice(fetched > 0 ? `Obsidian Connect: ${fetched} attachment(s) downloaded.` : 'Obsidian Connect: every attachment is already here.')
+          } finally {
+            button.setDisabled(false)
+          }
         })
       )
 
