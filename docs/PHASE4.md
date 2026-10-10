@@ -259,7 +259,35 @@ devices *(as built)*:
   path, and the other version is kept next to it (`keepTheirsAside`) - not the other
   way round, which would make the view save again.
 
-## Step 2: the trash and earlier versions
+## Step 2: the trash and earlier versions *(built, 0.5.2)*
+
+*As built:*
+
+- **"Deleted notes and files…"** (`Trash.list`, `TrashModal`) lists both, newest first;
+  restoring a file revives its entry at its path or as `<name> (restored).<ext>` and
+  fetches it, whatever the download limit.
+- **"Earlier versions"** is in a file's menu and a command (`FileVersionsModal`):
+  versions within the retention that were current for at least 10 minutes, with a
+  preview for images. Restoring is an edit - what the file holds now becomes a
+  version first, even a change not taken in yet. "Save as a copy" makes
+  `<name> (version <date>).<ext>`, named in the index straight away (its content is
+  on the server already).
+- **Cleaning up** (`AttachmentStore.cleanUp`) runs in the trash pass, 60 s after start
+  and every 6 hours. Content goes when no live entry, tombstone within the retention
+  or lasting version within it names it. A version current for less than 10 minutes
+  loses its content but keeps its record (`purgedAt`) as lineage until the retention
+  ends; then every record goes. Nothing leaves the index before the server confirms
+  the content gone.
+- **The server keeps a blob for 10 minutes after its last upload**, whatever it is
+  asked (`OBSIDIAN_CONNECT_PURGE_GRACE_S`); uploading content it has restarts that.
+  A device that uploads content the server already has names it a moment later, and
+  another device cleaning up just then would delete it underneath. The purge answers
+  what it kept, and that is asked about again next time.
+- **The settings show** what the account stores (`GET /blobs/:account/usage`).
+- *Left:* content uploaded but never named - a crash between upload and index - is
+  never cleaned up; healing would put it back only if a device held the file.
+
+*As specified:*
 
 - **"Deleted notes…" becomes "Deleted files…"** and lists notes and attachments, with
   the same history retention. Restoring an attachment revives its entry at its path,

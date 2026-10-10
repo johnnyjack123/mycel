@@ -10,6 +10,7 @@ import {
   type BlobIdsRequest,
   type BlobInfo,
   type BlobPurgeResponse,
+  type BlobUsageResponse,
   type AccountKeyResponse,
   type AuthConfigResponse,
   type CompactableResponse,
@@ -458,7 +459,14 @@ export function createHttpApp(
   app.post<{ Params: StoreParams }>(`${API.blobs}/:account/:vaultId/purge`, async (request, reply): Promise<BlobPurgeResponse | undefined> => {
     if (!(await ownStore(request, reply))) return undefined
     const body = (request.body ?? {}) as Partial<BlobIdsRequest>
-    return { purged: await blobs.purge(request.params.account, request.params.vaultId, body.ids) }
+    return blobs.purge(request.params.account, request.params.vaultId, body.ids)
+  })
+
+  app.get<{ Params: { account: string } }>(`${API.blobs}/:account/usage`, async (request, reply): Promise<BlobUsageResponse | undefined> => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    if (request.params.account !== accountId) return reply.code(403).send({ error: 'not your account' })
+    return { bytes: await blobs.usageOf(accountId), quotaBytes: blobs.limits.quotaBytes }
   })
 
   app.get<{ Querystring: { vaultId?: string; before?: string } }>(API.compactable, async (request, reply) => {

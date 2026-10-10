@@ -39,6 +39,7 @@ import { RecoveryModal } from './history/RecoveryModal'
 import { StateStore } from './sync/StateStore'
 import { Trash } from './sync/Trash'
 import { TrashModal } from './history/TrashModal'
+import { FileVersionsModal } from './history/FileVersionsModal'
 import { ReviewStore, type Review } from './sync/Reviews'
 import { ReviewListModal, ReviewModal } from './history/ReviewModal'
 import { VaultIndex } from './sync/VaultIndex'
@@ -58,6 +59,8 @@ const MB = 1024 * 1024
 const ATTACHMENT_SETTLE_MS = 2_000
 // How often attachments are compared against what was last agreed, for changes no event reported.
 const ATTACHMENT_RESCAN_MS = 60_000
+// A version current for less than this keeps no content once the trash is emptied.
+const ATTACHMENT_MIN_VERSION_AGE_MS = 10 * 60 * 1000
 
 const NOTE_STATUS_TEXT: Record<Exclude<NoteSyncState, 'untracked'>, string> = {
   synced: 'This note is synced: everything written here has reached the server.',
@@ -199,7 +202,8 @@ export default class ObsidianConnectPlugin extends Plugin {
       callback: () => this.openHistory()
     })
     this.addCommand({ id: 'open-backups', name: 'Browse backups', callback: () => this.openBackups() })
-    this.addCommand({ id: 'deleted-notes', name: 'Deleted notes…', callback: () => this.openTrash() })
+    this.addCommand({ id: 'deleted-notes', name: 'Deleted notes and files…', callback: () => this.openTrash() })
+    this.addCommand({ id: 'file-versions', name: 'Earlier versions of this file', callback: () => this.openFileVersions() })
     this.addCommand({ id: 'copy-log', name: 'Copy the log (for a bug report)', callback: () => void this.copyLog() })
     this.addCommand({ id: 'compare-versions', name: 'Compare the two versions of this note', callback: () => void this.openReview() })
     this.addCommand({ id: 'review-notes', name: 'Notes with two versions…', callback: () => void this.openReviews() })
@@ -312,7 +316,8 @@ export default class ObsidianConnectPlugin extends Plugin {
       downloadLimitBytes: limit < 0 ? null : Math.round(limit * MB),
       maxFileBytes: this.maxFileBytes,
       settleMs: ATTACHMENT_SETTLE_MS,
-      rescanMs: ATTACHMENT_RESCAN_MS
+      rescanMs: ATTACHMENT_RESCAN_MS,
+      minVersionAgeMs: ATTACHMENT_MIN_VERSION_AGE_MS
     }
   }
 
@@ -481,7 +486,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       this.contacts
     )
     this.compactor = new Compactor(this.api, keys, () => this.shared().historyRetentionDays)
-    this.trash = new Trash(this.api, store, () => this.shared().historyRetentionDays)
+    this.trash = new Trash(this.api, store, () => this.shared().historyRetentionDays, this.attachments)
 
     // Editors bind as soon as the index is there, not after the whole vault
     // has been scanned: an open note is settled on its own, first.
@@ -629,6 +634,35 @@ export default class ObsidianConnectPlugin extends Plugin {
       return
     }
     new TrashModal(this.app, this.trash, this.shared().historyRetentionDays).open()
+  }
+
+  /** Earlier versions of a file that is not a note - the active one unless given. */
+  private openFileVersions(file?: TFile): void {
+    const active = this.app.workspace.getActiveFile()
+    const target = file ?? (active instanceof TFile ? active : null)
+    if (!this.attachments?.isReady) {
+      new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
+      return
+    }
+    if (!target || target.extension === 'md') {
+      new Notice('Open an image, a PDF or another file that is not a note first. A note has its version history.')
+      return
+    }
+    if (!this.attachments.knows(target)) {
+      new Notice(`${target.name} is not synced yet.`)
+      return
+    }
+    new FileVersionsModal(this.app, this.attachments, target, this.shared().historyRetentionDays).open()
+  }
+
+  /** What this account stores in attachments, as the server reports it; null while unknown. */
+  async attachmentUsage(): Promise<{ bytes: number; quotaBytes: number | null } | null> {
+    if (!this.unlocked || !this.attachments?.isReady) return null
+    try {
+      return await this.api.blobUsage(this.unlocked.accountId)
+    } catch {
+      return null
+    }
   }
 
   private async stopSync(): Promise<void> {
@@ -784,6 +818,10 @@ export default class ObsidianConnectPlugin extends Plugin {
    */
   private noteMenu(menu: Menu, file: TAbstractFile): void {
     const store = this.store
+    if (file instanceof TFile && file.extension !== 'md' && this.attachments?.knows(file)) {
+      menu.addItem((item) => item.setTitle('Earlier versions').setIcon('history').onClick(() => this.openFileVersions(file)))
+      return
+    }
     if (!(file instanceof TFile) || file.extension !== 'md' || !store?.ready) return
     const docId = store.docIdForPath(file.path)
     if (!docId) return

@@ -613,7 +613,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Keep history for')
       .setDesc(
-        'Days of individually restorable versions, and how long deleted notes can be restored. After that, versions are folded together and deleted notes are removed from the server. 0 keeps everything. Also applies to notes you share.'
+        'Days of individually restorable versions of notes and files, and how long deleted ones can be restored. After that, versions are folded together and deleted notes and files are removed from the server. 0 keeps everything. Also applies to notes you share.'
       )
       .addText((text) =>
         text.setValue(String(current.historyRetentionDays)).onChange((value) => {
@@ -621,6 +621,20 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           if (Number.isFinite(parsed) && parsed >= 0) update({ historyRetentionDays: parsed })
         })
       )
+
+    const usage = new Setting(containerEl)
+      .setName('Attachments on the server')
+      .setDesc('Asking the server…')
+    void this.plugin.attachmentUsage().then((answer) => {
+      if (!answer) {
+        usage.setDesc('Not known while the server cannot be reached.')
+        return
+      }
+      const mb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(1)} MB`
+      usage.setDesc(
+        `${mb(answer.bytes)}, encrypted, including earlier versions and deleted files${answer.quotaBytes === null ? '' : `, of ${mb(answer.quotaBytes)} this server allows your account`}.`
+      )
+    })
 
     new Setting(containerEl)
       .setName('Keep backups for')

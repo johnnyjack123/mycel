@@ -266,8 +266,12 @@ and the server holds immutable blobs of its versions:
   event. A view that saves what it held right after another device's version
   was written into it (within 5 s, file open in a leaf) is not taken as an
   edit on top: that version is kept next to it (`keepTheirsAside`).
-- Built: own devices (step 1). Not yet: the trash and earlier versions in the
-  UI and cleaning up blobs (step 2), attachments of shared notes (step 3).
+- The trash lists notes and files; a file's menu has "Earlier versions". The
+  trash pass also cleans up: content no live entry, recent tombstone or lasting
+  version names goes, and only what the server confirms gone leaves the index.
+  The server keeps a blob 10 minutes past its last upload whatever it is asked.
+- Built: own devices (step 1), the trash and versions (step 2). Not yet:
+  attachments of shared notes (step 3).
 
 ### Around the notes
 
@@ -383,7 +387,7 @@ npm run test:merge     # merge/reconcile/identity and the crypto — no server, 
 npm run test:load      # the built bundle imports, onload/start/unload run, Obsidian stubbed; current and versioned
 npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart — in-process
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
-npm run test:recovery  # a server that lost its data, and one restored from a backup — in-process server
+npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 # needs a server that lets tests create accounts:
 npm run test:socket    # the encrypted transport, two devices of one account
 npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing, attachments
@@ -477,11 +481,10 @@ names what is known and left for later (signatures per author).
 
 Recovery codes, 2FA, notes beyond `maxLoadedDocuments` staying live.
 
-**Attachments, steps 2 and 3 (0.5.x).** Specified in **`docs/PHASE4.md`**: the
-trash and earlier versions for files, cleaning up blobs, and attachments
+**Attachments, step 3 (0.5.x).** Specified in **`docs/PHASE4.md`**: attachments
 travelling with shared notes in both directions, plus sharing the notes a note
-links to. Step 1 (own devices) is built; until step 3, a shared note's
-recipient does not get the files it embeds.
+links to. Steps 1 and 2 are built; until step 3, a shared note's recipient
+does not get the files it embeds.
 
 **Sharing a folder (wanted, later).** Share a whole folder with someone instead
 of note by note, including what is added to it later. Not designed yet.

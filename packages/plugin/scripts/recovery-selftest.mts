@@ -26,7 +26,9 @@ async function serve(dataDir: string) {
       PORT: String(port),
       OBSIDIAN_CONNECT_DATA_DIR: dataDir,
       OBSIDIAN_CONNECT_REGISTRATION: 'open',
-      OBSIDIAN_CONNECT_JWT_SECRET: 'recovery-selftest'
+      OBSIDIAN_CONNECT_JWT_SECRET: 'recovery-selftest',
+      // Content uploaded seconds ago may go when the test empties the trash.
+      OBSIDIAN_CONNECT_PURGE_GRACE_S: '0'
     }),
     // Removed accounts are cleared within moments, not minutes.
     { logger: false, sweepMs: 200 }
@@ -222,6 +224,46 @@ try {
   check(await eventually(() => A2.vault.text('One.md') === latest), 'and rolls back', A2.vault.text('One.md'))
   const kept = await Promise.all(A2.vault.adapter.backups().map((path) => A2.vault.adapter.read(path)))
   check(kept.some((text) => text.includes('written just before the restore')), 'keeping the text it had just written itself in a backup')
+
+  // --- the server lets go of content nothing needs any more ------------------------------
+  {
+    const bytesOf = (text: string): Uint8Array => new TextEncoder().encode(text.repeat(100))
+    const same = (a: Uint8Array | undefined, b: Uint8Array): boolean => a !== undefined && a.length === b.length && a.every((byte, i) => byte === b[i])
+    const SCAN = 'Pictures/scan.png'
+    const OLD = 'Pictures/old.png'
+    await A1.vault.userCreateBinary(SCAN, bytesOf('first scan '))
+    check(await eventually(() => same(A2.vault.bytes(SCAN), bytesOf('first scan '))), 'A2 gets a scan')
+    await A1.vault.userWriteBinary(SCAN, bytesOf('second scan '))
+    check(await eventually(() => same(A2.vault.bytes(SCAN), bytesOf('second scan '))), 'and its second version')
+    await A1.vault.userCreateBinary(OLD, bytesOf('soon deleted '))
+    check(await eventually(() => same(A2.vault.bytes(OLD), bytesOf('soon deleted '))), 'and a picture')
+    await A1.vault.trash(A1.vault.file(OLD))
+    check(await eventually(() => A2.vault.bytes(OLD) === undefined), 'which A1 deletes')
+    // A copy of the scan, deleted: its content is the scan's, which lives on.
+    await A1.vault.userCreateBinary('Pictures/scan copy.png', bytesOf('second scan '))
+    check(await eventually(() => same(A2.vault.bytes('Pictures/scan copy.png'), bytesOf('second scan '))), 'and a copy of the scan')
+    await A1.vault.trash(A1.vault.file('Pictures/scan copy.png'))
+    check(await eventually(() => A2.vault.bytes('Pictures/scan copy.png') === undefined), 'which A1 deletes too')
+    const before = blobsOnServer(empty, A1.accountId).length
+
+    A1.retentionDays = 1e-9
+    await A1.trash?.purge()
+    A1.retentionDays = 30
+    check(
+      blobsOnServer(empty, A1.accountId).length === before - 2,
+      'past the retention the server lets go of the earlier version and the deleted file',
+      { before, after: blobsOnServer(empty, A1.accountId).length }
+    )
+    check(
+      await eventually(() => !A2.trash?.list().some((item) => item.path === OLD)),
+      'no device offers the deleted file any more'
+    )
+    check(
+      same(A1.vault.bytes(SCAN), bytesOf('second scan ')) && samePhoto(A1.vault.bytes(PHOTO)) && same(A2.vault.bytes(SCAN), bytesOf('second scan ')),
+      'every file that lives is untouched'
+    )
+    check((await A1.attachments?.heal()) === 0, 'and the server still has all their content')
+  }
 
   // --- the admin removes the account of someone who shared a note -------------------------
   // One device of the participant is there when it happens, the other away,

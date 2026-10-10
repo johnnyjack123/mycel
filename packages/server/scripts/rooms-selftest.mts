@@ -4,7 +4,7 @@
 //
 //   npm run test:rooms
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, type Notice, type NotifyKind } from '@obsidian-connect/shared'
@@ -250,7 +250,7 @@ try {
     const full = (fill: number): Uint8Array => new Uint8Array(CHUNK).fill(fill)
     const tail = new Uint8Array(BLOB_CHUNK_OVERHEAD + 10).fill(9)
     const vault = aliceVault.vaultId
-    const store = new BlobStore(dataDir, { maxFileBytes: 3 * BLOB_CHUNK_BYTES, quotaBytes: null })
+    const store = new BlobStore(dataDir, { maxFileBytes: 3 * BLOB_CHUNK_BYTES, quotaBytes: null, purgeGraceMs: 0 })
     const id = hexId()
 
     check((await store.info(alice, vault, id)) === null, 'a blob nobody uploaded does not exist')
@@ -277,7 +277,7 @@ try {
     check(existsSync(join(dataDir, 'users', alice, vault, 'blobs', id)), "blobs live in their owner's vault folder")
     check((await status(() => again.putChunk(alice, vault, hexId(), 0, 4, full(1)))) === 413, 'a file over the limit is refused at its first chunk')
 
-    const tight = new BlobStore(dataDir, { maxFileBytes: 3 * BLOB_CHUNK_BYTES, quotaBytes: 3 * CHUNK })
+    const tight = new BlobStore(dataDir, { maxFileBytes: 3 * BLOB_CHUNK_BYTES, quotaBytes: 3 * CHUNK, purgeGraceMs: 0 })
     check((await status(() => tight.putChunk(alice, vault, hexId(), 0, 2, full(3)))) === 507, 'an account that used up its storage can add no more')
     check((await status(() => tight.putChunk(bob, bobVault.vaultId, hexId(), 0, 1, tail))) === 200, 'while another account still can')
 
@@ -316,6 +316,34 @@ try {
       (await again.info(alice, vault, id)) === null && !existsSync(join(dataDir, 'users', alice, vault, 'blobs', id)),
       'and the blob is gone'
     )
+    const usage = await app.inject({ method: 'GET', url: `/blobs/${alice}/usage`, headers: await auth(alice) })
+    check(
+      (usage.json() as { bytes?: number }).bytes === (await again.usageOf(alice)) && (await again.usageOf(alice)) === tail.length,
+      'the server tells an account how much it stores',
+      usage.body
+    )
+    check(
+      (await app.inject({ method: 'GET', url: `/blobs/${alice}/usage`, headers: await auth(bob) })).statusCode === 403,
+      "and nobody else how much another account stores"
+    )
+
+    // A device uploads content the server has, and names it a moment later;
+    // another device cleaning up just then must not delete it underneath.
+    const careful = new BlobStore(dataDir, { ...again.limits, purgeGraceMs: 60_000 })
+    const reused = hexId()
+    await careful.putChunk(alice, vault, reused, 0, 1, tail)
+    const soon = await careful.purge(alice, vault, [reused])
+    check(soon.purged.length === 0 && soon.kept.join() === reused, 'a blob uploaded a moment ago is kept when asked to go', soon)
+    const later = await careful.purge(alice, vault, [reused], Date.now() + 61_000)
+    check(later.purged.join() === reused, 'and goes once its grace has passed', later)
+    await careful.putChunk(alice, vault, reused, 0, 1, tail)
+    await delay(20)
+    await careful.putChunk(alice, vault, reused, 0, 1, tail)
+    const record = JSON.parse(readFileSync(join(dataDir, 'users', alice, vault, 'blobs', `${reused}.json`), 'utf8')) as {
+      createdAt: number
+      touchedAt: number
+    }
+    check(record.touchedAt > record.createdAt, 'uploading a blob it has restarts its grace', record)
     await app.close()
     await httpHub.shutdown()
   }

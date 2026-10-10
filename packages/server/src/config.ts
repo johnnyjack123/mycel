@@ -46,12 +46,15 @@ export interface ServerConfig {
   maxFileBytes: number
   /** What one account may store in attachments, in bytes; null for no limit. */
   quotaBytes: number | null
+  /** How long after its last upload a blob is kept even when a device asks to delete it. */
+  purgeGraceMs: number
 }
 
 const DEV_SECRET = 'dev-insecure-secret-change-me'
 const THIRTY_DAYS = 30 * 24 * 60 * 60
 const MB = 1024 * 1024
 const DEFAULT_MAX_FILE_MB = 100
+const DEFAULT_PURGE_GRACE_S = 10 * 60
 
 function parseIntFallback(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10)
@@ -71,6 +74,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     logUpdates: env.OBSIDIAN_CONNECT_LOG_UPDATES === 'true',
     maxFileBytes: Math.max(1, parseIntFallback(env.OBSIDIAN_CONNECT_MAX_FILE_MB, DEFAULT_MAX_FILE_MB)) * MB,
     // With open registration, this is what keeps a stranger from filling the disk.
-    quotaBytes: env.OBSIDIAN_CONNECT_QUOTA_MB ? Math.max(0, parseIntFallback(env.OBSIDIAN_CONNECT_QUOTA_MB, 0)) * MB : null
+    quotaBytes: env.OBSIDIAN_CONNECT_QUOTA_MB ? Math.max(0, parseIntFallback(env.OBSIDIAN_CONNECT_QUOTA_MB, 0)) * MB : null,
+    purgeGraceMs: Math.max(0, parseIntFallback(env.OBSIDIAN_CONNECT_PURGE_GRACE_S, DEFAULT_PURGE_GRACE_S)) * 1000
   }
 }

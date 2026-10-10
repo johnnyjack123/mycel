@@ -8,6 +8,7 @@ import {
   type BlobIdsRequest,
   type BlobInfo,
   type BlobPurgeResponse,
+  type BlobUsageResponse,
   type CompactableResponse,
   type ContactCodeInfo,
   type ContactCodeRequest,
@@ -277,6 +278,11 @@ export class ConnectApi {
   purgeBlobs(account: string, vaultId: string, ids: string[]): Promise<BlobPurgeResponse> {
     const request: BlobIdsRequest = { ids }
     return this.call('POST', this.blobPath(account, vaultId, 'purge'), request)
+  }
+
+  /** What the account stores in attachments, over all its vaults. */
+  blobUsage(account: string): Promise<BlobUsageResponse> {
+    return this.call('GET', `${API.blobs}/${encodeURIComponent(account)}/usage`)
   }
 }
 

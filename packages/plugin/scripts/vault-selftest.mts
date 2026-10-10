@@ -337,6 +337,53 @@ try {
     B.vault.offlineWriteBinary('Assets/quiet.bin', binary(41))
     check(await eventually(() => same(A.vault.bytes('Assets/quiet.bin'), binary(41))), 'a change that raised no event is found and sent all the same')
 
+    // --- earlier versions and the trash, for files ---------------------------------
+    {
+      const PIC = 'Assets/versions.png'
+      const first = binary(43, 3_100)
+      const second = binary(47, 3_200)
+      await A.vault.userCreateBinary(PIC, first)
+      check(await eventually(() => same(B.vault.bytes(PIC), first)), 'B has a picture')
+      await A.vault.userWriteBinary(PIC, second)
+      check(await eventually(() => same(B.vault.bytes(PIC), second)), 'A changes it, B follows')
+      const firstHash = await contentHash(first)
+      const secondHash = await contentHash(second)
+      const listed = (device: Device): string[] => (device.attachments?.versionsOf(device.vault.file(PIC)) ?? []).map((version) => version.hash)
+      check(
+        await eventually(() => listed(A).join() === firstHash && listed(B).join() === firstHash),
+        'the picture lists what it replaced as an earlier version, on both devices',
+        { a: listed(A), b: listed(B) }
+      )
+
+      await B.attachments?.restoreVersion(B.vault.file(PIC), firstHash)
+      check(
+        await eventually(() => same(A.vault.bytes(PIC), first) && same(B.vault.bytes(PIC), first)),
+        'restoring the earlier version on B brings it back everywhere'
+      )
+      check(await eventually(() => listed(A).includes(secondHash)), 'and the version it replaced is kept in turn', listed(A))
+
+      const later = B.attachments?.versionsOf(B.vault.file(PIC)).find((version) => version.hash === secondHash)
+      const copy = later ? await B.attachments?.saveVersionCopy(B.vault.file(PIC), later) : undefined
+      check(
+        Boolean(copy) && (await eventually(() => same(A.vault.bytes(copy?.path ?? ''), second))),
+        'an earlier version saved as a copy is a file of its own, everywhere',
+        copy?.path
+      )
+
+      await A.vault.trash(A.vault.file(PIC))
+      check(await eventually(() => B.vault.bytes(PIC) === undefined), 'A deletes the picture, B follows')
+      const inTrash = await eventually(() => Boolean(B.trash?.list().some((item) => item.kind === 'file' && item.path === PIC)))
+      check(inTrash, 'it waits in the trash on the other device too', B.trash?.list().map((item) => item.path))
+      const item = B.trash?.list().find((candidate) => candidate.kind === 'file' && candidate.path === PIC)
+      const back = item ? await B.trash?.restore(item) : null
+      check(
+        back?.path === PIC && (await eventually(() => same(A.vault.bytes(PIC), first) && same(B.vault.bytes(PIC), first))),
+        'restoring it brings it back, on every device',
+        back?.path
+      )
+      check(!B.trash?.list().some((candidate) => candidate.path === PIC), 'and it leaves the trash')
+    }
+
     // A note renamed into another kind of file is a file from then on.
     await A.vault.userCreate('Draft.md', 'plain text after all\n')
     check(await eventually(() => B.vault.text('Draft.md') === 'plain text after all\n'), 'B has a note')
@@ -585,8 +632,8 @@ try {
       { a: trashed(A), b: trashed(B) }
     )
     // The old Gone.md, whose name a new note has taken since.
-    const oldGone = B.trash?.list().find((note) => note.path === 'Gone.md')?.docId as string
-    const restored = await B.trash?.restore(oldGone)
+    const oldGone = B.trash?.list().find((item) => item.kind === 'note' && item.path === 'Gone.md')
+    const restored = oldGone ? await B.trash?.restore(oldGone) : null
     check(restored?.path === 'Gone (restored).md', 'a deleted note comes back next to the one that took its name', restored?.path)
     check(
       await eventually(
@@ -601,7 +648,7 @@ try {
     check(!trashed(A).includes('Gone.md'), 'and leaves the trash')
 
     // Past the retention, the server lets go of what is still in the trash.
-    const doomedId = A.trash?.list().find((note) => note.path === 'Doomed.md')?.docId as string
+    const doomedId = A.trash?.list().find((item) => item.kind === 'note' && item.path === 'Doomed.md')?.id as string
     A.retentionDays = 1e-9
     const purged = (await A.trash?.purge()) ?? 0
     A.retentionDays = 30
@@ -617,6 +664,13 @@ try {
     check(
       A.vault.text('Gone (restored).md') === 'content of a note that was deleted\n' && A.vault.text('Gone.md') === 'a new note\n',
       'while the notes that live are untouched'
+    )
+    // This server keeps content uploaded within the last minutes, whatever
+    // anyone asks; what it kept must not be forgotten as if it went.
+    check(
+      trashed(A).includes('Holiday/photo.jpg'),
+      'a deleted file whose content the server kept for now is still in the trash',
+      trashed(A)
     )
   }
 

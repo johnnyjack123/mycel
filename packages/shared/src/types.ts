@@ -76,6 +76,8 @@ export interface AttachmentVersion {
   since: number
   /** When it was replaced. */
   at: number
+  /** Its content is gone from the server; the record stays as lineage until the retention ends. */
+  purgedAt?: number
 }
 
 // --- accounts ------------------------------------------------------------------
@@ -403,4 +405,15 @@ export interface BlobHaveResponse {
 
 export interface BlobPurgeResponse {
   purged: string[]
+  /**
+   * Still there: uploaded again a moment ago, so another device may be about
+   * to name it. Asked about again next time.
+   */
+  kept: string[]
+}
+
+export interface BlobUsageResponse {
+  /** Ciphertext bytes the account keeps, over all its vaults. */
+  bytes: number
+  quotaBytes: number | null
 }

@@ -56,6 +56,7 @@ A template sits in `docs/server.env`:
 | `OBSIDIAN_CONNECT_LOG_UPDATES` | `false` | A log line per document frame. |
 | `OBSIDIAN_CONNECT_MAX_FILE_MB` | `100` | The largest attachment taken. Larger files stay on their device. |
 | `OBSIDIAN_CONNECT_QUOTA_MB` | none | What one account may store in attachments. Worth setting with open registration. |
+| `OBSIDIAN_CONNECT_PURGE_GRACE_S` | `600` | How long an attachment's content survives being cleaned up after its last upload. Leave it. |
 | `PORT` | `1234` | Published port. |
 
 ## Accounts

@@ -153,6 +153,28 @@ export class AttachmentIndex {
     }, 'local')
   }
 
+  /** The server let go of a deleted file's content; no device offers it for restoring any more. */
+  markPurged(fileId: string): void {
+    const entry = this.files.get(fileId)
+    if (!entry?.deletedAt || entry.purgedAt) return
+    this.doc.transact(() => this.files.set(fileId, { ...entry, purgedAt: Date.now(), updatedAt: Date.now() }), 'local')
+  }
+
+  /** A version's content is gone; its record stays, as the file's lineage. */
+  markVersionPurged(fileId: string, hash: string): void {
+    const key = `${fileId}:${hash}`
+    const version = this.versionMap.get(key)
+    if (!version || version.purgedAt) return
+    this.doc.transact(() => this.versionMap.set(key, { ...version, purgedAt: Date.now() }), 'local')
+  }
+
+  /** A version past the retention, record and all. */
+  dropVersion(fileId: string, hash: string): void {
+    const key = `${fileId}:${hash}`
+    if (!this.versionMap.has(key)) return
+    this.doc.transact(() => this.versionMap.delete(key), 'local')
+  }
+
   versions(fileId?: string): AttachmentVersion[] {
     const found: AttachmentVersion[] = []
     this.versionMap.forEach((version) => {

@@ -1,5 +1,5 @@
 import { Notice, TFile, getLinkpath, type App } from 'obsidian'
-import type { AttachmentEntry } from '@obsidian-connect/shared'
+import type { AttachmentEntry, AttachmentVersion } from '@obsidian-connect/shared'
 import { contentHash, type Bytes } from '@obsidian-connect/shared/crypto'
 import { ApiError } from '../account/api.js'
 import type { AttachmentIndex } from './AttachmentIndex.js'
@@ -34,6 +34,29 @@ export interface AttachmentOptions {
   settleMs: number
   /** How often the vault is compared against what was last agreed, for changes no event reported. */
   rescanMs: number
+  /**
+   * A version that was current for less than this keeps no content after a
+   * clean-up: a file a program rewrites every few seconds would otherwise
+   * fill the server. Its record stays as the file's lineage.
+   */
+  minVersionAgeMs: number
+}
+
+/** A file of this vault in the trash. */
+export interface DeletedFile {
+  fileId: string
+  path: string
+  deletedAt: number
+  size: number
+}
+
+/** An earlier content of a file, still on the server. */
+export interface FileVersion {
+  hash: string
+  size: number
+  /** When it became current, and when it was replaced. */
+  since: number
+  at: number
 }
 
 export interface Transfers {
@@ -61,6 +84,19 @@ const STOP_DRAIN_MS = 2_000
 // device's version was written into it. Obsidian saves an edited view about
 // 2 s after the last change; this leaves room for that.
 const STALE_SAVE_MS = 5_000
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** `stem (label)ext`, or `stem (label n)ext` from the second on. */
+function besides(path: string, label: string, n: number): string {
+  const slash = path.lastIndexOf('/')
+  const dot = path.lastIndexOf('.')
+  const cut = dot > slash ? dot : path.length
+  return `${path.slice(0, cut)} (${label}${n > 1 ? ` ${n}` : ''})${path.slice(cut)}`
+}
+
+function stamp(when: Date): string {
+  return `${when.getFullYear()}-${two(when.getMonth() + 1)}-${two(when.getDate())} ${two(when.getHours())}${two(when.getMinutes())}`
+}
 
 function parentOf(path: string): string {
   const slash = path.lastIndexOf('/')
@@ -81,11 +117,7 @@ function two(value: number): string {
 
 /** `name (conflict 2026-10-10 1432).png`, next to the original. */
 function conflictName(path: string, when: Date, n: number): string {
-  const slash = path.lastIndexOf('/')
-  const dot = path.lastIndexOf('.')
-  const cut = dot > slash ? dot : path.length
-  const stamp = `${when.getFullYear()}-${two(when.getMonth() + 1)}-${two(when.getDate())} ${two(when.getHours())}${two(when.getMinutes())}`
-  return `${path.slice(0, cut)} (conflict ${stamp}${n > 1 ? ` ${n}` : ''})${path.slice(cut)}`
+  return besides(path, `conflict ${stamp(when)}`, n)
 }
 
 /**
@@ -881,5 +913,144 @@ export class AttachmentStore {
       if (this.state.attachment(fileId)) fetched += 1
     })
     return fetched
+  }
+
+  // --- the trash and earlier versions -------------------------------------------------
+
+  /** Files of this vault deleted since `since` whose content the server still keeps, newest first. */
+  deletedFiles(since: number): DeletedFile[] {
+    return this.index
+      .deleted()
+      .filter(({ entry }) => !entry.purgedAt && (entry.deletedAt as number) >= since)
+      .map(({ fileId, entry }) => ({ fileId, path: entry.path, deletedAt: entry.deletedAt as number, size: entry.size }))
+      .sort((a, b) => b.deletedAt - a.deletedAt)
+  }
+
+  /**
+   * Brings a deleted file back - here and, through the index, on every
+   * device - at its path, or next to whatever took that meanwhile. Null while
+   * its content cannot be fetched: the file follows once the server answers.
+   */
+  async restoreDeleted(fileId: string): Promise<TFile | null> {
+    const entry = this.index.entry(fileId)
+    if (!this.isReady || !entry?.deletedAt || entry.purgedAt) return null
+    let path = entry.path
+    for (let n = 1; this.app.vault.getAbstractFileByPath(path) || this.index.idForPath(path); n += 1) path = besides(entry.path, 'restored', n)
+    await this.guarded(fileId, entry.size, async () => {
+      this.index.revive(fileId, path, entry.hash, entry.size)
+      this.state.forgetAttachment(fileId)
+      await this.pull(fileId).catch((error: unknown) => this.failed(error))
+    })
+    log.info(`${entry.path}: restored from the trash${path === entry.path ? '' : ` as ${path}`}`)
+    const file = this.app.vault.getAbstractFileByPath(path)
+    return file instanceof TFile ? file : null
+  }
+
+  /** Whether the file is one this store syncs and the index knows. */
+  knows(file: TFile): boolean {
+    return this.isReady && file.extension !== 'md' && Boolean(this.index.idForPath(file.path))
+  }
+
+  /** Earlier contents of a file that the server keeps, newest first. */
+  versionsOf(file: TFile, since = 0): FileVersion[] {
+    const fileId = this.index.idForPath(file.path)
+    const entry = fileId ? this.index.entry(fileId) : undefined
+    if (!fileId || !entry) return []
+    return this.index
+      .versions(fileId)
+      .filter(
+        (version) =>
+          version.hash !== entry.hash && !version.purgedAt && version.at >= since && version.at - version.since >= this.options.minVersionAgeMs
+      )
+      .map(({ hash, size, since: from, at }) => ({ hash, size, since: from, at }))
+  }
+
+  /** One version's content, for a preview. */
+  contentOf(hash: string): Promise<Bytes> {
+    return this.download(hash)
+  }
+
+  /**
+   * Makes an earlier version current again. An edit like any other: what the
+   * file holds now becomes a version in turn, and every device follows.
+   */
+  async restoreVersion(file: TFile, hash: string): Promise<void> {
+    const fileId = this.index.idForPath(file.path)
+    const entry = fileId ? this.index.entry(fileId) : undefined
+    if (!fileId || !entry) throw new Error('This file is not synced.')
+    await this.guarded(fileId, Math.max(entry.size, file.stat.size), async () => {
+      const read = await this.read(file)
+      if (!read) throw new Error('The file is being written; try again in a moment.')
+      // What it holds now - perhaps a change not taken in yet - becomes a
+      // version first, so the restore replaces nothing that is not kept.
+      if (read.hash !== this.index.entry(fileId)?.hash) {
+        await this.upload(read.data, read.hash)
+        this.index.setContent(fileId, read.hash, read.data.length)
+      }
+      const data = await this.download(hash)
+      if (!(await this.stillHolds(file, read))) throw new Error('The file changed meanwhile; try again.')
+      await this.app.vault.modifyBinary(file, buffer(data))
+      this.index.setContent(fileId, hash, data.length)
+      this.agree(fileId, file.path, { mtime: file.stat.mtime, size: data.length }, hash)
+    })
+    log.info(`${file.path}: an earlier version restored`)
+  }
+
+  /** An earlier version as a file of its own, next to the file. */
+  async saveVersionCopy(file: TFile, version: FileVersion): Promise<TFile> {
+    const data = await this.download(version.hash)
+    const label = `version ${stamp(new Date(version.since))}`
+    let path = besides(file.path, label, 1)
+    for (let n = 2; this.app.vault.getAbstractFileByPath(path) || this.index.idForPath(path); n += 1) path = besides(file.path, label, n)
+    const copy = await this.app.vault.createBinary(path, buffer(data))
+    // The content is on the server already; only the index has to name it.
+    await this.guarded(await this.index.nextId(path), data.length, async () => {
+      const id = await this.index.add(path, version.hash, data.length)
+      if (this.index.entry(id)?.hash === version.hash) this.agree(id, path, { mtime: copy.stat.mtime, size: data.length }, version.hash)
+    })
+    log.info(`${file.path}: an earlier version saved as ${path}`)
+    return copy
+  }
+
+  /**
+   * Lets the server go of content nothing needs any more: files deleted
+   * longer ago than the retention, versions older than it, and versions that
+   * were current only briefly. Any device of the account may run it. Only
+   * what the server confirms gone leaves the index; what it kept for now is
+   * asked about again next time, so nothing is forgotten while it still
+   * takes up room. Returns how many contents went.
+   */
+  async cleanUp(retentionDays: number, now = Date.now()): Promise<number> {
+    if (!this.isReady || retentionDays <= 0) return 0
+    const cutoff = now - retentionDays * DAY_MS
+    const needed = new Set<string>()
+    const expiredFiles: Array<{ fileId: string; hash: string }> = []
+    for (const { entry } of this.index.live()) needed.add(entry.hash)
+    for (const { fileId, entry } of this.index.deleted()) {
+      if (entry.purgedAt) continue
+      if ((entry.deletedAt as number) >= cutoff) needed.add(entry.hash)
+      else expiredFiles.push({ fileId, hash: entry.hash })
+    }
+    const expiredVersions: AttachmentVersion[] = []
+    const briefVersions: AttachmentVersion[] = []
+    for (const version of this.index.versions()) {
+      if (version.at < cutoff) expiredVersions.push(version)
+      else if (version.at - version.since >= this.options.minVersionAgeMs) needed.add(version.hash)
+      else if (!version.purgedAt) briefVersions.push(version)
+    }
+    const candidates = new Set(
+      [...expiredFiles, ...expiredVersions.filter((version) => !version.purgedAt), ...briefVersions]
+        .map(({ hash }) => hash)
+        .filter((hash) => !needed.has(hash))
+    )
+    const kept = candidates.size > 0 ? await this.blobs.purge(Array.from(candidates)) : new Set<string>()
+    for (const { fileId, hash } of expiredFiles) if (!kept.has(hash)) this.index.markPurged(fileId)
+    for (const version of expiredVersions) if (!kept.has(version.hash)) this.index.dropVersion(version.fileId, version.hash)
+    for (const version of briefVersions) {
+      if (candidates.has(version.hash) && !kept.has(version.hash)) this.index.markVersionPurged(version.fileId, version.hash)
+    }
+    const gone = Array.from(candidates).filter((hash) => !kept.has(hash)).length
+    if (gone > 0) log.info(`attachments: let go of ${gone} content(s) nothing needs any more`)
+    return gone
   }
 }

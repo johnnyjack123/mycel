@@ -30,6 +30,8 @@ interface BlobMeta {
   size: number
   count: number
   createdAt: number
+  /** The last upload of it, the first included. */
+  touchedAt?: number
 }
 
 interface UploadMeta {
@@ -42,6 +44,12 @@ export interface BlobLimits {
   maxFileBytes: number
   /** Ciphertext bytes an account may keep in all; null for no limit. */
   quotaBytes: number | null
+  /**
+   * How long after its last upload a blob survives being purged. A device
+   * that uploads content the server already has names it in its index right
+   * after; another device cleaning up at that moment would delete it under it.
+   */
+  purgeGraceMs: number
 }
 
 async function readJson<T>(path: string): Promise<T | null> {
@@ -156,7 +164,10 @@ export class BlobStore {
     return this.serial(`${account}/${vault}/${id}`, async () => {
       const dir = this.dir(account, vault)
       const done = await this.meta(account, vault, id)
-      if (done) return { complete: true, count: done.count, received: done.count, size: done.size }
+      if (done) {
+        await writeAtomic(join(dir, `${id}.json`), JSON.stringify({ ...done, touchedAt: Date.now() } satisfies BlobMeta))
+        return { complete: true, count: done.count, received: done.count, size: done.size }
+      }
 
       const uploads = join(dir, UPLOADS)
       const partPath = join(uploads, id)
@@ -200,7 +211,8 @@ export class BlobStore {
       if (!last) return { complete: false, count, received: index + 1, size }
 
       await rename(partPath, join(dir, id))
-      await writeAtomic(join(dir, `${id}.json`), JSON.stringify({ size, count, createdAt: Date.now() } satisfies BlobMeta))
+      const now = Date.now()
+      await writeAtomic(join(dir, `${id}.json`), JSON.stringify({ size, count, createdAt: now, touchedAt: now } satisfies BlobMeta))
       await unlink(metaPath).catch(() => undefined)
       await this.addUsage(account, size)
       return { complete: true, count, received: count, size }
@@ -230,26 +242,34 @@ export class BlobStore {
     }
   }
 
-  /** Lets go of these blobs. Answers which ones went. */
-  async purge(account: string, vault: string, ids: unknown): Promise<string[]> {
+  /**
+   * Lets go of these blobs, except those uploaded within the grace period.
+   * Answers which went and which were kept; any other was not there.
+   */
+  async purge(account: string, vault: string, ids: unknown, now = Date.now()): Promise<{ purged: string[]; kept: string[] }> {
     if (!Array.isArray(ids)) throw new BlobError(400, 'ids must be a list')
     const purged: string[] = []
+    const kept: string[] = []
     for (const value of ids) {
       if (typeof value !== 'string' || !isHexId(value)) continue
-      const gone = await this.serial(`${account}/${vault}/${value}`, async () => {
+      const outcome = await this.serial(`${account}/${vault}/${value}`, async () => {
         const dir = this.dir(account, vault)
         const meta = await this.meta(account, vault, value)
-        await this.dropUpload(join(dir, UPLOADS), value)
-        if (!meta) return false
+        if (!meta) {
+          await this.dropUpload(join(dir, UPLOADS), value)
+          return 'absent'
+        }
+        if (now - (meta.touchedAt ?? meta.createdAt) < this.limits.purgeGraceMs) return 'kept'
         // The record first: from then on the blob does not exist for anyone.
         await unlink(join(dir, `${value}.json`))
         await rm(join(dir, value), { force: true })
         await this.addUsage(account, -meta.size)
-        return true
+        return 'purged'
       })
-      if (gone) purged.push(value)
+      if (outcome === 'purged') purged.push(value)
+      else if (outcome === 'kept') kept.push(value)
     }
-    return purged
+    return { purged, kept }
   }
 
   /** Ciphertext bytes the account keeps, over all its vaults. */

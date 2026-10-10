@@ -243,7 +243,7 @@ export class Device {
     this.keys = keys
     this.sharing = sharing
     this.compactor = new Compactor(this.api, keys, () => this.retentionDays)
-    this.trash = new Trash(this.api, store, () => this.retentionDays)
+    this.trash = new Trash(this.api, store, () => this.retentionDays, attachments)
 
     // What main.ts wires up.
     store.onReady(() => this.editors.refresh())
@@ -322,7 +322,15 @@ export class Device {
   }
 
   private attachmentOptions(): ConstructorParameters<typeof AttachmentStore>[4] {
-    return { excludeGlobs: [], downloadLimitBytes: this.downloadLimit, maxFileBytes: this.maxFileBytes, settleMs: 100, rescanMs: 1_000 }
+    return {
+      excludeGlobs: [],
+      downloadLimitBytes: this.downloadLimit,
+      maxFileBytes: this.maxFileBytes,
+      settleMs: 100,
+      rescanMs: 1_000,
+      // Versions here live for seconds; all of them count.
+      minVersionAgeMs: 0
+    }
   }
 
   /** What the settings tab does when the limit is changed. */

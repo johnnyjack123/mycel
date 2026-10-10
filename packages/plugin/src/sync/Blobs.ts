@@ -102,11 +102,19 @@ export class Blobs {
     return ids.filter((id) => !present.has(id)).map((id) => byId.get(id) as string)
   }
 
-  /** Lets the server delete these contents. Answers the hashes that went. */
-  async purge(hashes: string[]): Promise<string[]> {
+  /**
+   * Lets the server delete these contents. Answers the hashes it kept for
+   * now - uploaded again a moment ago; every other one is gone.
+   */
+  async purge(hashes: string[]): Promise<Set<string>> {
     const byId = new Map<string, string>()
     for (const hash of new Set(hashes)) byId.set(await this.keys.blobId(hash), hash)
-    const { purged } = await this.api.purgeBlobs(this.keys.accountId, this.keys.vaultId, Array.from(byId.keys()))
-    return purged.map((id) => byId.get(id)).filter((hash): hash is string => Boolean(hash))
+    const ids = Array.from(byId.keys())
+    const kept = new Set<string>()
+    for (let start = 0; start < ids.length; start += HAVE_BATCH) {
+      const answer = await this.api.purgeBlobs(this.keys.accountId, this.keys.vaultId, ids.slice(start, start + HAVE_BATCH))
+      for (const id of answer.kept) kept.add(byId.get(id) as string)
+    }
+    return kept
   }
 }

@@ -45,7 +45,11 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
   const contacts = new ContactStore(config.dataDir)
   const forks = new ForkStore(config.dataDir)
   const hub = new RoomHub({ dataDir: config.dataDir, logUpdates: config.logUpdates }, accounts, contacts, forks)
-  const blobs = new BlobStore(config.dataDir, { maxFileBytes: config.maxFileBytes, quotaBytes: config.quotaBytes })
+  const blobs = new BlobStore(config.dataDir, {
+    maxFileBytes: config.maxFileBytes,
+    quotaBytes: config.quotaBytes,
+    purgeGraceMs: config.purgeGraceMs
+  })
   const app = createHttpApp(config, tokens, accounts, hub, contacts, blobs, { logger: options.logger ?? true, paceMs: options.paceMs })
   // The CLI only marks an account as removed; its shares end and its folder
   // goes here, where the rooms are.
