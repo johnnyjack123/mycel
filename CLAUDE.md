@@ -417,9 +417,16 @@ names what is known and left for later (signatures per author).
 
 ## Not built yet
 
-Recovery codes, 2FA, notes beyond `maxLoadedDocuments` staying live,
-attachments (they need an encrypted blob store of their own; today the plugin
-ignores every non-Markdown file, it does not break on them).
+Recovery codes, 2FA, notes beyond `maxLoadedDocuments` staying live.
+
+**Attachments (0.5, designed, being built).** Specified in **`docs/PHASE4.md`**:
+content-addressed encrypted blobs, entries in the vault index, conflicts kept as
+two files, trash and earlier versions, and attachments travelling with shared
+notes in both directions. Until it is built the plugin ignores every
+non-Markdown file; it does not break on them.
+
+**Sharing a folder (wanted, later).** Share a whole folder with someone instead
+of note by note, including what is added to it later. Not designed yet.
 
 **Syncing plugins and their settings (wanted, optional).** Not through the
 CRDT: a plugin's `data.json` is JSON, not text two people edit, many plugins

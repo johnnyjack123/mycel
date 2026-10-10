@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-09 · **0.4.1 on `feat/accounts`: Phases 1-3 plus the fixes from the first device run. Next milestone: 0.5, attachments - design first.**_
+_Last updated: 2026-10-10 · **0.4.1 on `feat/accounts`: Phases 1-3 plus the fixes from the first device run. Next milestone: 0.5, attachments - designed in `docs/PHASE4.md`, build step 1 next.**_
 
 ## Where we are
 
@@ -22,17 +22,17 @@ own devices were the last thing reported; 0.4.1 fixes them, not confirmed yet.
 
 ## Next step
 
-**Milestone 0.5: attachments.** Today the plugin ignores every non-Markdown file. They
-need an encrypted blob store of their own - not the CRDT. Design it with the user
-before building; open questions below. Then, as for every phase: spec in
-`docs/PHASE4.md`, build step by step with tests and a commit each, bump to 0.5.0.
+**Milestone 0.5: attachments.** Designed with the user on 2026-10-10:
+**`docs/PHASE4.md`** is the spec. Build it in its three steps, each with tests and a
+commit; the first build the user installs is 0.5.0.
 
-1. Read how the vault index, `DocStore` and the server's folders work
-   (`sync/VaultIndex.ts`, `sync/DocStore.ts`, `server/src/log.ts` `roomDir`).
-2. Agree the design (questions below), write `docs/PHASE4.md`.
-3. Build: blob encryption in `shared/crypto`, server blob routes and storage under
-   `users/<account>/<vault>/blobs/`, the plugin side (upload on create/modify, pull
-   missing, deletes into the trash), tests in `test:rooms` and `test:vault`.
+1. **Own devices:** blob encryption and ids in `shared/crypto` (+ `test:merge`), the
+   server's blob store and routes (+ `test:rooms`), `sync/AttachmentStore.ts` with the
+   fake vault learning binary files (+ `test:vault`), self-healing (+ `test:recovery`).
+2. **Trash and earlier versions:** "Deleted files…", "Earlier versions…", cleaning up.
+3. **Shared notes:** the attachment list in the note's document, attach records on
+   the server, delivering to `<share folder>/Attachments/`, declining by deleting,
+   the fork copy, the share dialog (attachments toggle, sharing linked notes).
 
 ## In flight / half-finished
 
@@ -40,6 +40,25 @@ Nothing.
 
 ## Decisions made this session
 
+Attachments (2026-10-10, details in `docs/PHASE4.md`):
+- Every non-Markdown file is a blob (`.canvas` too); excluded globs apply; 100 MB per
+  file by default (`OBSIDIAN_CONNECT_MAX_FILE_MB`), optional quota per account.
+- Download limit per device, set on each device: everything on desktop, 10 MB on a
+  phone by default; larger files come when a note that needs them is opened.
+- A conflicting edit keeps both, as two files (`name (conflict <date time>).ext`).
+- Deleted attachments go into the same trash as notes, and replaced versions are kept,
+  both for the history retention.
+- Shared notes carry their attachments in both directions, automatically, with a
+  toggle in the share dialog (on by default, per note). Embeds and links to files
+  count; links to notes do not, but the dialog offers to share the linked notes too
+  (recursively, once, at share time).
+- Everything that comes in through a share lands in `<share folder>/Attachments/`,
+  for owners as well.
+- Deleting a file a shared note brings means leaving that file: it never comes back
+  by itself, not even with a new version; restoring it from the trash rejoins.
+- Sharing a whole folder: wanted for later, noted in `CLAUDE.md`.
+
+Earlier:
 - Plugin and settings sync (0.7) only as snapshots from a chosen device, never through
   the CRDT - reasons in `CLAUDE.md`, "Not built yet".
 - A note's presence is for other people only: a note nobody else is in is not shared,
@@ -50,16 +69,17 @@ Nothing.
 
 ## Open questions for the user
 
-For attachments (0.5):
-- Which files - everything that is not Markdown, or a list (images, PDFs)? A size limit?
-- Should a note shared with someone carry the attachments it embeds?
-- Deleted attachments: into the same trash as notes, with the same retention?
-- Mobile: download every attachment, or only when a note that embeds it is opened?
-- A conflicting edit of a binary file cannot be merged: keep both as two files
-  (`name (other device).png`)?
+None open. To check on a device during step 3: Obsidian resolving links by the end of
+their path, and which file wins when two share a name.
 
 ## Known issues / debt
 
+- **Suspected, not checked:** `DocStore.applyRemoteRenames` applies another device's
+  rename with `fileManager.renameFile`, which - depending on Obsidian's "update internal
+  links" setting - rewrites links in other notes. The renaming device already sent
+  those edits through the CRDT, so arriving concurrently they could insert a link
+  twice. The fake vault's `renameFile` is a plain rename, so the tests cannot show it.
+  Attachments use `vault.rename` (PHASE4); for notes, check and decide separately.
 - **On a device only:** the caret fix of 0.4.1, the review dialog, the note cloud, the
   note menus, the trash dialog, the log file - all untestable headless.
 - Notes beyond `maxLoadedDocuments` (500) stop receiving live updates until opened (0.9).
@@ -82,6 +102,9 @@ beyond what the user reported, and the Docker image (built by CI only on `main`)
 ---
 
 ## Log
+
+### 2026-10-10
+- Attachments (0.5) designed with the user: `docs/PHASE4.md`. Nothing built yet.
 
 ### 2026-10-09
 - 0.4.1: carets only of other people - the owner is told when the last participant
