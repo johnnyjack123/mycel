@@ -11,7 +11,7 @@ import { check, delay, Device, eventually, failures, useServer } from './harness
 
 // Imported after the harness set up the DOM; CodeMirror reads it at module scope.
 const { Notice } = await import('obsidian')
-const { BLOB_CHUNK_BYTES, docRoom } = await import('@obsidian-connect/shared')
+const { BLOB_CHUNK_BYTES, docRoom, indexRoom } = await import('@obsidian-connect/shared')
 const { contentHash } = await import('@obsidian-connect/shared/crypto')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
@@ -1031,6 +1031,16 @@ try {
       await eventually(() => B.vault.text('Together.md') === 'a draft nobody else should see\n' && B.vault.text('Archive/Plan.md') === A.vault.text('Archive/Plan.md')),
       'and still has every note right'
     )
+    // B stood exactly where the history was folded: the snapshot ends at its
+    // last frame. That is compaction, not a server that lost data.
+    {
+      const held = (): string[] =>
+        [indexRoom(B.keys?.vaultId ?? ''), ...(B.index?.live() ?? []).map(({ docId }) => docRoom(docId))].filter((room) =>
+          B.socket?.isHeld(room)
+        )
+      await delay(1_000)
+      check(held().length === 0 && B.asked === 0, 'and is not taken for a device that met a server restored from a backup', held())
+    }
 
     // Detaching: C keeps a note A shares with her, as her own, and leaves the share.
     await A.vault.userCreate('Handout.md', 'handout v1\n')

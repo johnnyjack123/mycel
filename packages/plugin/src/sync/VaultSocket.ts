@@ -436,10 +436,16 @@ export class VaultSocket {
 
   private async applySnapshot(registration: Registration, uptoSeq: number, epoch: number, data: Uint8Array): Promise<void> {
     const hash = `snapshot:${await fingerprint(data)}`
-    this.checkVerification(registration, uptoSeq, hash)
-    // Folded past where this device stood: the frames it knew are inside, and
-    // can no longer be compared one by one.
-    if (registration.verify.state === 'pending' && uptoSeq > registration.verify.seq) registration.verify.state = 'match'
+    const verify = registration.verify
+    // Folded up to or past where this device stood: the frames it knew are
+    // inside, and can no longer be compared one by one. Folded exactly at its
+    // last frame is the common case - a note nobody touched for longer than
+    // the retention - and taking that for another server held every old
+    // note and asked about each of them. Only a snapshot this device already
+    // stood on is compared, against itself.
+    const folded = uptoSeq > verify.seq || (uptoSeq === verify.seq && !verify.hash?.startsWith('snapshot:'))
+    if (verify.state === 'pending' && folded) verify.state = 'match'
+    else this.checkVerification(registration, uptoSeq, hash)
     const plaintext = await this.open(registration, epoch, data, snapshotAad(registration.room, epoch))
     if (!plaintext || registration.dead) return
     const snapshot = unpackFrame(plaintext)
