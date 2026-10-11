@@ -309,7 +309,7 @@ devices *(as built)*:
 - **Space:** a 20 MB PDF annotated in ten sittings keeps ten versions, 200 MB, for
   the retention. The settings show the account's total as the server reports it.
 
-## Step 3: shared notes *(files built, 0.5.4; sharing linked notes not yet)*
+## Step 3: shared notes *(files built, 0.5.4; linked notes, 0.5.5)*
 
 *As built, where it differs from or adds to the specification below:*
 
@@ -342,8 +342,23 @@ devices *(as built)*:
 - **Server:** `POST /log/:room/attachments` records what a note's list names; reading
   someone else's blob takes `?room=` and access to that note. Purging keeps a blob any
   note names. The room going (purge, owner removed) drops its records.
-- **Not built yet:** "Also share the notes it links to" (below), and the delivered
-  file's resolution check runs only once the file is there.
+- **Linked notes (0.5.5)** are collected when the dialog opens (`share/LinkedNotes.ts`):
+  links, embeds and frontmatter links that resolve to a note, followed breadth first
+  and only through notes that go along - the links of a note that stays behind lead
+  nowhere on the other side. Each lands at the path of the first link that reached
+  it, cleaned of `./`, `../` and a leading `/` (`landingTitle`); the receiver's
+  `freePath` turns the sealed title's folders into folders and never climbs out of
+  the share folder. A receiver before 0.5.5 flattens `Ideas/Roadmap` into
+  `Ideas Roadmap.md`.
+- **A note the person has already is left alone**, because sharing it again would
+  overwrite their access and its title on the server. A linked note shared before
+  keeps its own choice about files - it applies to everyone in it, and nobody saw it
+  in the dialog.
+- **The receiver takes incoming shares one pass at a time** (`checkIncoming`): a note
+  and its linked notes arrive as one notification each, and several of them accepted
+  together give one notice.
+- **Not built:** the delivered file's resolution check runs only once the file is
+  there.
 
 ### The attachment list
 
@@ -459,7 +474,8 @@ same; the copy goes to the store, not to the disk.
   - create, modify, rename and delete across three devices;
   - a conflict, two vaults meeting, the download limit;
   - a remote delete of a file changed here;
-  - for step 3: publishing, delivering, declining, read access, and the fork copy.
+  - for step 3: publishing, delivering, declining, read access, and the fork copy;
+    the linked notes a share dialog lists, and where they land.
 - `test:recovery`: a server that lost its blobs gets them back.
 
 ## To verify on a device

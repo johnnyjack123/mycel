@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-11 · **0.5.4 on `feat/accounts`: attachments between one's own devices, the trash and earlier versions, and shared notes carrying their files (`docs/PHASE4.md`). Next: sharing the notes a note links to, the last part of step 3.**_
+_Last updated: 2026-10-11 · **0.5.5 on `feat/accounts`: milestone 0.5 built - attachments between one's own devices, the trash and earlier versions, shared notes carrying their files and the notes they link to (`docs/PHASE4.md`). Next: the user tests all of 0.5 on devices; then 0.6.**_
 
 ## Where we are
 
@@ -43,13 +43,16 @@ bodies need at least 8 MB (`docs/SERVER.md`).
    preview with deleted pictures, "Earlier versions" in a file's menu (image
    preview, restore, save as a copy), the usage line in the settings.
    Restoring notes and files from the trash confirmed on devices (2026-10-11).
-3. **Shared notes' files - built, 0.5.4.** To confirm on devices: the toggle in the
-   share dialog and in "Who has access" (a note shared before 0.5.4 counts as off),
-   a picture arriving in `Shared/Attachments/`, a change going back to the owner's own
-   file, deleting a received picture keeping it away. **Next:** "Also share the notes
-   it links to" in the share dialog (PHASE4, "The share dialog"): recursive list,
-   once at share time; the sealed title may carry folders so links between the
-   shared notes resolve below the share folder.
+3. **Shared notes' files - built, 0.5.4; the notes they link to - built, 0.5.5.**
+   To confirm on devices: the toggle in the share dialog and in "Who has access" (a
+   note shared before 0.5.4 counts as off), a picture arriving in
+   `Shared/Attachments/`, a change going back to the owner's own file, deleting a
+   received picture keeping it away; "Also share the notes it links to" - the list
+   with the reasons a note cannot go along, the linked notes landing in folders below
+   `Shared/` and their links resolving there, one notice for several notes.
+
+**Next:** the user tests all of 0.5 on devices (2026-10-12 onwards). Then 0.6,
+recovery codes and 2FA.
 
 ## In flight / half-finished
 
@@ -79,6 +82,10 @@ Attachments (2026-10-10, details in `docs/PHASE4.md`):
   everything of steps 1-2 unchanged); the base per shared file belongs to the vault,
   not the device; a note shared before 0.5.4 does not share its files until the
   owner turns it on in "Who has access".
+- Decided for linked notes (0.5.5), without asking: a linked note the person already
+  has is skipped, since sharing it again would overwrite their access; a linked note
+  shared before keeps its own choice about files; links are followed only through
+  notes that go along.
 - Found while building, decided without asking (invariant 24): an attachment entry is
   replaced whole, so two devices writing at once lose one write silently. Entries name
   what they replaced (`prev`) and every replacement leaves a version record; a version
@@ -95,8 +102,9 @@ Earlier:
 
 ## Open questions for the user
 
-None open. To check on a device during step 3: Obsidian resolving links by the end of
-their path, and which file wins when two share a name.
+None open. To check on a device: Obsidian resolving links by the end of their path
+(`[[Ideas/Roadmap]]` finding `Shared/Ideas/Roadmap.md`, `![[diagram.png]]` finding
+`Shared/Attachments/diagram.png`), and which file wins when two share a name.
 
 ## Known issues / debt
 
@@ -115,9 +123,12 @@ their path, and which file wins when two share a name.
 
 ## Verification state
 
-2026-10-11, 0.5.4: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
+2026-10-11, 0.5.5: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
 `test:rooms` (156), `test:sync` (26), `test:recovery` (56), and against a scratch
-server on 1235 `test:socket` (19) and `test:vault` (213) - all pass. For 0.5.4 also
+server on 1235 `test:socket` (19) and `test:vault` (222) - all pass. For 0.5.5 checked
+by putting the bug back: a title's folders flattened (`Shared/Ideas Roadmap.md`) and
+a note the person had shared again (their access overwritten) - four checks failed,
+nothing else. For 0.5.4 also
 checked by putting the bug back: a snapshot ending exactly at a device's last frame
 taken for another server (B held every old note). Shared files' conflict and
 lineage paths are covered (two people changing a picture at once; A's other device
@@ -136,6 +147,11 @@ image (built by CI only on `main`).
 ## Log
 
 ### 2026-10-11
+- 0.5.5: "Also share the notes it links to" in the share dialog - the notes a note
+  reaches through links, listed with the reason when one cannot go along, shared once
+  with the same choices and landing below the share folder at their link's path. A
+  note the person has already is left as it is. Incoming shares are taken one pass at
+  a time, with one notice for several; notices name contacts instead of account ids.
 - 0.5.4: shared notes carry their files, both ways, by the owner's choice per note -
   copied into each account's own store, landing in `<share folder>/Attachments/`;
   deleting a received file leaves it for good. Found and fixed on the way: compaction

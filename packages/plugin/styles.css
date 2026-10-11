@@ -34,6 +34,17 @@
   border-radius: 6px;
 }
 
+.connect-linked-notes {
+  max-height: 12em;
+  overflow-y: auto;
+  margin: 0 0 1em;
+  font-size: var(--font-ui-small);
+}
+
+.connect-linked-reason {
+  color: var(--text-muted);
+}
+
 .connect-history-row {
   display: flex;
   justify-content: space-between;

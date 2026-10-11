@@ -342,7 +342,9 @@ export class FakeMetadataCache {
     const files = this.vault.getFiles()
     return (
       files.find((file) => file.path === link || file.path === `${link}.md`) ??
-      files.find((file) => file.path.endsWith(`/${link}`) || file.name === link || file.basename === link) ??
+      files.find(
+        (file) => file.path.endsWith(`/${link}`) || file.path.endsWith(`/${link}.md`) || file.name === link || file.basename === link
+      ) ??
       null
     )
   }

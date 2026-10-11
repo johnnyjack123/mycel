@@ -285,7 +285,7 @@ and the server holds immutable blobs of its versions:
   the account (`declined`); the trash rejoins. The server lets a note's
   members read the blobs its list names and never purges those.
 - Built: own devices (step 1), the trash and versions (step 2), shared notes'
-  files (step 3). Not yet: sharing the notes a note links to.
+  files and the notes they link to (step 3).
 
 ### Around the notes
 
@@ -344,6 +344,11 @@ the name, which is not unique — is never drawn. There is no global
 
 - A share folder is only a **default landing spot**. Moving a note out keeps it
   shared; the link lives in the index.
+- **"Also share the notes it links to"** (`share/LinkedNotes.ts`) shares, once
+  and with the same choices, every note the note reaches through links. Each
+  lands below the share folder at its link's path - the sealed title carries
+  the folders - so the links between them resolve there. A note the person has
+  already is left alone: sharing it again would overwrite their access.
 - **Revoke is a protocol message** (`revoked`), also answered to a later
   subscribe, and moves the note to a new epoch.
 - **Every end of a share is a fork** (invariant 20). The server writes what the
@@ -494,11 +499,6 @@ names what is known and left for later (signatures per author).
 ## Not built yet
 
 Recovery codes, 2FA, notes beyond `maxLoadedDocuments` staying live.
-
-**Sharing the notes a note links to (0.5.x).** Specified in
-**`docs/PHASE4.md`**, step 3: the share dialog offers to share every note the
-note links to, recursively, once, at share time. Everything else of step 3 -
-files travelling with shared notes - is built.
 
 **Sharing a folder (wanted, later).** Share a whole folder with someone instead
 of note by note, including what is added to it later. Not designed yet.

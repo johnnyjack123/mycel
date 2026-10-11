@@ -1248,8 +1248,14 @@ export class DocStore {
     return this.index.docIdForPath(path)
   }
 
+  /**
+   * A title may carry folders: a note shared along with one that links to it
+   * lands at the link's path, so the link resolves here too. Nothing climbs
+   * out of the share folder.
+   */
   private freePath(folder: string, title: string): string {
-    const name = safeFileName(title)
+    const segments = title.split('/').filter((segment) => !['', '.', '..'].includes(segment.trim()))
+    const name = (segments.length > 0 ? segments : [title]).map(safeFileName).join('/')
     const prefix = folder.replace(/^\/+|\/+$/g, '')
     const at = (suffix: string): string => `${prefix ? `${prefix}/` : ''}${name}${suffix}.md`
     let candidate = at('')

@@ -15,6 +15,7 @@ const { BLOB_CHUNK_BYTES, docRoom, indexRoom } = await import('@obsidian-connect
 const { contentHash } = await import('@obsidian-connect/shared/crypto')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
+const { landingTitle, linkedNotes } = await import('../src/share/LinkedNotes.js')
 
 const serverUrl = process.argv[2] ?? process.env.OBSIDIAN_CONNECT_URL ?? 'ws://localhost:1234'
 useServer(serverUrl)
@@ -1179,6 +1180,64 @@ try {
       await delay(2_500)
       check(same(A.vault.bytes('Assets/diagram.png'), ownersCopy), "a reader's change to a picture does not reach the owner")
       await A.sharing?.setRole(boardId, C.accountId, 'write')
+    }
+
+    // --- sharing the notes a note links to ------------------------------------------
+    {
+      check(
+        landingTitle('../Projects/./Plan.md') === 'Projects/Plan' && landingTitle('/Top') === 'Top',
+        'a link path lands below the share folder, never above it'
+      )
+      const hubText = 'start at [[Ideas/Roadmap]], see [[Board]]\n'
+      const roadmapText = 'roadmap: [[Todo]], back to [[Hub]]\n'
+      await A.vault.userCreate('Ideas/Roadmap.md', roadmapText)
+      await A.vault.userCreate('Todo.md', 'todo\n')
+      await A.vault.userCreate('Hub.md', hubText)
+      check(
+        await eventually(() => A.docText('Hub.md') === hubText && A.docText('Ideas/Roadmap.md') === roadmapText && A.docText('Todo.md') === 'todo\n'),
+        'A writes a note that links to others, which link on'
+      )
+      const hubId = A.index?.docIdForPath('Hub.md') as string
+      const boardId = A.index?.docIdForPath('Board.md') as string
+      const linked = linkedNotes(A.metadataCache as never, A.store as never, A.vault.file('Hub.md') as never, (account) => account)
+      check(
+        JSON.stringify(linked.map((note) => [note.path, note.title, Boolean(note.docId)])) ===
+          JSON.stringify([
+            ['Ideas/Roadmap.md', 'Ideas/Roadmap', true],
+            ['Board.md', 'Board', true],
+            ['Todo.md', 'Todo', true]
+          ]),
+        'the share dialog lists the notes it links to and theirs in turn, each once, with the path of its link',
+        linked
+      )
+
+      await A.sharing?.share(hubId, C.accountId, 'read', false, true)
+      const outcome = await A.sharing?.shareLinked(linked, C.accountId, 'read', false, true)
+      check(outcome?.shared === 2 && outcome.had === 1 && outcome.failed === 0, 'A shares them along with it, all but the one C has', outcome)
+      check(
+        await eventually(
+          () =>
+            C.vault.text('Shared/Hub.md') === hubText &&
+            C.vault.text('Shared/Ideas/Roadmap.md') === roadmapText &&
+            C.vault.text('Shared/Todo.md') === 'todo\n',
+          15_000
+        ),
+        'C receives them below her share folder at the paths of their links, so the links between them resolve',
+        C.vault.getMarkdownFiles().map((file) => file.path)
+      )
+      check(
+        !C.vault.text('Shared/Ideas/Roadmap 2.md') && !C.vault.text('Shared/Todo 2.md') && !C.vault.text('Shared/Hub 2.md'),
+        'each once, though the server announced them one by one'
+      )
+      const roadmapId = C.index?.docIdForPath('Shared/Ideas/Roadmap.md') as string
+      check(C.store?.isReadOnly(roadmapId) === true, 'with the access chosen for the note that links to them')
+      check((await A.sharing?.attachmentsShared(A.index?.docIdForPath('Ideas/Roadmap.md') as string)) === true, 'and its choice about files')
+      check(
+        (await A.sharing?.members(boardId))?.members.find((member) => member.account === C.accountId)?.role === 'write' &&
+          C.store?.isReadOnly(boardId) === false &&
+          !C.vault.text('Shared/Board 2.md'),
+        'the note C had already keeps her access and its place'
+      )
     }
 
     // Removing a contact ends what the two share; each keeps what they have.

@@ -93,6 +93,7 @@ export class Device {
   readonly vault: InstanceType<typeof FakeVault>
   /** What the user renames with in Obsidian; it rewrites the links to the file. */
   readonly fileManager: InstanceType<typeof FakeFileManager>
+  readonly metadataCache: InstanceType<typeof FakeMetadataCache>
   readonly locals = new MemoryLocalStores()
   private readonly secretMap = new Map<string, string>()
   private readonly secrets = {
@@ -156,6 +157,7 @@ export class Device {
   ) {
     this.vault = new FakeVault(files)
     this.fileManager = new FakeFileManager(this.vault)
+    this.metadataCache = new FakeMetadataCache(this.vault)
   }
 
   async boot(): Promise<boolean> {
@@ -174,7 +176,7 @@ export class Device {
         for (const path of this.openFiles) visit({ view: { file: vault.getAbstractFileByPath(path) } })
       }
     }
-    const app = { vault, fileManager: this.fileManager, metadataCache: new FakeMetadataCache(vault), workspace }
+    const app = { vault, fileManager: this.fileManager, metadataCache: this.metadataCache, workspace }
     const state = new StateStore(vault.adapter as never, 'plugin')
     const backups = new BackupStore(vault.adapter as never, 'plugin')
     const index = new VaultIndex(openVault.vaultId, (path, generation) => keys.docId(path, generation))

@@ -28,6 +28,7 @@ import type { KeyRing } from '../account/KeyRing.js'
 import type { DocStore } from '../sync/DocStore.js'
 import { entryKey, type HistoryEntry } from '../sync/History.js'
 import type { Contacts } from './Contacts.js'
+import type { LinkedNote } from './LinkedNotes.js'
 import { setAttachmentsShared } from './SharedFiles.js'
 import { log } from '../log.js'
 
@@ -57,6 +58,8 @@ function titleOf(path: string): string {
 export class Sharing {
   /** The end of a share arrives as a message, a notice and a detach; one of them carries it out. */
   private readonly ending = new Map<string, Promise<TFile | null>>()
+  private incomingRunning: Promise<unknown> = Promise.resolve()
+  private incomingQueued: Promise<number> | null = null
 
   constructor(
     private readonly api: ConnectApi,
@@ -108,12 +111,6 @@ export class Sharing {
   }
 
   /**
-   * Shares a note of this vault. With history the person gets every epoch
-   * key; without, the note moves to a new epoch and they get that key and a
-   * snapshot of the note as it is now - the frames before it are deltas they
-   * could not read anyway.
-   */
-  /**
    * Whether the files the note embeds or links travel with it - the owner's
    * choice, per note: everyone in it reads the same document. Null while it
    * was never chosen.
@@ -138,7 +135,21 @@ export class Sharing {
     log.info(`${entry.path}: its files ${shared ? 'go along with it' : 'no longer go along with it'}`)
   }
 
-  async share(docId: string, account: string, role: ShareRole, withHistory: boolean, withAttachments?: boolean): Promise<void> {
+  /**
+   * Shares a note of this vault. With history the person gets every epoch
+   * key; without, the note moves to a new epoch and they get that key and a
+   * snapshot of the note as it is now - the frames before it are deltas they
+   * could not read anyway. `landing` is where it lands below their share
+   * folder, folders included; by default its name.
+   */
+  async share(
+    docId: string,
+    account: string,
+    role: ShareRole,
+    withHistory: boolean,
+    withAttachments?: boolean,
+    landing?: string
+  ): Promise<void> {
     const entry = this.store.entry(docId)
     if (!entry || entry.deletedAt) throw new Error('This note is not synced yet.')
     if (entry.owner) throw new Error(`Only ${this.nameOf(entry.owner)} can share this note.`)
@@ -150,7 +161,7 @@ export class Sharing {
     // Without the room's current state there is nothing to hand over, and
     // without it on the server there is no room to share yet.
     if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs))) throw new Error('The server is not reachable.')
-    const title = await this.keys.sealTitle(docId, titleOf(entry.path), recipientKey)
+    const title = await this.keys.sealTitle(docId, landing || titleOf(entry.path), recipientKey)
     const room = docRoom(docId)
 
     for (let attempt = 0; ; attempt += 1) {
@@ -207,6 +218,40 @@ export class Sharing {
     )
   }
 
+  /**
+   * Shares the notes a note links to along with it, with the same person and
+   * choices - once: a link added later shares nothing by itself, because
+   * nobody saw it listed. A note the person has already keeps the access and
+   * place it has, and one shared before keeps its choice about its files,
+   * which applies to everyone in it.
+   */
+  async shareLinked(
+    notes: LinkedNote[],
+    account: string,
+    role: ShareRole,
+    withHistory: boolean,
+    withAttachments?: boolean
+  ): Promise<{ shared: number; had: number; failed: number }> {
+    const outcome = { shared: 0, had: 0, failed: 0 }
+    for (const note of notes) {
+      if (!note.docId) continue
+      try {
+        const { members } = await this.api.members(note.docId)
+        if (members.some((member) => member.account === account)) {
+          outcome.had += 1
+          continue
+        }
+        const files = withAttachments !== undefined && (await this.attachmentsShared(note.docId)) === null ? withAttachments : undefined
+        await this.share(note.docId, account, role, withHistory, files, note.title)
+        outcome.shared += 1
+      } catch (error) {
+        log.warn(`${note.path}: sharing it along with the note that links to it failed`, error)
+        outcome.failed += 1
+      }
+    }
+    return outcome
+  }
+
   /** Takes access away and moves the note to an epoch the person never gets. */
   async revoke(docId: string, account: string): Promise<void> {
     const members = await this.api.members(docId)
@@ -241,7 +286,7 @@ export class Sharing {
   }
 
   /** Adds a note someone shared into this vault. */
-  async accept(share: IncomingShare): Promise<TFile | null> {
+  async accept(share: IncomingShare, announce = true): Promise<TFile | null> {
     const title = (await this.keys.openTitle(share.docId, share.title)) || 'Shared note'
     const file = await this.store.acceptShare(
       { docId: share.docId, owner: share.owner, role: share.role, title },
@@ -250,23 +295,48 @@ export class Sharing {
     if (!file) return null
     await this.api.accept({ docId: share.docId, vaultId: this.keys.vaultId })
     log.info(`${file.path}: shared by ${share.owner} to ${share.role}, added`)
-    new Notice(
-      `${share.owner} shared "${title}" with you${share.role === 'read' ? ' to read' : ''}. It is in ${file.path}.`,
-      10_000
-    )
+    if (announce) {
+      new Notice(
+        `${this.nameOf(share.owner)} shared "${file.basename}" with you${share.role === 'read' ? ' to read' : ''}. It is in ${file.path}.`,
+        10_000
+      )
+    }
     return file
   }
 
-  /** Accepts everything waiting, if this vault may do so without asking. Returns how many are still waiting. */
-  async checkIncoming(): Promise<number> {
+  /**
+   * Accepts everything waiting, if this vault may do so without asking.
+   * Returns how many are still waiting. A note shared with the notes it links
+   * to announces each of them separately; one pass at a time takes them all,
+   * each once, and a pass asked for meanwhile runs after it.
+   */
+  checkIncoming(): Promise<number> {
+    if (this.incomingQueued) return this.incomingQueued
+    const queued = this.incomingRunning.then(() => {
+      this.incomingQueued = null
+      return this.acceptWaiting()
+    })
+    this.incomingQueued = queued
+    this.incomingRunning = queued.catch(() => 0)
+    return queued
+  }
+
+  private async acceptWaiting(): Promise<number> {
     const waiting = await this.incoming()
     if (!this.options.autoAccept()) return waiting.length
+    const added = new Map<string, TFile[]>()
     for (const share of waiting) {
       try {
-        await this.accept(share)
+        const file = await this.accept(share, waiting.length === 1)
+        if (file) added.set(share.owner, [...(added.get(share.owner) ?? []), file])
       } catch (error) {
         log.error(`accepting ${share.docId} failed`, error)
       }
+    }
+    if (waiting.length === 1) return 0
+    for (const [owner, files] of added) {
+      const what = files.length === 1 ? `"${files[0]?.basename}"` : `${files.length} notes`
+      new Notice(`${this.nameOf(owner)} shared ${what} with you. ${files.length === 1 ? 'It is' : 'They are'} in ${this.options.folder()}.`, 10_000)
     }
     return 0
   }
@@ -276,7 +346,7 @@ export class Sharing {
       case 'share-added': {
         const waiting = await this.checkIncoming()
         if (waiting > 0) {
-          new Notice(`${notice.owner} shared a note with you. Run "Notes shared with me" to add it to this vault.`, 10_000)
+          new Notice(`${this.nameOf(notice.owner)} shared a note with you. Run "Notes shared with me" to add it to this vault.`, 10_000)
         }
         return
       }
@@ -284,7 +354,7 @@ export class Sharing {
         const entry = this.store.entry(notice.docId)
         if (notice.role && entry?.owner) {
           this.store.setShareRole(notice.docId, notice.role)
-          new Notice(`${notice.owner} changed your access to a shared note: you can now ${notice.role === 'read' ? 'only read' : 'edit'} it.`)
+          new Notice(`${this.nameOf(notice.owner)} changed your access to a shared note: you can now ${notice.role === 'read' ? 'only read' : 'edit'} it.`)
         } else if (entry && !entry.owner && !entry.deletedAt) {
           await this.refreshShared(notice.docId)
         }

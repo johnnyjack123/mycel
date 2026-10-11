@@ -23,6 +23,7 @@ import { NoteHistory } from './history/NoteHistory'
 import { AccessModal } from './share/AccessModal'
 import { IncomingModal } from './share/IncomingModal'
 import { ShareModal } from './share/ShareModal'
+import { linkedNotes } from './share/LinkedNotes'
 import { Contacts, type OpenCode } from './share/Contacts'
 import { Sharing } from './share/Sharing'
 import { SharedFiles } from './share/SharedFiles'
@@ -824,7 +825,9 @@ export default class ObsidianConnectPlugin extends Plugin {
       return
     }
     const files = this.attachments?.isReady && this.sharedFiles ? this.sharedFiles.summary(note.file) : null
-    new ShareModal(this.app, this.sharing, note.file, note.docId, this.contactList(), files).open()
+    const sharing = this.sharing
+    const linked = linkedNotes(this.app.metadataCache, this.store, note.file, (account) => sharing.nameOf(account))
+    new ShareModal(this.app, sharing, note.file, note.docId, this.contactList(), files, linked).open()
   }
 
   private openAccess(file?: TFile): void {
