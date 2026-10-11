@@ -26,6 +26,14 @@ export const SETTINGS_FIELD = 'settings'
 // INDEX_FIELD for a note.
 export const ATTACHMENTS_FIELD = 'attachments'
 export const VERSIONS_FIELD = 'versions'
+// `${docId}:${ref}` -> { at }: files of a shared note this account let go of.
+export const DECLINED_FIELD = 'declined'
+// `${docId}:${ref}` -> { hash, path }: what this vault last agreed with a shared note's list.
+export const SHARED_BASES_FIELD = 'sharedBases'
+// In a shared note's own document, next to its text: link -> SharedAttachment,
+// and the note's sharing settings - for now only `attachments: boolean`.
+export const NOTE_ATTACHMENTS_FIELD = 'attachments'
+export const NOTE_SHARE_FIELD = 'share'
 
 /**
  * Blobs are encrypted in chunks of this much plaintext, each with its own IV

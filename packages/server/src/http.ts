@@ -6,6 +6,7 @@ import {
   PROTOCOL_VERSION,
   isHexId,
   type AcceptRequest,
+  type AttachBlobsRequest,
   type BlobHaveResponse,
   type BlobIdsRequest,
   type BlobInfo,
@@ -426,18 +427,46 @@ export function createHttpApp(
     return accountId
   }
 
-  app.get<{ Params: BlobParams }>(`${API.blobs}/:account/:vaultId/:blobId`, async (request, reply): Promise<BlobInfo | undefined> => {
-    if (!(await ownStore(request, reply))) return undefined
-    const info = await blobs.info(request.params.account, request.params.vaultId, request.params.blobId)
-    if (!info) return reply.code(404).send({ error: 'no such blob' })
-    return info
-  })
+  /**
+   * Reading: the store's own account, or - with `?room=` - anyone who may
+   * read that note, if its attachment list names this blob.
+   */
+  async function readableBlob(
+    request: FastifyRequest<{ Params: BlobParams; Querystring: { room?: string } }>,
+    reply: FastifyReply
+  ): Promise<boolean> {
+    const accountId = await user(request, reply)
+    if (!accountId) return false
+    const { account, vaultId, blobId } = request.params
+    if (account === accountId && isHexId(vaultId) && (await accounts.get(accountId))?.vaults[vaultId]) return true
+    const room = request.query.room
+    if (room && (await hub.canReadBlob(accountId, room, { account, vault: vaultId, blob: blobId }))) return true
+    await reply.code(403).send({ error: 'not yours, and no note you can read names it' })
+    return false
+  }
 
-  app.get<{ Params: ChunkParams }>(`${API.blobs}/:account/:vaultId/:blobId/:chunk`, async (request, reply) => {
-    if (!(await ownStore(request, reply))) return undefined
+  app.get<{ Params: BlobParams; Querystring: { room?: string } }>(
+    `${API.blobs}/:account/:vaultId/:blobId`,
+    async (request, reply): Promise<BlobInfo | undefined> => {
+      if (!(await readableBlob(request, reply))) return undefined
+      const info = await blobs.info(request.params.account, request.params.vaultId, request.params.blobId)
+      if (!info) return reply.code(404).send({ error: 'no such blob' })
+      return info
+    }
+  )
+
+  app.get<{ Params: ChunkParams; Querystring: { room?: string } }>(`${API.blobs}/:account/:vaultId/:blobId/:chunk`, async (request, reply) => {
+    if (!(await readableBlob(request, reply))) return undefined
     const { account, vaultId, blobId, chunk } = request.params
     const data = await blobs.readChunk(account, vaultId, blobId, Number(chunk))
     return reply.type('application/octet-stream').send(data)
+  })
+
+  app.post<{ Params: RoomParams }>(`${API.log}/:room/attachments`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    await hub.attachBlobs(accountId, request.params.room, (request.body ?? {}) as AttachBlobsRequest)
+    return { ok: true }
   })
 
   app.put<{ Params: ChunkParams; Querystring: { count?: string } }>(

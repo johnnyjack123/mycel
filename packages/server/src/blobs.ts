@@ -93,11 +93,18 @@ export class BlobStore {
   private readonly queues = new Map<string, Promise<unknown>>()
   /** Bytes per account, counted once and kept up to date. */
   private readonly usage = new Map<string, Promise<number>>()
+  /** Whether a shared note names a blob; such a blob is kept whatever its owner asks. */
+  private attached: (account: string, vault: string, blob: string) => boolean = () => false
 
   constructor(
     private readonly dataDir: string,
     readonly limits: BlobLimits
   ) {}
+
+  /** Who knows which blobs shared notes name: the room hub. */
+  protect(attached: (account: string, vault: string, blob: string) => boolean): void {
+    this.attached = attached
+  }
 
   private dir(account: string, vault: string): string {
     return join(this.dataDir, 'users', account, vault, 'blobs')
@@ -260,6 +267,8 @@ export class BlobStore {
           return 'absent'
         }
         if (now - (meta.touchedAt ?? meta.createdAt) < this.limits.purgeGraceMs) return 'kept'
+        // Someone else may still fetch it through a note shared with them.
+        if (this.attached(account, vault, value)) return 'kept'
         // The record first: from then on the blob does not exist for anyone.
         await unlink(join(dir, `${value}.json`))
         await rm(join(dir, value), { force: true })

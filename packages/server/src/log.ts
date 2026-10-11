@@ -52,6 +52,11 @@ export interface RoomMeta {
   /** account id -> epoch -> that epoch's key sealed to them. */
   sealedKeys: Record<string, Record<string, string>>
   snapshots: SnapshotInfo[]
+  /**
+   * Blobs the note's attachment list names, as `account/vault/blob`: whoever
+   * may read the note may read these, and nobody may purge them meanwhile.
+   */
+  attachments?: string[]
 }
 
 const HEADER_BYTES = 8 + 8 + 4 + 4

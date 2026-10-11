@@ -61,6 +61,40 @@ export interface AttachmentEntry {
   deletedAt?: number
   /** The server let go of its content, so it can no longer be restored. */
   purgedAt?: number
+  /** It came in through a shared note, for this link. */
+  via?: { docId: string; ref: string }
+}
+
+/**
+ * One file a shared note embeds or links, in the note's own document - so
+ * it is encrypted under the note's key, readable to everyone in the note and
+ * to nobody else. The content lies in the store of whoever put it there.
+ */
+export interface SharedAttachment {
+  account: string
+  vault: string
+  blob: string
+  /** The blob's key, base64. */
+  key: string
+  hash: string
+  size: number
+  updatedAt: number
+  /** The account that set this version. */
+  by: string
+  /** The version this one replaced, as its writer knew it (invariant 24). */
+  prev?: string
+}
+
+/** A blob in someone's store, as a shared note names it to the server. */
+export interface BlobRef {
+  account: string
+  vault: string
+  blob: string
+}
+
+export interface AttachBlobsRequest {
+  attach?: BlobRef[]
+  detach?: BlobRef[]
 }
 
 /**

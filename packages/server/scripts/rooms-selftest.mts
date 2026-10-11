@@ -336,6 +336,11 @@ try {
     check(soon.purged.length === 0 && soon.kept.join() === reused, 'a blob uploaded a moment ago is kept when asked to go', soon)
     const later = await careful.purge(alice, vault, [reused], Date.now() + 61_000)
     check(later.purged.join() === reused, 'and goes once its grace has passed', later)
+    const named = hexId()
+    await again.putChunk(alice, vault, named, 0, 1, tail)
+    again.protect((_account, _vault, blob) => blob === named)
+    check((await again.purge(alice, vault, [named])).kept.join() === named, 'a blob a shared note names is kept when asked to go')
+    again.protect(() => false)
     await careful.putChunk(alice, vault, reused, 0, 1, tail)
     await delay(20)
     await careful.putChunk(alice, vault, reused, 0, 1, tail)
@@ -477,6 +482,32 @@ try {
   check((await hub.incoming(carol)).length === 0, 'and is gone from the list once accepted')
   check((await hub.members(alice, docId)).members.length === 2, 'the owner sees who has access')
   check((await status(() => hub.members(dave, docId))) === 403, 'outsiders do not')
+
+  // --- the files a shared note names ----------------------------------------------------
+  {
+    const bobBlob = { account: bob, vault: bobVault.vaultId, blob: hexId() }
+    const aliceBlob = { account: alice, vault: aliceVault.vaultId, blob: hexId() }
+    check(
+      (await status(() => hub.attachBlobs(carol, room, { attach: [{ account: carol, vault: carolVault.vaultId, blob: hexId() }] }))) === 403,
+      'a reader attaches nothing'
+    )
+    check((await status(() => hub.attachBlobs(bob, room, { attach: [aliceBlob] }))) === 403, "nobody attaches someone else's blob")
+    await hub.attachBlobs(bob, room, { attach: [bobBlob] })
+    await hub.attachBlobs(alice, room, { attach: [aliceBlob] })
+    check(
+      (await hub.canReadBlob(carol, room, bobBlob)) && (await hub.canReadBlob(bob, room, aliceBlob)),
+      'whoever reads the note may read the blobs it names'
+    )
+    check(!(await hub.canReadBlob(dave, room, bobBlob)), 'nobody else')
+    check(!(await hub.canReadBlob(carol, room, { ...bobBlob, blob: hexId() })), 'and no blob it does not name')
+    check(hub.isAttached(bob, bobVault.vaultId, bobBlob.blob), 'a blob a note names is protected from purging')
+    check((await status(() => hub.attachBlobs(carol, room, { detach: [bobBlob] }))) === 403, "a member does not detach another's blob")
+    await hub.attachBlobs(alice, room, { detach: [bobBlob] })
+    check(
+      !hub.isAttached(bob, bobVault.vaultId, bobBlob.blob) && !(await hub.canReadBlob(carol, room, bobBlob)),
+      'the owner detaches any; then nobody reads it through the note'
+    )
+  }
 
   // --- revoking ----------------------------------------------------------------------
   check(

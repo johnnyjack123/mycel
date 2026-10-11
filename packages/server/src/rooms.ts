@@ -5,6 +5,8 @@ import {
   isHexId,
   roomKind,
   roomSubject,
+  type AttachBlobsRequest,
+  type BlobRef,
   type ForkReason,
   type ForkResponse,
   type ForkSummary,
@@ -97,6 +99,8 @@ export class RoomHub {
   private readonly clients = new Set<RoomClient>()
   /** Accounts removed while connections of theirs may still be open; they create nothing any more. */
   private readonly gone = new Set<string>()
+  /** `account/vault/blob` -> the rooms whose attachment lists name it. */
+  private readonly attached = new Map<string, Set<string>>()
   private sweeping: Promise<void> | null = null
   private readonly ready: Promise<void>
 
@@ -107,8 +111,29 @@ export class RoomHub {
     private readonly forks: ForkStore
   ) {
     this.ready = loadAllMeta(options.dataDir).then((metas) => {
-      for (const meta of metas) this.metas.set(meta.room, meta)
+      for (const meta of metas) {
+        this.metas.set(meta.room, meta)
+        for (const key of meta.attachments ?? []) this.markAttached(key, meta.room, true)
+      }
     })
+  }
+
+  private markAttached(key: string, room: string, attached: boolean): void {
+    const rooms = this.attached.get(key) ?? new Set<string>()
+    if (attached) rooms.add(room)
+    else rooms.delete(room)
+    if (rooms.size > 0) this.attached.set(key, rooms)
+    else this.attached.delete(key)
+  }
+
+  /** A room went: its attachment list no longer holds any blob. */
+  private forgetAttachments(meta: RoomMeta): void {
+    for (const key of meta.attachments ?? []) this.markAttached(key, meta.room, false)
+  }
+
+  /** Whether a shared note names this blob; such a blob is never purged. */
+  isAttached(account: string, vault: string, blob: string): boolean {
+    return this.attached.has(`${account}/${vault}/${blob}`)
   }
 
   // --- rooms -------------------------------------------------------------------
@@ -595,6 +620,60 @@ export class RoomHub {
     return { open, access }
   }
 
+  /**
+   * Which blobs a shared note's attachment list names. Anyone who may write
+   * to the note attaches blobs of their own; the blob's account and the
+   * note's owner detach.
+   */
+  async attachBlobs(account: string, room: string, request: AttachBlobsRequest): Promise<void> {
+    if (roomKind(room) !== 'doc') throw new HubError(400, 'only notes carry attachments')
+    const { open, access } = await this.readable(account, room)
+    const toAttach = Array.isArray(request.attach) ? request.attach : []
+    const toDetach = Array.isArray(request.detach) ? request.detach : []
+    if (toAttach.length > 0 && !access.write) throw new HubError(403, 'read-only members attach nothing')
+    const vaults = (await this.accounts.get(account))?.vaults ?? {}
+    const key = (ref: unknown): string => {
+      const { account: owner, vault, blob } = (ref ?? {}) as Partial<BlobRef>
+      if (!isAccountId(owner) || typeof vault !== 'string' || !isHexId(vault) || typeof blob !== 'string' || !isHexId(blob)) {
+        throw new HubError(400, 'not a blob reference')
+      }
+      return `${owner}/${vault}/${blob}`
+    }
+    // Everything checked before anything changes.
+    const adding = toAttach.map((ref) => {
+      const k = key(ref)
+      if (ref.account !== account || !vaults[ref.vault]) throw new HubError(403, 'only blobs of your own are attached')
+      return k
+    })
+    const removing = toDetach.map((ref) => {
+      const k = key(ref)
+      if (ref.account !== account && !access.owner) throw new HubError(403, "only the note's owner detaches someone else's blob")
+      return k
+    })
+    const meta = open.log.meta
+    const list = new Set(meta.attachments ?? [])
+    for (const k of adding) {
+      list.add(k)
+      this.markAttached(k, room, true)
+    }
+    for (const k of removing) {
+      list.delete(k)
+      this.markAttached(k, room, false)
+    }
+    meta.attachments = Array.from(list)
+    await open.log.saveMeta()
+  }
+
+  /** Whether `account` may read this blob through a note it can read, whose list names it. */
+  async canReadBlob(account: string, room: string, ref: BlobRef): Promise<boolean> {
+    try {
+      const { open } = await this.readable(account, room)
+      return (open.log.meta.attachments ?? []).includes(`${ref.account}/${ref.vault}/${ref.blob}`)
+    } catch {
+      return false
+    }
+  }
+
   async keys(account: string, room: string): Promise<KeysResponse> {
     const { open, access } = await this.readable(account, room)
     const meta = open.log.meta
@@ -676,6 +755,7 @@ export class RoomHub {
     if (open.idleTimer) clearTimeout(open.idleTimer)
     this.rooms.delete(room)
     this.metas.delete(room)
+    this.forgetAttachments(meta)
     await open.log.remove()
     console.info(`[obsidian-connect] ${room} of ${account} purged, deleted longer ago than the retention`)
   }
@@ -778,6 +858,7 @@ export class RoomHub {
     }
     this.rooms.delete(meta.room)
     this.metas.delete(meta.room)
+    this.forgetAttachments(meta)
     for (const member of Object.keys(meta.members)) {
       this.notify(member, 'share-removed', { docId: roomSubject(meta.room), owner: meta.owner })
     }
