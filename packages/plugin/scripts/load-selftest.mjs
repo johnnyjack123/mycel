@@ -58,6 +58,7 @@ const obsidian = {
           onLayoutReady: (callback) => registered.layoutReady.push(callback),
           getActiveFile: () => null
         },
+        metadataCache: { on: () => ({}) },
         loadLocalStorage: (key) => localStorageStub.get(key) ?? null,
         saveLocalStorage: (key, value) => {
           if (value === null) localStorageStub.delete(key)

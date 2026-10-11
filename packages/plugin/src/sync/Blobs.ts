@@ -1,5 +1,14 @@
-import { blobChunkCount } from '@obsidian-connect/shared'
-import { blobChunk, concat, contentHash, decryptBlobChunk, encryptBlobChunk, type Bytes } from '@obsidian-connect/shared/crypto'
+import { blobChunkCount, type SharedAttachment } from '@obsidian-connect/shared'
+import {
+  aesKey,
+  blobChunk,
+  concat,
+  contentHash,
+  decryptBlobChunk,
+  encryptBlobChunk,
+  fromBase64,
+  type Bytes
+} from '@obsidian-connect/shared/crypto'
 import { ApiError, type ConnectApi } from '../account/api.js'
 
 // Moves the content of attachments to and from this vault's store on the
@@ -70,17 +79,42 @@ export class Blobs {
   /** The content, checked against its hash. Throws `BlobMissing` if the server has none. */
   async download(hash: string, progress?: (bytes: number) => void): Promise<Bytes> {
     const blobId = await this.keys.blobId(hash)
-    const known = await this.info(blobId)
-    if (!known?.complete) throw new BlobMissing(hash)
-    const key = await this.keys.blobKey(blobId)
+    const source = { account: this.keys.accountId, vault: this.keys.vaultId, blob: blobId }
+    return this.fetch(source, await this.keys.blobKey(blobId), hash, undefined, progress)
+  }
+
+  /**
+   * Content from someone else's store, through a shared note whose list names
+   * it and gives its key. Checked against the hash the list gives: the key
+   * only proves whoever holds it made the blob, not that it is this content.
+   */
+  async downloadFrom(source: SharedAttachment, room: string): Promise<Bytes> {
+    const key = await aesKey(fromBase64(source.key))
+    return this.fetch({ account: source.account, vault: source.vault, blob: source.blob }, key, source.hash, room)
+  }
+
+  private async fetch(
+    source: { account: string; vault: string; blob: string },
+    key: CryptoKey,
+    hash: string,
+    room?: string,
+    progress?: (bytes: number) => void
+  ): Promise<Bytes> {
+    let known: { complete: boolean; count: number } | null
+    try {
+      known = await this.api.blobInfo(source.account, source.vault, source.blob, room)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) throw new BlobMissing(hash)
+      throw error
+    }
+    if (!known.complete) throw new BlobMissing(hash)
     const parts: Bytes[] = []
     for (let index = 0; index < known.count; index += 1) {
-      const chunk = await this.api.blobChunk(this.keys.accountId, this.keys.vaultId, blobId, index)
-      parts.push(await decryptBlobChunk(key, chunk, blobId, index, known.count))
+      const chunk = await this.api.blobChunk(source.account, source.vault, source.blob, index, room)
+      parts.push(await decryptBlobChunk(key, chunk, source.blob, index, known.count))
       progress?.(chunk.length)
     }
     const data = concat(...parts)
-    // The key already proves the vault made it; this proves it is the right one.
     if ((await contentHash(data)) !== hash) throw new Error(`a blob did not match its content hash ${hash.slice(0, 12)}`)
     return data
   }

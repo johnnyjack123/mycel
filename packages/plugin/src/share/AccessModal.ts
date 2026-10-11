@@ -6,12 +6,16 @@ import { log } from '../log.js'
 /** Who has access to a note of yours: change what they may do, or take access away. */
 export class AccessModal extends Modal {
   private members: ShareMembersResponse | null = null
+  /** Whether the note's files go along; null when that is not this account's to say, or unknown. */
+  private attachments: boolean | null = null
 
   constructor(
     app: App,
     private readonly sharing: Sharing,
     private readonly file: TFile,
-    private readonly docId: string
+    private readonly docId: string,
+    /** The owner chooses for the note; and only while attachments sync at all. */
+    private readonly decidesFiles = false
   ) {
     super(app)
   }
@@ -26,6 +30,7 @@ export class AccessModal extends Modal {
     this.contentEl.createEl('p', { text: 'Loading…' })
     try {
       this.members = await this.sharing.members(this.docId)
+      if (this.decidesFiles) this.attachments = (await this.sharing.attachmentsShared(this.docId)) ?? false
     } catch (error) {
       log.error('listing access failed', error)
       this.contentEl.empty()
@@ -58,6 +63,24 @@ export class AccessModal extends Modal {
             .setButtonText('Remove')
             .setWarning()
             .onClick(() => void this.revoke(member.account))
+        )
+    }
+    if (this.attachments !== null) {
+      new Setting(contentEl)
+        .setName('Share its attachments')
+        .setDesc(
+          'The files the note embeds or links go along, both ways, and land in each share folder\'s Attachments. Turning it off stops new ones; files already received stay.'
+        )
+        .addToggle((toggle) =>
+          toggle.setValue(this.attachments === true).onChange(async (value) => {
+            try {
+              await this.sharing.setAttachmentsShared(this.docId, value)
+              this.attachments = value
+            } catch (error) {
+              new Notice(`Changing that failed: ${error instanceof Error ? error.message : String(error)}`)
+              toggle.setValue(!value)
+            }
+          })
         )
     }
     contentEl.createEl('p', {

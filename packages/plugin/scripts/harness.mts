@@ -44,6 +44,7 @@ const { Compactor } = await import('../src/sync/Compactor.js')
 const { Trash } = await import('../src/sync/Trash.js')
 const { EditorSync } = await import('../src/editor/EditorSync.js')
 const { Sharing } = await import('../src/share/Sharing.js')
+const { SharedFiles } = await import('../src/share/SharedFiles.js')
 const { Contacts } = await import('../src/share/Contacts.js')
 const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
@@ -119,6 +120,7 @@ export class Device {
   readonly editors = new EditorSync(() => this.store, noteOf)
   store: DocStoreT | null = null
   attachments: InstanceType<typeof AttachmentStore> | null = null
+  sharedFiles: InstanceType<typeof SharedFiles> | null = null
   attachmentIndex: InstanceType<typeof AttachmentIndex> | null = null
   /** This device's download limit for attachments, in bytes; null fetches everything. */
   downloadLimit: number | null = null
@@ -237,6 +239,12 @@ export class Device {
     const attachments = new AttachmentStore(app as never, attachmentIndex, state, new Blobs(this.api, keys), this.attachmentOptions())
     this.attachments = attachments
     this.attachmentIndex = attachmentIndex
+    const sharedFiles = new SharedFiles(app as never, store, attachments, this.api, keys, {
+      folder: () => 'Shared',
+      syncTimeoutMs: 4_000,
+      claimDelayMs: 300
+    })
+    this.sharedFiles = sharedFiles
     this.store = store
     this.index = index
     this.socket = socket
@@ -255,6 +263,7 @@ export class Device {
         this.indexTimer = null
         void store.applyRemoteIndexChanges().then(() => this.editors.refresh())
         void attachments.applyRemoteChanges()
+        sharedFiles.scheduleAll()
       }, 100)
     }
     index.onChange(applyIndex)
@@ -270,11 +279,14 @@ export class Device {
       vault.on('modify', (file) => {
         void store.onModify(file as never)
         attachments.onModify(file as never)
+        // Obsidian's metadata cache reports a note's changed links.
+        sharedFiles.noteChanged(file as never)
       }),
       vault.on('create', (file) => {
         if ((file as { extension?: string }).extension === undefined) return
         void store.onCreate(file as never)
         attachments.onCreate(file as never)
+        sharedFiles.noteChanged(file as never)
       }),
       vault.on('delete', (file) => {
         void store.onDelete((file as { path: string }).path)
@@ -287,7 +299,10 @@ export class Device {
     ]
     socket.connect()
     started = await store.start()
-    if (started) await attachments.start()
+    if (started) {
+      await attachments.start()
+      sharedFiles.start()
+    }
     if (started) {
       await contacts.processInbox()
       await sharing.checkEnded()
@@ -305,6 +320,8 @@ export class Device {
     this.refs = []
     this.recovery?.stop()
     this.recovery = null
+    this.sharedFiles?.stop()
+    this.sharedFiles = null
     const attachments = this.attachments
     this.attachments = null
     await attachments?.stop()

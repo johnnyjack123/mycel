@@ -1,6 +1,7 @@
 import { Notice, type TFile } from 'obsidian'
 import * as Y from 'yjs'
 import {
+  NOTE_SHARE_FIELD,
   docRoom,
   frameAad,
   roomSubject,
@@ -27,6 +28,7 @@ import type { KeyRing } from '../account/KeyRing.js'
 import type { DocStore } from '../sync/DocStore.js'
 import { entryKey, type HistoryEntry } from '../sync/History.js'
 import type { Contacts } from './Contacts.js'
+import { setAttachmentsShared } from './SharedFiles.js'
 import { log } from '../log.js'
 
 // Sharing a note with a person, and everything that follows from it: the
@@ -111,7 +113,32 @@ export class Sharing {
    * snapshot of the note as it is now - the frames before it are deltas they
    * could not read anyway.
    */
-  async share(docId: string, account: string, role: ShareRole, withHistory: boolean): Promise<void> {
+  /**
+   * Whether the files the note embeds or links travel with it - the owner's
+   * choice, per note: everyone in it reads the same document. Null while it
+   * was never chosen.
+   */
+  async attachmentsShared(docId: string): Promise<boolean | null> {
+    const handle = await this.store.handle(docId)
+    if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs))) return null
+    const value = handle.doc.getMap(NOTE_SHARE_FIELD).get('attachments')
+    return typeof value === 'boolean' ? value : null
+  }
+
+  async setAttachmentsShared(docId: string, shared: boolean): Promise<void> {
+    const entry = this.store.entry(docId)
+    if (!entry || entry.owner) throw new Error('Only the owner of a note decides whether its files go along.')
+    const handle = await this.store.handle(docId)
+    // Never into a document whose state is unknown, nor into one never written:
+    // the file of a pristine note could no longer be seeded (invariant 18).
+    if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs)) || handle.pristine) {
+      throw new Error('The server is not reachable.')
+    }
+    setAttachmentsShared(handle.doc, shared)
+    log.info(`${entry.path}: its files ${shared ? 'go along with it' : 'no longer go along with it'}`)
+  }
+
+  async share(docId: string, account: string, role: ShareRole, withHistory: boolean, withAttachments?: boolean): Promise<void> {
     const entry = this.store.entry(docId)
     if (!entry || entry.deletedAt) throw new Error('This note is not synced yet.')
     if (entry.owner) throw new Error(`Only ${this.nameOf(entry.owner)} can share this note.`)
@@ -174,7 +201,10 @@ export class Sharing {
       }
     }
     this.store.share(docId, true)
-    log.info(`${entry.path}: shared with ${account} to ${role}, ${withHistory ? 'with' : 'without'} history`)
+    if (withAttachments !== undefined && !handle.pristine) setAttachmentsShared(handle.doc, withAttachments)
+    log.info(
+      `${entry.path}: shared with ${account} to ${role}, ${withHistory ? 'with' : 'without'} history${withAttachments ? ', with its files' : ''}`
+    )
   }
 
   /** Takes access away and moves the note to an epoch the person never gets. */

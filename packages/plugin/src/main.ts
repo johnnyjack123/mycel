@@ -25,6 +25,7 @@ import { IncomingModal } from './share/IncomingModal'
 import { ShareModal } from './share/ShareModal'
 import { Contacts, type OpenCode } from './share/Contacts'
 import { Sharing } from './share/Sharing'
+import { SharedFiles } from './share/SharedFiles'
 import { AccountSettings, DEFAULT_SHARED_SETTINGS, type Contact, type SharedSettings } from './sync/AccountSettings'
 import { AttachmentIndex } from './sync/AttachmentIndex'
 import { AttachmentStore, type AttachmentOptions } from './sync/AttachmentStore'
@@ -61,6 +62,10 @@ const ATTACHMENT_SETTLE_MS = 2_000
 const ATTACHMENT_RESCAN_MS = 60_000
 // A version current for less than this keeps no content once the trash is emptied.
 const ATTACHMENT_MIN_VERSION_AGE_MS = 10 * 60 * 1000
+// Shared notes' files are compared with their lists this often, besides on every change.
+const SHARED_FILES_EVERY_MS = 60_000
+// A link no list names yet waits this long before this device lists its own file for it.
+const SHARED_FILES_CLAIM_MS = 10_000
 
 const NOTE_STATUS_TEXT: Record<Exclude<NoteSyncState, 'untracked'>, string> = {
   synced: 'This note is synced: everything written here has reached the server.',
@@ -142,6 +147,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   private settingsStore: LocalStore | null = null
   private settingsCursor: LocalCursor | null = null
   private sharing: Sharing | null = null
+  private sharedFiles: SharedFiles | null = null
   private contacts: Contacts | null = null
   private compactor: Compactor | null = null
   private trash: Trash | null = null
@@ -176,6 +182,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     // changes state without wiring each of them up.
     this.registerInterval(window.setInterval(() => this.renderNoteStatus(), NOTE_STATUS_MS))
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.renderNoteStatus()))
+    // A shared note's links may have changed: its files follow.
+    this.registerEvent(this.app.metadataCache.on('changed', (file) => this.sharedFiles?.noteChanged(file)))
     // Files over this device's download limit come when a note needs them.
     this.registerEvent(
       this.app.workspace.on('file-open', (file) => {
@@ -224,6 +232,7 @@ export default class ObsidianConnectPlugin extends Plugin {
 
     this.registerVaultEvents()
     this.registerInterval(window.setInterval(() => void this.compact(), COMPACT_EVERY_MS))
+    this.registerInterval(window.setInterval(() => this.sharedFiles?.scheduleAll(), SHARED_FILES_EVERY_MS))
 
     // The vault is not fully indexed while Obsidian is still starting, and a
     // scan that races it would treat half the notes as missing.
@@ -485,6 +494,11 @@ export default class ObsidianConnectPlugin extends Plugin {
       },
       this.contacts
     )
+    this.sharedFiles = new SharedFiles(this.app, store, this.attachments, this.api, keys, {
+      folder: () => this.shared().sharedFolder,
+      syncTimeoutMs: this.settings.syncTimeoutMs,
+      claimDelayMs: SHARED_FILES_CLAIM_MS
+    })
     this.compactor = new Compactor(this.api, keys, () => this.shared().historyRetentionDays)
     this.trash = new Trash(this.api, store, () => this.shared().historyRetentionDays, this.attachments)
 
@@ -593,6 +607,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       this.maxFileBytes = config.maxFileBytes
       attachments.setOptions(this.attachmentOptions())
       await attachments.start()
+      this.sharedFiles?.start()
     } catch (error) {
       log.warn('starting to sync attachments failed; trying again on the next connection', error)
     }
@@ -682,6 +697,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.unwatchSettings = null
     this.recovery?.stop()
     this.recovery = null
+    this.sharedFiles?.stop()
+    this.sharedFiles = null
     // Before the notes: stopping those closes the state both write to.
     const attachments = this.attachments
     this.attachments = null
@@ -773,6 +790,8 @@ export default class ObsidianConnectPlugin extends Plugin {
         this.renderStatus()
       })
       void this.attachments?.applyRemoteChanges()
+      // A share may have started, and the files of shared notes may have moved.
+      this.sharedFiles?.scheduleAll()
     }, 500)
   }
 
@@ -804,13 +823,15 @@ export default class ObsidianConnectPlugin extends Plugin {
       new Notice(`This note belongs to ${this.sharing.nameOf(owner)}; only they can share it.`)
       return
     }
-    new ShareModal(this.app, this.sharing, note.file, note.docId, this.contactList()).open()
+    const files = this.attachments?.isReady && this.sharedFiles ? this.sharedFiles.summary(note.file) : null
+    new ShareModal(this.app, this.sharing, note.file, note.docId, this.contactList(), files).open()
   }
 
   private openAccess(file?: TFile): void {
     const note = this.activeNote(file)
     if (!note || !this.sharing) return
-    new AccessModal(this.app, this.sharing, note.file, note.docId).open()
+    const decidesFiles = Boolean(this.attachments?.isReady) && !this.store?.entry(note.docId)?.owner
+    new AccessModal(this.app, this.sharing, note.file, note.docId, decidesFiles).open()
   }
 
   /**

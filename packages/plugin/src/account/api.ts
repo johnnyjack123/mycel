@@ -3,6 +3,7 @@ import {
   type AcceptRequest,
   type AccountBundle,
   type AccountKeyResponse,
+  type AttachBlobsRequest,
   type AuthConfigResponse,
   type BlobHaveResponse,
   type BlobIdsRequest,
@@ -256,8 +257,9 @@ export class ConnectApi {
     return `${API.blobs}/${encodeURIComponent(account)}/${encodeURIComponent(vaultId)}/${rest}`
   }
 
-  blobInfo(account: string, vaultId: string, blobId: string): Promise<BlobInfo> {
-    return this.call('GET', this.blobPath(account, vaultId, blobId))
+  /** `room`: read someone else's blob through a shared note that names it. */
+  blobInfo(account: string, vaultId: string, blobId: string, room?: string): Promise<BlobInfo> {
+    return this.call('GET', this.blobPath(account, vaultId, `${blobId}${room ? `?room=${encodeURIComponent(room)}` : ''}`))
   }
 
   async putBlobChunk(account: string, vaultId: string, blobId: string, index: number, count: number, data: Uint8Array): Promise<BlobInfo> {
@@ -265,9 +267,15 @@ export class ConnectApi {
     return response.json as BlobInfo
   }
 
-  async blobChunk(account: string, vaultId: string, blobId: string, index: number): Promise<Uint8Array> {
-    const response = await this.send({ method: 'GET', binary: true }, this.blobPath(account, vaultId, `${blobId}/${index}`))
+  async blobChunk(account: string, vaultId: string, blobId: string, index: number, room?: string): Promise<Uint8Array> {
+    const query = room ? `?room=${encodeURIComponent(room)}` : ''
+    const response = await this.send({ method: 'GET', binary: true }, this.blobPath(account, vaultId, `${blobId}/${index}${query}`))
     return response.bytes ?? new Uint8Array(0)
+  }
+
+  /** Which blobs a shared note's attachment list names, so its members may read them. */
+  attachBlobs(roomName: string, request: AttachBlobsRequest): Promise<unknown> {
+    return this.call('POST', `${API.log}/${room(roomName)}/attachments`, request)
   }
 
   haveBlobs(account: string, vaultId: string, ids: string[]): Promise<BlobHaveResponse> {

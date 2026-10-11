@@ -1,8 +1,8 @@
 import { Notice, TFile, getLinkpath, type App } from 'obsidian'
-import type { AttachmentEntry, AttachmentVersion } from '@obsidian-connect/shared'
+import type { AttachmentEntry, AttachmentVersion, SharedAttachment } from '@obsidian-connect/shared'
 import { contentHash, type Bytes } from '@obsidian-connect/shared/crypto'
 import { ApiError } from '../account/api.js'
-import type { AttachmentIndex } from './AttachmentIndex.js'
+import type { AttachmentIndex, SharedBase } from './AttachmentIndex.js'
 import { BlobMissing, type Blobs } from './Blobs.js'
 import { matchesGlob } from './glob.js'
 import type { StateStore } from './StateStore.js'
@@ -161,6 +161,7 @@ export class AttachmentStore {
   private readonly settling = new Map<string, number>()
   private readonly tooLarge = new Set<string>()
   private readonly listeners = new Set<() => void>()
+  private readonly localListeners = new Set<(change: { kind: 'deleted' | 'restored'; entry: AttachmentEntry }) => void>()
   /** Renames and deletes that happened before the index arrived. */
   private readonly early: Array<() => Promise<void>> = []
   private readonly transfers: Transfers = { uploads: 0, downloads: 0 }
@@ -701,11 +702,13 @@ export class AttachmentStore {
     this.settling.delete(path)
     const fileId = this.index.idForPath(path)
     if (!fileId) return
+    const entry = this.index.entry(fileId)
     await this.withLock(fileId, async () => {
       this.index.markDeleted(fileId)
       this.state.forgetAttachment(fileId)
     })
     log.info(`${path}: attachment deleted here`)
+    if (entry) for (const listener of this.localListeners) listener({ kind: 'deleted', entry })
   }
 
   /** Obsidian may report only the folder; whatever lay in it is deleted too. */
@@ -924,6 +927,118 @@ export class AttachmentStore {
     return fetched
   }
 
+  // --- files of shared notes ------------------------------------------------------------
+  //
+  // What comes in through a shared note is copied into this vault's own store
+  // and named in its index like any other file - so everything above holds
+  // for it unchanged: downloading, healing, versions, the trash, cleaning up.
+  // The price is the server holding it once per account.
+
+  /** The live file at a path, as the index has it. */
+  fileAt(path: string): { fileId: string; entry: AttachmentEntry } | null {
+    const fileId = this.index.idForPath(path)
+    const entry = fileId ? this.index.entry(fileId) : undefined
+    return fileId && entry ? { fileId, entry } : null
+  }
+
+  delivered(docId: string, ref: string): { fileId: string; entry: AttachmentEntry } | null {
+    return this.index.delivered(docId, ref) ?? null
+  }
+
+  isDeclined(docId: string, ref: string): boolean {
+    return this.index.isDeclined(docId, ref)
+  }
+
+  sharedBase(docId: string, ref: string): SharedBase | undefined {
+    return this.index.sharedBase(docId, ref)
+  }
+
+  setSharedBase(docId: string, ref: string, base: SharedBase | null): void {
+    this.index.setSharedBase(docId, ref, base)
+  }
+
+  sharedAt(path: string): Array<{ docId: string; ref: string }> {
+    return this.index.sharedAt(path)
+  }
+
+  decline(docId: string, ref: string): void {
+    this.index.decline(docId, ref)
+  }
+
+  undecline(docId: string, ref: string): void {
+    this.index.undecline(docId, ref)
+  }
+
+  /** Fires when the user deletes a file here, or brings one back from the trash. */
+  onLocalChange(listener: (change: { kind: 'deleted' | 'restored'; entry: AttachmentEntry }) => void): () => void {
+    this.localListeners.add(listener)
+    return () => this.localListeners.delete(listener)
+  }
+
+  /** Content in someone else's store, named by a shared note, copied into this vault's. */
+  private async copyIn(source: SharedAttachment, room: string): Promise<void> {
+    if (await this.blobs.has(source.hash)) return
+    const data = await this.transfer('downloads', () => this.blobs.downloadFrom(source, room))
+    await this.upload(data, source.hash)
+  }
+
+  /**
+   * A file a shared note brings, new here: copied into this vault's store,
+   * then named at `path`. Every device of the account fetches it from there,
+   * within its download limit. Null if the path was taken meanwhile.
+   */
+  async deliver(path: string, source: SharedAttachment, room: string, via: { docId: string; ref: string }): Promise<string | null> {
+    if (!this.isReady) return null
+    return this.guarded(await this.index.nextId(path), source.size, async () => {
+      if (this.index.idForPath(path) || this.app.vault.getAbstractFileByPath(path)) return null
+      await this.copyIn(source, room)
+      const fileId = await this.index.add(path, source.hash, source.size, via)
+      log.info(`${path}: came in through a shared note, ${source.size} bytes`)
+      return fileId
+    })
+  }
+
+  /** A delivered file whose link was renamed in the note: it follows, rather than coming in twice. */
+  reroute(fileId: string, via: { docId: string; ref: string }, path: string): void {
+    this.index.reroute(fileId, via)
+    if (!this.app.vault.getAbstractFileByPath(path) && !this.index.idForPath(path)) this.index.rename(fileId, path)
+  }
+
+  /**
+   * A shared note's newer version of a file here, which replaced the one this
+   * vault has knowingly: into this vault's store, then the file takes it -
+   * on every device, the way any change from elsewhere arrives.
+   */
+  async adopt(fileId: string, source: SharedAttachment, room: string): Promise<void> {
+    await this.guarded(fileId, source.size, async () => {
+      if (!this.index.entry(fileId) || this.index.entry(fileId)?.deletedAt) return
+      await this.copyIn(source, room)
+      this.index.setContent(fileId, source.hash, source.size)
+    })
+  }
+
+  /**
+   * Both this vault and the shared note changed a file: this vault's version
+   * is kept as a file of its own next to it, the note's takes the file. The
+   * copy's content is on the server already; only the index has to name it.
+   * Returns where the copy went.
+   */
+  async keepAsideAndAdopt(fileId: string, source: SharedAttachment, room: string): Promise<string | null> {
+    const entry = this.index.entry(fileId)
+    if (!entry || entry.deletedAt) return null
+    return this.guarded(fileId, Math.max(entry.size, source.size), async () => {
+      const current = this.index.entry(fileId)
+      // Another device of the account got there first.
+      if (!current || current.deletedAt || current.hash === source.hash) return null
+      await this.copyIn(source, room)
+      const copyPath = this.freeConflictPath(current.path, new Date())
+      await this.index.add(copyPath, current.hash, current.size)
+      this.index.setContent(fileId, source.hash, source.size)
+      log.info(`${current.path}: changed here and in a shared note; this vault's version kept as ${copyPath}`)
+      return copyPath
+    })
+  }
+
   // --- the trash and earlier versions -------------------------------------------------
 
   /** Files of this vault deleted since `since` whose content the server still keeps, newest first. */
@@ -951,6 +1066,7 @@ export class AttachmentStore {
       await this.pull(fileId).catch((error: unknown) => this.failed(error))
     })
     log.info(`${entry.path}: restored from the trash${path === entry.path ? '' : ` as ${path}`}`)
+    for (const listener of this.localListeners) listener({ kind: 'restored', entry })
     const file = this.app.vault.getAbstractFileByPath(path)
     return file instanceof TFile ? file : null
   }

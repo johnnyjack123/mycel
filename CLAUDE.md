@@ -120,7 +120,10 @@ someone's notes. Treat them as rules, not preferences.
     that was away took them for frames it had. Every cursor keeps the
     fingerprint of its last frame, and every subscribe asks for that frame
     again (`afterSeq = lastSeq - 1`); gone or different means the log is
-    another one. The room is then caught up from zero, merged, and **held** —
+    another one - except that a snapshot reaching up to or past it is
+    compaction, which folded the frame in: one ending exactly at the last
+    frame (a note untouched for longer than the retention) was once taken for
+    another server, and every old note was held and asked about. The room is then caught up from zero, merged, and **held** —
     nothing is sent until the user decided (`Recovery`), because uploading
     would undo a restore made on purpose and taking the server's state would
     drop what the devices wrote since. Index and settings always keep the
@@ -272,8 +275,17 @@ and the server holds immutable blobs of its versions:
   content no live entry, recent tombstone or lasting version names goes, and
   only what the server confirms gone leaves the index.
   The server keeps a blob 10 minutes past its last upload whatever it is asked.
-- Built: own devices (step 1), the trash and versions (step 2). Not yet:
-  attachments of shared notes (step 3).
+- **Shared notes carry their files** (`share/SharedFiles.ts`), both ways, when
+  the owner chose so (`share.attachments` in the note's document). The note's
+  document holds a list `link -> { account, vault, blob, key, hash, prev }`;
+  what comes in is copied into this vault's own store at once and lands in
+  `<share folder>/Attachments/<link>` with `via`, an ordinary file from then
+  on. The base per link is the vault's (`sharedBases` in the index), so every
+  device of an account decides the same. Deleting such a file declines it for
+  the account (`declined`); the trash rejoins. The server lets a note's
+  members read the blobs its list names and never purges those.
+- Built: own devices (step 1), the trash and versions (step 2), shared notes'
+  files (step 3). Not yet: sharing the notes a note links to.
 
 ### Around the notes
 
@@ -483,10 +495,10 @@ names what is known and left for later (signatures per author).
 
 Recovery codes, 2FA, notes beyond `maxLoadedDocuments` staying live.
 
-**Attachments, step 3 (0.5.x).** Specified in **`docs/PHASE4.md`**: attachments
-travelling with shared notes in both directions, plus sharing the notes a note
-links to. Steps 1 and 2 are built; until step 3, a shared note's recipient
-does not get the files it embeds.
+**Sharing the notes a note links to (0.5.x).** Specified in
+**`docs/PHASE4.md`**, step 3: the share dialog offers to share every note the
+note links to, recursively, once, at share time. Everything else of step 3 -
+files travelling with shared notes - is built.
 
 **Sharing a folder (wanted, later).** Share a whole folder with someone instead
 of note by note, including what is added to it later. Not designed yet.

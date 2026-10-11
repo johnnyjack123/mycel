@@ -1072,6 +1072,115 @@ try {
       { a: A.vault.text('Handout.md'), c: C.vault.text('Shared/Handout.md') }
     )
 
+    // --- the files a shared note embeds ---------------------------------------------
+    {
+      const diagram = binary(53, 2_000)
+      await A.vault.userCreateBinary('Assets/diagram.png', diagram)
+      await A.vault.userCreate('Board.md', 'see ![[diagram.png]]\n')
+      check(
+        await eventually(() => Boolean(A.attachmentIndex?.idForPath('Assets/diagram.png')) && A.docText('Board.md') === 'see ![[diagram.png]]\n'),
+        'A has a note that embeds a picture'
+      )
+      const boardId = A.index?.docIdForPath('Board.md') as string
+      await A.sharing?.share(boardId, C.accountId, 'write', true, true)
+      check(await eventually(() => C.vault.text('Shared/Board.md') === 'see ![[diagram.png]]\n'), 'C receives a note shared with its files')
+      check(
+        await eventually(() => same(C.vault.bytes('Shared/Attachments/diagram.png'), diagram), 15_000),
+        "and the picture it embeds, in her share folder's Attachments",
+        C.vault.attachmentPaths()
+      )
+      {
+        const id = C.attachmentIndex?.idForPath('Shared/Attachments/diagram.png') ?? ''
+        check(C.attachmentIndex?.entry(id)?.via?.ref === 'diagram.png', 'as a file of her own vault, one that came in through the note')
+      }
+
+      // C draws on it: A's original follows, on both of A's devices.
+      const drawn = binary(59, 2_100)
+      await C.vault.userWriteBinary('Shared/Attachments/diagram.png', drawn)
+      check(
+        await eventually(() => same(A.vault.bytes('Assets/diagram.png'), drawn) && same(B.vault.bytes('Assets/diagram.png'), drawn), 15_000),
+        "C's change to the picture reaches A's own file, on every device of A"
+      )
+      check(!A.vault.attachmentPaths().some((path) => path.startsWith('Shared/Attachments/diagram')), 'and A gets no second copy of it')
+
+      // C adds a picture of her own to the note.
+      const sketch = binary(61, 1_800)
+      await C.vault.userCreateBinary('Carol/sketch.png', sketch)
+      await delay(400)
+      await C.vault.userWrite('Shared/Board.md', 'see ![[diagram.png]]\nand ![[sketch.png]]\n')
+      check(
+        await eventually(() => same(A.vault.bytes('Shared/Attachments/sketch.png'), sketch), 15_000),
+        "a picture C adds reaches A, in A's share folder's Attachments",
+        A.vault.attachmentPaths()
+      )
+
+      // A deletes the picture C added: A leaves that file, for good.
+      await A.vault.trash(A.vault.file('Shared/Attachments/sketch.png'))
+      check(await eventually(() => B.vault.bytes('Shared/Attachments/sketch.png') === undefined), "it goes from A's other device too")
+      await delay(500)
+      const redrawn = binary(67, 1_900)
+      await C.vault.userWriteBinary('Carol/sketch.png', redrawn)
+      check(await eventually(() => C.attachmentIndex?.entry(C.attachmentIndex.idForPath('Carol/sketch.png') ?? '')?.size === redrawn.length), 'C changes her picture')
+      await delay(2_500)
+      check(
+        A.vault.bytes('Shared/Attachments/sketch.png') === undefined && B.vault.bytes('Shared/Attachments/sketch.png') === undefined,
+        'deleting a file a shared note brings is leaving it: it does not come back to A, even changed',
+        A.vault.attachmentPaths()
+      )
+      check(same(C.vault.bytes('Carol/sketch.png'), redrawn), 'while C keeps hers')
+
+      // Both change the picture at once, neither seeing the other's change.
+      {
+        const listedHash = async (device: Device): Promise<string | undefined> =>
+          ((await device.store?.handle(boardId))?.doc.getMap('attachments').get('diagram.png') as { hash?: string } | undefined)?.hash
+        await delay(500)
+        const holdA = holdPushes(A, 'doc:')
+        const holdC = holdPushes(C, 'doc:')
+        const byA = binary(73, 2_300)
+        const byC = binary(79, 2_400)
+        await A.vault.userWriteBinary('Assets/diagram.png', byA)
+        await C.vault.userWriteBinary('Shared/Attachments/diagram.png', byC)
+        const [hashA, hashC] = [await contentHash(byA), await contentHash(byC)]
+        check(
+          await eventually(async () => (await listedHash(A)) === hashA && (await listedHash(C)) === hashC, 15_000),
+          'both put their version into the note, unseen by the other'
+        )
+        holdA()
+        holdC()
+        const versions = (device: Device, prefix: string): Uint8Array[] =>
+          device.vault
+            .attachmentPaths()
+            .filter((path) => path.startsWith(prefix))
+            .map((path) => device.vault.bytes(path) as Uint8Array)
+        check(
+          await eventually(() => {
+            const all = [...versions(A, 'Assets/diagram'), ...versions(C, 'Shared/Attachments/diagram')]
+            return (
+              same(A.vault.bytes('Assets/diagram.png'), C.vault.bytes('Shared/Attachments/diagram.png')) &&
+              all.some((data) => same(data, byA)) &&
+              all.some((data) => same(data, byC))
+            )
+          }, 20_000),
+          'two people changing a picture at once end with the same file, the other version kept as a second one',
+          { a: A.vault.attachmentPaths(), c: C.vault.attachmentPaths() }
+        )
+        check(
+          !B.vault.attachmentPaths().some((path) => path.startsWith('Shared/Attachments/diagram')),
+          "and A's other device, which saw A's change before the note, brings in no copy of its own",
+          B.vault.attachmentPaths()
+        )
+      }
+
+      // Read only: what C changes stays with her.
+      await A.sharing?.setRole(boardId, C.accountId, 'read')
+      check(await eventually(() => C.store?.isReadOnly(boardId) === true), 'C may only read the note now')
+      const ownersCopy = A.vault.bytes('Assets/diagram.png')
+      await C.vault.userWriteBinary('Shared/Attachments/diagram.png', binary(71, 2_200))
+      await delay(2_500)
+      check(same(A.vault.bytes('Assets/diagram.png'), ownersCopy), "a reader's change to a picture does not reach the owner")
+      await A.sharing?.setRole(boardId, C.accountId, 'write')
+    }
+
     // Removing a contact ends what the two share; each keeps what they have.
     await A.vault.userCreate('Parting.md', 'shared before parting\n')
     check(await eventually(() => A.docText('Parting.md') === 'shared before parting\n'), 'A writes one more note')

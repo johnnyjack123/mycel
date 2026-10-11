@@ -9,6 +9,7 @@ import {
   fromUtf8,
   seal,
   titleContext,
+  toBase64,
   unseal,
   utf8,
   vaultKeys,
@@ -69,6 +70,14 @@ export class KeyRing {
   /** The key of one blob of this vault. */
   blobKey(blobId: string): Promise<CryptoKey> {
     return this.cached(`blob:${blobId}`, () => vaultKeys.blob(this.vault.key, blobId))
+  }
+
+  /**
+   * The same key, base64, to put into a shared note's attachment list - the
+   * only place a blob key ever leaves the vault, encrypted under the note's key.
+   */
+  async blobKeyForShare(blobId: string): Promise<string> {
+    return toBase64(await vaultKeys.blob(this.vault.key, blobId))
   }
 
   private cached(id: string, make: () => Promise<Bytes>): Promise<CryptoKey> {

@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-11 · **0.5.3 on `feat/accounts`: attachments between one's own devices, the trash and earlier versions of files (steps 1-2 of `docs/PHASE4.md`). Next: step 3, attachments of shared notes.**_
+_Last updated: 2026-10-11 · **0.5.4 on `feat/accounts`: attachments between one's own devices, the trash and earlier versions, and shared notes carrying their files (`docs/PHASE4.md`). Next: sharing the notes a note links to, the last part of step 3.**_
 
 ## Where we are
 
@@ -42,9 +42,14 @@ bodies need at least 8 MB (`docs/SERVER.md`).
    To confirm: the trash from a folder's menu and the settings, the rendered version
    preview with deleted pictures, "Earlier versions" in a file's menu (image
    preview, restore, save as a copy), the usage line in the settings.
-3. **Shared notes - next.** The attachment list in the note's document, attach records on
-   the server, delivering to `<share folder>/Attachments/`, declining by deleting,
-   the fork copy, the share dialog (attachments toggle, sharing linked notes).
+   Restoring notes and files from the trash confirmed on devices (2026-10-11).
+3. **Shared notes' files - built, 0.5.4.** To confirm on devices: the toggle in the
+   share dialog and in "Who has access" (a note shared before 0.5.4 counts as off),
+   a picture arriving in `Shared/Attachments/`, a change going back to the owner's own
+   file, deleting a received picture keeping it away. **Next:** "Also share the notes
+   it links to" in the share dialog (PHASE4, "The share dialog"): recursive list,
+   once at share time; the sealed title may carry folders so links between the
+   shared notes resolve below the share folder.
 
 ## In flight / half-finished
 
@@ -69,6 +74,11 @@ Attachments (2026-10-10, details in `docs/PHASE4.md`):
 - Deleting a file a shared note brings means leaving that file: it never comes back
   by itself, not even with a new version; restoring it from the trash rejoins.
 - Sharing a whole folder: wanted for later, noted in `CLAUDE.md`.
+- Decided while building step 3, without asking: files that come in through a share
+  are copied into the receiving account's own store (twice the space on the server,
+  everything of steps 1-2 unchanged); the base per shared file belongs to the vault,
+  not the device; a note shared before 0.5.4 does not share its files until the
+  owner turns it on in "Who has access".
 - Found while building, decided without asking (invariant 24): an attachment entry is
   replaced whole, so two devices writing at once lose one write silently. Entries name
   what they replaced (`prev`) and every replacement leaves a version record; a version
@@ -105,9 +115,13 @@ their path, and which file wins when two share a name.
 
 ## Verification state
 
-2026-10-11, 0.5.3: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
-`test:rooms` (147), `test:sync` (26), `test:recovery` (56), and against a scratch
-server on 1235 `test:socket` (19) and `test:vault` (196) - all pass. Checked by putting
+2026-10-11, 0.5.4: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
+`test:rooms` (156), `test:sync` (26), `test:recovery` (56), and against a scratch
+server on 1235 `test:socket` (19) and `test:vault` (213) - all pass. For 0.5.4 also
+checked by putting the bug back: a snapshot ending exactly at a device's last frame
+taken for another server (B held every old note). Shared files' conflict and
+lineage paths are covered (two people changing a picture at once; A's other device
+seeing A's change before the note) but were not each checked with the bug back. Checked by putting
 the bug back: the link doubling of 0.4.2 (`[[RenamedRenamed]]`), two racing writes of
 one attachment without the lineage rule (one version lost), healing only on start
 (the server's lost blob never came back), a note renamed to `.txt` (pulled back in);
@@ -122,6 +136,12 @@ image (built by CI only on `main`).
 ## Log
 
 ### 2026-10-11
+- 0.5.4: shared notes carry their files, both ways, by the owner's choice per note -
+  copied into each account's own store, landing in `<share folder>/Attachments/`;
+  deleting a received file leaves it for good. Found and fixed on the way: compaction
+  up to exactly a device's last frame was taken for a server restored from a backup,
+  so every note untouched for longer than the retention would have been held and
+  asked about (the first frames turn 30 days old around 2026-10-18).
 - 0.5.3: the trash in every folder's menu and in the settings; a note's version
   history renders each version, pictures deleted since shown from the trash with a
   Restore button.

@@ -309,7 +309,41 @@ devices *(as built)*:
 - **Space:** a 20 MB PDF annotated in ten sittings keeps ten versions, 200 MB, for
   the retention. The settings show the account's total as the server reports it.
 
-## Step 3: shared notes
+## Step 3: shared notes *(files built, 0.5.4; sharing linked notes not yet)*
+
+*As built, where it differs from or adds to the specification below:*
+
+- **Copied, not referenced.** Whatever comes in through a shared note is copied
+  into this vault's own store at once (`AttachmentStore.deliver`: download from the
+  sharer's store with the key from the list, check the hash, upload) and named in
+  the index with `via: { docId, ref }`. There is no `remote` field: everything from
+  steps 1 and 2 - downloading, healing, versions, the trash, cleaning up - holds for
+  such a file unchanged, and a share that ends has nothing left to copy. The price:
+  the server holds a shared file once per account.
+- **The base is the vault's, not a device's**: `sharedBases` in the index document,
+  `docId:ref -> { hash, path, prev? }`. "Here" means this vault - its index, on every
+  device - so every device of the account decides the same; a base per device made
+  one device take its sibling's change for someone else's and bring in a copy.
+  `prev` is the list version this vault replaced when it published: base and list
+  travel in different rooms, and a list still showing that version has not caught
+  up yet - it is no news, and no conflict.
+- **List entries name what they replaced** (`prev`), and a version is taken only if
+  it replaced this vault's knowingly (invariant 24). A list version that never saw
+  this vault's change is a conflict: this vault's version is kept as a file of its
+  own next to it (`keepAsideAndAdopt`), and the file takes the list's.
+- **A link nobody lists yet waits 10 s** (`claimDelayMs`) before a device lists its
+  own file for it, so the device that added the link names its file itself, not
+  another one that happens to have a file of that name.
+- **A renamed link** - the original renamed, Obsidian rewriting the note - moves the
+  file that came in under the old name rather than bringing in a second one.
+- **Whether a note's files go along** is `share.attachments` in the note's document,
+  set by the share dialog (on by default) and changeable in "Who has access". A note
+  shared before 0.5.4 has no value, which counts as off: nobody was asked.
+- **Server:** `POST /log/:room/attachments` records what a note's list names; reading
+  someone else's blob takes `?room=` and access to that note. Purging keeps a blob any
+  note names. The room going (purge, owner removed) drops its records.
+- **Not built yet:** "Also share the notes it links to" (below), and the delivered
+  file's resolution check runs only once the file is there.
 
 ### The attachment list
 

@@ -1,14 +1,18 @@
 import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
 import type { ShareRole } from '@obsidian-connect/shared'
+import { formatSize } from '../history/media.js'
 import type { Contact } from '../sync/AccountSettings.js'
 import type { Sharing } from './Sharing.js'
 import { log } from '../log.js'
 
-/** Share this note: with whom, what they may do, and whether they see the past. */
+/** Share this note: with whom, what they may do, whether they see the past, and whether its files go along. */
 export class ShareModal extends Modal {
   private person = ''
   private role: ShareRole = 'write'
   private withHistory = false
+  private withAttachments = true
+  /** Shared already: the files' choice was made then, and applies to everyone in it. */
+  private attachmentsChosen: boolean | null = null
   private busy = false
 
   constructor(
@@ -17,13 +21,19 @@ export class ShareModal extends Modal {
     private readonly file: TFile,
     private readonly docId: string,
     /** Only contacts: their keys are pinned, and the server shares with nobody else. */
-    private readonly contacts: Contact[]
+    private readonly contacts: Contact[],
+    /** The files the note embeds or links, as they stand; null while attachments do not sync. */
+    private readonly files: { count: number; bytes: number } | null
   ) {
     super(app)
   }
 
-  onOpen(): void {
+  async onOpen(): Promise<void> {
     this.titleEl.setText(`Share "${this.file.basename}"`)
+    this.render()
+    if (!this.files) return
+    this.attachmentsChosen = await this.sharing.attachmentsShared(this.docId).catch(() => null)
+    if (this.attachmentsChosen !== null) this.withAttachments = this.attachmentsChosen
     this.render()
   }
 
@@ -70,6 +80,24 @@ export class ShareModal extends Modal {
         })
       )
 
+    if (this.files) {
+      const files = this.files
+      const what =
+        files.count === 0
+          ? 'The note embeds or links no files yet;'
+          : `${files.count} file(s) (${formatSize(files.bytes)}) the note embeds or links go along, and so do those added later;`
+      new Setting(contentEl)
+        .setName('Share its attachments')
+        .setDesc(
+          `${what} whatever the other side adds to the note comes to you. They land in your share folder's Attachments. Applies to everyone the note is shared with.`
+        )
+        .addToggle((toggle) =>
+          toggle.setValue(this.withAttachments).onChange((value) => {
+            this.withAttachments = value
+          })
+        )
+    }
+
     contentEl.createEl('p', {
       cls: 'setting-item-description',
       text: 'Whatever they receive stays with them: taking access away later stops new changes from reaching them, but the copy they have is theirs.'
@@ -87,7 +115,7 @@ export class ShareModal extends Modal {
     if (this.busy || !this.person) return
     this.busy = true
     try {
-      await this.sharing.share(this.docId, this.person, this.role, this.withHistory)
+      await this.sharing.share(this.docId, this.person, this.role, this.withHistory, this.files ? this.withAttachments : undefined)
       new Notice(`${this.file.basename} is shared with ${this.sharing.nameOf(this.person)}.`)
       this.close()
     } catch (error) {
