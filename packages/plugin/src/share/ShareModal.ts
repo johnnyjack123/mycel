@@ -18,6 +18,10 @@ export class ShareModal extends Modal {
   private withLinked = false
   /** Shared already: the files' choice was made then, and applies to everyone in it. */
   private attachmentsChosen: boolean | null = null
+  /** Who has the note already, and their access; null until the server answered. */
+  private members: Map<string, ShareRole> | null = null
+  /** The access was picked by hand, not taken from what the person has. */
+  private roleChosen = false
   private busy = false
 
   constructor(
@@ -38,9 +42,18 @@ export class ShareModal extends Modal {
   async onOpen(): Promise<void> {
     this.titleEl.setText(`Share "${this.file.basename}"`)
     this.render()
-    if (!this.files) return
-    this.attachmentsChosen = await this.sharing.attachmentsShared(this.docId).catch(() => null)
-    if (this.attachmentsChosen !== null) this.withAttachments = this.attachmentsChosen
+    const [chosen, members] = await Promise.all([
+      this.files ? this.sharing.attachmentsShared(this.docId).catch(() => null) : null,
+      this.sharing
+        .members(this.docId)
+        .then(({ members }) => new Map(members.map((member) => [member.account, member.role])))
+        .catch(() => null)
+    ])
+    this.attachmentsChosen = chosen
+    if (chosen !== null) this.withAttachments = chosen
+    this.members = members
+    const current = members?.get(this.person)
+    if (current && !this.roleChosen) this.role = current
     this.render()
   }
 
@@ -57,12 +70,26 @@ export class ShareModal extends Modal {
     }
     this.person ||= people[0]?.accountId ?? ''
 
-    new Setting(contentEl).setName('Person').addDropdown((dropdown) => {
+    // Sharing again with someone who has the note is how their access changes on
+    // the server, so the dialog says so and starts from what they have.
+    const current = this.members?.get(this.person)
+    const person = new Setting(contentEl).setName('Person').addDropdown((dropdown) => {
       for (const contact of people) dropdown.addOption(contact.accountId, contact.localName || contact.name)
       dropdown.setValue(this.person).onChange((value) => {
         this.person = value
+        const theirs = this.members?.get(value)
+        if (theirs) {
+          this.role = theirs
+          this.roleChosen = false
+        }
+        this.render()
       })
     })
+    if (current) {
+      person.setDesc(
+        `${this.sharing.nameOf(this.person)} already has this note and can ${current === 'read' ? 'only read' : 'edit'} it. Sharing again gives them the access chosen below; what they have stays with them.`
+      )
+    }
 
     new Setting(contentEl)
       .setName('Access')
@@ -73,6 +100,7 @@ export class ShareModal extends Modal {
           .setValue(this.role)
           .onChange((value) => {
             this.role = value as ShareRole
+            this.roleChosen = true
           })
       )
 
@@ -114,7 +142,7 @@ export class ShareModal extends Modal {
 
     new Setting(contentEl).addButton((button) =>
       button
-        .setButtonText('Share')
+        .setButtonText(current ? 'Share again' : 'Share')
         .setCta()
         .onClick(() => void this.submit())
     )
@@ -150,16 +178,18 @@ export class ShareModal extends Modal {
     this.busy = true
     try {
       const withAttachments = this.files ? this.withAttachments : undefined
+      const had = this.members?.get(this.person)
       await this.sharing.share(this.docId, this.person, this.role, this.withHistory, withAttachments)
       const name = this.sharing.nameOf(this.person)
+      const access = `${name} can ${this.role === 'read' ? 'only read' : 'edit'} ${this.file.basename}${had && had !== this.role ? ' now' : ''}.`
       if (this.withLinked) {
         const outcome = await this.sharing.shareLinked(this.linked, this.person, this.role, this.withHistory, withAttachments)
-        const parts = [`${this.file.basename} and ${notes(outcome.shared)} it links to are shared with ${name}.`]
+        const parts = [had ? access : `${this.file.basename} is shared with ${name}.`, `${notes(outcome.shared)} it links to went along.`]
         if (outcome.had > 0) parts.push(`${notes(outcome.had)} they had already stayed as they were.`)
         if (outcome.failed > 0) parts.push(`${notes(outcome.failed)} could not be shared; see the log.`)
         new Notice(parts.join(' '), outcome.failed > 0 ? 12_000 : 6_000)
       } else {
-        new Notice(`${this.file.basename} is shared with ${name}.`)
+        new Notice(had ? access : `${this.file.basename} is shared with ${name}.`)
       }
       this.close()
     } catch (error) {

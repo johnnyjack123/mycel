@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-11 · **0.5.5 on `feat/accounts`: milestone 0.5 built - attachments between one's own devices, the trash and earlier versions, shared notes carrying their files and the notes they link to (`docs/PHASE4.md`). Next: the user tests all of 0.5 on devices; then 0.6.**_
+_Last updated: 2026-10-11 · **0.5.6 on `feat/accounts`: milestone 0.5 built - attachments between one's own devices, the trash and earlier versions, shared notes carrying their files and the notes they link to (`docs/PHASE4.md`). Next: the user tests all of 0.5 on devices; then 0.6.**_
 
 ## Where we are
 
@@ -49,7 +49,9 @@ bodies need at least 8 MB (`docs/SERVER.md`).
    `Shared/Attachments/`, a change going back to the owner's own file, deleting a
    received picture keeping it away; "Also share the notes it links to" - the list
    with the reasons a note cannot go along, the linked notes landing in folders below
-   `Shared/` and their links resolving there, one notice for several notes.
+   `Shared/` and their links resolving there, one notice for several notes; sharing
+   a note again with someone who has it (0.5.6: the hint, their access preselected,
+   "Share again").
 
 **Next:** the user tests all of 0.5 on devices (2026-10-12 onwards). Then 0.6,
 recovery codes and 2FA.
@@ -123,7 +125,8 @@ None open. To check on a device: Obsidian resolving links by the end of their pa
 
 ## Verification state
 
-2026-10-11, 0.5.5: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
+2026-10-11, 0.5.6 (the share dialog only): `typecheck`, `build`, `test:load` and
+`test:merge` pass; the dialog itself is untestable headless. 0.5.5: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
 `test:rooms` (156), `test:sync` (26), `test:recovery` (56), and against a scratch
 server on 1235 `test:socket` (19) and `test:vault` (222) - all pass. For 0.5.5 checked
 by putting the bug back: a title's folders flattened (`Shared/Ideas Roadmap.md`) and
@@ -147,6 +150,10 @@ image (built by CI only on `main`).
 ## Log
 
 ### 2026-10-11
+- 0.5.6: the share dialog says when the person has the note already, starts from
+  their access and reads "Share again" - sharing again is how the server changes
+  their access, and the dialog's default "Can edit" turned a reader into an editor
+  without a word.
 - 0.5.5: "Also share the notes it links to" in the share dialog - the notes a note
   reaches through links, listed with the reason when one cannot go along, shared once
   with the same choices and landing below the share folder at their link's path. A

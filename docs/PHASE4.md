@@ -351,7 +351,9 @@ devices *(as built)*:
   the share folder. A receiver before 0.5.5 flattens `Ideas/Roadmap` into
   `Ideas Roadmap.md`.
 - **A note the person has already is left alone**, because sharing it again would
-  overwrite their access and its title on the server. A linked note shared before
+  overwrite their access and its title on the server. For the note the dialog is
+  opened on that is a choice, so the dialog (0.5.6) says the person has it, with
+  which access, starts from that access and reads "Share again". A linked note shared before
   keeps its own choice about files - it applies to everyone in it, and nobody saw it
   in the dialog.
 - **The receiver takes incoming shares one pass at a time** (`checkIncoming`): a note

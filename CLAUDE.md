@@ -349,6 +349,10 @@ the name, which is not unique — is never drawn. There is no global
   lands below the share folder at its link's path - the sealed title carries
   the folders - so the links between them resolve there. A note the person has
   already is left alone: sharing it again would overwrite their access.
+- **Sharing again with a member changes their access** on the server (role and
+  title replaced, history never taken back). The share dialog therefore says
+  when the person has the note, starts from their current access and reads
+  "Share again".
 - **Revoke is a protocol message** (`revoked`), also answered to a later
   subscribe, and moves the note to a new epoch.
 - **Every end of a share is a fork** (invariant 20). The server writes what the
