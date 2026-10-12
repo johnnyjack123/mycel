@@ -526,6 +526,78 @@ export interface RecoveryKeys {
   wrapKey: Bytes
 }
 
+// --- two-factor sign-in --------------------------------------------------------------
+//
+// TOTP (RFC 6238) as every authenticator app speaks it: HMAC-SHA1, six digits,
+// 30-second steps. It guards the sign-in only; nothing is encrypted with it.
+// The server checks codes itself; this side makes the secret, shows it to the
+// app, and checks the first code before bothering the server with it.
+
+export const TOTP_STEP_SECONDS = 30
+const TOTP_SECRET_BYTES = 20
+// Authenticator apps read RFC 4648 base32, not Crockford's.
+const RFC4648 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+
+export function newTotpSecret(): Bytes {
+  return randomBytes(TOTP_SECRET_BYTES)
+}
+
+/** The secret as an authenticator app takes it typed in: RFC 4648 base32, no padding. */
+export function totpKeyText(secret: Uint8Array): string {
+  let bits = 0
+  let value = 0
+  let out = ''
+  for (const byte of secret) {
+    value = (value << 8) | byte
+    bits += 8
+    while (bits >= 5) {
+      out += RFC4648[(value >>> (bits - 5)) & 31]
+      bits -= 5
+    }
+  }
+  if (bits > 0) out += RFC4648[(value << (5 - bits)) & 31]
+  return out
+}
+
+/** What a QR code or a link hands an authenticator app. */
+export function totpUri(secret: Uint8Array, label: string, issuer: string): string {
+  const name = `${encodeURIComponent(issuer)}:${encodeURIComponent(label)}`
+  return `otpauth://totp/${name}?secret=${totpKeyText(secret)}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=${TOTP_STEP_SECONDS}`
+}
+
+export function totpStep(nowMs: number): number {
+  return Math.floor(nowMs / 1000 / TOTP_STEP_SECONDS)
+}
+
+/** The six digits for one time step. */
+export async function totpCode(secret: Bytes, step: number): Promise<string> {
+  const counter = new Uint8Array(8)
+  let rest = step
+  for (let index = 7; index >= 0; index -= 1) {
+    counter[index] = rest % 256
+    rest = Math.floor(rest / 256)
+  }
+  const key = await crypto.subtle.importKey('raw', secret, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, counter))
+  const offset = (mac[mac.length - 1] as number) & 0x0f
+  const binary =
+    (((mac[offset] as number) & 0x7f) << 24) |
+    ((mac[offset + 1] as number) << 16) |
+    ((mac[offset + 2] as number) << 8) |
+    (mac[offset + 3] as number)
+  return String(binary % 1_000_000).padStart(6, '0')
+}
+
+/** Whether a code fits now, a step either side allowed for clocks that drift. */
+export async function totpMatches(secret: Bytes, code: string, nowMs: number): Promise<boolean> {
+  const typed = code.replace(/\s/g, '')
+  const step = totpStep(nowMs)
+  for (const candidate of [step - 1, step, step + 1]) {
+    if ((await totpCode(secret, candidate)) === typed) return true
+  }
+  return false
+}
+
 export async function recoveryKeys(secret: Bytes): Promise<RecoveryKeys> {
   return {
     recoveryKey: await hkdf(secret, 'obsidian-connect recovery-login'),

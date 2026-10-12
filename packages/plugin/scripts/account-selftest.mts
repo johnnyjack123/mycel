@@ -9,11 +9,17 @@ import { join } from 'node:path'
 import { check, Device, eventually, finish, useServer } from './harness.mjs'
 
 const { docRoom } = await import('@obsidian-connect/shared')
-const { encodeRecoveryCode, newRecoverySecret } = await import('@obsidian-connect/shared/crypto')
+const { TOTP_STEP_SECONDS, encodeRecoveryCode, newRecoverySecret, newTotpSecret, totpCode, totpStep } = await import(
+  '@obsidian-connect/shared/crypto'
+)
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
 
 const root = mkdtempSync(join(tmpdir(), 'oc-account-selftest-'))
+// The clock codes are checked against, shared with the "phone" below: every
+// code it shows is for a step of its own, as if half a minute had passed, so
+// no test waits for the next one.
+let clock = Date.now()
 const server = await startServer(
   loadConfig({
     HOST: '127.0.0.1',
@@ -22,8 +28,19 @@ const server = await startServer(
     OBSIDIAN_CONNECT_REGISTRATION: 'open',
     OBSIDIAN_CONNECT_JWT_SECRET: 'account-selftest'
   }),
-  { logger: false, paceMs: 0 }
+  // Wrong passwords and codes on purpose, many more than an address may try.
+  { logger: false, paceMs: 0, now: () => clock, maxFailures: 1_000 }
 )
+
+/** An authenticator app. */
+class Phone {
+  readonly secret = newTotpSecret()
+
+  async code(): Promise<string> {
+    clock += TOTP_STEP_SECONDS * 1000
+    return totpCode(this.secret, totpStep(clock))
+  }
+}
 useServer(`ws://127.0.0.1:${server.port}`)
 
 const run = Date.now().toString(36)
@@ -121,6 +138,53 @@ try {
     await new Device('', false).recover(A1.recoveryCode as string, newName, RECOVERED).then(() => false, () => true),
     'so that no code opens it'
   )
+
+  // --- two-factor sign-in ---------------------------------------------------------------
+  const phone = new Phone()
+  check(await A1.enableTotp(phone.secret, '000000').then(() => false, () => true), 'two-factor sign-in needs a code the app made')
+  await A1.enableTotp(phone.secret, await phone.code())
+  check(A1.hasTotp === true, 'with one, A1 turns it on')
+  check(await eventually(() => A3.signedOut === 1 && !A3.signedIn), 'and every other device is signed out', { a3: A3.signedOut })
+  check(await eventually(() => A1.socket?.connected === true) && A1.signedOut === 1, 'A1 itself carries on')
+
+  check(
+    (await A3.boot().then(
+      () => false,
+      (error: unknown) => error instanceof Error && error.message.includes('cancelled')
+    )) && A3.askedForCode.join() === 'false',
+    'the password alone no longer signs A3 in: it asks for a code',
+    A3.askedForCode
+  )
+  let wrongFirst = true
+  A3.authenticator = {
+    code: async () => {
+      if (!wrongFirst) return phone.code()
+      wrongFirst = false
+      return '000000'
+    }
+  }
+  check(await A3.boot(), 'with a code from the app it does')
+  check(A3.askedForCode.slice(-2).join() === 'false,true', 'after asking again for a wrong one', A3.askedForCode)
+  await A1.vault.userWrite('Two.md', 'second\nwith two factors\n')
+  check(await eventually(() => A3.vault.text('Two.md') === 'second\nwith two factors\n'), 'and syncs as before')
+  check(await A1.disableTotp('000000').then(() => false, () => true), 'turning it off needs a current code')
+
+  // The phone is lost: the recovery code gets in without it.
+  await A1.makeRecoveryCode()
+  const RECOVERED_AGAIN = 'phone gone, horse, battery and staple'
+  const A4 = new Device('', false)
+  devices.push(A4)
+  await A4.recover(A1.recoveryCode as string, newName, RECOVERED_AGAIN)
+  check(A4.totpWasOn && (await A4.boot()) && A4.hasTotp === false, 'a recovery needs no code, and turns two-factor sign-in off')
+  A1.password = RECOVERED_AGAIN
+  A1.authenticator = null
+  check(await eventually(() => A1.signedOut === 2) && (await A1.boot()), 'the other devices sign in with the password alone again')
+
+  const newPhone = new Phone()
+  await A4.enableTotp(newPhone.secret, await newPhone.code())
+  check(A4.hasTotp === true, 'it can be turned on again, with the new phone')
+  await A4.disableTotp(await newPhone.code())
+  check(A4.hasTotp === false, 'and off, with password and a current code')
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {

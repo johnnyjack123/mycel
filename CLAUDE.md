@@ -205,6 +205,11 @@ someone's notes. Treat them as rules, not preferences.
   a new name and password; using it spends it and signs out every other device.
   Making, replacing or deleting one needs the current password, never a token
   alone: a planted code would let its holder replace the account's keys.
+- **Two-factor sign-in** (TOTP, optional) guards the sign-in only - nothing is
+  encrypted with it, and it cannot be: six digits that change every 30 seconds,
+  checked by the server. The right password answers `403` with a challenge (a token
+  of scope `2fa`), the code turns it into a session. Turning it on signs out the
+  other devices; a recovery turns it off; so can the admin (`user 2fa-off`).
 
 ### Identity
 
@@ -435,7 +440,7 @@ npm run test:load      # the built bundle imports, onload/start/unload run, Obsi
 npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart — in-process
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
-npm run test:account   # the account with real devices: signing the other devices out, the recovery code — in-process server
+npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
 # needs a server that lets tests create accounts:
 npm run test:socket    # the encrypted transport, two devices of one account
 npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing, attachments
@@ -456,7 +461,8 @@ is replaced through `paths` in `scripts/tsconfig.json`.
 **Still only verifiable on a device:** `editorInfoField` and the real timing of
 Obsidian's saves and reloads, IndexedDB, `requestUrl` (binary bodies too, on
 mobile), `localStorage`, the modals and the settings tab, Obsidian's binary
-file events and link resolution, memory with large files on a phone.
+file events and link resolution, memory with large files on a phone, the QR code
+scanned by an authenticator app and the `otpauth://` link opening one.
 
 ## Gotchas
 
@@ -527,7 +533,8 @@ names what is known and left for later (signatures per author).
 
 ## Not built yet
 
-Recovery codes, 2FA, notes beyond `maxLoadedDocuments` staying live.
+Notes beyond `maxLoadedDocuments` staying live. (Recovery codes and 2FA: built
+in 0.6, `docs/PHASE5.md`.)
 
 **Sharing a folder (wanted, later).** Share a whole folder with someone instead
 of note by note, including what is added to it later. Not designed yet.

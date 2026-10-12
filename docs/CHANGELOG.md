@@ -8,6 +8,24 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.6 - recovery codes and two-factor sign-in (from 2026-10-12, spec `docs/PHASE5.md`)
 
+- **0.6.2** (2026-10-12) - two-factor sign-in with TOTP, optional per account. The
+  settings turn it on in three steps (`TotpSetupModal`): the password, checked on the
+  device against its master key; whether the recovery code is at hand, offering a
+  new one (or making the first); then a QR code (`qrcode-generator` 2.0.4, drawn as
+  an SVG of its own, dark on light), an `otpauth://` link for a phone running
+  Obsidian, the key to type, and a first code checked on the device before the
+  server is asked. Turning it on signs out every other device. Signing in is two
+  steps: the right password answers `403` with a challenge token of scope `2fa`
+  (5 minutes), `/auth/login/totp` takes it with the code (`askTotpCode`). A used
+  time step is spent; five wrong codes block codes for that account for 15 minutes,
+  on top of the address throttle. Off with password and a current code, by a
+  recovery (which offers to turn it on again), or by the admin
+  (`obsidian-connect user 2fa-off <accountId>`); `user list` shows `2fa`. A 0.5 or
+  0.6.0/0.6.1 plugin signing in to such an account shows a message to update.
+  `test:merge` 142 (RFC 6238 vectors, RFC 4648 key, the link), `test:rooms` 220,
+  `test:account` 40. Checked by putting the bug back: without `lastStep` the server
+  took a code twice - four checks failed.
+
 - **0.6.1** (2026-10-12) - the recovery code. Every new account gets one, shown once
   (`RecoveryCodeModal`: copy, "I have written it down"); the settings show whether
   the account has one and make a new one or delete it, asking for the password

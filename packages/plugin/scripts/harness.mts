@@ -122,6 +122,12 @@ export class Device {
   private unlocked: Unlocked | null = null
   /** The recovery code this device was last shown. */
   recoveryCode: string | null = null
+  /** Whether the last recovery on this device turned two-factor sign-in off. */
+  totpWasOn = false
+  /** The person's authenticator app, as far as signing in on this device goes; null: no code to give. */
+  authenticator: { code(): Promise<string> } | null = null
+  /** Every time signing in asked for a code: whether it was asked again after a wrong one. */
+  readonly askedForCode: boolean[] = []
   /** How often the server signed this device out while it ran. */
   signedOut = 0
   // Outlives restarts, like the plugin's own: Obsidian keeps the extension in
@@ -176,9 +182,13 @@ export class Device {
       this.recoveryCode = registered.recoveryCode
       return registered.unlocked
     }
+    const askCode = async (again: boolean): Promise<string | null> => {
+      this.askedForCode.push(again)
+      return this.authenticator ? this.authenticator.code() : null
+    }
     const unlocked =
       (await this.session.unlock()) ??
-      (this.signUp && !this.accountId ? await register() : await this.session.login(this.username, this.password))
+      (this.signUp && !this.accountId ? await register() : await this.session.login(this.username, this.password, askCode))
     this.unlocked = unlocked
     this.accountId = unlocked.accountId
     const openVault = await this.session.openVault(unlocked, VAULT)
@@ -369,8 +379,25 @@ export class Device {
   async recover(code: string, username: string, password: string): Promise<void> {
     const recovered = await this.session.recover(code, username, password)
     this.recoveryCode = recovered.recoveryCode
+    this.totpWasOn = recovered.totpWasOn
     this.username = username
     this.password = password
+  }
+
+  /** What the setup dialog does once the app shows a code for the secret. */
+  async enableTotp(secret: Uint8Array, code: string, password = this.password): Promise<void> {
+    if (!this.unlocked) throw new Error('not signed in')
+    this.unlocked = await this.session.enableTotp(this.unlocked, password, new Uint8Array(secret), code)
+  }
+
+  async disableTotp(code: string, password = this.password): Promise<void> {
+    if (!this.unlocked) throw new Error('not signed in')
+    this.unlocked = await this.session.disableTotp(this.unlocked, password, code)
+  }
+
+  /** Whether signing in asks for a code, as this device last heard. */
+  get hasTotp(): boolean | undefined {
+    return this.unlocked?.bundle.totp
   }
 
   /** Whether the device holds a token and keys - what the settings show as "signed in". */

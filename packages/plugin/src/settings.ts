@@ -240,6 +240,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
             .onClick(() => void this.run(() => this.plugin.signOut()))
         )
       this.recoveryRow(containerEl)
+      this.totpRow(containerEl)
       const ids = this.plugin.ids()
       if (ids) {
         // The server knows no names; these are what it knows, and what the
@@ -294,6 +295,32 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           .setButtonText('Delete…')
           .setWarning()
           .onClick(() => this.plugin.openDeleteRecoveryCode())
+      )
+  }
+
+  private totpRow(containerEl: HTMLElement): void {
+    const state = this.plugin.totpState()
+    if (!state) return
+    const row = new Setting(containerEl).setName('Two-factor sign-in')
+    if (state === 'unsupported') {
+      row.setDesc('This server does not offer two-factor sign-in yet. It needs an update.')
+      return
+    }
+    if (state === 'off') {
+      row
+        .setDesc(
+          'Off. When on, signing in on a device also asks for a code from an authenticator app on your phone. It guards the sign-in only: your notes are encrypted with your password either way.'
+        )
+        .addButton((button) => button.setButtonText('Turn on…').onClick(() => this.plugin.openTotpSetup()))
+      return
+    }
+    row
+      .setDesc('On. Signing in on a device asks for a code from your authenticator app. Lost your phone? Your recovery code gets you in without one.')
+      .addButton((button) =>
+        button
+          .setButtonText('Turn off…')
+          .setWarning()
+          .onClick(() => this.plugin.openTotpOff())
       )
   }
 

@@ -136,7 +136,36 @@ export interface AuthConfigResponse {
   features?: ServerFeature[]
 }
 
-export type ServerFeature = 'recovery'
+export type ServerFeature = 'recovery' | 'totp'
+
+/**
+ * The answer to the right login key of an account with two-factor sign-in
+ * (status 403): no session yet, a challenge to send back with the code.
+ */
+export interface SecondFactorRequired {
+  error: string
+  secondFactor: 'totp'
+  /** A short-lived token that only `/auth/login/totp` accepts. */
+  challenge: string
+}
+
+export interface TotpLoginRequest {
+  challenge: string
+  code: string
+}
+
+/** Turns two-factor sign-in on: the secret the device made, and a first code from the app. */
+export interface TotpEnableRequest {
+  loginKey: string
+  /** Base64. */
+  secret: string
+  code: string
+}
+
+export interface TotpDisableRequest {
+  loginKey: string
+  code: string
+}
 
 /** A recovery code as the server keeps it: the key it finds the account by, and the second wrapping. */
 export interface RecoveryRecord {
@@ -211,12 +240,16 @@ export interface AccountBundle {
   vaults: VaultRecord[]
   /** When the recovery code was made; null without one, absent from a server before 0.6. */
   recovery?: { createdAt: number } | null
+  /** Whether signing in asks for a code from an authenticator app. */
+  totp?: boolean
 }
 
 export interface SessionResponse {
   token: string
   expiresIn: number
   account: AccountBundle
+  /** After a recovery: two-factor sign-in was on, and the recovery turned it off. */
+  totpWasOn?: boolean
 }
 
 export interface RefreshResponse {

@@ -156,6 +156,10 @@ export const API = {
   account: '/account',
   /** Makes or replaces the recovery code; `/delete` removes it. */
   recovery: '/account/recovery',
+  /** The second step of signing in with two-factor sign-in. */
+  loginTotp: '/auth/login/totp',
+  /** Turns two-factor sign-in on; `/off` turns it off. */
+  totp: '/account/totp',
   vaults: '/vaults',
   /** `/accounts/:accountId/key`: someone's public key, by account id. */
   accounts: '/accounts',

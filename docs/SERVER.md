@@ -63,8 +63,9 @@ A template sits in `docs/server.env`:
 
 ```bash
 docker compose exec obsidian-connect obsidian-connect invite                    # a code for one new account
-docker compose exec obsidian-connect obsidian-connect user list                 # account ids, created, vaults, recovery code
+docker compose exec obsidian-connect obsidian-connect user list                 # account ids, created, vaults, recovery code, 2fa
 docker compose exec obsidian-connect obsidian-connect user remove <accountId>
+docker compose exec obsidian-connect obsidian-connect user 2fa-off <accountId>  # a lost phone, no recovery code
 ```
 
 There are no names to list: everyone finds their account id in the plugin's settings,
@@ -75,6 +76,12 @@ The admin cannot reset a password: the server holds no key that could open an
 account. A forgotten password is what the account's **recovery code** is for - made
 with every new account, and in the plugin's settings for older ones. It is checked
 like a password, and an address trying unknown codes is turned away the same way.
+
+Two-factor sign-in is the account's own choice, in the plugin's settings. Someone
+who lost their phone and has no recovery code needs `user 2fa-off`: it lowers the
+sign-in back to name and password, which are still needed - the admin gets no way
+into anyone's notes from it. Five wrong codes block codes for that account for 15
+minutes.
 
 `user remove` stops the account from signing in at once. The running server then ends
 everything it shared, within a few minutes: everyone a note was shared with keeps it

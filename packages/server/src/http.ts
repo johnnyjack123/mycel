@@ -37,6 +37,10 @@ import {
   type RecoverySetRequest,
   type RefreshResponse,
   type RegisterRequest,
+  type SecondFactorRequired,
+  type TotpDisableRequest,
+  type TotpEnableRequest,
+  type TotpLoginRequest,
   type RevokeRequest,
   type RoleRequest,
   type SessionResponse,
@@ -44,7 +48,7 @@ import {
   type SnapshotRequest
 } from '@obsidian-connect/shared'
 import { AccountError, isAccountId, sessionOf, type AccountStore } from './accounts.js'
-import type { TokenService } from './auth.js'
+import type { TokenService, TokenSession } from './auth.js'
 import { BlobError, type BlobStore } from './blobs.js'
 import type { ServerConfig } from './config.js'
 import type { ContactStore } from './contacts.js'
@@ -84,6 +88,10 @@ export interface HttpOptions {
   logger?: boolean
   /** How long every sign-in and registration takes; shorter in self-tests. */
   paceMs?: number
+  /** The clock codes from an authenticator app are checked against; a self-test's own. */
+  now?: () => number
+  /** Failures an address may have within 15 minutes; more in self-tests, which fail on purpose. */
+  maxFailures?: number
 }
 
 export function createHttpApp(
@@ -96,7 +104,10 @@ export function createHttpApp(
   options: HttpOptions = {}
 ): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? true, bodyLimit: BODY_LIMIT })
-  const guard = new AddressGuard()
+  const guard = new AddressGuard(options.maxFailures)
+  // Wrong codes, per account: five within 15 minutes block codes for 15.
+  const codeGuard = new AddressGuard(5)
+  const now = options.now ?? Date.now
 
   // Blob chunks travel raw: base64 in JSON would add a third to every file.
   app.addContentTypeParser(
@@ -178,7 +189,7 @@ export function createHttpApp(
     protocol: PROTOCOL_VERSION,
     serverId: await accounts.serverId(),
     maxFileBytes: blobs.limits.maxFileBytes,
-    features: ['recovery']
+    features: ['recovery', 'totp']
   }))
 
   app.post(API.register, async (request, reply) =>
@@ -189,10 +200,48 @@ export function createHttpApp(
   )
 
   app.post(API.login, async (request, reply) =>
-    guarded(request, reply, async (): Promise<SessionResponse | null> => {
+    guarded(request, reply, async (): Promise<SessionResponse | SecondFactorRequired | null> => {
       const account = await accounts.login(((request.body ?? {}) as Partial<LoginRequest>).loginKey)
-      return account ? session(account.accountId) : null
+      if (!account) return null
+      if (!account.totp) return session(account.accountId)
+      // The right password, but no session and no keys yet. A plugin from
+      // before 0.6 shows the error and nothing else.
+      void reply.code(403)
+      return {
+        error: 'This account signs in with a code from an authenticator app. Update Obsidian Connect to 0.6.2 or later.',
+        secondFactor: 'totp',
+        challenge: await tokens.challenge(account.accountId, sessionOf(account))
+      }
     })
+  )
+
+  app.post(API.loginTotp, async (request, reply) =>
+    guarded(
+      request,
+      reply,
+      async (): Promise<SessionResponse | null> => {
+        const body = (request.body ?? {}) as Partial<TotpLoginRequest>
+        let challenge: TokenSession
+        try {
+          challenge = await tokens.verifyChallenge(typeof body.challenge === 'string' ? body.challenge : '')
+        } catch {
+          throw new AccountError(401, 'that took too long; sign in again')
+        }
+        const account = await accounts.get(challenge.accountId)
+        if (!account || sessionOf(account) !== challenge.gen) throw new AccountError(401, 'sign in again')
+        // Only someone who knew the password gets here, so wrong codes can be
+        // counted per account - six digits are not much to guess.
+        if (codeGuard.blocked(account.accountId)) throw new AccountError(429, 'too many wrong codes; try again later')
+        const right = await accounts.checkTotp(account.accountId, body.code, now())
+        if (right === null) return session(account.accountId)
+        if (!right) {
+          codeGuard.failed(account.accountId)
+          return null
+        }
+        return session(account.accountId)
+      },
+      'wrong code'
+    )
   )
 
   app.post(API.refresh, async (request, reply): Promise<RefreshResponse | undefined> => {
@@ -242,14 +291,39 @@ export function createHttpApp(
       request,
       reply,
       async (): Promise<SessionResponse | null> => {
-        const account = await accounts.recover((request.body ?? {}) as RecoverCommitRequest)
+        const body = (request.body ?? {}) as RecoverCommitRequest
+        const totpWasOn = Boolean((await accounts.findByRecovery(body.recoveryKey))?.totp)
+        const account = await accounts.recover(body)
         if (!account) return null
         hub.disconnect(account.accountId)
-        return session(account.accountId)
+        return { ...(await session(account.accountId)), totpWasOn }
       },
       unknownCode
     )
   )
+
+  // --- two-factor sign-in ----------------------------------------------------------
+
+  app.post(API.totp, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return guarded(request, reply, async (): Promise<SessionResponse> => {
+      const body = (request.body ?? {}) as Partial<TotpEnableRequest>
+      await accounts.enableTotp(accountId, body.loginKey, body.secret, body.code, now())
+      // Every other device signs in again, with a code; this one carries on.
+      hub.disconnect(accountId)
+      return session(accountId)
+    })
+  })
+
+  app.post(`${API.totp}/off`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return guarded(request, reply, async (): Promise<AccountBundle> => {
+      const body = (request.body ?? {}) as Partial<TotpDisableRequest>
+      return accounts.bundle(await accounts.disableTotp(accountId, body.loginKey, body.code, now()))
+    })
+  })
 
   app.post(API.recovery, async (request, reply) => {
     const accountId = await user(request, reply)

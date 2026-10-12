@@ -106,6 +106,12 @@ either — it knows accounts only by random ids.
 Changing the password, or recovering the account, signs out every other device:
 they sign in again with the new password.
 
+**Two-factor sign-in** is optional: turned on in the settings, signing in on a
+device also asks for a code from an authenticator app (Aegis, 2FAS, Google
+Authenticator, …). It guards the sign-in to the server; your notes stay encrypted
+with your password either way. A lost phone is what the recovery code is for, and
+the server's admin can turn it off too.
+
 Every markdown note is synced automatically; there is no per-note switch. So is
 every other file (see *Attachments* below). Settings under *All your devices*
 (exclusions, conflict markers, retention, share folder) are the same on every
@@ -202,7 +208,7 @@ npm run test:load         # does the built bundle load, start and unload cleanly
 npm run test:rooms        # accounts, access, key epochs, sharing, compaction, restart
 npm run test:sync         # does the editor binding actually sync? (jsdom)
 npm run test:recovery     # a server that lost data or was rolled back, a removed account, cleaning up files (in-process server)
-npm run test:account      # signing the other devices out, the recovery code (in-process server)
+npm run test:account      # signing the other devices out, the recovery code, two-factor sign-in (in-process server)
 # against a running server with open registration:
 npm run test:socket       # the encrypted transport, two devices of one account
 npm run test:vault        # three devices and a collaborator, end to end, notes and attachments

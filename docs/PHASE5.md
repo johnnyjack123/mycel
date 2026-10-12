@@ -135,7 +135,7 @@ Making a code checks its wrappings open again too, not only a recovery. A server
 from before 0.6 shows up as a bundle without `recovery`: the settings then say the
 server needs an update, and registration simply shows no code.
 
-## Two-factor sign-in *(step 3)*
+## Two-factor sign-in *(step 3, built 0.6.2)*
 
 - **TOTP** (RFC 6238): HMAC-SHA1, six digits, 30 seconds, one step either side
   accepted for clocks that drift. A step once used is not accepted again (`lastStep`),
@@ -184,6 +184,15 @@ In the settings, signed in:
 - In the settings: the password and a current code. Moves no generation.
 - By a recovery (above).
 - By the admin: `obsidian-connect user 2fa-off <accountId>`.
+
+*As built:* the setup checks the password on the device first - the master key it
+derives must be the one in use - so a typo shows before the QR code, not after. The
+QR code comes from `qrcode-generator` (2.0.4, MIT, no dependencies), drawn as an SVG
+of our own on a white ground whatever the theme. The second sign-in step asks again
+after a wrong code within the same challenge; the dialog points to the recovery code
+for a lost phone. The server's TOTP clock and its address throttle can be set for
+the in-process self-tests (`now`, `maxFailures` in `StartOptions`), which fail on
+purpose more often than an address may and cannot wait for the next 30 seconds.
 
 ## Server
 

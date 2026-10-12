@@ -1,6 +1,6 @@
 {
   "name": "@obsidian-connect/plugin",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "type": "module",
   "main": "main.js",
@@ -24,6 +24,7 @@
     "@zxcvbn-ts/language-en": "^4.1.1",
     "hash-wasm": "^4.12.0",
     "lib0": "^0.2.98",
+    "qrcode-generator": "2.0.4",
     "y-indexeddb": "^9.0.12",
     "y-protocols": "^1.0.6",
     "yjs": "^13.6.20"

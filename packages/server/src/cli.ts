@@ -8,13 +8,15 @@
 //   obsidian-connect invite                    a code for one new account
 //   obsidian-connect user list
 //   obsidian-connect user remove <accountId>
+//   obsidian-connect user 2fa-off <accountId>
 import { AccountError, AccountStore, isAccountId } from './accounts.js'
 import { loadConfig, loadEnvFile } from './config.js'
 
 const USAGE = `usage:
   obsidian-connect invite                    print a code that lets one person create an account
-  obsidian-connect user list                 every account: id, created, number of vaults, whether it has a recovery code
-  obsidian-connect user remove <accountId>   delete an account (its id is shown in the plugin's settings)`
+  obsidian-connect user list                 every account: id, created, number of vaults, recovery code, 2fa
+  obsidian-connect user remove <accountId>   delete an account (its id is shown in the plugin's settings)
+  obsidian-connect user 2fa-off <accountId>  turn off two-factor sign-in, for a lost phone without a recovery code`
 
 async function main(argv: string[]): Promise<number> {
   const [scope, command, id] = argv
@@ -41,7 +43,8 @@ async function main(argv: string[]): Promise<number> {
       for (const account of all) {
         const created = new Date(account.createdAt).toISOString().slice(0, 10)
         const recovery = account.recovery ? '  recovery code' : ''
-        console.log(`${account.accountId}  created ${created}  vaults ${Object.keys(account.vaults).length}${recovery}`)
+        const totp = account.totp ? '  2fa' : ''
+        console.log(`${account.accountId}  created ${created}  vaults ${Object.keys(account.vaults).length}${recovery}${totp}`)
       }
       const open = await accounts.invites()
       if (open > 0) console.log(`${open} invite code(s) not used yet`)
@@ -59,6 +62,19 @@ async function main(argv: string[]): Promise<number> {
           : `no account ${id}`
       )
       return removed ? 0 : 1
+    }
+    case '2fa-off': {
+      if (!isAccountId(id)) {
+        console.error('usage: obsidian-connect user 2fa-off <accountId>')
+        return 1
+      }
+      const turnedOff = await accounts.turnOffTotp(id)
+      console.log(
+        turnedOff
+          ? `${id} signs in without a code again. Its password is still needed - to sign in, and to decrypt anything.`
+          : `${id} has no two-factor sign-in (or no such account)`
+      )
+      return turnedOff ? 0 : 1
     }
     default:
       console.log(USAGE)

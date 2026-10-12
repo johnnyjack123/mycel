@@ -440,6 +440,34 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   )
 }
 
+// --- two-factor sign-in --------------------------------------------------------------------
+{
+  // RFC 6238, appendix B, SHA-1: the last six of its eight digits.
+  const rfc = e2e.utf8('12345678901234567890')
+  const vectors: Array<[number, string]> = [
+    [59, '287082'],
+    [1_111_111_109, '081804'],
+    [1_111_111_111, '050471'],
+    [1_234_567_890, '005924'],
+    [2_000_000_000, '279037'],
+    [20_000_000_000, '353130']
+  ]
+  const codes = await Promise.all(vectors.map(([seconds]) => e2e.totpCode(rfc, e2e.totpStep(seconds * 1000))))
+  check(codes.join() === vectors.map(([, code]) => code).join(), "the device's codes match RFC 6238's test vectors", codes)
+  check(e2e.totpKeyText(rfc) === 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', 'the key an app is given to type is RFC 4648 base32')
+  const uri = e2e.totpUri(rfc, 'anna', 'Obsidian Connect')
+  check(
+    uri === 'otpauth://totp/Obsidian%20Connect:anna?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Obsidian%20Connect&algorithm=SHA1&digits=6&period=30',
+    'and the link an app opens names the secret, the issuer and the account',
+    uri
+  )
+  const at = 1_111_111_111_000
+  check(
+    (await e2e.totpMatches(rfc, '050471', at)) && (await e2e.totpMatches(rfc, '050 471', at + 30_000)) && !(await e2e.totpMatches(rfc, '050471', at + 90_000)),
+    'a code fits its own step and the ones beside it, no further'
+  )
+}
+
 // --- contacts, against a server that may lie ---------------------------------------------
 {
   const { Contacts } = await import('../src/share/Contacts.js')

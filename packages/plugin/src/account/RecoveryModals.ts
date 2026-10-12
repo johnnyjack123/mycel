@@ -10,7 +10,9 @@ export class RecoveryCodeModal extends Modal {
   constructor(
     app: App,
     private readonly code: string,
-    private readonly intro: string
+    private readonly intro: string,
+    /** Once the dialog is gone, however it was closed. */
+    private readonly onDone: (() => void) | null = null
   ) {
     super(app)
   }
@@ -53,6 +55,7 @@ export class RecoveryCodeModal extends Modal {
 
   onClose(): void {
     this.contentEl.empty()
+    this.onDone?.()
   }
 }
 

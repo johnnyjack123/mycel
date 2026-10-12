@@ -40,6 +40,9 @@ import {
   type ShareMembersResponse,
   type ShareRequest,
   type SnapshotRequest,
+  type TotpDisableRequest,
+  type TotpEnableRequest,
+  type TotpLoginRequest,
   type VaultRecord
 } from '@obsidian-connect/shared'
 
@@ -68,7 +71,9 @@ export type HttpClient = (request: HttpRequest) => Promise<HttpResponse>
 export class ApiError extends Error {
   constructor(
     readonly status: number,
-    message: string
+    message: string,
+    /** What the server answered, for refusals that carry more than a message. */
+    readonly body: unknown = null
   ) {
     super(message)
   }
@@ -103,7 +108,7 @@ export class ConnectApi {
     }
     if (response.status >= 200 && response.status < 300) return response
     const message = (response.json as { error?: string } | null)?.error ?? `HTTP ${response.status}`
-    throw new ApiError(response.status, message)
+    throw new ApiError(response.status, message, response.json)
   }
 
   private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, auth = true): Promise<T> {
@@ -150,6 +155,19 @@ export class ConnectApi {
 
   deleteRecovery(request: RecoveryDeleteRequest): Promise<AccountBundle> {
     return this.call('POST', `${API.recovery}/delete`, request)
+  }
+
+  /** The second step of signing in, with the challenge the first answered. */
+  loginTotp(request: TotpLoginRequest): Promise<SessionResponse> {
+    return this.call('POST', API.loginTotp, request, false)
+  }
+
+  enableTotp(request: TotpEnableRequest): Promise<SessionResponse> {
+    return this.call('POST', API.totp, request)
+  }
+
+  disableTotp(request: TotpDisableRequest): Promise<AccountBundle> {
+    return this.call('POST', `${API.totp}/off`, request)
   }
 
   account(): Promise<AccountBundle> {

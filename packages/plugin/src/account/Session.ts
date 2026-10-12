@@ -1,4 +1,4 @@
-import type { AccountBundle, AuthConfigResponse, RecoveryRecord, SessionResponse } from '@obsidian-connect/shared'
+import type { AccountBundle, AuthConfigResponse, RecoveryRecord, SecondFactorRequired, SessionResponse } from '@obsidian-connect/shared'
 import {
   CURRENT_KDF_VERSION,
   KDF_VERSIONS,
@@ -75,6 +75,19 @@ const VAULT_KEY = 'vault'
 export interface Registered {
   unlocked: Unlocked
   recoveryCode: string | null
+}
+
+/**
+ * Asked for a code from the authenticator app when the account wants one.
+ * `again`: the last one was wrong. Null: the person gave up.
+ */
+export type AskCode = (again: boolean) => Promise<string | null>
+
+/** The challenge of a sign-in that wants a second factor, or null for any other refusal. */
+function secondFactorChallenge(error: unknown): string | null {
+  if (!(error instanceof ApiError) || error.status !== 403) return null
+  const body = error.body as Partial<SecondFactorRequired> | null
+  return body?.secondFactor === 'totp' && typeof body.challenge === 'string' ? body.challenge : null
 }
 
 /** Whether `wrapped` opens under `key` to exactly `expected`. */
@@ -184,6 +197,13 @@ export class Session {
     return { code: await encodeRecoveryCode(secret), record }
   }
 
+  /** Whether this is the password the device signed in with: the master key it derives is the one in use. */
+  async checkPassword(unlocked: Unlocked, password: string): Promise<boolean> {
+    const salt = await accountSalt(await this.serverId(), unlocked.username)
+    const keys = await derivePasswordKeys(password, salt, unlocked.bundle.kdfVersion, this.argon2id)
+    return toHex(keys.masterKey) === toHex(unlocked.masterKey)
+  }
+
   /** The login key of the current password, which the server asks for before replacing anything. */
   private async currentLoginKey(unlocked: Unlocked, password: string): Promise<string> {
     const salt = await accountSalt(await this.serverId(), unlocked.username)
@@ -215,7 +235,7 @@ export class Session {
    * spent; the new one comes back and has to be shown. Every other device of
    * the account is signed out.
    */
-  async recover(code: string, username: string, password: string): Promise<Registered & { recoveryCode: string }> {
+  async recover(code: string, username: string, password: string): Promise<Registered & { recoveryCode: string; totpWasOn: boolean }> {
     const secret = await decodeRecoveryCode(code)
     if (!secret) throw new Error('That is not a recovery code. Check it for a typo.')
     const server = await this.server()
@@ -251,11 +271,17 @@ export class Session {
       wrappedAccountSecret,
       recovery: fresh.record
     }
-    const unlocked = await this.move(async () => this.adopt(await this.api.recoverCommit(request), next.masterKey, name, server.serverId))
-    return { unlocked, recoveryCode: fresh.code }
+    let totpWasOn = false
+    const unlocked = await this.move(async () => {
+      const response = await this.api.recoverCommit(request)
+      totpWasOn = response.totpWasOn === true
+      return this.adopt(response, next.masterKey, name, server.serverId)
+    })
+    return { unlocked, recoveryCode: fresh.code, totpWasOn }
   }
 
-  async login(username: string, password: string): Promise<Unlocked> {
+  /** `askCode`: for an account with two-factor sign-in, the code from the authenticator app. */
+  async login(username: string, password: string, askCode?: AskCode): Promise<Unlocked> {
     const name = normalizeName(username)
     const serverId = await this.serverId()
     const salt = await accountSalt(serverId, name)
@@ -266,15 +292,48 @@ export class Session {
     let refusal: unknown = null
     for (const version of versions) {
       const keys = await derivePasswordKeys(password, salt, version, this.argon2id)
+      let response: SessionResponse
       try {
-        const response = await this.api.login({ loginKey: toBase64(keys.loginKey) })
-        return await this.adopt(response, keys.masterKey, name, serverId)
+        response = await this.api.login({ loginKey: toBase64(keys.loginKey) })
       } catch (error) {
+        const challenge = secondFactorChallenge(error)
+        if (challenge !== null) return this.adopt(await this.secondStep(challenge, askCode), keys.masterKey, name, serverId)
         if (!(error instanceof ApiError) || error.status !== 401) throw error
         refusal = error
+        continue
       }
+      return this.adopt(response, keys.masterKey, name, serverId)
     }
     throw refusal ?? new Error('wrong name or password')
+  }
+
+  /** The password was right; the code from the app, until it is right too or the person gives up. */
+  private async secondStep(challenge: string, askCode?: AskCode): Promise<SessionResponse> {
+    if (!askCode) throw new Error('This account signs in with a code from an authenticator app.')
+    for (let again = false; ; again = true) {
+      const code = await askCode(again)
+      if (code === null) throw new Error('Signing in was cancelled.')
+      try {
+        return await this.api.loginTotp({ challenge, code: code.replace(/\s/g, '') })
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 401 || error.message !== 'wrong code') throw error
+      }
+    }
+  }
+
+  /**
+   * Turns two-factor sign-in on with the secret this device made and showed
+   * to the app, and a first code from it. Every other device is signed out.
+   */
+  async enableTotp(unlocked: Unlocked, password: string, secret: Bytes, code: string): Promise<Unlocked> {
+    const serverId = await this.serverId()
+    const request = { loginKey: await this.currentLoginKey(unlocked, password), secret: toBase64(secret), code: code.replace(/\s/g, '') }
+    return this.move(async () => this.adopt(await this.api.enableTotp(request), unlocked.masterKey, unlocked.username, serverId))
+  }
+
+  async disableTotp(unlocked: Unlocked, password: string, code: string): Promise<Unlocked> {
+    const bundle = await this.api.disableTotp({ loginKey: await this.currentLoginKey(unlocked, password), code: code.replace(/\s/g, '') })
+    return this.withBundle(unlocked, bundle)
   }
 
   private async adopt(response: SessionResponse, masterKey: Bytes, username: string, serverId: string): Promise<Unlocked> {

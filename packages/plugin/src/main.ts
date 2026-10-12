@@ -28,6 +28,7 @@ import { hashWasmArgon2id } from './account/argon2'
 import { KeyRing } from './account/KeyRing'
 import { PasswordModal } from './account/PasswordModal'
 import { PasswordPromptModal, RecoveryCodeModal } from './account/RecoveryModals'
+import { TotpOffModal, TotpSetupModal, askTotpCode } from './account/TotpModals'
 import { Session, type OpenVault, type SecretStore, type Unlocked } from './account/Session'
 import { EditorSync } from './editor/EditorSync'
 import { BackupModal } from './history/BackupModal'
@@ -405,7 +406,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   async signIn(username: string, password: string): Promise<void> {
     if (!username || !password) throw new Error('Enter your name and password.')
     await this.stopSync()
-    await this.session.login(username, password)
+    await this.session.login(username, password, (again) => askTotpCode(this.app, again))
     new Notice(`Obsidian Connect: signed in as ${this.settings.username}.`)
     await this.startSync()
   }
@@ -446,10 +447,60 @@ export default class ObsidianConnectPlugin extends Plugin {
     if (!verdict.ok) throw new Error(verdict.reason)
     if (password !== repeat) throw new Error('The passwords differ.')
     await this.stopSync()
-    const { recoveryCode } = await this.session.recover(code, username, password)
+    const { unlocked, recoveryCode, totpWasOn } = await this.session.recover(code, username, password)
+    // Already, not only once sync started: the offer below may come first.
+    this.unlocked = unlocked
     new Notice(`Obsidian Connect: account recovered, signed in as ${this.settings.username}. Your other devices sign in again with the new password.`, 12_000)
-    new RecoveryCodeModal(this.app, recoveryCode, 'The code you used no longer works. This is your new one.').open()
+    // The recovery turned two-factor sign-in off - a lost phone is a reason
+    // to recover. Offered again once the new code is written down.
+    const offerTotp = totpWasOn
+      ? () => this.openTotpSetup('Two-factor sign-in was on, and the recovery turned it off. Turn it on again, with your phone - or close this to do it later in the settings.')
+      : null
+    new RecoveryCodeModal(this.app, recoveryCode, 'The code you used no longer works. This is your new one.', offerTotp).open()
     await this.startSync()
+  }
+
+  /** What the settings show about two-factor sign-in; null while not signed in. */
+  totpState(): 'on' | 'off' | 'unsupported' | null {
+    const bundle = this.unlocked?.bundle
+    if (!bundle) return null
+    if (bundle.totp === undefined) return 'unsupported'
+    return bundle.totp ? 'on' : 'off'
+  }
+
+  openTotpSetup(intro: string | null = null): void {
+    new TotpSetupModal(
+      this.app,
+      {
+        checkPassword: async (password) => {
+          if (!this.unlocked) throw new Error('Sign in first.')
+          return this.session.checkPassword(this.unlocked, password)
+        },
+        hasRecoveryCode: () => this.recoveryState()?.state === 'made',
+        makeRecoveryCode: async (password) => {
+          if (!this.unlocked) throw new Error('Sign in first.')
+          const made = await this.session.makeRecoveryCode(this.unlocked, password)
+          this.unlocked = made.unlocked
+          this.settingTab?.display()
+          return made.code
+        },
+        label: () => this.settings.username,
+        enable: async (password, secret, code) => {
+          if (!this.unlocked) throw new Error('Sign in first.')
+          this.unlocked = await this.session.enableTotp(this.unlocked, password, secret, code)
+          this.settingTab?.display()
+        }
+      },
+      intro
+    ).open()
+  }
+
+  openTotpOff(): void {
+    new TotpOffModal(this.app, async (password, code) => {
+      if (!this.unlocked) throw new Error('Sign in first.')
+      this.unlocked = await this.session.disableTotp(this.unlocked, password, code)
+      this.settingTab?.display()
+    }).open()
   }
 
   /** What the settings show about the recovery code; null while not signed in. */
@@ -522,7 +573,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.renderStatus()
     this.settingTab?.display()
     new Notice(
-      'Obsidian Connect: this device was signed out - the password was changed or the account recovered on another device. Sign in again in the plugin settings.',
+      'Obsidian Connect: this device was signed out - on another device the password was changed, the account recovered or two-factor sign-in turned on. Sign in again in the plugin settings.',
       0
     )
   }

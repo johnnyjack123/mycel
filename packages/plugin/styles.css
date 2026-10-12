@@ -165,6 +165,18 @@
   user-select: all;
 }
 
+/* Dark on light whatever the theme, with a quiet zone: scanners need both. */
+.connect-qr {
+  width: min(240px, 70vw);
+  margin: 0.5em auto;
+}
+
+.connect-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .connect-recovery-code {
   font-size: 1.3em;
   letter-spacing: 0.05em;

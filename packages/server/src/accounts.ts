@@ -10,6 +10,7 @@ import type {
   RegistrationMode,
   VaultRecord
 } from '@obsidian-connect/shared'
+import { TOTP_SECRET_BYTES, totpMatch } from './totp.js'
 
 // Accounts live in one JSON file. The server and the CLI (`docker exec …
 // obsidian-connect invite`) both write it, so every change re-reads the file
@@ -44,6 +45,16 @@ export interface StoredAccount {
   sessions?: number
   /** The recovery code: the hash of its key, and the account's keys wrapped under it. */
   recovery?: StoredRecovery
+  /** Two-factor sign-in, when it is on. */
+  totp?: StoredTotp
+}
+
+export interface StoredTotp {
+  /** Base64. The server has to read it to check a code. */
+  secret: string
+  createdAt: number
+  /** The last time step a code was accepted for; it and every one before are spent. */
+  lastStep: number
 }
 
 export interface StoredRecovery {
@@ -409,7 +420,77 @@ export class AccountStore {
       account.wrappedPrivateKey = request.wrappedPrivateKey
       account.wrappedAccountSecret = request.wrappedAccountSecret
       account.sessions = sessionOf(account) + 1
+      // The code stands in for every factor: a lost phone is a reason to use it.
+      delete account.totp
       return account
+    })
+  }
+
+  // --- two-factor sign-in ------------------------------------------------------
+
+  /**
+   * Turns two-factor sign-in on, with the secret the device made, once a code
+   * from the app proves the app has it. Signs out every other device: they
+   * sign in again, with a code.
+   */
+  enableTotp(accountId: string, loginKey: unknown, secret: unknown, code: unknown, now = Date.now()): Promise<StoredAccount> {
+    const current = decoded(loginKey, 32)
+    const key = decoded(secret, TOTP_SECRET_BYTES)
+    if (!current) return Promise.reject(new AccountError(400, 'the login key is missing'))
+    if (!key) return Promise.reject(new AccountError(400, 'the secret is missing'))
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account || account.loginHash !== loginHash(current)) throw new AccountError(403, 'the current password is wrong')
+      if (account.totp) throw new AccountError(409, 'two-factor sign-in is on already')
+      const step = totpMatch(key, code, now, -1)
+      if (step === null) throw new AccountError(403, 'the code does not match')
+      account.totp = { secret: secret as string, createdAt: now, lastStep: step }
+      account.sessions = sessionOf(account) + 1
+      return account
+    })
+  }
+
+  /**
+   * Whether the code is right for the account now, and if so spends its step.
+   * Null for an account without two-factor sign-in.
+   */
+  checkTotp(accountId: string, code: unknown, now = Date.now()): Promise<boolean | null> {
+    return this.update((data) => {
+      const totp = data.accounts[accountId]?.totp
+      if (!totp) return null
+      const step = totpMatch(Buffer.from(totp.secret, 'base64'), code, now, totp.lastStep)
+      if (step === null) return false
+      totp.lastStep = step
+      return true
+    })
+  }
+
+  /** In the settings: the password and a current code. */
+  disableTotp(accountId: string, loginKey: unknown, code: unknown, now = Date.now()): Promise<StoredAccount> {
+    const current = decoded(loginKey, 32)
+    if (!current) return Promise.reject(new AccountError(400, 'the login key is missing'))
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account || account.loginHash !== loginHash(current)) throw new AccountError(403, 'the current password is wrong')
+      if (!account.totp) return account
+      if (totpMatch(Buffer.from(account.totp.secret, 'base64'), code, now, account.totp.lastStep) === null) {
+        throw new AccountError(403, 'the code does not match')
+      }
+      delete account.totp
+      return account
+    })
+  }
+
+  /**
+   * The admin's way, for a lost phone without a recovery code. The password
+   * is still needed to sign in - and to decrypt anything.
+   */
+  turnOffTotp(accountId: string): Promise<boolean> {
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account?.totp) return false
+      delete account.totp
+      return true
     })
   }
 
@@ -450,7 +531,8 @@ export class AccountStore {
         sealedName: vault.sealedName,
         wrappedKey: vault.wrappedKey
       })),
-      recovery: account.recovery ? { createdAt: account.recovery.createdAt } : null
+      recovery: account.recovery ? { createdAt: account.recovery.createdAt } : null,
+      totp: Boolean(account.totp)
     }
   }
 }

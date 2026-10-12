@@ -17,6 +17,7 @@ import { loadConfig, loadEnvFile } from '../src/config.js'
 import { createHttpApp } from '../src/http.js'
 import { ForkStore } from '../src/forks.js'
 import { AddressGuard, paced } from '../src/throttle.js'
+import { totpCode } from '../src/totp.js'
 import type { Frame } from '../src/log.js'
 import { HubError, RoomHub, type RoomClient } from '../src/rooms.js'
 
@@ -240,6 +241,67 @@ try {
     check((await status(() => accounts.setRecovery(frank, frankKeys.loginKey, null))) === 403, 'deleting the code needs the current password')
     await accounts.setRecovery(frank, newLoginKey, null)
     check((await found(third)) === undefined && accounts.bundle(await frankNow()).recovery === null, 'and leaves none')
+  }
+
+  // --- two-factor sign-in ----------------------------------------------------------
+  {
+    // RFC 6238, appendix B, SHA-1: the last six of its eight digits.
+    const rfc = Buffer.from('12345678901234567890')
+    const vectors: Array<[number, string]> = [
+      [59, '287082'],
+      [1_111_111_109, '081804'],
+      [1_111_111_111, '050471'],
+      [1_234_567_890, '005924'],
+      [2_000_000_000, '279037'],
+      [20_000_000_000, '353130']
+    ]
+    check(
+      vectors.every(([seconds, code]) => totpCode(rfc, Math.floor(seconds / 30)) === code),
+      "the server's codes match RFC 6238's test vectors",
+      vectors.map(([seconds]) => totpCode(rfc, Math.floor(seconds / 30)))
+    )
+
+    const t0 = 1_800_000_000_000
+    const secret = randomBytes(20)
+    const codeAt = (ms: number, offset = 0): string => totpCode(secret, Math.floor(ms / 30_000) + offset)
+    const henKeys = keyMaterial()
+    const hen = (await accounts.register({ ...henKeys, recovery: { recoveryKey: b64(32), wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) } }, 'open')).accountId
+    const henNow = async (): Promise<StoredAccount> => (await accounts.get(hen)) as StoredAccount
+    const enable = (loginKey: string, code: string, at = t0): Promise<unknown> => accounts.enableTotp(hen, loginKey, secret.toString('base64'), code, at)
+    check((await status(() => enable(b64(32), codeAt(t0)))) === 403, 'turning it on needs the password, not only a token')
+    check((await status(() => enable(henKeys.loginKey, codeAt(t0 + 120_000)))) === 403, 'and a code the app made from that secret, now')
+    const before = sessionOf(await henNow())
+    await enable(henKeys.loginKey, codeAt(t0))
+    check(accounts.bundle(await henNow()).totp === true && sessionOf(await henNow()) === before + 1, 'then it is on, and every other device signed out')
+    check((await status(() => enable(henKeys.loginKey, codeAt(t0, 1)))) === 409, 'turning it on twice is refused')
+    check((await accounts.checkTotp(hen, codeAt(t0), t0)) === false, 'the code used to turn it on is spent')
+    check((await accounts.checkTotp(hen, codeAt(t0 + 30_000), t0 + 30_000)) === true, "the next step's code signs in")
+    check((await accounts.checkTotp(hen, codeAt(t0 + 30_000), t0 + 30_000)) === false, 'once: the same code again is refused')
+    check((await accounts.checkTotp(hen, codeAt(t0 + 60_000, -1), t0 + 60_000)) === false, 'and so is any step before it')
+    check((await accounts.checkTotp(hen, codeAt(t0 + 90_000, 1), t0 + 90_000)) === true, 'a clock a step ahead is allowed')
+    check((await accounts.checkTotp(hen, codeAt(t0 + 300_000, 3), t0 + 300_000)) === false, 'three steps off is not')
+    check((await accounts.checkTotp(bob, '123456', t0)) === null, 'an account without it has no code to check')
+    check((await status(() => accounts.disableTotp(hen, henKeys.loginKey, '000000', t0 + 330_000))) === 403, 'turning it off needs a current code')
+    check((await status(() => accounts.disableTotp(hen, b64(32), codeAt(t0 + 330_000), t0 + 330_000))) === 403, 'and the password')
+    await accounts.disableTotp(hen, henKeys.loginKey, codeAt(t0 + 330_000), t0 + 330_000)
+    check(accounts.bundle(await henNow()).totp === false, 'with both it is off')
+
+    await enable(henKeys.loginKey, codeAt(t0 + 600_000), t0 + 600_000)
+    check((await accounts.turnOffTotp(hen)) && accounts.bundle(await henNow()).totp === false, 'the admin can turn it off')
+    check(!(await accounts.turnOffTotp(hen)), 'and says when there was nothing to turn off')
+
+    await enable(henKeys.loginKey, codeAt(t0 + 900_000), t0 + 900_000)
+    const recoveryKey = b64(32)
+    await accounts.setRecovery(hen, henKeys.loginKey, { recoveryKey, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) })
+    await accounts.recover({
+      recoveryKey,
+      newLoginKey: b64(32),
+      kdfVersion: 1,
+      wrappedPrivateKey: b64(64),
+      wrappedAccountSecret: b64(48),
+      recovery: { recoveryKey: b64(32), wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) }
+    })
+    check(accounts.bundle(await henNow()).totp === false, 'a recovery turns it off: a lost phone is a reason to use the code')
   }
 
   // --- contacts ----------------------------------------------------------------
@@ -493,6 +555,63 @@ try {
       httpHub.detach(stillOpen)
       httpHub.detach(otherDevice)
       httpHub.detach(bystander)
+    }
+
+    // Two-factor sign-in over HTTP: two steps, a challenge only the second
+    // accepts. An app of its own, with its own clock - and an address guard
+    // that has not counted the failures above.
+    {
+      let clock = 1_900_000_000_000
+      const app = createHttpApp(loadConfig({}), tokens, accounts, httpHub, contacts, again, { logger: false, paceMs: 0, now: () => clock })
+      check(((config.json() as { features?: string[] }).features ?? []).includes('totp'), 'the server says it offers two-factor sign-in')
+      const ivyKeys = keyMaterial()
+      const ivy = (await accounts.register(ivyKeys, 'open')).accountId
+      const secret = randomBytes(20)
+      const code = (offset = 0): string => totpCode(secret, Math.floor(clock / 30_000) + offset)
+      const elsewhere = new Client(ivy, hexId())
+      httpHub.attach(elsewhere)
+      const on = await app.inject({
+        method: 'POST',
+        url: '/account/totp',
+        headers: await auth(ivy),
+        payload: { loginKey: ivyKeys.loginKey, secret: secret.toString('base64'), code: code() }
+      })
+      check(on.statusCode === 200 && (on.json() as { account?: { totp?: boolean } }).account?.totp === true, 'turning it on answers with a session', on.body)
+      check(elsewhere.take().some((message) => message.type === 'close' && message.code === CLOSE_SIGNED_OUT), 'and closes the other devices as signed out')
+      httpHub.detach(elsewhere)
+
+      const login = await app.inject({ method: 'POST', url: '/auth/login', payload: { loginKey: ivyKeys.loginKey } })
+      const asked = login.json() as { secondFactor?: string; challenge?: string; account?: unknown; token?: string }
+      check(
+        login.statusCode === 403 && asked.secondFactor === 'totp' && typeof asked.challenge === 'string' && !asked.account && !asked.token,
+        'the right password then answers with a challenge - no keys, no token',
+        login.body
+      )
+      const challenge = asked.challenge as string
+      check(
+        (await app.inject({ method: 'GET', url: '/account', headers: { authorization: `Bearer ${challenge}` } })).statusCode === 401,
+        'the challenge opens nothing else'
+      )
+      const second = (body: Record<string, string>) => app.inject({ method: 'POST', url: '/auth/login/totp', payload: body })
+      const wrong = await second({ challenge, code: code(5) })
+      check(wrong.statusCode === 401 && (wrong.json() as { error?: string }).error === 'wrong code', 'a wrong code is refused', wrong.body)
+      check((await second({ challenge: b64(32), code: code() })).statusCode === 401, 'and so is a made-up challenge')
+      clock += 30_000
+      const right = await second({ challenge, code: code() })
+      const signedIn = { authorization: `Bearer ${(right.json() as { token?: string }).token ?? ''}` }
+      check(right.statusCode === 200 && (await app.inject({ method: 'GET', url: '/account', headers: signedIn })).statusCode === 200, 'the right code signs in', right.body)
+      check((await second({ challenge, code: code() })).statusCode === 401, 'once')
+
+      for (let attempt = 0; attempt < 4; attempt += 1) await second({ challenge, code: code(7) })
+      clock += 30_000
+      const blocked = await second({ challenge, code: code() })
+      check(blocked.statusCode === 429, 'five wrong codes block codes for that account, even the right one', blocked.body)
+
+      const off = await app.inject({ method: 'POST', url: '/account/totp/off', headers: signedIn, payload: { loginKey: ivyKeys.loginKey, code: code() } })
+      check(off.statusCode === 200 && (off.json() as { totp?: boolean }).totp === false, 'turning it off with password and code', off.body)
+      const plain = await app.inject({ method: 'POST', url: '/auth/login', payload: { loginKey: ivyKeys.loginKey } })
+      check(plain.statusCode === 200 && typeof (plain.json() as { token?: string }).token === 'string', 'afterwards the password alone signs in again')
+      await app.close()
     }
     await app.close()
     await httpHub.shutdown()

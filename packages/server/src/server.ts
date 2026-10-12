@@ -29,6 +29,10 @@ export interface StartOptions {
   paceMs?: number
   /** How often removed accounts are cleared. */
   sweepMs?: number
+  /** The clock codes from an authenticator app are checked against. */
+  now?: () => number
+  /** Failed sign-ins an address may have within 15 minutes. */
+  maxFailures?: number
 }
 
 const VAULT_PREFIX = '/vault/'
@@ -51,7 +55,12 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
     purgeGraceMs: config.purgeGraceMs
   })
   blobs.protect((account, vault, blob) => hub.isAttached(account, vault, blob))
-  const app = createHttpApp(config, tokens, accounts, hub, contacts, blobs, { logger: options.logger ?? true, paceMs: options.paceMs })
+  const app = createHttpApp(config, tokens, accounts, hub, contacts, blobs, {
+    logger: options.logger ?? true,
+    paceMs: options.paceMs,
+    now: options.now,
+    maxFailures: options.maxFailures
+  })
   // The CLI only marks an account as removed; its shares end and its folder
   // goes here, where the rooms are.
   const sweep = (): void => {
