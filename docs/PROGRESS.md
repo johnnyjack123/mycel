@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-12 · **0.5.7 on `feat/accounts`: milestone 0.5 (attachments) built and accepted by the user. Next: milestone 0.6, recovery codes and 2FA - to be designed with the user first.**_
+_Last updated: 2026-10-12 · **0.5.7 on `feat/accounts`: milestone 0.5 (attachments) built and accepted by the user. Milestone 0.6 (recovery codes and 2FA) designed with the user in `docs/PHASE5.md`; building step 1.**_
 
 ## Where we are
 
@@ -27,30 +27,19 @@ not been seen on a device yet.
 
 ## Next step
 
-**Milestone 0.6: recovery codes and 2FA** (version 0.6.0). Nothing is designed
-yet. Do it the way 0.5 went: talk it through with the user (AskUserQuestion; the
-user writes German, decides product questions themselves and wants to be asked),
-write `docs/PHASE5.md`, then build in steps with tests.
+**Milestone 0.6: recovery codes and 2FA**, specified in `docs/PHASE5.md` (decided
+with the user on 2026-10-12 - every decision is listed at its top). Three steps,
+each with its tests, a commit and a version:
 
-1. Read: CLAUDE.md "Accounts and keys"; `docs/PHASE2.md` "Keys", "Accounts";
-   `docs/PHASE3.md` "Accounts without names". Code: plugin `src/account/Session.ts`
-   (register, login, unlock), `KeyRing.ts`, `api.ts`, `PasswordModal.ts` (the
-   password change re-wraps the account secret and private key - a recovery path
-   would be a second wrapping of the same two), `settings.ts` (account screens);
-   server `src/accounts.ts`, `auth.ts`, `throttle.ts`, `cli.ts`.
-2. Questions to settle with the user - none decided:
-   - What a recovery code restores: access after a forgotten password (a second
-     wrapping of account secret + private key under a key from the code, and a
-     second login credential the server checks), then a new password.
-   - One code or several single-use ones; shown once at account creation or also
-     made later in the settings; what existing accounts get.
-   - 2FA: in an end-to-end design it can only guard the server login (the token
-     and the wrapped key bundle; the password is still needed to decrypt). TOTP
-     (the server holds the secret) or WebAuthn/passkeys (support in Obsidian
-     mobile unknown). Do devices already signed in stay signed in? Losing the
-     second factor - recovery codes, or the admin CLI by account id?
-3. Constraint from invariant 14: the password and anything derived from it that
-   unlocks keys never leave the device; the server knows accounts only by id.
+1. Signing out the other devices: a session generation per account, sockets closed
+   with `4401` (0.6.0).
+2. The recovery code (0.6.1).
+3. Two-factor sign-in with TOTP (0.6.2).
+
+Code to start from: plugin `src/account/Session.ts`, `api.ts`, `PasswordModal.ts`,
+`settings.ts` (account screens), `sync/VaultSocket.ts` (close handling); server
+`src/accounts.ts`, `auth.ts`, `http.ts`, `server.ts` (socket upgrade), `wshub.ts`,
+`cli.ts`.
 
 ## In flight / half-finished
 
