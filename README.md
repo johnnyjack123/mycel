@@ -3,12 +3,13 @@
 End-to-end encrypted, CRDT-based (Yjs) vault synchronization and live
 collaboration.
 
-Keeps a vault in sync across your own devices, and lets you share single notes
-with other people for live editing with cursors — in Obsidian's own editor. The
-server you run only ever sees ciphertext. See `CLAUDE.md` for the architecture,
-`docs/PHASE2.md` for keys and sharing, `docs/PHASE3.md` for accounts without
-names, contacts, the end of a share and surviving the server, and
-`docs/SERVER.md` for running the server.
+Keeps a vault in sync across your own devices - notes, pictures, PDFs, canvases -
+and lets you share single notes with other people for live editing with cursors,
+in Obsidian's own editor. The server you run only ever sees ciphertext. See
+`CLAUDE.md` for the architecture, `docs/PHASE2.md` for keys and sharing,
+`docs/PHASE3.md` for accounts without names, contacts, the end of a share and
+surviving the server, `docs/PHASE4.md` for attachments, `docs/SERVER.md` for
+running the server and `docs/CHANGELOG.md` for what each version changed.
 
 ## Requirements
 
@@ -98,32 +99,53 @@ losing access to the encrypted notes on the server. Your devices keep their
 files. It needs to be strong (the plugin checks, and offers to generate one);
 the server never learns your name either — it knows accounts only by random ids.
 
-Every markdown note is synced automatically; there is no per-note switch.
-Settings under *All your devices* (exclusions, conflict markers, retention, share
-folder) are the same on every device; the ones under *This device* are not.
+Every markdown note is synced automatically; there is no per-note switch. So is
+every other file (see *Attachments* below). Settings under *All your devices*
+(exclusions, conflict markers, retention, share folder) are the same on every
+device; the ones under *This device* are not.
 
-Commands: *Show sync status*, *Open version history for this note*,
-*Browse backups*, *Deleted notes…*, *Notes with two versions…*, *Force resync of
-this note*, *Reconnect and rescan the vault*, *Copy the log*, and the sharing
-commands below. Sharing, access, history and comparing versions are also in the
-note's "…" menu and its right-click menu.
+Commands: *Show sync status*, *Open version history* (a note's or a file's),
+*Browse backups*, *Deleted notes and files…*, *Notes with two versions…*, *Force
+resync of this note*, *Reconnect and rescan the vault*, *Copy the log*, and the
+sharing commands below. Sharing, access, history and comparing versions are also
+in every file's "…" menu and right-click menu, in a section of their own under
+*Obsidian Connect*.
 
-The cloud in the status bar shows where the note in front of you stands: green
-when the server has everything written here, red while it does not yet, grey
-while the server has not answered.
+The cloud in the status bar shows where the note or file in front of you stands:
+green when the server has everything written here, red while it does not yet,
+grey while the server has not answered, orange for a file too large for the
+server. Clicking it opens the plugin's menu for that file. Beside it, an icon
+says whether the note is shared - a lock when you may only read it, which also
+appears in the note's header (phones have no status bar).
 
-**Two versions of a note.** When two devices meet with different copies of the
-same note — two existing vaults paired for the first time — nothing tells which
-side changed what, so both versions are kept. *Compare versions* shows them side
-by side, passage by passage: keep this device's, the other one's, or both.
+**Two versions of a note.** Whatever you type in a note's editor merges with the
+other devices' changes by itself, offline too. Both versions are kept only when a
+note changes as a *file* - another program or plugin writes it, a device meets
+another with a different copy (two existing vaults paired for the first time) -
+and both sides changed the same lines, or nothing tells which side changed what.
+*Compare versions* shows them side by side, passage by passage: keep this
+device's, the other one's, or both. It appears on the device that kept both.
+
+### Attachments
+
+Every file that is not a note - pictures, PDFs, canvases - is synced as an
+encrypted, immutable copy per version. A phone downloads files up to 10 MB by
+default (*This device* in the settings) and the rest when a note that embeds them
+is opened, or with *Download attachments* in the note's menu. A file changed on
+two devices at once is kept twice, as `name (conflict <date time>).ext`. Deleted
+files go to the same trash as notes, and a file's *Version history* keeps its
+earlier versions for the history retention, with a preview for pictures. The
+server takes files up to 100 MB by default (`docs/SERVER.md`); a larger one stays
+on its device.
 
 **The log** lives in the plugin folder (`logs/`, a week of it) and never contains
 the text of a note. *Copy the log* is for bug reports; *Detailed logging* in the
 settings adds every change sent and received.
 
-**Deleted notes…** lists what was deleted on any of your devices and brings a
-note back. Deleted notes stay restorable for the history retention; after that
-the server deletes them, unless they are still shared with someone.
+**Deleted notes and files…** (also in every folder's menu and the settings) lists
+what was deleted on any of your devices and brings it back. Deleted notes and
+files stay restorable for the history retention; after that the server deletes
+them, unless a note is still shared with someone.
 
 If the server ever lost data or was restored from an older backup, the plugin
 notices, syncs nothing for the affected notes and asks once whether this device
@@ -143,13 +165,22 @@ share between the two of you; each keeps their copies.
 
 1. Open the note and run **Share this note…**. Pick a contact, *can edit* or
    *can read*, and whether they get the note's history or only what is written
-   from now on.
-2. The note appears in their share folder (`Shared/` by default) and stays live
+   from now on. If they have the note already, the dialog says so, and *Share
+   again* changes their access.
+2. **Share its attachments** (on by default): the files the note embeds or links
+   go along, both ways, and land in each share folder's `Attachments/`. A change
+   to such a file reaches the other side; deleting a file that came in this way
+   keeps it away for good, and restoring it from the trash brings it back.
+3. **Also share the notes it links to** (off by default) lists every note the note
+   reaches through links and shares them along, once, with the same choices. They
+   land below the share folder at the path of their link, so the links keep
+   working.
+4. The note appears in their share folder (`Shared/` by default) and stays live
    between you, with each other's cursors. **Notes shared with me** lists what
    others shared with you.
-3. **Who has access to this note** changes a person's role or removes them.
-   Removing someone moves the note to a new key.
-4. As the one it was shared with, deleting the note leaves the share, and
+5. **Who has access to this note** changes a person's role, removes them, and
+   turns the attachments on or off. Removing someone moves the note to a new key.
+6. As the one it was shared with, deleting the note leaves the share, and
    **Make this shared note my own copy** detaches it.
 
 However a share ends — removed, detached, a contact removed, the owner's account
@@ -163,10 +194,10 @@ npm run test:merge        # merge, reconcile, identity and crypto (no server, no
 npm run test:load         # does the built bundle load, start and unload cleanly?
 npm run test:rooms        # accounts, access, key epochs, sharing, compaction, restart
 npm run test:sync         # does the editor binding actually sync? (jsdom)
-npm run test:recovery     # a server that lost data or was rolled back, a removed account (in-process server)
+npm run test:recovery     # a server that lost data or was rolled back, a removed account, cleaning up files (in-process server)
 # against a running server with open registration:
 npm run test:socket       # the encrypted transport, two devices of one account
-npm run test:vault        # three devices and a collaborator, end to end
+npm run test:vault        # three devices and a collaborator, end to end, notes and attachments
 ```
 
 Run the server for tests on its own port and data directory, never against the
@@ -183,8 +214,9 @@ an in-memory vault whose editor saves and reloads files the way Obsidian does:
 pulling a vault onto a new device, renames, deletes, both devices typing at
 once, offline edits on both sides, contacts, sharing with and without history,
 read-only access, revoking and detaching with the history kept, the trash,
-restoring an old version and compaction — and checks that nothing on the server
-is readable.
+restoring an old version and compaction, attachments with their conflicts,
+versions and trash, shared notes' files and linked notes — and checks that
+nothing on the server is readable.
 
 ## How it works
 
@@ -206,11 +238,15 @@ is readable.
 - Version history is decrypted and replayed on your device. After the history
   retention (default 30 days, an account-wide setting) your own device folds
   older versions into an encrypted snapshot.
+- Attachments do not travel through Yjs. Each version of a file is an encrypted
+  blob, named by a keyed hash of its content and uploaded in 4 MiB chunks; the
+  vault index names which blob a file holds. A file is replaced or trashed only
+  once the server holds its current content.
 
 ## Limitations
 
-- **Attachments are not synced.** Binary files do not travel through Yjs; only
-  markdown notes do.
+- **A file shared through a note is stored once per account** on the server: what
+  comes in is copied into the receiving account's own store.
 - **Documents beyond `maxLoadedDocuments` stop receiving live updates** until
   opened again. They catch up on the next load, but a note you have not touched
   in a while is not live.

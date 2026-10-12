@@ -20,7 +20,11 @@ packages/
 ```
 
 The design of accounts, keys, sharing and the encrypted transport is specified in
-**`docs/PHASE2.md`**; running the server in **`docs/SERVER.md`**.
+**`docs/PHASE2.md`**, Phase 3 in **`docs/PHASE3.md`**, attachments (0.5) in
+**`docs/PHASE4.md`**; running the server in **`docs/SERVER.md`**. Where the work
+stands and what is next: **`docs/PROGRESS.md`**; what each version changed and how
+its fixes were verified: **`docs/CHANGELOG.md`**. A new milestone gets its design
+document (`docs/PHASE5.md` for 0.6) written with the user before it is built.
 
 ## Non-negotiable invariants
 

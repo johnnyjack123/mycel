@@ -1,236 +1,148 @@
 # Progress
 
-_Last updated: 2026-10-12 · **0.5.7 on `feat/accounts`: milestone 0.5 built - attachments between one's own devices, the trash and earlier versions, shared notes carrying their files and the notes they link to (`docs/PHASE4.md`). Next: the user tests all of 0.5 on devices; then 0.6.**_
+_Last updated: 2026-10-12 · **0.5.7 on `feat/accounts`: milestone 0.5 (attachments) built and accepted by the user. Next: milestone 0.6, recovery codes and 2FA - to be designed with the user first.**_
 
 ## Where we are
 
 Monorepo (`npm` workspaces): `packages/shared`, `packages/server`, `packages/plugin`.
-**Read `CLAUDE.md` first** - invariants, architecture, the version roadmap to 1.0.0
-and the conventions (push after every commit, bump the version for every change the
-user installs). Designs: `docs/PHASE2.md` (keys, sharing), `docs/PHASE3.md` (accounts
-without names, contacts, forks, trash, surviving the server); running the server:
-`docs/SERVER.md`.
+**Read `CLAUDE.md` first** - invariants (24 of them, each from a real bug), the
+architecture, the version roadmap to 1.0.0 and the conventions. Designs:
+`docs/PHASE2.md` (keys, sharing), `docs/PHASE3.md` (accounts without names,
+contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments);
+`docs/SERVER.md` for running the server; `docs/CHANGELOG.md` for every version and
+how its fixes were verified.
 
-Branch `feat/accounts`, pushed, CI green. Not merged to `main` yet - merging is what
-builds and publishes the Docker image for the first time. The user runs the server
-with npm on the laptop (port 1234, `packages/server/data` - never touch either) and
-installs the plugin by copying `main.js`, `manifest.json`, `styles.css`.
+Branch `feat/accounts`, pushed, CI green up to `9c22501` (0.5.7). Not merged to
+`main` - merging is what first builds and publishes the Docker image. The user
+runs the server with npm on the laptop (port 1234, `packages/server/data` - never
+touch either; see CLAUDE.md, Gotchas) and installs the plugin by copying
+`main.js`, `manifest.json`, `styles.css`. Server code unchanged since 0.5.4.
 
-On the user's devices (2026-10-09): sign-in and account creation, sync, sharing and
-live editing work. The account screens of 0.4.0 are confirmed. Carets between one's
-own devices were the last thing reported; 0.4.1 fixes them, not confirmed yet.
-
-2026-10-10, 0.5.0 on devices: attachments sync, canvas conflicts give two files. Seen:
-a canvas card named right after it was created arrived without its name until the
-next change; once a conflict copy lacked a card's name typed offline. 0.5.1 fixes the
-causes found (see PHASE4, "Hardened in 0.5.1"); not confirmed on devices yet.
-
-**0.5.0 needs the server restarted with the new code** (blob routes) - the user's
-server on 1234 runs whatever they started last. An old server makes the plugin sync
-notes only (it logs "the server does not store attachments"). Behind nginx, request
-bodies need at least 8 MB (`docs/SERVER.md`).
+Confirmed on the user's devices: sign-in and account creation, note sync, sharing
+and live editing, attachments syncing with conflict copies, restoring notes and
+files from the trash, the version history with rendered Markdown, linked notes
+(2026-10-12). On 2026-10-12 the user said that with 0.5.7's changes (plugin menu
+section, cloud for files, read-only mark) milestone 0.5 is done. 0.5.7 itself has
+not been seen on a device yet.
 
 ## Next step
 
-**Milestone 0.5: attachments**, spec in **`docs/PHASE4.md`**, three steps:
+**Milestone 0.6: recovery codes and 2FA** (version 0.6.0). Nothing is designed
+yet. Do it the way 0.5 went: talk it through with the user (AskUserQuestion; the
+user writes German, decides product questions themselves and wants to be asked),
+write `docs/PHASE5.md`, then build in steps with tests.
 
-1. **Own devices - built, 0.5.0, hardened in 0.5.1.** Confirmed on devices: files
-   arrive, conflict copies. Still to confirm: canvas card names (0.5.1), the phone's
-   10 MB limit and "Download attachments".
-2. **Trash and earlier versions - built, 0.5.2; 0.5.3 after the first look.** Seen
-   on devices: the trash was hard to find, a version preview showed pictures as text.
-   To confirm: the trash from a folder's menu and the settings, "Version history"
-   in a file's menu (image preview, restore, save as a copy), the usage line in the
-   settings. Restoring notes and files from the trash confirmed on devices
-   (2026-10-11); the version history with rendered Markdown (2026-10-12).
-3. **Shared notes' files - built, 0.5.4; the notes they link to - built, 0.5.5.**
-   To confirm on devices: the toggle in the share dialog and in "Who has access" (a
-   note shared before 0.5.4 counts as off), a picture arriving in
-   `Shared/Attachments/`, a change going back to the owner's own file, deleting a
-   received picture keeping it away; "Also share the notes it links to" - the list
-   with the reasons a note cannot go along, the linked notes landing in folders below
-   `Shared/` and their links resolving there, one notice for several notes; sharing
-   a note again with someone who has it (0.5.6: the hint, their access preselected,
-   "Share again"). Linked notes confirmed on devices (2026-10-12); a reader could
-   not type and saw no reason why - 0.5.7 marks it.
-
-2026-10-12, the user's look at 0.5.6, answered in 0.5.7: the plugin's menu items
-under the plugin's name, the cloud opening that menu and showing for attachments
-too, a mark for shared and read-only notes, "Version history" for files as for notes.
-With that the user considers milestone 0.5 done.
-
-**Next:** 0.6, recovery codes and 2FA - after the user confirms 0.5.7 on a device.
+1. Read: CLAUDE.md "Accounts and keys"; `docs/PHASE2.md` "Keys", "Accounts";
+   `docs/PHASE3.md` "Accounts without names". Code: plugin `src/account/Session.ts`
+   (register, login, unlock), `KeyRing.ts`, `api.ts`, `PasswordModal.ts` (the
+   password change re-wraps the account secret and private key - a recovery path
+   would be a second wrapping of the same two), `settings.ts` (account screens);
+   server `src/accounts.ts`, `auth.ts`, `throttle.ts`, `cli.ts`.
+2. Questions to settle with the user - none decided:
+   - What a recovery code restores: access after a forgotten password (a second
+     wrapping of account secret + private key under a key from the code, and a
+     second login credential the server checks), then a new password.
+   - One code or several single-use ones; shown once at account creation or also
+     made later in the settings; what existing accounts get.
+   - 2FA: in an end-to-end design it can only guard the server login (the token
+     and the wrapped key bundle; the password is still needed to decrypt). TOTP
+     (the server holds the secret) or WebAuthn/passkeys (support in Obsidian
+     mobile unknown). Do devices already signed in stay signed in? Losing the
+     second factor - recovery codes, or the admin CLI by account id?
+3. Constraint from invariant 14: the password and anything derived from it that
+   unlocks keys never leave the device; the server knows accounts only by id.
 
 ## In flight / half-finished
 
-Nothing.
+Nothing. Everything is committed except this handoff (docs only).
 
-## Decisions made this session
+## Decisions made (not visible in the code)
 
-Attachments (2026-10-10, details in `docs/PHASE4.md`):
-- Every non-Markdown file is a blob (`.canvas` too); excluded globs apply; 100 MB per
-  file by default (`OBSIDIAN_CONNECT_MAX_FILE_MB`), optional quota per account.
-- Download limit per device, set on each device: everything on desktop, 10 MB on a
-  phone by default; larger files come when a note that needs them is opened.
-- A conflicting edit keeps both, as two files (`name (conflict <date time>).ext`).
-- Deleted attachments go into the same trash as notes, and replaced versions are kept,
-  both for the history retention.
-- Shared notes carry their attachments in both directions, automatically, with a
-  toggle in the share dialog (on by default, per note). Embeds and links to files
-  count; links to notes do not, but the dialog offers to share the linked notes too
-  (recursively, once, at share time).
-- Everything that comes in through a share lands in `<share folder>/Attachments/`,
-  for owners as well.
-- Deleting a file a shared note brings means leaving that file: it never comes back
-  by itself, not even with a new version; restoring it from the trash rejoins.
-- Sharing a whole folder: wanted for later, noted in `CLAUDE.md`.
-- Decided while building step 3, without asking: files that come in through a share
-  are copied into the receiving account's own store (twice the space on the server,
-  everything of steps 1-2 unchanged); the base per shared file belongs to the vault,
-  not the device; a note shared before 0.5.4 does not share its files until the
-  owner turns it on in "Who has access".
-- Decided for linked notes (0.5.5), without asking: a linked note the person already
-  has is skipped, since sharing it again would overwrite their access; a linked note
-  shared before keeps its own choice about files; links are followed only through
-  notes that go along.
-- Found while building, decided without asking (invariant 24): an attachment entry is
-  replaced whole, so two devices writing at once lose one write silently. Entries name
-  what they replaced (`prev`) and every replacement leaves a version record; a version
-  that never saw a device's content is a conflict there, both files kept.
-
-Earlier:
-- Plugin and settings sync (0.7) only as snapshots from a chosen device, never through
-  the CRDT - reasons in `CLAUDE.md`, "Not built yet".
-- A note's presence is for other people only: a note nobody else is in is not shared,
-  and carets of the same account are never drawn (account id in the awareness state).
-- Reviews ("Compare versions") are device-local and only for merges without a base or
-  with conflicts; two devices seeding different texts at the same moment produce no
-  review (rare, the note then holds both texts).
+- Attachments: the decisions taken with the user are in `docs/PHASE4.md` (top and
+  "As built" notes per step). Taken without asking and accepted since: shared files
+  are copied into each account's own store (server space once per account); the
+  base per shared file belongs to the vault, not the device; a note shared before
+  0.5.4 shares no files until the owner turns it on; a linked note the person has
+  already is skipped; links are followed only through notes that go along.
+- Menus: our items stay in Obsidian's file menus (the only place on a phone, which
+  has no status bar), grouped under a label with the plugin's name; the cloud opens
+  the same menu on desktop. Submenus were not used: not public API.
+- Later wishes, not designed: sharing a whole folder; plugin and settings sync (0.7,
+  snapshots from a chosen device, never through the CRDT - reasons in CLAUDE.md).
 
 ## Open questions for the user
 
-- A note showed "Compare versions" (2026-10-12). Only a change that reaches a note as
-  a file change - not through a bound editor - can produce one: a three-way merge
-  that kept both sides of the same line, or one without a base. Asked the user for
-  the note's lines from "Copy the log" (`merge (... conflict(s))` / `no common base`,
-  `two versions kept`) to find which.
+1. **"Compare versions" on a note (2026-10-12).** The user asked whether an editor
+   is not bound locally, so offline edits merge cleanly. Answer: yes - typing in a
+   bound editor, offline too, goes into the CRDT and merges without a review. A
+   review comes only from a note changing as a file outside a bound editor (another
+   plugin or program, typing before the binding settled, a device without a base)
+   with both sides changing the same lines (`conflict`) or no base (`no-base`); it
+   appears only on the device that merged (`sync/Reviews.ts` is device-local). The
+   log the user pasted (one device, 2026-10-10 23:02 to 10-12 09:06) has no
+   `merge (...)` or `two versions kept` line. Asked: on which device it appeared and
+   the date the dialog names; then that device's log of that day.
+2. **The user's server dropped out on 2026-10-12.** Their device lost
+   `ws://localhost:1234` at 08:54:07Z, 3 s after a scratch server was started on
+   1235 (08:54:04.716Z), and was still retrying at 09:06. No mechanism found: the
+   scratch server listened only on 1235 with its own data directory, no test used
+   1234, the user's `start:server` runs `tsx src/index.ts` without watch, and
+   nothing then changed server or shared sources (only `package.json` versions).
+   Asked the user what their server's console showed. If it recurs when a scratch
+   server starts, find out why before running the end-to-end tests again.
 
-To check on a device: Obsidian resolving links by the end of their path
-(`[[Ideas/Roadmap]]` finding `Shared/Ideas/Roadmap.md`, `![[diagram.png]]` finding
-`Shared/Attachments/diagram.png`), and which file wins when two share a name.
+To check on a device: 0.5.7's menu section, the cloud on a canvas and its menu, the
+lock for a read-only note (status bar and note header, also on a phone); Obsidian
+resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
+`Shared/Attachments/x.png`, and which file wins when two share a name.
 
 ## Known issues / debt
 
-- **On a device only:** the caret fix of 0.4.1, the review dialog, the note cloud, the
-  note menus, the trash dialog, the log file - all untestable headless. For 0.5.0:
-  `readBinary`/`createBinary`/`modifyBinary` and their events, `requestUrl` with binary
-  bodies on mobile, `file-open` fetching, memory with large files on a phone.
+- **On a device only** (untestable headless): menus, modals, the settings tab, the
+  status bar marks, the header lock, `requestUrl` with binary bodies on mobile,
+  binary file events, `file-open` fetching, memory with large files on a phone.
 - Content uploaded but never named in the index (a crash between the two) is never
   cleaned up from the server.
-- Notes beyond `maxLoadedDocuments` (500) stop receiving live updates until opened (0.9).
-- No password recovery, no 2FA (0.6).
-- Frames authenticated by the note's key, not signed per author (0.9, `docs/PHASE3.md`).
-- Local copies of a purged note stay in IndexedDB on the devices that did not purge it.
+- Notes beyond `maxLoadedDocuments` (500) stop receiving live updates until opened
+  (0.9).
+- No password recovery, no 2FA (0.6 - next).
+- Frames authenticated by the note's key, not signed per author (0.9,
+  `docs/PHASE3.md`).
+- Local copies of a purged note stay in IndexedDB on the devices that did not
+  purge it.
 - The plugin name contains "Obsidian", which the community catalogue forbids (0.9).
+- The Docker image has never been built (CI builds it on `main` only).
 
 ## Verification state
 
-2026-10-12, 0.5.7: `typecheck`, `build`, `test:load`, `test:merge`, and against a
-scratch server `test:socket` (19) and `test:vault` (224, the file's cloud included)
-pass. Menus, the status marks and the header lock are untestable headless.
-2026-10-11, 0.5.6 (the share dialog only): `typecheck`, `build`, `test:load` and
-`test:merge` pass; the dialog itself is untestable headless. 0.5.5: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
-`test:rooms` (156), `test:sync` (26), `test:recovery` (56), and against a scratch
-server on 1235 `test:socket` (19) and `test:vault` (222) - all pass. For 0.5.5 checked
-by putting the bug back: a title's folders flattened (`Shared/Ideas Roadmap.md`) and
-a note the person had shared again (their access overwritten) - four checks failed,
-nothing else. For 0.5.4 also
-checked by putting the bug back: a snapshot ending exactly at a device's last frame
-taken for another server (B held every old note). Shared files' conflict and
-lineage paths are covered (two people changing a picture at once; A's other device
-seeing A's change before the note) but were not each checked with the bug back. Checked by putting
-the bug back: the link doubling of 0.4.2 (`[[RenamedRenamed]]`), two racing writes of
-one attachment without the lineage rule (one version lost), healing only on start
-(the server's lost blob never came back), a note renamed to `.txt` (pulled back in);
-for 0.5.1 all five old behaviours at once - each of its five new checks failed,
-nothing else; for 0.5.2 a clean-up that forgets what the server kept (trash entry
-lost) and one that purges content a live file needs (the server lost the scan).
-Not verified: anything on a device beyond what the user reported, and the Docker
-image (built by CI only on `main`).
+At `9c22501` (0.5.7), run 2026-10-12: `typecheck` and `build` pass; `test:merge`
+130, `test:load` 12, `test:rooms` 156, `test:sync` 26, `test:recovery` 56 - all
+pass (run after the 0.5.7 commit). Against a scratch server on 1235: `test:socket`
+19, `test:vault` 224 - all pass (run before the commit, same code). Bug-back checks
+per version: `docs/CHANGELOG.md`. Not verified: 0.5.7 on a device, the Docker
+image.
+
+How to run the end-to-end suites without touching the user's server: CLAUDE.md,
+Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
+1234 when no URL is given - always pass `ws://localhost:1235`.
 
 ---
 
 ## Log
 
 ### 2026-10-12
-- 0.5.7: the plugin's items in every file menu sit in a section of their own under
-  the plugin's name; clicking the cloud opens the same menu, with the trash and
-  incoming shares. The cloud shows for attachments too (`fileState`, with `local`
-  for a file the server does not take). Beside it a mark for a shared note - a lock
-  when only to read - and a lock in the note's header, for phones. "Earlier
-  versions" is "Version history" now, one command for notes and files.
+- 0.5.7: the plugin's menu section, the cloud for files and as a menu, the shared /
+  read-only mark and header lock, "Version history" for files.
+- Docs brought up to date for a handoff: `docs/CHANGELOG.md` (new, the full version
+  history), README (attachments, shared files, linked notes, menus), CLAUDE.md
+  (doc index), PLAN.md (marked historical).
 
 ### 2026-10-11
-- 0.5.6: the share dialog says when the person has the note already, starts from
-  their access and reads "Share again" - sharing again is how the server changes
-  their access, and the dialog's default "Can edit" turned a reader into an editor
-  without a word.
-- 0.5.5: "Also share the notes it links to" in the share dialog - the notes a note
-  reaches through links, listed with the reason when one cannot go along, shared once
-  with the same choices and landing below the share folder at their link's path. A
-  note the person has already is left as it is. Incoming shares are taken one pass at
-  a time, with one notice for several; notices name contacts instead of account ids.
-- 0.5.4: shared notes carry their files, both ways, by the owner's choice per note -
-  copied into each account's own store, landing in `<share folder>/Attachments/`;
-  deleting a received file leaves it for good. Found and fixed on the way: compaction
-  up to exactly a device's last frame was taken for a server restored from a backup,
-  so every note untouched for longer than the retention would have been held and
-  asked about (the first frames turn 30 days old around 2026-10-18).
-- 0.5.3: the trash in every folder's menu and in the settings; a note's version
-  history renders each version, pictures deleted since shown from the trash with a
-  Restore button.
-- 0.5.2: the trash and earlier versions of files - "Deleted notes and files…",
-  "Earlier versions" with an image preview, restore and save as a copy, cleaning up
-  the server's blobs in the trash pass (with a 10-minute grace on the server), the
-  account's usage in the settings.
+- 0.5.4 to 0.5.6: shared notes carry their files; the compaction misread as a
+  restored server fixed; linked notes; "Share again".
 
 ### 2026-10-10
-- 0.5.1: canvas card names that never left the device, and a conflict copy without
-  the latest save - the base recorded the stat after the upload, and a conflict
-  overwrote a file without checking it was still what had been read. Events now always
-  read, a scan every minute catches missed events, and a view saving over another
-  device's version keeps that version as a second file.
-- 0.5.0: attachments between one's own devices - blobs encrypted in chunks, the
-  server's blob store, `AttachmentStore`, conflicts as two files, the download limit,
-  self-healing; a note renamed to another extension no longer comes back.
-- Attachments (0.5) designed with the user: `docs/PHASE4.md`.
-- 0.4.2: another device's rename is applied with `vault.rename` (invariant 22).
-  `fileManager.renameFile` rewrote the links a second time, and when both devices did
-  so before seeing each other's edit every link came out twice - reproduced in
-  `test:vault` by holding back both devices' note changes, failing with the old code.
+- 0.5.0 to 0.5.3: attachments between own devices, hardened for canvases; the trash
+  and earlier versions of files. Attachments designed with the user (`PHASE4.md`).
 
-### 2026-10-09
-- 0.4.1: carets only of other people - the owner is told when the last participant
-  leaves, and the awareness state names the account, not the name.
-
-### 2026-09-27
-- 0.4.0, from the first run of Phase 3 on devices: "Compare versions" for notes kept
-  in two versions; a log file per day; the note cloud in the status bar; sharing in the
-  note menus; friend codes listed and deletable; account screens; show-password eye;
-  carets redrawn robustly. Version numbers introduced, with a roadmap to 1.0.0.
-- A bundle built during a `git stash` check shipped the old settings screen;
-  `test:load` now fails when a source is newer than `main.js`.
-
-### 2026-09-24 to 26
-- Phase 3: surviving a server that lost or rolled back data, accounts without names,
-  contacts by one-time code, forking a share with its history, removing accounts, the
-  trash. Docker image built and published by CI on `main`.
-
-### 2026-09-23
-- Phase 2 (accounts, end-to-end encryption, sharing by person, Docker) and the fixes
-  from the first device run of Phase 1.
-
-### 2026-09-18 to 22
-- Phase 1: vault-wide CRDT sync, multiplexed transport, file bridge, three-way
-  reconcile with backups, vault index, history. Found and fixed the ViewPlugin that
-  CodeMirror silently deactivated, and the text doubling between devices.
+Older: `docs/CHANGELOG.md`.
