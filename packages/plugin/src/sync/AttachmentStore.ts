@@ -68,6 +68,8 @@ export interface FileVersion {
   at: number
 }
 
+export type AttachmentSyncState = 'synced' | 'unsent' | 'waiting' | 'local' | 'untracked'
+
 export interface Transfers {
   uploads: number
   downloads: number
@@ -1092,6 +1094,23 @@ export class AttachmentStore {
   /** Whether the file is one this store syncs and the index knows. */
   knows(file: TFile): boolean {
     return this.isReady && file.extension !== 'md' && Boolean(this.index.idForPath(file.path))
+  }
+
+  /**
+   * Where one file stands, for the cloud in the status bar: `unsent` while it
+   * is not taken in as it is now, `waiting` while another device's version is
+   * on its way, `local` when the server does not take a file that large.
+   */
+  fileState(file: TFile): AttachmentSyncState {
+    if (!this.tracks(file)) return 'untracked'
+    if (this.tooLarge.has(file.path)) return 'local'
+    const fileId = this.state.attachmentAt(file.path)
+    if (!fileId || this.locks.has(fileId) || this.settling.has(file.path)) return 'unsent'
+    if (this.looksUnchanged(file, fileId)) return 'synced'
+    const known = this.state.attachment(fileId)
+    const entry = this.index.entry(fileId)
+    const asAgreed = known && known.path === file.path && known.mtime === file.stat.mtime && known.size === file.stat.size
+    return asAgreed && entry && !entry.deletedAt && entry.hash !== known.hash ? 'waiting' : 'unsent'
   }
 
   /** Earlier contents of a file that the server keeps, newest first. */

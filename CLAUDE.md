@@ -270,7 +270,7 @@ and the server holds immutable blobs of its versions:
   was written into it (within 5 s, file open in a leaf) is not taken as an
   edit on top: that version is kept next to it (`keepTheirsAside`).
 - The trash lists notes and files (command, settings, every folder's menu); a
-  file's menu has "Earlier versions"; a note's history renders each version,
+  file's menu has "Version history", like a note's; a note's history renders each version,
   pictures deleted since shown from the trash. The trash pass also cleans up:
   content no live entry, recent tombstone or lasting version names goes, and
   only what the server confirms gone leaves the index.
@@ -294,10 +294,17 @@ and the server holds immutable blobs of its versions:
   the clipboard. Never note text — paths, ids, sizes, outcomes. `log.debug`
   (every frame, every caret) only with "Detailed logging" on.
 - **The cloud** in the status bar is `DocStore.noteState` for the active note,
-  polled: `unsent` while anything this device holds is unconfirmed, `waiting`
-  while the server's state is unknown, `held` during a recovery.
+  `AttachmentStore.fileState` for any other file, polled: `unsent` while
+  anything this device holds is unconfirmed, `waiting` while the server's state
+  is unknown (for a file: another device's version on its way), `held` during a
+  recovery, `local` for a file too large for the server. Clicking it opens the
+  plugin's menu for that file. Beside it a mark says whether the note is shared
+  and whether only to read; a note shared to read only also gets a lock in the
+  header of every view showing it - a phone has no status bar.
 - **The note's menus** (its "…" menu, the file explorer, the editor's right
-  click) carry sharing, access, detaching, history and "Compare versions".
+  click) carry sharing, access, detaching, history and "Compare versions", in
+  a section of their own under a label with the plugin's name (Obsidian's menus
+  have no headings, and its submenus are not public API).
 
 ### Editor
 

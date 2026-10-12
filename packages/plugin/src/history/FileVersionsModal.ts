@@ -23,7 +23,7 @@ export class FileVersionsModal extends Modal {
   }
 
   onOpen(): void {
-    this.titleEl.setText(`Earlier versions: ${this.file.name}`)
+    this.titleEl.setText(`Version history: ${this.file.name}`)
     const since = this.retentionDays > 0 ? Date.now() - this.retentionDays * 24 * 60 * 60 * 1000 : 0
     this.versions = this.attachments.versionsOf(this.file, since)
     this.render()

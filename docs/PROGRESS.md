@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-11 · **0.5.6 on `feat/accounts`: milestone 0.5 built - attachments between one's own devices, the trash and earlier versions, shared notes carrying their files and the notes they link to (`docs/PHASE4.md`). Next: the user tests all of 0.5 on devices; then 0.6.**_
+_Last updated: 2026-10-12 · **0.5.7 on `feat/accounts`: milestone 0.5 built - attachments between one's own devices, the trash and earlier versions, shared notes carrying their files and the notes they link to (`docs/PHASE4.md`). Next: the user tests all of 0.5 on devices; then 0.6.**_
 
 ## Where we are
 
@@ -39,10 +39,10 @@ bodies need at least 8 MB (`docs/SERVER.md`).
    10 MB limit and "Download attachments".
 2. **Trash and earlier versions - built, 0.5.2; 0.5.3 after the first look.** Seen
    on devices: the trash was hard to find, a version preview showed pictures as text.
-   To confirm: the trash from a folder's menu and the settings, the rendered version
-   preview with deleted pictures, "Earlier versions" in a file's menu (image
-   preview, restore, save as a copy), the usage line in the settings.
-   Restoring notes and files from the trash confirmed on devices (2026-10-11).
+   To confirm: the trash from a folder's menu and the settings, "Version history"
+   in a file's menu (image preview, restore, save as a copy), the usage line in the
+   settings. Restoring notes and files from the trash confirmed on devices
+   (2026-10-11); the version history with rendered Markdown (2026-10-12).
 3. **Shared notes' files - built, 0.5.4; the notes they link to - built, 0.5.5.**
    To confirm on devices: the toggle in the share dialog and in "Who has access" (a
    note shared before 0.5.4 counts as off), a picture arriving in
@@ -51,10 +51,15 @@ bodies need at least 8 MB (`docs/SERVER.md`).
    with the reasons a note cannot go along, the linked notes landing in folders below
    `Shared/` and their links resolving there, one notice for several notes; sharing
    a note again with someone who has it (0.5.6: the hint, their access preselected,
-   "Share again").
+   "Share again"). Linked notes confirmed on devices (2026-10-12); a reader could
+   not type and saw no reason why - 0.5.7 marks it.
 
-**Next:** the user tests all of 0.5 on devices (2026-10-12 onwards). Then 0.6,
-recovery codes and 2FA.
+2026-10-12, the user's look at 0.5.6, answered in 0.5.7: the plugin's menu items
+under the plugin's name, the cloud opening that menu and showing for attachments
+too, a mark for shared and read-only notes, "Version history" for files as for notes.
+With that the user considers milestone 0.5 done.
+
+**Next:** 0.6, recovery codes and 2FA - after the user confirms 0.5.7 on a device.
 
 ## In flight / half-finished
 
@@ -104,7 +109,13 @@ Earlier:
 
 ## Open questions for the user
 
-None open. To check on a device: Obsidian resolving links by the end of their path
+- A note showed "Compare versions" (2026-10-12). Only a change that reaches a note as
+  a file change - not through a bound editor - can produce one: a three-way merge
+  that kept both sides of the same line, or one without a base. Asked the user for
+  the note's lines from "Copy the log" (`merge (... conflict(s))` / `no common base`,
+  `two versions kept`) to find which.
+
+To check on a device: Obsidian resolving links by the end of their path
 (`[[Ideas/Roadmap]]` finding `Shared/Ideas/Roadmap.md`, `![[diagram.png]]` finding
 `Shared/Attachments/diagram.png`), and which file wins when two share a name.
 
@@ -114,7 +125,6 @@ None open. To check on a device: Obsidian resolving links by the end of their pa
   note menus, the trash dialog, the log file - all untestable headless. For 0.5.0:
   `readBinary`/`createBinary`/`modifyBinary` and their events, `requestUrl` with binary
   bodies on mobile, `file-open` fetching, memory with large files on a phone.
-- A file over the server's limit is only logged; no mark in its menu yet.
 - Content uploaded but never named in the index (a crash between the two) is never
   cleaned up from the server.
 - Notes beyond `maxLoadedDocuments` (500) stop receiving live updates until opened (0.9).
@@ -125,6 +135,9 @@ None open. To check on a device: Obsidian resolving links by the end of their pa
 
 ## Verification state
 
+2026-10-12, 0.5.7: `typecheck`, `build`, `test:load`, `test:merge`, and against a
+scratch server `test:socket` (19) and `test:vault` (224, the file's cloud included)
+pass. Menus, the status marks and the header lock are untestable headless.
 2026-10-11, 0.5.6 (the share dialog only): `typecheck`, `build`, `test:load` and
 `test:merge` pass; the dialog itself is untestable headless. 0.5.5: `typecheck` and `build` pass; `test:merge` (130), `test:load` (12),
 `test:rooms` (156), `test:sync` (26), `test:recovery` (56), and against a scratch
@@ -148,6 +161,14 @@ image (built by CI only on `main`).
 ---
 
 ## Log
+
+### 2026-10-12
+- 0.5.7: the plugin's items in every file menu sit in a section of their own under
+  the plugin's name; clicking the cloud opens the same menu, with the trash and
+  incoming shares. The cloud shows for attachments too (`fileState`, with `local`
+  for a file the server does not take). Beside it a mark for a shared note - a lock
+  when only to read - and a lock in the note's header, for phones. "Earlier
+  versions" is "Version history" now, one command for notes and files.
 
 ### 2026-10-11
 - 0.5.6: the share dialog says when the person has the note already, starts from

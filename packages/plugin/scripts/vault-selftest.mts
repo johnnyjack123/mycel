@@ -1082,6 +1082,11 @@ try {
         await eventually(() => Boolean(A.attachmentIndex?.idForPath('Assets/diagram.png')) && A.docText('Board.md') === 'see ![[diagram.png]]\n'),
         'A has a note that embeds a picture'
       )
+      check(
+        await eventually(() => A.attachments?.fileState(A.vault.file('Assets/diagram.png') as never) === 'synced'),
+        "the picture's cloud says it is synced",
+        A.attachments?.fileState(A.vault.file('Assets/diagram.png') as never)
+      )
       const boardId = A.index?.docIdForPath('Board.md') as string
       await A.sharing?.share(boardId, C.accountId, 'write', true, true)
       check(await eventually(() => C.vault.text('Shared/Board.md') === 'see ![[diagram.png]]\n'), 'C receives a note shared with its files')
@@ -1098,6 +1103,10 @@ try {
       // C draws on it: A's original follows, on both of A's devices.
       const drawn = binary(59, 2_100)
       await C.vault.userWriteBinary('Shared/Attachments/diagram.png', drawn)
+      check(
+        C.attachments?.fileState(C.vault.file('Shared/Attachments/diagram.png') as never) === 'unsent',
+        'a picture changed a moment ago is not synced yet'
+      )
       check(
         await eventually(() => same(A.vault.bytes('Assets/diagram.png'), drawn) && same(B.vault.bytes('Assets/diagram.png'), drawn), 15_000),
         "C's change to the picture reaches A's own file, on every device of A"

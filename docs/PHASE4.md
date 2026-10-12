@@ -266,7 +266,7 @@ devices *(as built)*:
 - **"Deleted notes and files…"** (`Trash.list`, `TrashModal`) lists both, newest first;
   restoring a file revives its entry at its path or as `<name> (restored).<ext>` and
   fetches it, whatever the download limit.
-- **"Earlier versions"** is in a file's menu and a command (`FileVersionsModal`):
+- **"Version history"** is in a file's menu and the same command as a note's (`FileVersionsModal`):
   versions within the retention that were current for at least 10 minutes, with a
   preview for images. Restoring is an edit - what the file holds now becomes a
   version first, even a change not taken in yet. "Save as a copy" makes
@@ -297,7 +297,7 @@ devices *(as built)*:
 - **"Deleted notes…" becomes "Deleted files…"** and lists notes and attachments, with
   the same history retention. Restoring an attachment revives its entry at its path,
   or as `<name> (restored).<ext>` if the path is taken, and downloads it.
-- **"Earlier versions…"** is in an attachment's menu. It lists the versions within the
+- **"Version history"** (until 0.5.7 "Earlier versions") is in an attachment's menu. It lists the versions within the
   retention, with a preview for images. Each can be restored, which is an edit, so
   the current version becomes a version in turn, or saved as a copy next to it.
 - **Cleaning up** runs on any device of the account, in the trash pass:

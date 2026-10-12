@@ -117,16 +117,31 @@
   word-break: break-word;
 }
 
-/* The cloud in the status bar: where the active note stands. */
-.connect-note-status {
+/* The cloud in the status bar: where the active note or file stands. Next to
+   it, whether the note is shared, and whether only to read. */
+.connect-note-status,
+.connect-share-status {
   display: flex;
   align-items: center;
   cursor: pointer;
 }
 
-.connect-note-status svg {
+.connect-note-status svg,
+.connect-share-status svg {
   width: var(--icon-s);
   height: var(--icon-s);
+}
+
+.connect-share-status {
+  color: var(--text-muted);
+}
+
+.connect-share-status.is-read-only {
+  color: var(--color-orange);
+}
+
+.connect-note-status.is-local {
+  color: var(--color-orange);
 }
 
 .connect-note-status.is-synced {

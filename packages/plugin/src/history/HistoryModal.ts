@@ -49,7 +49,7 @@ export class HistoryModal extends Modal {
   }
 
   async onOpen(): Promise<void> {
-    this.titleEl.setText(`History: ${this.options.file.basename}`)
+    this.titleEl.setText(`Version history: ${this.options.file.basename}`)
     this.contentEl.createEl('p', { text: 'Loading and decrypting versions…' })
     try {
       await this.options.history.load()

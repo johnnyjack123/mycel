@@ -1,4 +1,16 @@
-import { Notice, Platform, Plugin, TFile, TFolder, editorInfoField, requestUrl, setIcon, type Menu, type TAbstractFile } from 'obsidian'
+import {
+  MarkdownView,
+  Menu,
+  Notice,
+  Platform,
+  Plugin,
+  TFile,
+  TFolder,
+  editorInfoField,
+  requestUrl,
+  setIcon,
+  type TAbstractFile
+} from 'obsidian'
 import {
   docRoom,
   settingsRoom,
@@ -29,7 +41,7 @@ import { Sharing } from './share/Sharing'
 import { SharedFiles } from './share/SharedFiles'
 import { AccountSettings, DEFAULT_SHARED_SETTINGS, type Contact, type SharedSettings } from './sync/AccountSettings'
 import { AttachmentIndex } from './sync/AttachmentIndex'
-import { AttachmentStore, type AttachmentOptions } from './sync/AttachmentStore'
+import { AttachmentStore, type AttachmentOptions, type AttachmentSyncState } from './sync/AttachmentStore'
 import { BackupStore } from './sync/BackupStore'
 import { Blobs } from './sync/Blobs'
 import { Compactor } from './sync/Compactor'
@@ -68,11 +80,43 @@ const SHARED_FILES_EVERY_MS = 60_000
 // A link no list names yet waits this long before this device lists its own file for it.
 const SHARED_FILES_CLAIM_MS = 10_000
 
-const NOTE_STATUS_TEXT: Record<Exclude<NoteSyncState, 'untracked'>, string> = {
-  synced: 'This note is synced: everything written here has reached the server.',
-  unsent: 'This note has changes the server has not confirmed yet.',
-  waiting: 'Not known yet whether this note is up to date: the server has not answered.',
-  held: "The server's copy of this note differs from what this device knew. It waits for your decision."
+type SyncState = Exclude<NoteSyncState | AttachmentSyncState, 'untracked'>
+
+/** What the cloud says: briefly at the top of its menu, in full as its tooltip. */
+const SYNC_STATUS: Record<SyncState, { label: string; note?: string; file?: string }> = {
+  synced: {
+    label: 'Synced',
+    note: 'This note is synced: everything written here has reached the server.',
+    file: 'This file is synced: the server holds it as it is here.'
+  },
+  unsent: {
+    label: 'Not confirmed by the server yet',
+    note: 'This note has changes the server has not confirmed yet.',
+    file: 'This file has changes the server has not confirmed yet.'
+  },
+  waiting: {
+    label: 'Waiting for the server',
+    note: 'Not known yet whether this note is up to date: the server has not answered.',
+    file: "Another device's version of this file is on its way."
+  },
+  held: {
+    label: 'Waiting for your decision',
+    note: "The server's copy of this note differs from what this device knew. It waits for your decision."
+  },
+  local: {
+    label: 'Only on this device',
+    file: 'This file is larger than the server takes; it stays on this device.'
+  }
+}
+
+// Obsidian's menus have no headings; this section, under a label naming the
+// plugin, keeps its items together and says where they come from.
+const MENU_SECTION = 'obsidian-connect'
+
+interface MenuAction {
+  title: string
+  icon: string
+  run: () => unknown
 }
 
 /** Obsidian's own request function: no CORS, works on mobile. */
@@ -159,7 +203,10 @@ export default class ObsidianConnectPlugin extends Plugin {
   private settingTab: ObsidianConnectSettingTab | null = null
   private statusBar!: HTMLElement
   private noteStatus!: HTMLElement
+  private shareStatus!: HTMLElement
   private noteStatusKey = ''
+  /** The lock in the header of each view showing a note shared to read only - where one tries to type. */
+  private readonly readOnlyMarks = new Map<MarkdownView, { text: string; el: HTMLElement }>()
   private status: SocketStatus = 'disconnected'
   private unwatchIndex: (() => void) | null = null
   private unwatchSocket: (() => void) | null = null
@@ -178,7 +225,11 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.statusBar = this.addStatusBarItem()
     this.noteStatus = this.addStatusBarItem()
     this.noteStatus.addClass('connect-note-status')
-    this.noteStatus.addEventListener('click', () => this.explainNoteStatus())
+    this.noteStatus.addEventListener('click', (event) => this.openConnectMenu(event))
+    this.shareStatus = this.addStatusBarItem()
+    this.shareStatus.addClass('connect-share-status')
+    this.shareStatus.addEventListener('click', () => this.openAccess())
+    this.register(() => this.unmarkReadOnlyViews())
     // Cheap - a few lookups for one note - and it catches every way a note
     // changes state without wiring each of them up.
     this.registerInterval(window.setInterval(() => this.renderNoteStatus(), NOTE_STATUS_MS))
@@ -189,6 +240,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on('file-open', (file) => {
         if (file?.extension === 'md') void this.attachments?.fetchFor(file)
+        this.renderNoteStatus()
       })
     )
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => this.noteMenu(menu, file)))
@@ -207,12 +259,15 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.addCommand({ id: 'show-status', name: 'Show sync status', callback: () => this.showStatus() })
     this.addCommand({
       id: 'open-history',
-      name: 'Open version history for this note',
-      callback: () => this.openHistory()
+      name: 'Open version history',
+      callback: () => {
+        const file = this.app.workspace.getActiveFile()
+        if (file && file.extension !== 'md') this.openFileVersions(file)
+        else this.openHistory()
+      }
     })
     this.addCommand({ id: 'open-backups', name: 'Browse backups', callback: () => this.openBackups() })
     this.addCommand({ id: 'deleted-notes', name: 'Deleted notes and files…', callback: () => this.openTrash() })
-    this.addCommand({ id: 'file-versions', name: 'Earlier versions of this file', callback: () => this.openFileVersions() })
     this.addCommand({ id: 'copy-log', name: 'Copy the log (for a bug report)', callback: () => void this.copyLog() })
     this.addCommand({ id: 'compare-versions', name: 'Compare the two versions of this note', callback: () => void this.openReview() })
     this.addCommand({ id: 'review-notes', name: 'Notes with two versions…', callback: () => void this.openReviews() })
@@ -653,7 +708,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     new TrashModal(this.app, this.trash, this.shared().historyRetentionDays, folder).open()
   }
 
-  /** Earlier versions of a file that is not a note - the active one unless given. */
+  /** The version history of a file that is not a note - the active one unless given. */
   private openFileVersions(file?: TFile): void {
     const active = this.app.workspace.getActiveFile()
     const target = file ?? (active instanceof TFile ? active : null)
@@ -839,46 +894,83 @@ export default class ObsidianConnectPlugin extends Plugin {
 
   /**
    * The note's own menus - its "..." menu, the file explorer's, the editor's
-   * right click - carry what the command palette does for the active note.
+   * right click - carry what the command palette does for the active note,
+   * together and under the plugin's name.
    */
   private noteMenu(menu: Menu, file: TAbstractFile): void {
-    const store = this.store
-    // Where a deleted note or picture was is where one looks for it.
-    if (file instanceof TFolder && store?.ready) {
-      const folder = file.isRoot() ? null : file.path
-      menu.addItem((item) => item.setTitle('Deleted notes and files…').setIcon('trash-2').onClick(() => this.openTrash(folder)))
-      return
-    }
-    if (file instanceof TFile && file.extension !== 'md' && this.attachments?.knows(file)) {
-      menu.addItem((item) => item.setTitle('Earlier versions').setIcon('history').onClick(() => this.openFileVersions(file)))
-      return
-    }
-    if (!(file instanceof TFile) || file.extension !== 'md' || !store?.ready) return
-    const docId = store.docIdForPath(file.path)
-    if (!docId) return
-    const entry = store.entry(docId)
-    if (entry?.owner) {
-      menu.addItem((item) => item.setTitle('Who has access').setIcon('users').onClick(() => this.openAccess(file)))
-      menu.addItem((item) => item.setTitle('Make my own copy').setIcon('copy').onClick(() => void this.detachActive(file)))
-    } else {
-      menu.addItem((item) => item.setTitle('Share…').setIcon('share-2').onClick(() => this.openShare(file)))
-      if (entry?.shared) menu.addItem((item) => item.setTitle('Who has access').setIcon('users').onClick(() => this.openAccess(file)))
-    }
-    menu.addItem((item) => item.setTitle('Version history').setIcon('history').onClick(() => this.openHistory(file)))
-    if (this.attachments?.isReady && this.settings.attachmentDownloadLimitMb >= 0) {
+    const actions = this.connectActions(file)
+    if (actions.length === 0) return
+    menu.addItem((item) => item.setTitle(this.manifest.name).setIsLabel(true).setSection(MENU_SECTION))
+    for (const action of actions) {
       menu.addItem((item) =>
         item
-          .setTitle('Download attachments')
-          .setIcon('download')
-          .onClick(async () => {
-            const fetched = (await this.attachments?.fetchFor(file)) ?? 0
-            new Notice(fetched > 0 ? `${fetched} attachment(s) of ${file.basename} downloaded.` : `${file.basename} has everything it embeds or links.`)
-          })
+          .setTitle(action.title)
+          .setIcon(action.icon)
+          .setSection(MENU_SECTION)
+          .onClick(() => void action.run())
       )
     }
-    if (this.reviews?.pendingFor(docId)) {
-      menu.addItem((item) => item.setTitle('Compare versions').setIcon('git-compare').onClick(() => void this.openReview(file)))
+  }
+
+  /** The cloud's menu: where the file in front of you stands, and what can be done with it. */
+  private openConnectMenu(event: MouseEvent): void {
+    const active = this.activeState()
+    const menu = new Menu()
+    if (active) menu.addItem((item) => item.setTitle(SYNC_STATUS[active.state].label).setIsLabel(true))
+    for (const action of active ? this.connectActions(active.file) : []) {
+      menu.addItem((item) =>
+        item
+          .setTitle(action.title)
+          .setIcon(action.icon)
+          .onClick(() => void action.run())
+      )
     }
+    menu.addSeparator()
+    menu.addItem((item) => item.setTitle('Deleted notes and files…').setIcon('trash-2').onClick(() => this.openTrash()))
+    menu.addItem((item) => item.setTitle('Notes shared with me').setIcon('inbox').onClick(() => this.openIncoming()))
+    menu.showAtMouseEvent(event)
+  }
+
+  /** What this plugin offers for a note, a file or a folder. */
+  private connectActions(file: TAbstractFile): MenuAction[] {
+    const store = this.store
+    // Where a deleted note or picture was is where one looks for it.
+    if (file instanceof TFolder) {
+      if (!store?.ready) return []
+      const folder = file.isRoot() ? null : file.path
+      return [{ title: 'Deleted notes and files…', icon: 'trash-2', run: () => this.openTrash(folder) }]
+    }
+    if (!(file instanceof TFile)) return []
+    if (file.extension !== 'md') {
+      return this.attachments?.knows(file) ? [{ title: 'Version history', icon: 'history', run: () => this.openFileVersions(file) }] : []
+    }
+    if (!store?.ready) return []
+    const docId = store.docIdForPath(file.path)
+    if (!docId) return []
+    const entry = store.entry(docId)
+    const actions: MenuAction[] = []
+    if (entry?.owner) {
+      actions.push({ title: 'Who has access', icon: 'users', run: () => this.openAccess(file) })
+      actions.push({ title: 'Make my own copy', icon: 'copy', run: () => this.detachActive(file) })
+    } else {
+      actions.push({ title: 'Share…', icon: 'share-2', run: () => this.openShare(file) })
+      if (entry?.shared) actions.push({ title: 'Who has access', icon: 'users', run: () => this.openAccess(file) })
+    }
+    actions.push({ title: 'Version history', icon: 'history', run: () => this.openHistory(file) })
+    if (this.attachments?.isReady && this.settings.attachmentDownloadLimitMb >= 0) {
+      actions.push({
+        title: 'Download attachments',
+        icon: 'download',
+        run: async () => {
+          const fetched = (await this.attachments?.fetchFor(file)) ?? 0
+          new Notice(fetched > 0 ? `${fetched} attachment(s) of ${file.basename} downloaded.` : `${file.basename} has everything it embeds or links.`)
+        }
+      })
+    }
+    if (this.reviews?.pendingFor(docId)) {
+      actions.push({ title: 'Compare versions', icon: 'git-compare', run: () => this.openReview(file) })
+    }
+    return actions
   }
 
   /** The two versions of a note that were merged, to choose from. */
@@ -1039,35 +1131,103 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.statusBar.setText(`Connect: ${label} · ${this.store.loadedCount()}/${this.store.trackedCount()}${moving ? ` · ${moving}` : ''}`)
   }
 
-  private activeNoteState(): NoteSyncState {
-    const file = this.activeFile()
-    return file && this.store ? this.store.noteState(file) : 'untracked'
+  /** The note or file in front of you and where it stands; null when it is not synced at all. */
+  private activeState(): { file: TFile; state: SyncState; text: string } | null {
+    const file = this.app.workspace.getActiveFile()
+    if (!(file instanceof TFile)) return null
+    const note = file.extension === 'md'
+    const state = note ? (this.store?.noteState(file) ?? 'untracked') : (this.attachments?.fileState(file) ?? 'untracked')
+    if (state === 'untracked') return null
+    const status = SYNC_STATUS[state]
+    return { file, state, text: (note ? status.note : status.file) ?? status.label }
   }
 
-  /** The cloud next to the connection status: where the note in front of you stands. */
+  /** Whether a note is shared, and whether only to read; null for one nobody else is in. */
+  private shareState(file: TFile): { readOnly: boolean; text: string } | null {
+    const store = this.store
+    const docId = file.extension === 'md' && store?.ready ? store.docIdForPath(file.path) : undefined
+    const entry = docId ? store?.entry(docId) : undefined
+    if (!docId || !entry || entry.deletedAt) return null
+    if (entry.owner) {
+      const name = this.sharing?.nameOf(entry.owner) ?? 'Someone'
+      return store?.isReadOnly(docId)
+        ? {
+            readOnly: true,
+            text: `${name} shared this note with you to read only, so you cannot change it. "Make my own copy" ends the share for you and gives you a copy you can edit.`
+          }
+        : { readOnly: false, text: `${name} shared this note with you; you can edit it.` }
+    }
+    return entry.shared ? { readOnly: false, text: 'You share this note with others.' } : null
+  }
+
+  /**
+   * The cloud next to the connection status: where the note or file in front
+   * of you stands. Beside it, whether the note is shared and how.
+   */
   private renderNoteStatus(): void {
-    const state = this.activeNoteState()
+    this.markReadOnlyViews()
+    const active = this.activeState()
+    const share = active ? this.shareState(active.file) : null
     const offline = this.status !== 'connected'
-    const key = `${state}:${offline}`
+    const key = `${active?.state}:${active?.text}:${offline}:${share?.text}`
     if (key === this.noteStatusKey) return
     this.noteStatusKey = key
-    const el = this.noteStatus
-    el.empty()
-    el.removeClass('is-synced', 'is-unsent', 'is-waiting', 'is-held')
-    if (state === 'untracked') {
-      el.hide()
-      return
+
+    const cloud = this.noteStatus
+    cloud.empty()
+    cloud.removeClass('is-synced', 'is-unsent', 'is-waiting', 'is-held', 'is-local')
+    if (active) {
+      cloud.show()
+      cloud.addClass(`is-${active.state}`)
+      setIcon(cloud, (active.state === 'waiting' && offline) || active.state === 'local' ? 'cloud-off' : 'cloud')
+      cloud.setAttribute('aria-label', active.text)
+      cloud.setAttribute('data-tooltip-position', 'top')
+    } else {
+      cloud.hide()
     }
-    el.show()
-    el.addClass(`is-${state}`)
-    setIcon(el, state === 'waiting' && offline ? 'cloud-off' : 'cloud')
-    el.setAttribute('aria-label', NOTE_STATUS_TEXT[state])
-    el.setAttribute('data-tooltip-position', 'top')
+
+    const mark = this.shareStatus
+    mark.empty()
+    mark.toggleClass('is-read-only', Boolean(share?.readOnly))
+    if (share) {
+      mark.show()
+      setIcon(mark, share.readOnly ? 'lock' : 'users')
+      mark.setAttribute('aria-label', share.text)
+      mark.setAttribute('data-tooltip-position', 'top')
+    } else {
+      mark.hide()
+    }
   }
 
-  private explainNoteStatus(): void {
-    const state = this.activeNoteState()
-    if (state !== 'untracked') new Notice(NOTE_STATUS_TEXT[state], 8_000)
+  /**
+   * A lock in the header of every view showing a note shared to read only.
+   * The status bar says it too, but a phone has none, and the header is
+   * where one looks when typing does nothing.
+   */
+  private markReadOnlyViews(): void {
+    const shown = new Set<MarkdownView>()
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const view = leaf.view
+      if (!(view instanceof MarkdownView)) return
+      shown.add(view)
+      const share = view.file ? this.shareState(view.file) : null
+      const text = share?.readOnly ? share.text : null
+      const mark = this.readOnlyMarks.get(view)
+      if (mark?.text === text) return
+      mark?.el.remove()
+      this.readOnlyMarks.delete(view)
+      if (text) this.readOnlyMarks.set(view, { text, el: view.addAction('lock', text, () => new Notice(text, 10_000)) })
+    })
+    for (const [view, mark] of this.readOnlyMarks) {
+      if (shown.has(view)) continue
+      mark.el.remove()
+      this.readOnlyMarks.delete(view)
+    }
+  }
+
+  private unmarkReadOnlyViews(): void {
+    for (const mark of this.readOnlyMarks.values()) mark.el.remove()
+    this.readOnlyMarks.clear()
   }
 
   private showStatus(): void {
