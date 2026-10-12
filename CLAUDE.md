@@ -209,7 +209,9 @@ someone's notes. Treat them as rules, not preferences.
   encrypted with it, and it cannot be: six digits that change every 30 seconds,
   checked by the server. The right password answers `403` with a challenge (a token
   of scope `2fa`), the code turns it into a session. Turning it on signs out the
-  other devices; a recovery turns it off; so can the admin (`user 2fa-off`).
+  other devices. A recovery keeps it when given a current code from the app, the
+  same entry going on working, and turns it off otherwise; so can the admin
+  (`user 2fa-off`).
 
 ### Identity
 

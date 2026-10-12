@@ -2,6 +2,7 @@ import { App, Modal, Notice, Setting, TextComponent } from 'obsidian'
 import qrcode from 'qrcode-generator'
 import { newTotpSecret, totpKeyText, totpMatches, totpUri, type Bytes } from '@obsidian-connect/shared/crypto'
 import { PasswordReveal } from './reveal'
+import type { KeepProblem } from './Session.js'
 
 const ISSUER = 'Obsidian Connect'
 const SVG = 'http://www.w3.org/2000/svg'
@@ -107,6 +108,94 @@ class TotpCodeModal extends Modal {
     }
     this.settled = true
     this.resolve(this.code)
+    this.close()
+  }
+
+  onClose(): void {
+    if (!this.settled) this.resolve(null)
+    this.contentEl.empty()
+  }
+}
+
+/**
+ * During a recovery of an account with two-factor sign-in: keep it with a
+ * code from the app, or turn it off. Null when closed - the recovery is then
+ * cancelled.
+ */
+export function askKeepTotp(app: App, problem: KeepProblem): Promise<{ code: string } | 'off' | null> {
+  return new Promise((resolve) => {
+    new KeepTotpModal(app, problem, resolve).open()
+  })
+}
+
+class KeepTotpModal extends Modal {
+  private code = ''
+  private settled = false
+
+  constructor(
+    app: App,
+    private readonly problem: KeepProblem,
+    private readonly resolve: (choice: { code: string } | 'off' | null) => void
+  ) {
+    super(app)
+  }
+
+  onOpen(): void {
+    this.titleEl.setText('Two-factor sign-in')
+    if (this.problem === 'blocked') {
+      this.contentEl.createEl('p', {
+        text: 'Too many wrong codes: codes for this account are refused for 15 minutes. Turn two-factor sign-in off now and set it up again afterwards, or close this and try again later.'
+      })
+    } else {
+      this.contentEl.createEl('p', {
+        text:
+          this.problem === 'wrong'
+            ? 'That code was not right, or was used already. Enter the one your authenticator app shows now.'
+            : 'Two-factor sign-in is on for this account. Still have Obsidian Connect in your authenticator app? Enter the code it shows now, and it stays on with that entry - your devices sign in with it, as before.'
+      })
+      const field = codeField(
+        new Setting(this.contentEl).setName('Code from the app'),
+        (value) => {
+          this.code = value
+        },
+        () => this.keep()
+      )
+      new Setting(this.contentEl).addButton((button) =>
+        button
+          .setButtonText('Keep it')
+          .setCta()
+          .onClick(() => this.keep())
+      )
+      window.setTimeout(() => field.inputEl.focus(), 0)
+    }
+    new Setting(this.contentEl)
+      .setName('Lost the phone, or the entry?')
+      .setDesc(
+        'Turn it off: the recovery goes ahead without it, and you can set it up again with a new entry right after. Do that too if a phone with the entry was lost or stolen, even if you still have the entry elsewhere - whoever has that phone can make codes.'
+      )
+      .addButton((button) =>
+        button
+          .setButtonText('Turn it off')
+          .setWarning()
+          .onClick(() => this.settle('off'))
+      )
+    this.contentEl.createEl('p', {
+      cls: 'setting-item-description',
+      text: 'Closing this cancels the recovery: nothing changes, and your recovery code still works.'
+    })
+  }
+
+  private keep(): void {
+    if (!/^\d{6}$/.test(this.code)) {
+      new Notice('The code has six digits.')
+      return
+    }
+    this.settle({ code: this.code })
+  }
+
+  private settle(choice: { code: string } | 'off'): void {
+    this.settled = true
+    this.resolve(choice)
     this.close()
   }
 

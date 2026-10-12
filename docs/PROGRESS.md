@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-12 · **0.6.2 on `feat/accounts`: milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built - all three steps. Next: the user checks 0.6.2 on a device; then milestone 0.7 (plugins and their settings) is designed with the user.**_
+_Last updated: 2026-10-12 · **0.6.3 on `feat/accounts`: milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built; the user tried 0.6.2 on a device ("works quite well"), and 0.6.3 lets a recovery keep 2FA as asked. Next: the user checks 0.6.3; then milestone 0.7 (plugins and their settings) is designed with the user.**_
 
 ## Where we are
 
@@ -13,7 +13,7 @@ contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments),
 `docs/SERVER.md` for running the server; `docs/CHANGELOG.md` for every version and
 how its fixes were verified.
 
-Branch `feat/accounts`, pushed, CI green up to `9c22501` (0.5.7). Not merged to
+Branch `feat/accounts`, pushed, CI green up to `bfcb238` (0.6.2). Not merged to
 `main` - merging is what first builds and publishes the Docker image. The user
 runs the server with npm on the laptop (port 1234, `packages/server/data` - never
 touch either; see CLAUDE.md, Gotchas) and installs the plugin by copying
@@ -32,10 +32,11 @@ not been seen on a device yet.
 
 **Milestone 0.6 is built** (`docs/PHASE5.md`, decided with the user on
 2026-10-12): 0.6.0 signing out the other devices, 0.6.1 the recovery code, 0.6.2
-two-factor sign-in. What only a device can show - the dialogs, the settings rows,
-the QR code in an authenticator app, the `otpauth://` link on a phone, a device
-being signed out while it runs - is listed under "To verify on a device" in
-`docs/PHASE5.md`. The user installs 0.6.2 (plugin and server) and checks it.
+two-factor sign-in, 0.6.3 a recovery keeping 2FA. The user tried 0.6.2 on a device
+and found it working well, except that a recovery meant a new entry in the
+authenticator app - 0.6.3 answers that. What only a device can show is listed under
+"To verify on a device" in `docs/PHASE5.md`. The user installs 0.6.3 (plugin and
+server) and checks the new question in the recovery.
 
 Then **milestone 0.7: syncing plugins and their settings** - not designed yet. The
 direction the user gave is in CLAUDE.md ("Not built yet"): snapshots from a chosen
@@ -64,7 +65,11 @@ Nothing. Everything is committed and pushed.
   removed account's sockets are closed as signed out too; the 2FA setup checks the
   password on the device first; the QR code comes from `qrcode-generator` 2.0.4.
   Not built: a "sign out all other devices" button of its own (offered in the
-  questions, not chosen - the mechanism is there if it is wanted).
+  questions, not chosen - the mechanism is there if it is wanted). 0.6.3: the user
+  asked whether a recovery could keep 2FA without a security tradeoff; built as a
+  question in the recovery. Keeping needs a current code from the app (no plain
+  "keep" switch), so nobody keeps a factor they no longer have. Closing the
+  question cancels the recovery.
 - Later wishes, not designed: sharing a whole folder; plugin and settings sync (0.7,
   snapshots from a chosen device, never through the CRDT - reasons in CLAUDE.md).
 
@@ -114,12 +119,13 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
 
 ## Verification state
 
-At 0.6.2, run 2026-10-12 before its commit: `typecheck` and `build` pass;
-`test:merge` 142, `test:load` 12, `test:rooms` 220, `test:sync` 26, `test:recovery`
-56, `test:account` 40 - all pass. Against a scratch server on 1235: `test:socket`
-19, `test:vault` 224 - all pass. CI green for 0.6.0 and 0.6.1. Bug-back checks per
-version: `docs/CHANGELOG.md`. Not verified: 0.5.7 and 0.6 on a device (dialogs,
-settings rows, QR code, `otpauth://` link), the Docker image.
+At 0.6.3, run 2026-10-12 before its commit: `typecheck` and `build` pass;
+`test:merge` 142, `test:load` 12, `test:rooms` 233, `test:sync` 26, `test:recovery`
+56, `test:account` 46 - all pass. Against a scratch server on 1235: `test:socket`
+19, `test:vault` 224 - all pass (the user's server on 1234 was not running, before
+or after). CI green up to 0.6.2. Bug-back checks per version: `docs/CHANGELOG.md`.
+Seen on a device by the user: 0.6.2 (recovery and 2FA). Not verified: 0.6.3's
+question in the recovery, the Docker image.
 
 How to run the end-to-end suites without touching the user's server: CLAUDE.md,
 Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
@@ -132,7 +138,8 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 ### 2026-10-12
 - Milestone 0.6 designed with the user (`docs/PHASE5.md`). 0.6.0: a password change
   signs out every other device on the server (session generation, `4401`). 0.6.1:
-  the recovery code. 0.6.2: two-factor sign-in (TOTP) - milestone 0.6 built.
+  the recovery code. 0.6.2: two-factor sign-in (TOTP) - milestone 0.6 built. 0.6.3,
+  after the user tried 0.6.2: a recovery keeps 2FA with a code from the app.
 - 0.5.7: the plugin's menu section, the cloud for files and as a menu, the shared /
   read-only mark and header lock, "Version history" for files.
 - Docs brought up to date for a handoff: `docs/CHANGELOG.md` (new, the full version

@@ -208,6 +208,8 @@ export interface RecoverResponse {
   publicKey: string
   wrappedPrivateKey: string
   wrappedAccountSecret: string
+  /** Whether the account signs in with a second factor, which the recovery may keep. Absent before 0.6.3. */
+  totp?: boolean
 }
 
 /** A new name and password for the account, and a new code; the old one is spent. */
@@ -218,6 +220,11 @@ export interface RecoverCommitRequest {
   wrappedPrivateKey: string
   wrappedAccountSecret: string
   recovery: RecoveryRecord
+  /**
+   * A current code from the authenticator app: two-factor sign-in stays on,
+   * with the entry the app has. Without one the recovery turns it off.
+   */
+  totpCode?: string
 }
 
 export interface LoginRequest {
@@ -248,7 +255,7 @@ export interface SessionResponse {
   token: string
   expiresIn: number
   account: AccountBundle
-  /** After a recovery: two-factor sign-in was on, and the recovery turned it off. */
+  /** After a recovery: two-factor sign-in was on, and the recovery turned it off. False when it was kept. */
   totpWasOn?: boolean
 }
 

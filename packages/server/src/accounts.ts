@@ -387,7 +387,8 @@ export class AccountStore {
   /**
    * A forgotten password: the recovery code sets a new name and password and
    * is spent - the request carries the next one. Every device signed in so far
-   * is signed out. Null when the code opens no account.
+   * is signed out. Null when the code opens no account. A wrong `totpCode`
+   * changes nothing, so the code is not spent by a typo.
    */
   recover(request: RecoverCommitRequest, now = Date.now()): Promise<StoredAccount | null> {
     const key = decoded(request.recoveryKey, 32)
@@ -412,6 +413,16 @@ export class AccountStore {
       if (!account) return null
       const hash = loginHash(next)
       if (data.logins[hash] && data.logins[hash] !== account.accountId) throw new AccountError(409, 'choose another name or password')
+      // The code stands in for every factor: a lost phone is a reason to use
+      // it. Whoever still has the app proves it with a code and keeps it -
+      // never weaker than turning it off, which the code allows anyway.
+      if (account.totp && request.totpCode !== undefined) {
+        const step = totpMatch(Buffer.from(account.totp.secret, 'base64'), request.totpCode, now, account.totp.lastStep)
+        if (step === null) throw new AccountError(401, 'wrong code')
+        account.totp.lastStep = step
+      } else {
+        delete account.totp
+      }
       setRecoveryIn(data, account, recovery)
       delete data.logins[account.loginHash]
       data.logins[hash] = account.accountId
@@ -420,8 +431,6 @@ export class AccountStore {
       account.wrappedPrivateKey = request.wrappedPrivateKey
       account.wrappedAccountSecret = request.wrappedAccountSecret
       account.sessions = sessionOf(account) + 1
-      // The code stands in for every factor: a lost phone is a reason to use it.
-      delete account.totp
       return account
     })
   }

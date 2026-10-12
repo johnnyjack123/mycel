@@ -83,11 +83,29 @@ export interface Registered {
  */
 export type AskCode = (again: boolean) => Promise<string | null>
 
+/** Why a recovery asks again whether to keep two-factor sign-in. */
+export type KeepProblem = 'wrong' | 'blocked' | null
+
+/**
+ * Asked during a recovery of an account with two-factor sign-in: a code from
+ * the authenticator app keeps it, with the entry the app has; 'off' turns it
+ * off. Null cancels the recovery - nothing changes, the code still works.
+ */
+export type AskKeepTotp = (problem: KeepProblem) => Promise<{ code: string } | 'off' | null>
+
 /** The challenge of a sign-in that wants a second factor, or null for any other refusal. */
 function secondFactorChallenge(error: unknown): string | null {
   if (!(error instanceof ApiError) || error.status !== 403) return null
   const body = error.body as Partial<SecondFactorRequired> | null
   return body?.secondFactor === 'totp' && typeof body.challenge === 'string' ? body.challenge : null
+}
+
+/** What a refused recovery says about the code meant to keep two-factor sign-in; null for anything else. */
+function keepProblem(error: unknown): KeepProblem {
+  if (!(error instanceof ApiError)) return null
+  if (error.status === 401 && error.message === 'wrong code') return 'wrong'
+  if (error.status === 429 && error.message === 'too many wrong codes; try again later') return 'blocked'
+  return null
 }
 
 /** Whether `wrapped` opens under `key` to exactly `expected`. */
@@ -233,9 +251,15 @@ export class Session {
    * A forgotten password, or name: the recovery code opens the account's keys,
    * which are wrapped anew under the name and password chosen now. The code is
    * spent; the new one comes back and has to be shown. Every other device of
-   * the account is signed out.
+   * the account is signed out. `askKeep`: whether to keep two-factor sign-in;
+   * without it, the recovery turns it off.
    */
-  async recover(code: string, username: string, password: string): Promise<Registered & { recoveryCode: string; totpWasOn: boolean }> {
+  async recover(
+    code: string,
+    username: string,
+    password: string,
+    askKeep?: AskKeepTotp
+  ): Promise<Registered & { recoveryCode: string; totpWasOn: boolean }> {
     const secret = await decodeRecoveryCode(code)
     if (!secret) throw new Error('That is not a recovery code. Check it for a typo.')
     const server = await this.server()
@@ -251,6 +275,9 @@ export class Session {
     } catch {
       throw new Error('The server answered this code with keys it does not open.')
     }
+    const cancelled = (): Error => new Error('The recovery was cancelled. Nothing changed; your recovery code still works.')
+    let keep = found.totp === true && askKeep ? await askKeep(null) : 'off'
+    if (keep === null) throw cancelled()
     const next = await derivePasswordKeys(password, await accountSalt(server.serverId, name), CURRENT_KDF_VERSION, this.argon2id)
     const wrappedPrivateKey = await wrapSecret(next.masterKey, privateKey, PRIVATE_KEY)
     const wrappedAccountSecret = await wrapSecret(next.masterKey, accountSecret, ACCOUNT_SECRET)
@@ -271,13 +298,25 @@ export class Session {
       wrappedAccountSecret,
       recovery: fresh.record
     }
-    let totpWasOn = false
-    const unlocked = await this.move(async () => {
-      const response = await this.api.recoverCommit(request)
-      totpWasOn = response.totpWasOn === true
-      return this.adopt(response, next.masterKey, name, server.serverId)
-    })
-    return { unlocked, recoveryCode: fresh.code, totpWasOn }
+    // The server changes nothing for a wrong code, so the same request goes
+    // again with the next one.
+    for (;;) {
+      const totpCode = keep === 'off' ? undefined : keep.code.replace(/\s/g, '')
+      let totpWasOn = false
+      try {
+        const unlocked = await this.move(async () => {
+          const response = await this.api.recoverCommit({ ...request, totpCode })
+          totpWasOn = response.totpWasOn === true
+          return this.adopt(response, next.masterKey, name, server.serverId)
+        })
+        return { unlocked, recoveryCode: fresh.code, totpWasOn }
+      } catch (error) {
+        const problem = keep === 'off' ? null : keepProblem(error)
+        if (problem === null || !askKeep) throw error
+        keep = await askKeep(problem)
+        if (keep === null) throw cancelled()
+      }
+    }
   }
 
   /** `askCode`: for an account with two-factor sign-in, the code from the authenticator app. */

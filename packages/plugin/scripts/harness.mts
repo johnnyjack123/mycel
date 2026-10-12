@@ -3,6 +3,7 @@
 // accounts, keys, DocStore, socket and editor binding, against a fake vault
 // that saves and reloads the way Obsidian does.
 import { JSDOM } from 'jsdom'
+import type { KeepProblem } from '../src/account/Session.js'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true })
 const globals = globalThis as Record<string, unknown>
@@ -122,12 +123,20 @@ export class Device {
   private unlocked: Unlocked | null = null
   /** The recovery code this device was last shown. */
   recoveryCode: string | null = null
-  /** Whether the last recovery on this device turned two-factor sign-in off. */
+  /** Whether the last recovery on this device turned two-factor sign-in off (false when it kept it). */
   totpWasOn = false
   /** The person's authenticator app, as far as signing in on this device goes; null: no code to give. */
   authenticator: { code(): Promise<string> } | null = null
   /** Every time signing in asked for a code: whether it was asked again after a wrong one. */
   readonly askedForCode: boolean[] = []
+  /**
+   * What the person answers when a recovery asks whether to keep two-factor
+   * sign-in: the app's code if they have one, otherwise turn it off.
+   */
+  keepTotp: (problem: KeepProblem) => Promise<{ code: string } | 'off' | null> = async () =>
+    this.authenticator ? { code: await this.authenticator.code() } : 'off'
+  /** Every time a recovery asked that: why it asked (null: the first time). */
+  readonly askedToKeep: KeepProblem[] = []
   /** How often the server signed this device out while it ran. */
   signedOut = 0
   // Outlives restarts, like the plugin's own: Obsidian keeps the extension in
@@ -377,7 +386,10 @@ export class Device {
 
   /** The sign-in screen's "Forgot your password?": signs this device in under the name and password chosen. */
   async recover(code: string, username: string, password: string): Promise<void> {
-    const recovered = await this.session.recover(code, username, password)
+    const recovered = await this.session.recover(code, username, password, (problem) => {
+      this.askedToKeep.push(problem)
+      return this.keepTotp(problem)
+    })
     this.recoveryCode = recovered.recoveryCode
     this.totpWasOn = recovered.totpWasOn
     this.username = username

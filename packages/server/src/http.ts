@@ -47,7 +47,7 @@ import {
   type ShareRequest,
   type SnapshotRequest
 } from '@obsidian-connect/shared'
-import { AccountError, isAccountId, sessionOf, type AccountStore } from './accounts.js'
+import { AccountError, isAccountId, sessionOf, type AccountStore, type StoredAccount } from './accounts.js'
 import type { TokenService, TokenSession } from './auth.js'
 import { BlobError, type BlobStore } from './blobs.js'
 import type { ServerConfig } from './config.js'
@@ -279,7 +279,8 @@ export function createHttpApp(
           accountId: account.accountId,
           publicKey: account.publicKey,
           wrappedPrivateKey: account.recovery.wrappedPrivateKey,
-          wrappedAccountSecret: account.recovery.wrappedAccountSecret
+          wrappedAccountSecret: account.recovery.wrappedAccountSecret,
+          totp: Boolean(account.totp)
         }
       },
       unknownCode
@@ -292,11 +293,21 @@ export function createHttpApp(
       reply,
       async (): Promise<SessionResponse | null> => {
         const body = (request.body ?? {}) as RecoverCommitRequest
-        const totpWasOn = Boolean((await accounts.findByRecovery(body.recoveryKey))?.totp)
-        const account = await accounts.recover(body)
+        const found = await accounts.findByRecovery(body.recoveryKey)
+        const keeping = Boolean(found?.totp) && body.totpCode !== undefined
+        // Codes to keep the second factor are counted like those signing in:
+        // a block leaves turning it off, which the recovery code allows anyway.
+        if (found && keeping && codeGuard.blocked(found.accountId)) throw new AccountError(429, 'too many wrong codes; try again later')
+        let account: StoredAccount | null
+        try {
+          account = await accounts.recover(body, now())
+        } catch (error) {
+          if (found && keeping && error instanceof AccountError && error.status === 401) codeGuard.failed(found.accountId)
+          throw error
+        }
         if (!account) return null
         hub.disconnect(account.accountId)
-        return { ...(await session(account.accountId)), totpWasOn }
+        return { ...(await session(account.accountId)), totpWasOn: Boolean(found?.totp) && !account.totp }
       },
       unknownCode
     )

@@ -28,7 +28,7 @@ import { hashWasmArgon2id } from './account/argon2'
 import { KeyRing } from './account/KeyRing'
 import { PasswordModal } from './account/PasswordModal'
 import { PasswordPromptModal, RecoveryCodeModal } from './account/RecoveryModals'
-import { TotpOffModal, TotpSetupModal, askTotpCode } from './account/TotpModals'
+import { TotpOffModal, TotpSetupModal, askKeepTotp, askTotpCode } from './account/TotpModals'
 import { Session, type OpenVault, type SecretStore, type Unlocked } from './account/Session'
 import { EditorSync } from './editor/EditorSync'
 import { BackupModal } from './history/BackupModal'
@@ -447,12 +447,13 @@ export default class ObsidianConnectPlugin extends Plugin {
     if (!verdict.ok) throw new Error(verdict.reason)
     if (password !== repeat) throw new Error('The passwords differ.')
     await this.stopSync()
-    const { unlocked, recoveryCode, totpWasOn } = await this.session.recover(code, username, password)
+    const { unlocked, recoveryCode, totpWasOn } = await this.session.recover(code, username, password, (problem) => askKeepTotp(this.app, problem))
     // Already, not only once sync started: the offer below may come first.
     this.unlocked = unlocked
-    new Notice(`Obsidian Connect: account recovered, signed in as ${this.settings.username}. Your other devices sign in again with the new password.`, 12_000)
-    // The recovery turned two-factor sign-in off - a lost phone is a reason
-    // to recover. Offered again once the new code is written down.
+    const withCode = unlocked.bundle.totp ? ' and a code from your authenticator app, as before' : ''
+    new Notice(`Obsidian Connect: account recovered, signed in as ${this.settings.username}. Your other devices sign in again with the new password${withCode}.`, 12_000)
+    // The recovery turned two-factor sign-in off - the phone was lost, or
+    // its entry. Offered again once the new code is written down.
     const offerTotp = totpWasOn
       ? () => this.openTotpSetup('Two-factor sign-in was on, and the recovery turned it off. Turn it on again, with your phone - or close this to do it later in the settings.')
       : null

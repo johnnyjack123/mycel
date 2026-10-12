@@ -36,6 +36,14 @@ with a second factor, that factor's TOTP secret, and when a code was last used.
   password, turns 2FA off and offers to set it up again. The admin can turn it off
   too (`obsidian-connect user 2fa-off <accountId>`); the password stays needed, so
   that only lowers the sign-in to what it was without 2FA.
+- **A recovery may keep 2FA** (asked by the user after the first device run of
+  0.6.2, built in 0.6.3): a forgotten password is no reason to set up the app again.
+  The recovery asks whether the authenticator app still has the entry; a current code
+  from it keeps 2FA on with the same secret, otherwise it is turned off as above. No
+  security is given up: whoever holds the recovery code may turn 2FA off anyway, and
+  keeping it is never weaker than that. The code proves the app still has the entry,
+  so nobody keeps a factor they no longer have. The dialog says to turn it off when a
+  phone with the entry was lost, even if the entry survives elsewhere.
 - **Signing in is two steps:** name and password, then the code.
 
 ## Signing out the other devices *(step 1, built 0.6.0)*
@@ -120,9 +128,11 @@ On the sign-in screen, "Forgot your password?" opens the recovery: the code, a n
    a wrapping of nothing would destroy the account. Then `POST /auth/recover/commit`:
    the old `recoveryKey`, `newLoginKey`, `kdfVersion`, the password wrappings, and the
    new code's key and wrappings.
-3. The server checks the old code again, replaces login and recovery, turns 2FA off,
-   moves the session generation, and answers with a session - and whether 2FA was on.
-4. The plugin shows the new code once, and if 2FA was on, offers to set it up again.
+3. The server checks the old code again, replaces login and recovery, turns 2FA off
+   unless a current code from the app keeps it (0.6.3, below), moves the session
+   generation, and answers with a session - and whether it turned 2FA off.
+4. The plugin shows the new code once, and if 2FA was turned off, offers to set it up
+   again.
 
 - A name and password another account has already are refused (409), as at
   registration.
@@ -179,10 +189,25 @@ In the settings, signed in:
 - Two steps tell someone who has the password that it is right. Accepted: the address
   throttle limits guessing, and a one-form sign-in would show a code field to everyone.
 
+### A recovery keeping it *(0.6.3)*
+
+- `POST /auth/recover` also answers `totp`: whether the account signs in with a
+  second factor. The holder of the code learns nothing they could not do anyway.
+- The plugin then asks, before it derives anything: a code from the app keeps it;
+  "Turn it off" turns it off; closing the dialog cancels the recovery, and the code
+  still works.
+- `POST /auth/recover/commit` takes `totpCode`. The server checks it like a sign-in
+  code (its step is spent, the account's code guard counts a wrong one). A wrong code
+  changes nothing, the recovery code included, so the plugin sends the same request
+  again with the next code. Once codes are blocked for the account, the dialog offers
+  only turning it off.
+- The recovery signs out every other device either way. With 2FA kept, they sign in
+  with the new password and a code from the same entry.
+
 ### Turning it off
 
 - In the settings: the password and a current code. Moves no generation.
-- By a recovery (above).
+- By a recovery without a code from the app (above).
 - By the admin: `obsidian-connect user 2fa-off <accountId>`.
 
 *As built:* the setup checks the password on the device first - the master key it
@@ -202,9 +227,10 @@ purpose more often than an address may and cannot wait for the next 30 seconds.
   its entry there too.
 - `AccountBundle` adds `recovery: { createdAt } | null` and `totp: boolean`, for the
   settings.
-- New endpoints, all paced and guarded: `POST /auth/recover`, `/auth/recover/commit`,
-  `/auth/login/totp`; with a token and the current login key: `POST /account/recovery`
-  (make or replace), `/account/recovery/delete`, `/account/totp`, `/account/totp/off`.
+- New endpoints, all paced and guarded: `POST /auth/recover` (answers `totp` since
+  0.6.3), `/auth/recover/commit` (takes `totpCode` since 0.6.3), `/auth/login/totp`;
+  with a token and the current login key: `POST /account/recovery` (make or replace),
+  `/account/recovery/delete`, `/account/totp`, `/account/totp/off`.
 - `/auth/config` names what the server can (`features`); a plugin that finds recovery
   or 2FA missing says the server needs an update. No new protocol version: everything
   is added, and a 0.5 plugin keeps working against the new server, except for signing
@@ -226,12 +252,16 @@ purpose more often than an address may and cannot wait for the next 30 seconds.
   `test:recovery` - register, recover with a new name and password, the old password
   refused, the same vault key afterwards; a second device signed out on its socket;
   2FA on, the two-step sign-in, a recovery turning it off.
+- 0.6.3: a recovery keeping 2FA - in `test:rooms` the store and the routes (a wrong
+  code changes nothing, the right one keeps the secret and spends its step, the block
+  leaves turning it off); in `test:account` the devices (cancelling, asking again
+  after a wrong code, the other devices signing in with the same entry, the block).
 
 ## To verify on a device
 
-The dialogs (the code shown at registration, the recovery screen, the 2FA setup), the
-QR code scanned by an authenticator app, the `otpauth://` link on a phone, a device
-being signed out while it runs.
+The dialogs (the code shown at registration, the recovery screen, the 2FA setup, the
+question in a recovery whether to keep 2FA), the QR code scanned by an authenticator
+app, the `otpauth://` link on a phone, a device being signed out while it runs.
 
 ## Known limit
 

@@ -8,6 +8,19 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.6 - recovery codes and two-factor sign-in (from 2026-10-12, spec `docs/PHASE5.md`)
 
+- **0.6.3** (2026-10-12) - a recovery can keep two-factor sign-in. Asked by the user
+  after trying 0.6.2: a forgotten password meant a new entry in the authenticator app.
+  `/auth/recover` now says whether the account has 2FA, and the plugin asks
+  (`askKeepTotp`): a current code from the app keeps it with the same secret,
+  "Turn it off" does what 0.6.2 did, closing cancels the recovery. The code travels
+  with `/auth/recover/commit` (`totpCode`). It is checked like a sign-in code: its
+  step is spent, and a wrong one counts against the account and changes nothing,
+  so the recovery code is not spent and the plugin asks again. Once codes are
+  blocked, the dialog offers only to turn it off. A 0.6.2 plugin sends no code and
+  gets the old behaviour. `test:rooms` 233, `test:account` 46. Checked by putting
+  the bug back: with the recovery always turning 2FA off, the 12 new checks in
+  `test:rooms` and 5 in `test:account` failed, and nothing else.
+
 - **0.6.2** (2026-10-12) - two-factor sign-in with TOTP, optional per account. The
   settings turn it on in three steps (`TotpSetupModal`): the password, checked on the
   device against its master key; whether the recovery code is at hand, offering a

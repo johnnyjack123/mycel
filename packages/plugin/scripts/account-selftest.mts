@@ -1,6 +1,7 @@
 // The account itself with real devices: signing the other devices out when
-// the password changes, and the recovery code. The server runs in this
-// process, on a port and in a directory of its own, never near the user's.
+// the password changes, the recovery code and two-factor sign-in. The server
+// runs in this process, on a port and in a directory of its own, never near
+// the user's.
 //
 //   npm run test:account
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -169,16 +170,57 @@ try {
   check(await eventually(() => A3.vault.text('Two.md') === 'second\nwith two factors\n'), 'and syncs as before')
   check(await A1.disableTotp('000000').then(() => false, () => true), 'turning it off needs a current code')
 
-  // The phone is lost: the recovery code gets in without it.
+  // The password is forgotten, the phone is not: the recovery keeps two-factor
+  // sign-in, and the entry in the app goes on working.
+  await A1.makeRecoveryCode()
+  const KEPT = 'forgotten horse, battery and staple'
+  const A5 = new Device('', false)
+  devices.push(A5)
+  A5.keepTotp = async () => null
+  check(
+    await A5.recover(A1.recoveryCode as string, newName, KEPT).then(
+      () => false,
+      (error: unknown) => error instanceof Error && error.message.includes('cancelled')
+    ),
+    'closing the question about two-factor sign-in cancels the recovery'
+  )
+  let wrongKeep = true
+  A5.keepTotp = async () => {
+    if (!wrongKeep) return { code: await phone.code() }
+    wrongKeep = false
+    return { code: '000000' }
+  }
+  await A5.recover(A1.recoveryCode as string, newName, KEPT)
+  check(JSON.stringify(A5.askedToKeep) === '[null,null,"wrong"]', 'the code still worked after that, and a wrong code from the app is asked for again', A5.askedToKeep)
+  check(!A5.totpWasOn && (await A5.boot()) && A5.hasTotp === true, 'with the right one the recovery keeps two-factor sign-in')
+  check(await eventually(() => A1.signedOut === 2 && A3.signedOut === 2), 'and still signs out every other device', { a1: A1.signedOut, a3: A3.signedOut })
+  A1.password = KEPT
+  A1.authenticator = { code: () => phone.code() }
+  const asked = A1.askedForCode.length
+  check(
+    (await A1.boot()) && A1.askedForCode.length === asked + 1,
+    'they sign in with the new password and a code from the entry the app had all along',
+    A1.askedForCode
+  )
+
+  // The phone is lost, and the codes of an old entry do not fit: once codes
+  // are blocked the question offers only to turn it off - the recovery code
+  // still gets in.
   await A1.makeRecoveryCode()
   const RECOVERED_AGAIN = 'phone gone, horse, battery and staple'
   const A4 = new Device('', false)
   devices.push(A4)
+  A4.keepTotp = async (problem) => (problem === 'blocked' ? 'off' : { code: '000000' })
   await A4.recover(A1.recoveryCode as string, newName, RECOVERED_AGAIN)
-  check(A4.totpWasOn && (await A4.boot()) && A4.hasTotp === false, 'a recovery needs no code, and turns two-factor sign-in off')
+  check(
+    A4.askedToKeep[0] === null && A4.askedToKeep.at(-1) === 'blocked' && A4.askedToKeep.slice(1, -1).every((problem) => problem === 'wrong'),
+    'five wrong codes block keeping it',
+    A4.askedToKeep
+  )
+  check(A4.totpWasOn && (await A4.boot()) && A4.hasTotp === false, 'and the recovery turns two-factor sign-in off')
   A1.password = RECOVERED_AGAIN
   A1.authenticator = null
-  check(await eventually(() => A1.signedOut === 2) && (await A1.boot()), 'the other devices sign in with the password alone again')
+  check(await eventually(() => A1.signedOut === 3) && (await A1.boot()), 'the other devices sign in with the password alone again')
 
   const newPhone = new Phone()
   await A4.enableTotp(newPhone.secret, await newPhone.code())

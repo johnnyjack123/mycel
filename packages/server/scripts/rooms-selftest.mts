@@ -291,17 +291,42 @@ try {
     check(!(await accounts.turnOffTotp(hen)), 'and says when there was nothing to turn off')
 
     await enable(henKeys.loginKey, codeAt(t0 + 900_000), t0 + 900_000)
-    const recoveryKey = b64(32)
+    let recoveryKey = b64(32)
     await accounts.setRecovery(hen, henKeys.loginKey, { recoveryKey, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) })
-    await accounts.recover({
-      recoveryKey,
-      newLoginKey: b64(32),
-      kdfVersion: 1,
-      wrappedPrivateKey: b64(64),
-      wrappedAccountSecret: b64(48),
-      recovery: { recoveryKey: b64(32), wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) }
-    })
-    check(accounts.bundle(await henNow()).totp === false, 'a recovery turns it off: a lost phone is a reason to use the code')
+    const recoverHen = async (totpCode: string | undefined, at: number): Promise<StoredAccount | null> => {
+      const next = b64(32)
+      const account = await accounts.recover(
+        {
+          recoveryKey,
+          newLoginKey: b64(32),
+          kdfVersion: 1,
+          wrappedPrivateKey: b64(64),
+          wrappedAccountSecret: b64(48),
+          recovery: { recoveryKey: next, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) },
+          totpCode
+        },
+        at
+      )
+      recoveryKey = next
+      return account
+    }
+    const t1 = t0 + 930_000
+    const loginBefore = (await henNow()).loginHash
+    check((await status(() => recoverHen(codeAt(t1, 5), t1))) === 401, 'a wrong code to keep two-factor sign-in through a recovery is refused')
+    check(
+      (await henNow()).loginHash === loginBefore && accounts.bundle(await henNow()).totp === true && (await accounts.findByRecovery(recoveryKey))?.accountId === hen,
+      'and changes nothing: the recovery code is not spent'
+    )
+    const generation = sessionOf(await henNow())
+    await recoverHen(codeAt(t1), t1)
+    check(
+      accounts.bundle(await henNow()).totp === true && (await henNow()).loginHash !== loginBefore && sessionOf(await henNow()) === generation + 1,
+      'the right one recovers and keeps it, and still signs out every other device'
+    )
+    check((await accounts.checkTotp(hen, codeAt(t1), t1)) === false, 'that code is spent')
+    check((await accounts.checkTotp(hen, codeAt(t1 + 30_000), t1 + 30_000)) === true, "and the same app's next one signs in")
+    await recoverHen(undefined, t1 + 60_000)
+    check(accounts.bundle(await henNow()).totp === false, 'without a code a recovery turns it off: a lost phone is a reason to use the code')
   }
 
   // --- contacts ----------------------------------------------------------------
@@ -611,6 +636,65 @@ try {
       check(off.statusCode === 200 && (off.json() as { totp?: boolean }).totp === false, 'turning it off with password and code', off.body)
       const plain = await app.inject({ method: 'POST', url: '/auth/login', payload: { loginKey: ivyKeys.loginKey } })
       check(plain.statusCode === 200 && typeof (plain.json() as { token?: string }).token === 'string', 'afterwards the password alone signs in again')
+      await app.close()
+    }
+
+    // A recovery that keeps two-factor sign-in, over HTTP. An app of its own
+    // again: its code guard has counted nothing yet.
+    {
+      let clock = 1_950_000_000_000
+      const app = createHttpApp(loadConfig({}), tokens, accounts, httpHub, contacts, again, { logger: false, paceMs: 0, now: () => clock, maxFailures: 1_000 })
+      const jackKeys = keyMaterial()
+      const jack = (await accounts.register(jackKeys, 'open')).accountId
+      const secret = randomBytes(20)
+      const code = (offset = 0): string => totpCode(secret, Math.floor(clock / 30_000) + offset)
+      await accounts.enableTotp(jack, jackKeys.loginKey, secret.toString('base64'), code(), clock)
+      let recoveryKey = b64(32)
+      await accounts.setRecovery(jack, jackKeys.loginKey, { recoveryKey, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) })
+      const opened = await app.inject({ method: 'POST', url: '/auth/recover', payload: { recoveryKey } })
+      check(opened.statusCode === 200 && (opened.json() as { totp?: boolean }).totp === true, 'the recovery says the account signs in with a second factor', opened.body)
+      const newLoginKey = b64(32)
+      const commit = async (totpCode?: string) => {
+        const next = b64(32)
+        const response = await app.inject({
+          method: 'POST',
+          url: '/auth/recover/commit',
+          payload: {
+            recoveryKey,
+            newLoginKey,
+            kdfVersion: 1,
+            wrappedPrivateKey: b64(64),
+            wrappedAccountSecret: b64(48),
+            recovery: { recoveryKey: next, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) },
+            totpCode
+          }
+        })
+        if (response.statusCode === 200) recoveryKey = next
+        return { status: response.statusCode, body: response.json() as { error?: string; totpWasOn?: boolean; account?: { totp?: boolean } } }
+      }
+      clock += 30_000
+      const wrong = await commit(code(5))
+      check(wrong.status === 401 && wrong.body.error === 'wrong code', 'a wrong code to keep it is refused', wrong.body)
+      check((await accounts.login(jackKeys.loginKey))?.accountId === jack, 'and the password stays as it was')
+      const kept = await commit(code())
+      check(kept.status === 200 && kept.body.totpWasOn === false && kept.body.account?.totp === true, 'the right one recovers the account and keeps it', kept.body)
+      const login = await app.inject({ method: 'POST', url: '/auth/login', payload: { loginKey: newLoginKey } })
+      const challenge = (login.json() as { challenge?: string }).challenge ?? ''
+      check(login.statusCode === 403 && challenge !== '', 'the new password then asks for a code', login.body)
+      clock += 30_000
+      const second = await app.inject({ method: 'POST', url: '/auth/login/totp', payload: { challenge, code: code() } })
+      check(second.statusCode === 200, 'and the app it had before signs in', second.body)
+
+      for (let attempt = 0; attempt < 4; attempt += 1) await commit(code(7))
+      clock += 30_000
+      const blocked = await commit(code())
+      check(
+        blocked.status === 429 && blocked.body.error === 'too many wrong codes; try again later',
+        'five wrong codes block keeping it, even with the right one',
+        blocked.body
+      )
+      const off = await commit()
+      check(off.status === 200 && off.body.totpWasOn === true && off.body.account?.totp === false, 'the recovery code still gets in then, and turns it off', off.body)
       await app.close()
     }
     await app.close()

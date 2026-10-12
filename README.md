@@ -110,7 +110,9 @@ they sign in again with the new password.
 device also asks for a code from an authenticator app (Aegis, 2FAS, Google
 Authenticator, …). It guards the sign-in to the server; your notes stay encrypted
 with your password either way. A lost phone is what the recovery code is for, and
-the server's admin can turn it off too.
+the server's admin can turn it off too. If you recover the account with the phone
+still at hand, a code from the app keeps two-factor sign-in with the entry the app
+already has.
 
 Every markdown note is synced automatically; there is no per-note switch. So is
 every other file (see *Attachments* below). Settings under *All your devices*
