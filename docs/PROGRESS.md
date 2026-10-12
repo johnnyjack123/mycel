@@ -54,7 +54,7 @@ write `docs/PHASE5.md`, then build in steps with tests.
 
 ## In flight / half-finished
 
-Nothing. Everything is committed except this handoff (docs only).
+Nothing. Everything is committed and pushed (last: the handoff, `5f1e2a0`).
 
 ## Decisions made (not visible in the code)
 
