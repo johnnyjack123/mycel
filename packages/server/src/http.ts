@@ -37,7 +37,7 @@ import {
   type ShareRequest,
   type SnapshotRequest
 } from '@obsidian-connect/shared'
-import { AccountError, isAccountId, type AccountStore } from './accounts.js'
+import { AccountError, isAccountId, sessionOf, type AccountStore } from './accounts.js'
 import type { TokenService } from './auth.js'
 import { BlobError, type BlobStore } from './blobs.js'
 import type { ServerConfig } from './config.js'
@@ -114,8 +114,10 @@ export function createHttpApp(
     const header = request.headers.authorization ?? ''
     const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : ''
     try {
-      const accountId = await tokens.verify(token)
-      if (await accounts.get(accountId)) return accountId
+      const { accountId, gen } = await tokens.verify(token)
+      const account = await accounts.get(accountId)
+      // A token from before the password changed was signed out with it.
+      if (account && sessionOf(account) === gen) return accountId
     } catch {
       // falls through to 401
     }
@@ -126,7 +128,7 @@ export function createHttpApp(
   async function session(accountId: string): Promise<SessionResponse> {
     const account = await accounts.get(accountId)
     if (!account) throw new AccountError(401, 'unknown account')
-    const issued = await tokens.issue(accountId)
+    const issued = await tokens.issue(accountId, sessionOf(account))
     return { token: issued.token, expiresIn: issued.expiresIn, account: accounts.bundle(account) }
   }
 
@@ -184,7 +186,8 @@ export function createHttpApp(
   app.post(API.refresh, async (request, reply): Promise<RefreshResponse | undefined> => {
     const accountId = await user(request, reply)
     if (!accountId) return undefined
-    return tokens.issue(accountId)
+    const { token, expiresIn } = await session(accountId)
+    return { token, expiresIn }
   })
 
   app.post(API.password, async (request, reply) => {
@@ -192,6 +195,7 @@ export function createHttpApp(
     if (!accountId) return undefined
     return guarded(request, reply, async () => {
       await accounts.changePassword(accountId, request.body as PasswordChangeRequest)
+      hub.disconnect(accountId)
       return session(accountId)
     })
   })

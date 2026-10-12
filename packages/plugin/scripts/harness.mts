@@ -116,6 +116,11 @@ export class Device {
   )
   /** The server knows this account by this id alone; sharing addresses it. */
   accountId = ''
+  /** What this device signs in with; a password change elsewhere does not tell it. */
+  password = PASSWORD
+  private unlocked: Awaited<ReturnType<InstanceType<typeof Session>['login']>> | null = null
+  /** How often the server signed this device out while it ran. */
+  signedOut = 0
   // Outlives restarts, like the plugin's own: Obsidian keeps the extension in
   // its editors while sync is stopped and started again.
   readonly editors = new EditorSync(() => this.store, noteOf)
@@ -164,7 +169,10 @@ export class Device {
     // A restart unlocks with what the device kept; the first start signs in.
     const unlocked =
       (await this.session.unlock()) ??
-      (this.signUp ? await this.session.register(this.username, PASSWORD) : await this.session.login(this.username, PASSWORD))
+      (this.signUp && !this.accountId
+        ? await this.session.register(this.username, this.password)
+        : await this.session.login(this.username, this.password))
+    this.unlocked = unlocked
     this.accountId = unlocked.accountId
     const openVault = await this.session.openVault(unlocked, VAULT)
     const keys = new KeyRing(openVault, unlocked, this.api, this.secrets)
@@ -187,7 +195,18 @@ export class Device {
         else void this.sharing?.onNotify(kind, payload as never).then(() => this.editors.refresh())
       },
       revoked: (room) => void this.sharing?.onRevoked(room).then(() => this.editors.refresh()),
-      diverged: (room) => this.recovery?.diverged(room)
+      diverged: (room) => this.recovery?.diverged(room),
+      // What main.ts's `checkSignedIn` does.
+      signedOut: () =>
+        void this.session.stillSignedIn().then(async (still) => {
+          if (this.socket !== socket) return
+          if (still !== false) {
+            socket.reconnect()
+            return
+          }
+          this.signedOut += 1
+          await this.shutdown()
+        })
     })
     const settings = new AccountSettings()
     const settingsStore = this.locals.open(`obsidian-connect/${openVault.vaultId}/set`, settings.doc)
@@ -312,6 +331,18 @@ export class Device {
     }
     this.editors.refresh()
     return started
+  }
+
+  /** What the password dialog does. The other devices of the account are not told the new one. */
+  async changePassword(next: string): Promise<void> {
+    if (!this.unlocked) throw new Error('not signed in')
+    this.unlocked = await this.session.changePassword(this.unlocked, this.password, next)
+    this.password = next
+  }
+
+  /** Whether the device holds a token and keys - what the settings show as "signed in". */
+  get signedIn(): boolean {
+    return this.token !== null
   }
 
   async shutdown(): Promise<void> {

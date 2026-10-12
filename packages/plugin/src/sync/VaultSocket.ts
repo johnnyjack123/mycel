@@ -7,7 +7,7 @@ import {
 } from 'y-protocols/awareness'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { MUX, awarenessAad, frameAad, snapshotAad, type Notice, type NotifyKind } from '@obsidian-connect/shared'
+import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, type Notice, type NotifyKind } from '@obsidian-connect/shared'
 import { bytes, decrypt, encrypt, packFrame, sha256, toHex, unpackFrame } from '@obsidian-connect/shared/crypto'
 import type { HistoryEntry } from './History.js'
 import { log } from '../log.js'
@@ -97,6 +97,12 @@ export interface SocketHandlers {
    * merged into the local state, and held until `keepLocal` or a reset.
    */
   diverged?(room: string): void
+  /**
+   * The server closed the socket because its token no longer holds. The
+   * socket waits until `reconnect` - the token may simply be one this device
+   * replaced a moment ago, or the device was signed out.
+   */
+  signedOut?(): void
 }
 
 type Verification = 'none' | 'pending' | 'match' | 'mismatch'
@@ -191,11 +197,16 @@ export class VaultSocket {
       this.receive(new Uint8Array(event.data as ArrayBuffer))
     }
     socket.onclose = (event: CloseEvent) => {
-      if (!this.closed) log.info(`disconnected (${event.code}${event.reason ? ` ${event.reason}` : ''}), retry ${this.retries + 1}`)
+      const signedOut = event.code === CLOSE_SIGNED_OUT && this.handlers.signedOut !== undefined
+      if (!this.closed) {
+        log.info(`disconnected (${event.code}${event.reason ? ` ${event.reason}` : ''})${signedOut ? '' : `, retry ${this.retries + 1}`}`)
+      }
       this.ws = null
       for (const registration of this.registrations.values()) this.resetSync(registration)
       this.emit('disconnected')
-      this.scheduleReconnect()
+      // Retrying with the same token would only be closed again.
+      if (signedOut && !this.closed) this.handlers.signedOut?.()
+      else this.scheduleReconnect()
     }
     socket.onerror = () => {
       // `onclose` always follows, which is where the reconnect lives.
@@ -217,6 +228,11 @@ export class VaultSocket {
     registration.whenSynced = new Promise<void>((resolve) => {
       registration.markSynced = resolve
     })
+  }
+
+  /** Connects again after `signedOut`, once the token is known to hold. */
+  reconnect(): void {
+    this.scheduleReconnect()
   }
 
   private scheduleReconnect(): void {

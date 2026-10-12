@@ -1,6 +1,7 @@
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
+  CLOSE_SIGNED_OUT,
   docRoom,
   isHexId,
   roomKind,
@@ -45,6 +46,8 @@ export interface RoomClient {
   sendRevoked(room: string, reason: string): void
   sendDenied(room: string, reason: string): void
   sendNotify(kind: NotifyKind, payload: Notice): void
+  /** Ends the connection; the device learns why from the close code. */
+  close(code: number, reason: string): void
 }
 
 export class HubError extends Error {
@@ -238,6 +241,18 @@ export class RoomHub {
 
   notify(account: string, kind: NotifyKind, payload: Notice): void {
     for (const client of this.clients) if (client.account === account) client.sendNotify(kind, payload)
+  }
+
+  /**
+   * Closes every connection of the account: its session generation moved. A
+   * token checked once at the upgrade would otherwise keep a socket - and the
+   * frames on it - for as long as the socket stays open. Devices still signed
+   * in come straight back with their new token.
+   */
+  disconnect(account: string): void {
+    for (const client of Array.from(this.clients)) {
+      if (client.account === account) client.close(CLOSE_SIGNED_OUT, 'signed out')
+    }
   }
 
   /**
@@ -827,6 +842,9 @@ export class RoomHub {
   private async clearAccount(account: string, now: number): Promise<void> {
     if (!isAccountId(account)) return
     this.gone.add(account)
+    // Its own devices learn they are signed out, instead of being told every
+    // note of theirs was revoked.
+    this.disconnect(account)
     for (const meta of Array.from(this.metas.values())) {
       if (meta.owner === account) {
         await this.closeOwnerless(meta, now)

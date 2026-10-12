@@ -437,6 +437,26 @@ export default class ObsidianConnectPlugin extends Plugin {
     new Notice('Obsidian Connect: signed out. Your notes stay in this vault.')
   }
 
+  /**
+   * The server closed the socket as signed out. Either this device changed the
+   * password a moment ago and carries on with its new token, or another device
+   * did - then this one stops. Files and unsent edits stay; they go out once
+   * it is signed in to the account again.
+   */
+  private async checkSignedIn(socket: VaultSocket): Promise<void> {
+    const still = await this.session.stillSignedIn()
+    if (this.socket !== socket) return
+    if (still !== false) {
+      socket.reconnect()
+      return
+    }
+    log.info('signed out by the server: the password was changed, or the account signed its devices out')
+    await this.stopSync()
+    this.unlocked = null
+    this.renderStatus()
+    new Notice('Obsidian Connect: this device was signed out, because the password was changed elsewhere. Sign in again in the plugin settings.', 0)
+  }
+
   openPasswordChange(): void {
     new PasswordModal(this.app, async (current, next) => {
       if (!this.unlocked) throw new Error('Sign in first.')
@@ -491,7 +511,8 @@ export default class ObsidianConnectPlugin extends Plugin {
       notify: (kind, payload) => this.onNotify(kind, payload),
       revoked: (room) => void this.sharing?.onRevoked(room).then(() => this.editors.refresh()),
       denied: (room, reason) => log.error(`${room} was refused: ${reason}`),
-      diverged: (room) => this.recovery?.diverged(room)
+      diverged: (room) => this.recovery?.diverged(room),
+      signedOut: () => void this.checkSignedIn(socket)
     })
     this.socket = socket
     this.history = indexedDbHistory(vault.vaultId)

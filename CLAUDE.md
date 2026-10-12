@@ -193,6 +193,12 @@ someone's notes. Treat them as rules, not preferences.
   receive epoch keys **sealed** to their public key.
 - The device keeps the token in `data.json`, the master key, the account bundle
   and sealed keys in Obsidian's per-vault `localStorage`, so it starts offline.
+- **Signing the other devices out** (`docs/PHASE5.md`): every token carries the
+  account's session generation (`sessions` in `accounts.json`, `gen` in the token,
+  absent = 0), and only the current one is accepted. A password change moves it and
+  the server closes the account's sockets with `4401`, also its own device's: the
+  close arrives before the new token, so `Session.stillSignedIn` waits for the
+  device's own request (`Session.move`) before asking whether it is signed out.
 
 ### Identity
 
@@ -423,6 +429,7 @@ npm run test:load      # the built bundle imports, onload/start/unload run, Obsi
 npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart — in-process
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
+npm run test:account   # the account with real devices: signing the other devices out — in-process server
 # needs a server that lets tests create accounts:
 npm run test:socket    # the encrypted transport, two devices of one account
 npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing, attachments

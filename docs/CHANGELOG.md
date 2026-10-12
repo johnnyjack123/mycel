@@ -6,6 +6,23 @@ verified. `docs/PROGRESS.md` holds only the current state.
 "Checked by putting the bug back" means: the old behaviour was restored in the source,
 the suite run, the new checks seen failing (and nothing else), the fix restored.
 
+## 0.6 - recovery codes and two-factor sign-in (from 2026-10-12, spec `docs/PHASE5.md`)
+
+- **0.6.0** (2026-10-12) - a password change signs out every other device on the
+  server, not only the honest ones. Every account has a session generation, every
+  token carries it (`gen`; tokens from before count as 0, so the update signs
+  nobody out), and a token of an older generation is refused by every route, the
+  refresh and the socket upgrade. The server closes the account's open sockets with
+  `4401` (`CLOSE_SIGNED_OUT`); a stale or invalid token at the upgrade is closed the
+  same way rather than refused, which a browser WebSocket would only retry forever.
+  The plugin asks the server on `4401` (`Session.stillSignedIn`) and either carries on
+  with its token or stops and says to sign in again; files and unsent edits stay. A
+  removed account's devices are closed the same way instead of seeing every note of
+  theirs revoked. New suite `test:account` (in-process server), `test:rooms` 165.
+  Checked by putting the bug back: without waiting for its own password change
+  (`Session.moving`), the device that changed the password read the server closing
+  its socket as being signed out and signed itself out, 3 of 3 runs.
+
 ## 0.5 - attachments (2026-10-10 to 12, spec `docs/PHASE4.md`)
 
 - **0.5.7** (2026-10-12) - the plugin's items in every file menu sit in a section of

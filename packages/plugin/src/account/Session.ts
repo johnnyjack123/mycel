@@ -76,6 +76,14 @@ function vaultNameAad(vaultId: string): string {
 }
 
 export class Session {
+  /**
+   * A request of this device that moves the account's session generation,
+   * while it runs. The server closes every socket of the account before this
+   * device has its new token, so whether it is still signed in can only be
+   * asked once the request is done.
+   */
+  private moving: Promise<unknown> = Promise.resolve()
+
   constructor(
     private readonly api: ConnectApi,
     private readonly secrets: SecretStore,
@@ -238,14 +246,41 @@ export class Session {
     const currentKeys = await derivePasswordKeys(current, salt, unlocked.bundle.kdfVersion, this.argon2id)
     const nextKeys = await derivePasswordKeys(next, salt, CURRENT_KDF_VERSION, this.argon2id)
     const privateKey = await unwrapSecret(unlocked.masterKey, unlocked.bundle.wrappedPrivateKey, PRIVATE_KEY)
-    const response = await this.api.changePassword({
+    const request = {
       loginKey: toBase64(currentKeys.loginKey),
       newLoginKey: toBase64(nextKeys.loginKey),
       kdfVersion: CURRENT_KDF_VERSION,
       wrappedPrivateKey: await wrapSecret(nextKeys.masterKey, privateKey, PRIVATE_KEY),
       wrappedAccountSecret: await wrapSecret(nextKeys.masterKey, unlocked.accountSecret, ACCOUNT_SECRET)
-    })
-    return this.adopt(response, nextKeys.masterKey, unlocked.username, serverId)
+    }
+    return this.move(async () => this.adopt(await this.api.changePassword(request), nextKeys.masterKey, unlocked.username, serverId))
+  }
+
+  /** Runs a request that moves the session generation; see `moving`. */
+  private move<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.moving.then(task)
+    this.moving = run.catch(() => undefined)
+    return run
+  }
+
+  /**
+   * Asked when the server closed the socket as signed out: true if the token
+   * still holds (it is renewed), false if this device was signed out - the
+   * keys are forgotten then - and null if the server cannot be asked now.
+   */
+  async stillSignedIn(): Promise<boolean | null> {
+    await this.moving
+    try {
+      const refreshed = await this.api.refresh()
+      await this.onToken(refreshed.token, this.secrets.load(NAME))
+      return true
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 401) return null
+      // Unlike signing out, the server's id stays pinned: it is the same server.
+      this.forget()
+      await this.onToken(null, null)
+      return false
+    }
   }
 
   async signOut(): Promise<void> {

@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-12 · **0.5.7 on `feat/accounts`: milestone 0.5 (attachments) built and accepted by the user. Milestone 0.6 (recovery codes and 2FA) designed with the user in `docs/PHASE5.md`; building step 1.**_
+_Last updated: 2026-10-12 · **0.6.0 on `feat/accounts`: milestone 0.6 (recovery codes and 2FA) designed with the user in `docs/PHASE5.md`; step 1 (signing out the other devices) built. Next: step 2, the recovery code.**_
 
 ## Where we are
 
@@ -8,7 +8,8 @@ Monorepo (`npm` workspaces): `packages/shared`, `packages/server`, `packages/plu
 **Read `CLAUDE.md` first** - invariants (24 of them, each from a real bug), the
 architecture, the version roadmap to 1.0.0 and the conventions. Designs:
 `docs/PHASE2.md` (keys, sharing), `docs/PHASE3.md` (accounts without names,
-contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments);
+contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments),
+`docs/PHASE5.md` (recovery codes, 2FA);
 `docs/SERVER.md` for running the server; `docs/CHANGELOG.md` for every version and
 how its fixes were verified.
 
@@ -16,7 +17,8 @@ Branch `feat/accounts`, pushed, CI green up to `9c22501` (0.5.7). Not merged to
 `main` - merging is what first builds and publishes the Docker image. The user
 runs the server with npm on the laptop (port 1234, `packages/server/data` - never
 touch either; see CLAUDE.md, Gotchas) and installs the plugin by copying
-`main.js`, `manifest.json`, `styles.css`. Server code unchanged since 0.5.4.
+`main.js`, `manifest.json`, `styles.css`. 0.6.0 changes the server too: the user's
+server needs restarting with it (tokens from before stay valid).
 
 Confirmed on the user's devices: sign-in and account creation, note sync, sharing
 and live editing, attachments syncing with conflict copies, restoring notes and
@@ -31,8 +33,8 @@ not been seen on a device yet.
 with the user on 2026-10-12 - every decision is listed at its top). Three steps,
 each with its tests, a commit and a version:
 
-1. Signing out the other devices: a session generation per account, sockets closed
-   with `4401` (0.6.0).
+1. *(built, 0.6.0)* Signing out the other devices: a session generation per
+   account, sockets closed with `4401`.
 2. The recovery code (0.6.1).
 3. Two-factor sign-in with TOTP (0.6.2).
 
@@ -43,7 +45,7 @@ Code to start from: plugin `src/account/Session.ts`, `api.ts`, `PasswordModal.ts
 
 ## In flight / half-finished
 
-Nothing. Everything is committed and pushed (last: the handoff, `5f1e2a0`).
+Nothing. Everything is committed and pushed.
 
 ## Decisions made (not visible in the code)
 
@@ -104,12 +106,12 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
 
 ## Verification state
 
-At `9c22501` (0.5.7), run 2026-10-12: `typecheck` and `build` pass; `test:merge`
-130, `test:load` 12, `test:rooms` 156, `test:sync` 26, `test:recovery` 56 - all
-pass (run after the 0.5.7 commit). Against a scratch server on 1235: `test:socket`
-19, `test:vault` 224 - all pass (run before the commit, same code). Bug-back checks
-per version: `docs/CHANGELOG.md`. Not verified: 0.5.7 on a device, the Docker
-image.
+At 0.6.0, run 2026-10-12 before its commit: `typecheck` and `build` pass;
+`test:merge` 130, `test:load` 12, `test:rooms` 165, `test:sync` 26, `test:recovery`
+56, `test:account` 10 (new) - all pass. Against a scratch server on 1235:
+`test:socket` 19 (one check adapted: no token is now let in and closed as signed
+out), `test:vault` 224 - all pass. Bug-back checks per version: `docs/CHANGELOG.md`.
+Not verified: 0.5.7 and 0.6.0 on a device, the Docker image.
 
 How to run the end-to-end suites without touching the user's server: CLAUDE.md,
 Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
@@ -120,6 +122,8 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 ## Log
 
 ### 2026-10-12
+- Milestone 0.6 designed with the user (`docs/PHASE5.md`). 0.6.0: a password change
+  signs out every other device on the server (session generation, `4401`).
 - 0.5.7: the plugin's menu section, the cloud for files and as a menu, the shared /
   read-only mark and header lock, "Version history" for files.
 - Docs brought up to date for a handoff: `docs/CHANGELOG.md` (new, the full version

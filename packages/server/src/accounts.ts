@@ -35,6 +35,16 @@ export interface StoredAccount {
   wrappedPrivateKey: string
   wrappedAccountSecret: string
   vaults: Record<string, StoredVault>
+  /**
+   * The session generation every valid token carries. Moving it on signs out
+   * every device holding an older token; absent is 0.
+   */
+  sessions?: number
+}
+
+/** The generation a token of this account must carry. */
+export function sessionOf(account: StoredAccount): number {
+  return account.sessions ?? 0
 }
 
 export interface StoredInvite {
@@ -274,6 +284,9 @@ export class AccountStore {
       account.kdfVersion = request.kdfVersion
       account.wrappedPrivateKey = request.wrappedPrivateKey
       account.wrappedAccountSecret = request.wrappedAccountSecret
+      // Whoever signed in with the old password keeps the account secret, but
+      // not the server: their token stops working here.
+      account.sessions = sessionOf(account) + 1
       return account
     })
   }

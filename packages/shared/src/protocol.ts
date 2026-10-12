@@ -136,6 +136,14 @@ export const MUX = {
 
 export type MuxMessage = (typeof MUX)[keyof typeof MUX]
 
+/**
+ * The close code of a vault socket whose token no longer holds - the
+ * password was changed, or the account signed its other devices out. A
+ * browser WebSocket cannot see the HTTP status of a refused upgrade, so the
+ * server accepts the upgrade and closes with this instead.
+ */
+export const CLOSE_SIGNED_OUT = 4401
+
 export const API = {
   health: '/health',
   config: '/auth/config',

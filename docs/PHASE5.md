@@ -38,7 +38,7 @@ with a second factor, that factor's TOTP secret, and when a code was last used.
   that only lowers the sign-in to what it was without 2FA.
 - **Signing in is two steps:** name and password, then the code.
 
-## Signing out the other devices *(step 1)*
+## Signing out the other devices *(step 1, built 0.6.0)*
 
 Today a token stays valid until it expires (30 days, refreshed on every start), so a
 password change leaves every other device's token working; honest devices only notice
@@ -67,6 +67,12 @@ is the server - new frames, new notes, new files.
   after a password change).
 - The password dialog already says that the other devices will ask to sign in again;
   from now on that holds for every client, not only honest ones.
+
+*As built:* the device that moved the generation has its own socket closed too, and
+the close arrives before the answer carrying its new token. `Session` therefore runs
+every request that moves the generation through `move`, and `stillSignedIn` waits for
+it before asking - without that the device signed itself out (reproduced). A removed
+account's sockets are closed with `4401` as well, at the start of the sweep.
 
 ## The recovery code *(step 2)*
 

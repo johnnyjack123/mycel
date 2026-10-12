@@ -61,6 +61,11 @@ jobs:
       - name: Server data loss and rollback self-test
         run: npm run test:recovery
 
+      # Also its own server in-process: a password change signing the other
+      # devices out while they run, and nothing on them lost by it.
+      - name: Account self-test
+        run: npm run test:account
+
       # The end-to-end self-tests need a live server that lets them create
       # accounts, so start one and wait for it.
       - name: Start the sync server

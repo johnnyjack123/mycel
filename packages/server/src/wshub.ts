@@ -135,6 +135,10 @@ class VaultConnection implements RoomClient {
   sendError(message: string): void {
     this.message(MUX.error, null, (encoder) => encoding.writeVarString(encoder, message))
   }
+
+  close(code: number, reason: string): void {
+    this.ws.close(code, reason)
+  }
 }
 
 /**

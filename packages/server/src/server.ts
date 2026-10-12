@@ -2,9 +2,9 @@ import type { IncomingMessage } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Duplex } from 'node:stream'
 import { WebSocketServer } from 'ws'
-import { isHexId } from '@obsidian-connect/shared'
-import { AccountStore } from './accounts.js'
-import { TokenService } from './auth.js'
+import { CLOSE_SIGNED_OUT, isHexId } from '@obsidian-connect/shared'
+import { AccountStore, sessionOf } from './accounts.js'
+import { TokenService, type TokenSession } from './auth.js'
 import { BlobStore } from './blobs.js'
 import { ContactStore } from './contacts.js'
 import { ForkStore } from './forks.js'
@@ -69,16 +69,22 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
         return
       }
       const vaultId = decodeURIComponent(url.pathname.slice(VAULT_PREFIX.length))
-      let accountId: string
+      let session: TokenSession | null = null
       try {
-        accountId = await tokens.verify(url.searchParams.get('token') ?? '')
+        session = await tokens.verify(url.searchParams.get('token') ?? '')
       } catch {
-        reject(socket, '401 Unauthorized')
+        // answered below
+      }
+      const account = session ? await accounts.get(session.accountId) : undefined
+      if (!session || !account || sessionOf(account) !== session.gen) {
+        // A refused upgrade looks like "unreachable" to a browser WebSocket,
+        // which then retries forever; a close code it can read.
+        wss.handleUpgrade(request, socket, head, (ws) => ws.close(CLOSE_SIGNED_OUT, 'signed out'))
         return
       }
-      const account = await accounts.get(accountId)
+      const accountId = session.accountId
       // A vault's connection carries its index; only its owner may open one.
-      if (!isHexId(vaultId) || !account || !account.vaults[vaultId]) {
+      if (!isHexId(vaultId) || !account.vaults[vaultId]) {
         app.log.warn({ vaultId, accountId }, 'ws upgrade rejected')
         reject(socket, '403 Forbidden')
         return

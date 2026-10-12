@@ -7,8 +7,9 @@ import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, type Notice, type NotifyKind } from '@obsidian-connect/shared'
-import { AccountStore } from '../src/accounts.js'
+import { SignJWT } from 'jose'
+import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, CLOSE_SIGNED_OUT, type Notice, type NotifyKind } from '@obsidian-connect/shared'
+import { AccountStore, sessionOf, type StoredAccount } from '../src/accounts.js'
 import { TokenService } from '../src/auth.js'
 import { BlobStore } from '../src/blobs.js'
 import { ContactStore } from '../src/contacts.js'
@@ -54,6 +55,7 @@ interface Message {
   data?: string
   reason?: string
   kind?: string
+  code?: number
 }
 
 class Client implements RoomClient {
@@ -90,6 +92,9 @@ class Client implements RoomClient {
   }
   sendNotify(kind: NotifyKind, _payload: Notice): void {
     this.messages.push({ type: 'notify', kind })
+  }
+  close(code: number, reason: string): void {
+    this.messages.push({ type: 'close', code, reason })
   }
 
   take(): Message[] {
@@ -285,7 +290,10 @@ try {
     const tokens = new TokenService('rooms-selftest', 3_600)
     const httpHub = new RoomHub({ dataDir }, accounts, contacts, new ForkStore(dataDir))
     const app = createHttpApp(loadConfig({}), tokens, accounts, httpHub, contacts, again, { logger: false, paceMs: 0 })
-    const auth = async (account: string): Promise<Record<string, string>> => ({ authorization: `Bearer ${(await tokens.issue(account)).token}` })
+    const auth = async (account: string): Promise<Record<string, string>> => {
+      const stored = (await accounts.get(account)) as StoredAccount
+      return { authorization: `Bearer ${(await tokens.issue(account, sessionOf(stored))).token}` }
+    }
     const octets = { 'content-type': 'application/octet-stream' }
     const small = hexId()
     const put = await app.inject({
@@ -349,6 +357,55 @@ try {
       touchedAt: number
     }
     check(record.touchedAt > record.createdAt, 'uploading a blob it has restarts its grace', record)
+
+    // Signing out the other devices: a password change moves the account's
+    // session generation, and every token from before stops working - one
+    // that signed in with a stolen password included.
+    {
+      const erinKeys = keyMaterial()
+      const erin = (await accounts.register(erinKeys, 'open')).accountId
+      const legacy = await new SignJWT({ scope: 'user' })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setSubject(erin)
+        .setIssuer('obsidian-connect')
+        .setIssuedAt()
+        .setExpirationTime('1h')
+        .sign(new TextEncoder().encode('rooms-selftest'))
+      check(
+        (await app.inject({ method: 'GET', url: '/account', headers: { authorization: `Bearer ${legacy}` } })).statusCode === 200,
+        'a token from before generations still works: updating the server signs nobody out'
+      )
+      const before = await auth(erin)
+      const otherDevice = new Client(erin, hexId())
+      const bystander = new Client(bob, hexId())
+      httpHub.attach(otherDevice)
+      httpHub.attach(bystander)
+      const changed = await app.inject({
+        method: 'POST',
+        url: '/auth/password',
+        headers: before,
+        payload: { loginKey: erinKeys.loginKey, newLoginKey: b64(32), kdfVersion: 1, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) }
+      })
+      check(changed.statusCode === 200, 'the password is changed', changed.body)
+      check((await app.inject({ method: 'GET', url: '/account', headers: before })).statusCode === 401, 'afterwards the token from before is refused')
+      check((await app.inject({ method: 'POST', url: '/auth/refresh', headers: before })).statusCode === 401, 'and cannot be refreshed')
+      check(
+        (await app.inject({ method: 'GET', url: '/account', headers: { authorization: `Bearer ${legacy}` } })).statusCode === 401,
+        'nor can one from before generations'
+      )
+      const fresh = { authorization: `Bearer ${(changed.json() as { token: string }).token}` }
+      check((await app.inject({ method: 'GET', url: '/account', headers: fresh })).statusCode === 200, 'the device that changed it carries on with its new token')
+      const refreshed = await app.inject({ method: 'POST', url: '/auth/refresh', headers: fresh })
+      const renewed = { authorization: `Bearer ${(refreshed.json() as { token: string }).token}` }
+      check((await app.inject({ method: 'GET', url: '/account', headers: renewed })).statusCode === 200, 'and refreshing it stays in the new generation')
+      check(
+        otherDevice.take().some((message) => message.type === 'close' && message.code === CLOSE_SIGNED_OUT),
+        "the account's open connections are closed as signed out"
+      )
+      check(!bystander.take().some((message) => message.type === 'close'), "and nobody else's")
+      httpHub.detach(otherDevice)
+      httpHub.detach(bystander)
+    }
     await app.close()
     await httpHub.shutdown()
   }

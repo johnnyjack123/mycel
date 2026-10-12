@@ -7,7 +7,7 @@
 //   npm run test:socket -- ws://localhost:1235
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
-import { CONTENT_FIELD, docRoom, indexRoom } from '@obsidian-connect/shared'
+import { CLOSE_SIGNED_OUT, CONTENT_FIELD, docRoom, indexRoom } from '@obsidian-connect/shared'
 
 // VaultSocket targets the browser Obsidian runs in: Node 22+ has a WebSocket,
 // the timers need a `window`.
@@ -213,26 +213,33 @@ check(
 // that owns the vault may open it - checked at the upgrade, before any room.
 {
   const other = await device(`socket-other-${run}`, 'another long password', true)
-  const opens = (token: string): Promise<boolean> =>
+  const opens = (token: string): Promise<'open' | 'refused' | 'signed out'> =>
     new Promise((resolve) => {
       const ws = new WebSocket(`${serverUrl.replace(/\/+$/, '')}/vault/${one.vault.vaultId}?token=${encodeURIComponent(token)}`)
+      const settle = (outcome: 'open' | 'refused' | 'signed out'): void => {
+        clearTimeout(timer)
+        resolve(outcome)
+      }
       const timer = setTimeout(() => {
         ws.close()
-        resolve(false)
+        resolve('refused')
       }, 5_000)
-      ws.onopen = () => {
-        clearTimeout(timer)
-        ws.close()
-        resolve(true)
+      // A token that does not hold is let in and closed at once, so a device
+      // can tell "signed out" from "unreachable"; open means it stays open.
+      ws.onopen = () =>
+        setTimeout(() => {
+          if (ws.readyState !== WebSocket.OPEN) return
+          ws.close()
+          settle('open')
+        }, 300)
+      ws.onclose = (event) => {
+        if (event.code === CLOSE_SIGNED_OUT) settle('signed out')
       }
-      ws.onerror = () => {
-        clearTimeout(timer)
-        resolve(false)
-      }
+      ws.onerror = () => settle('refused')
     })
-  check(!(await opens(other.token() ?? '')), "another account's token does not open this vault")
-  check(!(await opens('')), 'nor does no token')
-  check(await opens(one.token() ?? ''), 'while its own does')
+  check((await opens(other.token() ?? '')) === 'refused', "another account's token does not open this vault")
+  check((await opens('')) === 'signed out', 'nor does no token, which is closed as signed out')
+  check((await opens(one.token() ?? '')) === 'open', 'while its own does')
   other.socket.destroy()
 }
 
