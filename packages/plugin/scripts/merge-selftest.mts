@@ -397,6 +397,49 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(again.getText(CONTENT_FIELD).length === 0, 'a seed deleted since does nothing when applied again - hence the fallback in DocStore')
 }
 
+// --- the recovery code --------------------------------------------------------------------
+{
+  // Fixed, so whether every typo is caught does not depend on the draw.
+  const secret = new Uint8Array(Array.from({ length: 16 }, (_, index) => (index * 37 + 11) & 255))
+  const code = await e2e.encodeRecoveryCode(secret)
+  check(/^([0-9A-HJKMNP-TV-Z]{5}-){5}[0-9A-HJKMNP-TV-Z]{5}$/.test(code), 'a recovery code is six groups of five characters', code)
+  check(e2e.toHex((await e2e.decodeRecoveryCode(code)) ?? new Uint8Array()) === e2e.toHex(secret), 'and reads back as its secret')
+  check(
+    e2e.toHex((await e2e.decodeRecoveryCode(code.toLowerCase().replace(/-/g, ' ').replace(/1/g, 'l').replace(/0/g, 'o'))) ?? new Uint8Array()) ===
+      e2e.toHex(secret),
+    'typed in lower case, with spaces, l for 1 and o for 0 too'
+  )
+  const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+  const plain = code.replace(/-/g, '')
+  let typos = 0
+  let missed = 0
+  for (let position = 0; position < plain.length; position += 1) {
+    for (const char of alphabet) {
+      if (char === plain[position]) continue
+      typos += 1
+      if ((await e2e.decodeRecoveryCode(plain.slice(0, position) + char + plain.slice(position + 1))) !== null) missed += 1
+    }
+  }
+  check(missed === 0, `every single-character typo is caught (${typos} tried)`, { missed })
+  check(
+    (await e2e.decodeRecoveryCode(plain.slice(1))) === null && (await e2e.decodeRecoveryCode(`${plain}A`)) === null,
+    'so is a character left out or one too many'
+  )
+  check((await e2e.decodeRecoveryCode('not a code')) === null, 'and anything else is no code')
+  const keys = await e2e.recoveryKeys(secret)
+  const password = await e2e.derivePasswordKeys('x'.repeat(12), new Uint8Array(16), 1, async (_p, _s, params) => new Uint8Array(params.hashLength).fill(7))
+  check(
+    new Set([keys.recoveryKey, keys.wrapKey, password.loginKey, password.masterKey].map((key) => e2e.toHex(key))).size === 4,
+    'what the server gets from the code is not what wraps the keys'
+  )
+  const accountSecret = e2e.randomBytes(32)
+  const wrapped = await e2e.wrapSecret(keys.wrapKey, accountSecret, 'recovery-account-secret')
+  check(
+    await e2e.unwrapSecret(keys.wrapKey, wrapped, 'recovery-private-key').then(() => false, () => true),
+    'a wrapping does not open under another context'
+  )
+}
+
 // --- contacts, against a server that may lie ---------------------------------------------
 {
   const { Contacts } = await import('../src/share/Contacts.js')

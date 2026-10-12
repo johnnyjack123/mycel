@@ -36,7 +36,7 @@ export class PasswordModal extends Modal {
       this.repeat = value
     })
     new Setting(this.contentEl)
-      .setDesc('Or let this device make one: 20 random characters. Keep it in a password manager - there is no reset.')
+      .setDesc('Or let this device make one: 20 random characters. Keep it in a password manager.')
       .addButton((button) =>
         button.setButtonText('Generate').onClick(() => {
           const generated = generatePassword()

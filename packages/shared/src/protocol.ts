@@ -151,7 +151,11 @@ export const API = {
   login: '/auth/login',
   refresh: '/auth/refresh',
   password: '/auth/password',
+  /** With a recovery code: the second wrapping, then `/commit` with a new name and password. */
+  recover: '/auth/recover',
   account: '/account',
+  /** Makes or replaces the recovery code; `/delete` removes it. */
+  recovery: '/account/recovery',
   vaults: '/vaults',
   /** `/accounts/:accountId/key`: someone's public key, by account id. */
   accounts: '/accounts',

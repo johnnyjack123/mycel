@@ -74,7 +74,7 @@ every request that moves the generation through `move`, and `stillSignedIn` wait
 it before asking - without that the device signed itself out (reproduced). A removed
 account's sockets are closed with `4401` as well, at the start of the sweep.
 
-## The recovery code *(step 2)*
+## The recovery code *(step 2, built 0.6.1)*
 
 ```
 code: 16 random bytes ‖ 22-bit check   (30 characters, Crockford base32, six groups of five)
@@ -127,6 +127,13 @@ On the sign-in screen, "Forgot your password?" opens the recovery: the code, a n
 - A name and password another account has already are refused (409), as at
   registration.
 - Every other device signs in again, with the new name and password.
+
+*As built:* the sign-in screen has "Use a recovery code…", which opens the
+recovery screen; its back arrow returns to signing in. The dialog showing a code
+enables "Done" only once "I have written it down" is on; Escape still closes it.
+Making a code checks its wrappings open again too, not only a recovery. A server
+from before 0.6 shows up as a bundle without `recovery`: the settings then say the
+server needs an update, and registration simply shows no code.
 
 ## Two-factor sign-in *(step 3)*
 

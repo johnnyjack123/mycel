@@ -51,6 +51,7 @@ const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryL
 )
 
 type DocStoreT = InstanceType<typeof DocStore>
+type Unlocked = Awaited<ReturnType<InstanceType<typeof Session>['login']>>
 type ViewT = InstanceType<typeof FakeMarkdownView>
 
 export const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -118,7 +119,9 @@ export class Device {
   accountId = ''
   /** What this device signs in with; a password change elsewhere does not tell it. */
   password = PASSWORD
-  private unlocked: Awaited<ReturnType<InstanceType<typeof Session>['login']>> | null = null
+  private unlocked: Unlocked | null = null
+  /** The recovery code this device was last shown. */
+  recoveryCode: string | null = null
   /** How often the server signed this device out while it ran. */
   signedOut = 0
   // Outlives restarts, like the plugin's own: Obsidian keeps the extension in
@@ -156,7 +159,8 @@ export class Device {
   readonly views: ViewT[] = []
 
   constructor(
-    readonly username: string,
+    /** A recovery may choose another. */
+    public username: string,
     private readonly signUp: boolean,
     files: Record<string, string | Uint8Array> = {}
   ) {
@@ -167,11 +171,14 @@ export class Device {
 
   async boot(): Promise<boolean> {
     // A restart unlocks with what the device kept; the first start signs in.
+    const register = async (): Promise<Unlocked> => {
+      const registered = await this.session.register(this.username, this.password)
+      this.recoveryCode = registered.recoveryCode
+      return registered.unlocked
+    }
     const unlocked =
       (await this.session.unlock()) ??
-      (this.signUp && !this.accountId
-        ? await this.session.register(this.username, this.password)
-        : await this.session.login(this.username, this.password))
+      (this.signUp && !this.accountId ? await register() : await this.session.login(this.username, this.password))
     this.unlocked = unlocked
     this.accountId = unlocked.accountId
     const openVault = await this.session.openVault(unlocked, VAULT)
@@ -338,6 +345,32 @@ export class Device {
     if (!this.unlocked) throw new Error('not signed in')
     this.unlocked = await this.session.changePassword(this.unlocked, this.password, next)
     this.password = next
+  }
+
+  /** What the settings do: needs the password, replaces the code. */
+  async makeRecoveryCode(password = this.password): Promise<void> {
+    if (!this.unlocked) throw new Error('not signed in')
+    const made = await this.session.makeRecoveryCode(this.unlocked, password)
+    this.unlocked = made.unlocked
+    this.recoveryCode = made.code
+  }
+
+  async deleteRecoveryCode(password = this.password): Promise<void> {
+    if (!this.unlocked) throw new Error('not signed in')
+    this.unlocked = await this.session.deleteRecoveryCode(this.unlocked, password)
+  }
+
+  /** Whether the server keeps a recovery code for the account, as this device last heard. */
+  get hasRecoveryCode(): boolean | undefined {
+    return this.unlocked?.bundle.recovery === undefined ? undefined : this.unlocked.bundle.recovery !== null
+  }
+
+  /** The sign-in screen's "Forgot your password?": signs this device in under the name and password chosen. */
+  async recover(code: string, username: string, password: string): Promise<void> {
+    const recovered = await this.session.recover(code, username, password)
+    this.recoveryCode = recovered.recoveryCode
+    this.username = username
+    this.password = password
   }
 
   /** Whether the device holds a token and keys - what the settings show as "signed in". */

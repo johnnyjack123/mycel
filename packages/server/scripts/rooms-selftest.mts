@@ -199,6 +199,49 @@ try {
     )
   }
 
+  // A recovery code alone finds its account and sets a new name and password;
+  // using it spends it.
+  {
+    const record = (recoveryKey = b64(32)) => ({ recoveryKey, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) })
+    const found = async (recoveryKey: string): Promise<string | undefined> => (await accounts.findByRecovery(recoveryKey))?.accountId
+    const first = b64(32)
+    const frankKeys = keyMaterial()
+    const frank = (await accounts.register({ ...frankKeys, recovery: record(first) }, 'open')).accountId
+    const frankNow = async (): Promise<StoredAccount> => (await accounts.get(frank)) as StoredAccount
+    check((await found(first)) === frank, 'an account made with a recovery code is found by it alone')
+    check(accounts.bundle(await frankNow()).recovery?.createdAt !== undefined, 'and its bundle says it has one')
+    check((await found(b64(32))) === undefined, 'any other code finds nothing')
+    check((await status(() => accounts.register({ ...keyMaterial(), recovery: record(first) }, 'open'))) === 409, 'nobody registers with a code in use')
+    check(accounts.bundle((await accounts.get(bob)) as StoredAccount).recovery === null, 'an account without one says so')
+
+    check((await status(() => accounts.setRecovery(frank, b64(32), record()))) === 403, 'making a new code needs the password, not only a token')
+    const second = b64(32)
+    await accounts.setRecovery(frank, frankKeys.loginKey, record(second))
+    check((await found(first)) === undefined && (await found(second)) === frank, 'a new code replaces the old one at once')
+
+    const ginaKeys = keyMaterial()
+    await accounts.register(ginaKeys, 'open')
+    const newLoginKey = b64(32)
+    const third = b64(32)
+    const commit = (recoveryKey: string, login = newLoginKey, next = third): Promise<StoredAccount | null> =>
+      accounts.recover({ recoveryKey, newLoginKey: login, kdfVersion: 1, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48), recovery: record(next) })
+    const before = sessionOf(await frankNow())
+    check((await commit(b64(32))) === null, 'an unknown code recovers nothing')
+    check((await status(() => commit(second, ginaKeys.loginKey))) === 409, 'a name and password another account has are refused')
+    check((await status(() => commit(second, newLoginKey, second))) === 409, 'the code cannot stay as it was: using it spends it')
+    check((await found(second)) === frank && (await accounts.login(frankKeys.loginKey))?.accountId === frank, 'refusals change nothing')
+    const recovered = await commit(second)
+    check(
+      recovered?.accountId === frank && (await accounts.login(newLoginKey))?.accountId === frank && (await accounts.login(frankKeys.loginKey)) === null,
+      'the code sets a new password, and the old one no longer signs in'
+    )
+    check(sessionOf(await frankNow()) === before + 1, 'every device signed in so far is signed out')
+    check((await found(second)) === undefined && (await found(third)) === frank, 'the code used is spent, the new one works')
+    check((await status(() => accounts.setRecovery(frank, frankKeys.loginKey, null))) === 403, 'deleting the code needs the current password')
+    await accounts.setRecovery(frank, newLoginKey, null)
+    check((await found(third)) === undefined && accounts.bundle(await frankNow()).recovery === null, 'and leaves none')
+  }
+
   // --- contacts ----------------------------------------------------------------
   const contacts = new ContactStore(dataDir)
   {
@@ -380,11 +423,12 @@ try {
       const bystander = new Client(bob, hexId())
       httpHub.attach(otherDevice)
       httpHub.attach(bystander)
+      const erinLogin = b64(32)
       const changed = await app.inject({
         method: 'POST',
         url: '/auth/password',
         headers: before,
-        payload: { loginKey: erinKeys.loginKey, newLoginKey: b64(32), kdfVersion: 1, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) }
+        payload: { loginKey: erinKeys.loginKey, newLoginKey: erinLogin, kdfVersion: 1, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) }
       })
       check(changed.statusCode === 200, 'the password is changed', changed.body)
       check((await app.inject({ method: 'GET', url: '/account', headers: before })).statusCode === 401, 'afterwards the token from before is refused')
@@ -403,6 +447,50 @@ try {
         "the account's open connections are closed as signed out"
       )
       check(!bystander.take().some((message) => message.type === 'close'), "and nobody else's")
+
+      // The recovery over HTTP: the code alone, guarded like a sign-in.
+      check(((config.json() as { features?: string[] }).features ?? []).includes('recovery'), 'the server says it takes recovery codes')
+      const freshNow = async (): Promise<Record<string, string>> => auth(erin)
+      const code = b64(32)
+      const record = { recoveryKey: code, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) }
+      const wrongPassword = await app.inject({ method: 'POST', url: '/account/recovery', headers: await freshNow(), payload: { loginKey: b64(32), recovery: record } })
+      check(wrongPassword.statusCode === 403, 'a token alone does not make a recovery code', wrongPassword.body)
+      const made = await app.inject({ method: 'POST', url: '/account/recovery', headers: await freshNow(), payload: { loginKey: erinLogin, recovery: record } })
+      check(
+        made.statusCode === 200 && typeof (made.json() as { recovery?: { createdAt?: number } }).recovery?.createdAt === 'number',
+        'with the password it does, and the answer is the bundle with it',
+        made.body
+      )
+      const unknown = await app.inject({ method: 'POST', url: '/auth/recover', payload: { recoveryKey: b64(32) } })
+      check(unknown.statusCode === 401 && (unknown.json() as { error?: string }).error === 'this recovery code is not known here', 'an unknown code is refused', unknown.body)
+      const opened = await app.inject({ method: 'POST', url: '/auth/recover', payload: { recoveryKey: code } })
+      check(
+        opened.statusCode === 200 &&
+          (opened.json() as { accountId?: string; wrappedPrivateKey?: string }).accountId === erin &&
+          (opened.json() as { wrappedPrivateKey?: string }).wrappedPrivateKey === record.wrappedPrivateKey,
+        'a known one answers with the second wrapping',
+        opened.body
+      )
+      const stillOpen = new Client(erin, hexId())
+      httpHub.attach(stillOpen)
+      const recovered = await app.inject({
+        method: 'POST',
+        url: '/auth/recover/commit',
+        payload: {
+          recoveryKey: code,
+          newLoginKey: b64(32),
+          kdfVersion: 1,
+          wrappedPrivateKey: b64(64),
+          wrappedAccountSecret: b64(48),
+          recovery: { recoveryKey: b64(32), wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) }
+        }
+      })
+      check(recovered.statusCode === 200, 'the recovery sets a new password', recovered.body)
+      const after = { authorization: `Bearer ${(recovered.json() as { token: string }).token}` }
+      check((await app.inject({ method: 'GET', url: '/account', headers: after })).statusCode === 200, 'and signs this device in')
+      check((await app.inject({ method: 'GET', url: '/account', headers: renewed })).statusCode === 401, 'and every other device out')
+      check(stillOpen.take().some((message) => message.type === 'close' && message.code === CLOSE_SIGNED_OUT), 'their connections closed')
+      httpHub.detach(stillOpen)
       httpHub.detach(otherDevice)
       httpHub.detach(bystander)
     }

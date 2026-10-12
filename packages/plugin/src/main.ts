@@ -27,6 +27,7 @@ import { probeServer, type ServerProbe } from './account/probe'
 import { hashWasmArgon2id } from './account/argon2'
 import { KeyRing } from './account/KeyRing'
 import { PasswordModal } from './account/PasswordModal'
+import { PasswordPromptModal, RecoveryCodeModal } from './account/RecoveryModals'
 import { Session, type OpenVault, type SecretStore, type Unlocked } from './account/Session'
 import { EditorSync } from './editor/EditorSync'
 import { BackupModal } from './history/BackupModal'
@@ -418,15 +419,80 @@ export default class ObsidianConnectPlugin extends Plugin {
     if (!username) throw new Error('Choose a name.')
     const verdict = judgePassword(password, [username])
     if (!verdict.ok) throw new Error(verdict.reason)
-    // There is no reset: a typo here locks the account's notes for good.
+    // A typo here, and only the recovery code still opens the account.
     if (password !== repeat) throw new Error('The passwords differ.')
     await this.stopSync()
-    await this.session.register(username, password, invite)
-    new Notice(
-      `Obsidian Connect: account ${this.settings.username} created. Keep the password safe - it is the only way to decrypt your notes.`,
-      12_000
-    )
+    const { recoveryCode } = await this.session.register(username, password, invite)
+    new Notice(`Obsidian Connect: account ${this.settings.username} created. Keep the password safe.`, 8_000)
+    if (recoveryCode) {
+      new RecoveryCodeModal(
+        this.app,
+        recoveryCode,
+        'Your account is ready. If you ever forget your password - or the name you signed up with - this code gets you back in.'
+      ).open()
+    }
     await this.startSync()
+  }
+
+  /**
+   * "Forgot your password?": the recovery code opens the account's keys, which
+   * the name and password chosen now wrap anew. The code is spent; the new one
+   * is shown once. Every other device of the account is signed out.
+   */
+  async recoverAccount(code: string, username: string, password: string, repeat: string): Promise<void> {
+    if (!code.trim()) throw new Error('Enter your recovery code.')
+    if (!username) throw new Error('Choose the name to sign in with from now on.')
+    const verdict = judgePassword(password, [username])
+    if (!verdict.ok) throw new Error(verdict.reason)
+    if (password !== repeat) throw new Error('The passwords differ.')
+    await this.stopSync()
+    const { recoveryCode } = await this.session.recover(code, username, password)
+    new Notice(`Obsidian Connect: account recovered, signed in as ${this.settings.username}. Your other devices sign in again with the new password.`, 12_000)
+    new RecoveryCodeModal(this.app, recoveryCode, 'The code you used no longer works. This is your new one.').open()
+    await this.startSync()
+  }
+
+  /** What the settings show about the recovery code; null while not signed in. */
+  recoveryState(): { state: 'made'; createdAt: number } | { state: 'none' } | { state: 'unsupported' } | null {
+    const bundle = this.unlocked?.bundle
+    if (!bundle) return null
+    if (bundle.recovery === undefined) return { state: 'unsupported' }
+    return bundle.recovery ? { state: 'made', createdAt: bundle.recovery.createdAt } : { state: 'none' }
+  }
+
+  openMakeRecoveryCode(): void {
+    const replacing = this.recoveryState()?.state === 'made'
+    new PasswordPromptModal(
+      this.app,
+      replacing ? 'Make a new recovery code' : 'Make a recovery code',
+      replacing
+        ? 'The code you have now stops working at once. Your password confirms it is you.'
+        : 'With a recovery code, a forgotten password is not the end of your account. Your password confirms it is you.',
+      'Make the code',
+      async (password) => {
+        if (!this.unlocked) throw new Error('Sign in first.')
+        const made = await this.session.makeRecoveryCode(this.unlocked, password)
+        this.unlocked = made.unlocked
+        this.settingTab?.display()
+        new RecoveryCodeModal(this.app, made.code, replacing ? 'The code before this one no longer works.' : 'Your account now has a recovery code.').open()
+      }
+    ).open()
+  }
+
+  openDeleteRecoveryCode(): void {
+    new PasswordPromptModal(
+      this.app,
+      'Delete the recovery code',
+      'Without a recovery code, a forgotten password means losing access to this account. Your notes stay on your devices, but they no longer sync.',
+      'Delete',
+      async (password) => {
+        if (!this.unlocked) throw new Error('Sign in first.')
+        this.unlocked = await this.session.deleteRecoveryCode(this.unlocked, password)
+        this.settingTab?.display()
+        new Notice('Obsidian Connect: the recovery code is deleted.')
+      },
+      true
+    ).open()
   }
 
   async signOut(): Promise<void> {
@@ -450,11 +516,15 @@ export default class ObsidianConnectPlugin extends Plugin {
       socket.reconnect()
       return
     }
-    log.info('signed out by the server: the password was changed, or the account signed its devices out')
+    log.info('signed out by the server: the password was changed or the account recovered elsewhere')
     await this.stopSync()
     this.unlocked = null
     this.renderStatus()
-    new Notice('Obsidian Connect: this device was signed out, because the password was changed elsewhere. Sign in again in the plugin settings.', 0)
+    this.settingTab?.display()
+    new Notice(
+      'Obsidian Connect: this device was signed out - the password was changed or the account recovered on another device. Sign in again in the plugin settings.',
+      0
+    )
   }
 
   openPasswordChange(): void {

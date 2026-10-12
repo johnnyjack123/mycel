@@ -94,10 +94,17 @@ npm run dev:plugin
 3. On every other device: sign in with the same account and the same vault name.
    That is the whole pairing.
 
-The password never leaves the device, and nobody can reset it: losing it means
-losing access to the encrypted notes on the server. Your devices keep their
-files. It needs to be strong (the plugin checks, and offers to generate one);
-the server never learns your name either — it knows accounts only by random ids.
+The password never leaves the device, and nobody can reset it — not even the
+server's admin. What gets you back in is the **recovery code** the plugin shows
+when the account is made (older accounts make one in the settings): it opens the
+account on its own, and you choose a new name and password with it. Keep it
+apart from your password. Without either, the encrypted notes on the server are
+lost to you; your devices keep their files. The password needs to be strong (the
+plugin checks, and offers to generate one); the server never learns your name
+either — it knows accounts only by random ids.
+
+Changing the password, or recovering the account, signs out every other device:
+they sign in again with the new password.
 
 Every markdown note is synced automatically; there is no per-note switch. So is
 every other file (see *Attachments* below). Settings under *All your devices*
@@ -195,6 +202,7 @@ npm run test:load         # does the built bundle load, start and unload cleanly
 npm run test:rooms        # accounts, access, key epochs, sharing, compaction, restart
 npm run test:sync         # does the editor binding actually sync? (jsdom)
 npm run test:recovery     # a server that lost data or was rolled back, a removed account, cleaning up files (in-process server)
+npm run test:account      # signing the other devices out, the recovery code (in-process server)
 # against a running server with open registration:
 npm run test:socket       # the encrypted transport, two devices of one account
 npm run test:vault        # three devices and a collaborator, end to end, notes and attachments
@@ -250,7 +258,8 @@ nothing on the server is readable.
 - **Documents beyond `maxLoadedDocuments` stop receiving live updates** until
   opened again. They catch up on the next load, but a note you have not touched
   in a while is not live.
-- **A forgotten password cannot be recovered** (no recovery codes yet).
+- **A forgotten password without the recovery code cannot be recovered.** No one
+  can reset it, by design.
 - **The server still sees metadata:** which account ids, vault ids and note ids
   exist, who is whose contact and shares with whom, and when and how much was
   written. No names, no titles, no text.

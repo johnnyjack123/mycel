@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import type {
   AccountBundle,
   PasswordChangeRequest,
+  RecoverCommitRequest,
+  RecoveryRecord,
   RegisterRequest,
   RegistrationMode,
   VaultRecord
@@ -40,6 +42,16 @@ export interface StoredAccount {
    * every device holding an older token; absent is 0.
    */
   sessions?: number
+  /** The recovery code: the hash of its key, and the account's keys wrapped under it. */
+  recovery?: StoredRecovery
+}
+
+export interface StoredRecovery {
+  /** sha256 of the recovery key. */
+  hash: string
+  wrappedPrivateKey: string
+  wrappedAccountSecret: string
+  createdAt: number
 }
 
 /** The generation a token of this account must carry. */
@@ -55,6 +67,8 @@ interface AccountFile {
   accounts: Record<string, StoredAccount>
   /** loginHash -> account id. */
   logins: Record<string, string>
+  /** Recovery hash -> account id: a code alone finds its account, no name needed. */
+  recoveries: Record<string, string>
   /** sha256 of an invite code -> the invite. Consumed by registering. */
   invites: Record<string, StoredInvite>
   /**
@@ -101,7 +115,36 @@ function newInviteCode(): string {
 }
 
 function empty(): AccountFile {
-  return { accounts: {}, logins: {}, invites: {}, removed: {} }
+  return { accounts: {}, logins: {}, recoveries: {}, invites: {}, removed: {} }
+}
+
+/** A recovery code as the device sent it, checked, or why not. */
+function recoveryOf(record: unknown, now: number): StoredRecovery {
+  const { recoveryKey, wrappedPrivateKey, wrappedAccountSecret } = (record ?? {}) as Partial<RecoveryRecord>
+  const key = decoded(recoveryKey, 32)
+  if (!key || !decoded(wrappedPrivateKey, 16) || !decoded(wrappedAccountSecret, 16)) {
+    throw new AccountError(400, 'incomplete recovery code')
+  }
+  return {
+    hash: loginHash(key),
+    wrappedPrivateKey: wrappedPrivateKey as string,
+    wrappedAccountSecret: wrappedAccountSecret as string,
+    createdAt: now
+  }
+}
+
+/** Replaces the account's recovery code in the account and the index, in one change of the file. */
+function setRecoveryIn(data: AccountFile, account: StoredAccount, recovery: StoredRecovery | null): void {
+  // 128 random bits do not collide; a code already in use - this account's
+  // own too, which a recovery has to replace - was sent twice.
+  if (recovery && data.recoveries[recovery.hash] !== undefined) throw new AccountError(409, 'make another recovery code')
+  if (account.recovery) delete data.recoveries[account.recovery.hash]
+  if (recovery) {
+    account.recovery = recovery
+    data.recoveries[recovery.hash] = account.accountId
+  } else {
+    delete account.recovery
+  }
 }
 
 export class AccountStore {
@@ -207,6 +250,12 @@ export class AccountStore {
     if (!decoded(request.publicKey, 65) || !decoded(request.wrappedPrivateKey, 16) || !decoded(request.wrappedAccountSecret, 16)) {
       return Promise.reject(new AccountError(400, 'incomplete key material'))
     }
+    let recovery: StoredRecovery | null
+    try {
+      recovery = request.recovery === undefined ? null : recoveryOf(request.recovery, Date.now())
+    } catch (error) {
+      return Promise.reject(error)
+    }
     return this.update((data) => {
       const hash = loginHash(loginKey)
       // Only someone who typed exactly these name and password gets here, and
@@ -228,6 +277,7 @@ export class AccountStore {
         wrappedAccountSecret: request.wrappedAccountSecret as string,
         vaults: {}
       }
+      if (recovery) setRecoveryIn(data, account, recovery)
       data.accounts[accountId] = account
       data.logins[hash] = accountId
       return account
@@ -291,12 +341,85 @@ export class AccountStore {
     })
   }
 
+  /**
+   * Makes or replaces the recovery code, or removes it (`record` null). Needs
+   * the current password: a token alone could otherwise plant a code its
+   * holder knows - with wrappings of nothing - and through a recovery replace
+   * the account's keys.
+   */
+  setRecovery(accountId: string, loginKey: unknown, record: unknown, now = Date.now()): Promise<StoredAccount> {
+    const current = decoded(loginKey, 32)
+    if (!current) return Promise.reject(new AccountError(400, 'the login key is missing'))
+    let recovery: StoredRecovery | null
+    try {
+      recovery = record === null ? null : recoveryOf(record, now)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account || account.loginHash !== loginHash(current)) throw new AccountError(403, 'the current password is wrong')
+      setRecoveryIn(data, account, recovery)
+      return account
+    })
+  }
+
+  /** The account a recovery key opens, or null - never why. */
+  async findByRecovery(recoveryKey: unknown): Promise<StoredAccount | null> {
+    const key = decoded(recoveryKey, 32)
+    if (!key) return null
+    const data = await this.load()
+    const accountId = data.recoveries[loginHash(key)]
+    return accountId ? (data.accounts[accountId] ?? null) : null
+  }
+
+  /**
+   * A forgotten password: the recovery code sets a new name and password and
+   * is spent - the request carries the next one. Every device signed in so far
+   * is signed out. Null when the code opens no account.
+   */
+  recover(request: RecoverCommitRequest, now = Date.now()): Promise<StoredAccount | null> {
+    const key = decoded(request.recoveryKey, 32)
+    const next = decoded(request.newLoginKey, 32)
+    if (!key) return Promise.resolve(null)
+    if (!next) return Promise.reject(new AccountError(400, 'the login key is missing'))
+    if (!Number.isInteger(request.kdfVersion) || request.kdfVersion < 1) {
+      return Promise.reject(new AccountError(400, 'unknown key derivation version'))
+    }
+    if (!decoded(request.wrappedPrivateKey, 16) || !decoded(request.wrappedAccountSecret, 16)) {
+      return Promise.reject(new AccountError(400, 'incomplete key material'))
+    }
+    let recovery: StoredRecovery
+    try {
+      recovery = recoveryOf(request.recovery, now)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    return this.update((data) => {
+      const accountId = data.recoveries[loginHash(key)]
+      const account = accountId ? data.accounts[accountId] : undefined
+      if (!account) return null
+      const hash = loginHash(next)
+      if (data.logins[hash] && data.logins[hash] !== account.accountId) throw new AccountError(409, 'choose another name or password')
+      setRecoveryIn(data, account, recovery)
+      delete data.logins[account.loginHash]
+      data.logins[hash] = account.accountId
+      account.loginHash = hash
+      account.kdfVersion = request.kdfVersion
+      account.wrappedPrivateKey = request.wrappedPrivateKey
+      account.wrappedAccountSecret = request.wrappedAccountSecret
+      account.sessions = sessionOf(account) + 1
+      return account
+    })
+  }
+
   /** The account can no longer sign in at once; its data goes with the server's next sweep. */
   remove(accountId: string, now = Date.now()): Promise<boolean> {
     return this.update((data) => {
       const account = data.accounts[accountId]
       if (!account) return false
       delete data.logins[account.loginHash]
+      if (account.recovery) delete data.recoveries[account.recovery.hash]
       delete data.accounts[accountId]
       data.removed[accountId] = now
       return true
@@ -326,7 +449,8 @@ export class AccountStore {
         vaultId,
         sealedName: vault.sealedName,
         wrappedKey: vault.wrappedKey
-      }))
+      })),
+      recovery: account.recovery ? { createdAt: account.recovery.createdAt } : null
     }
   }
 }

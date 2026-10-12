@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-12 · **0.6.0 on `feat/accounts`: milestone 0.6 (recovery codes and 2FA) designed with the user in `docs/PHASE5.md`; step 1 (signing out the other devices) built. Next: step 2, the recovery code.**_
+_Last updated: 2026-10-12 · **0.6.1 on `feat/accounts`: milestone 0.6 (recovery codes and 2FA) designed with the user in `docs/PHASE5.md`; steps 1 (signing out the other devices) and 2 (the recovery code) built. Next: step 3, two-factor sign-in.**_
 
 ## Where we are
 
@@ -17,8 +17,8 @@ Branch `feat/accounts`, pushed, CI green up to `9c22501` (0.5.7). Not merged to
 `main` - merging is what first builds and publishes the Docker image. The user
 runs the server with npm on the laptop (port 1234, `packages/server/data` - never
 touch either; see CLAUDE.md, Gotchas) and installs the plugin by copying
-`main.js`, `manifest.json`, `styles.css`. 0.6.0 changes the server too: the user's
-server needs restarting with it (tokens from before stay valid).
+`main.js`, `manifest.json`, `styles.css`. 0.6.0 and 0.6.1 change the server too:
+the user's server needs restarting with them (tokens from before stay valid).
 
 Confirmed on the user's devices: sign-in and account creation, note sync, sharing
 and live editing, attachments syncing with conflict copies, restoring notes and
@@ -35,13 +35,22 @@ each with its tests, a commit and a version:
 
 1. *(built, 0.6.0)* Signing out the other devices: a session generation per
    account, sockets closed with `4401`.
-2. The recovery code (0.6.1).
-3. Two-factor sign-in with TOTP (0.6.2).
+2. *(built, 0.6.1)* The recovery code: at registration, in the settings, and
+   "Use a recovery code…" on the sign-in screen.
+3. Two-factor sign-in with TOTP (0.6.2). Per `docs/PHASE5.md`: setup asks for the
+   password, then whether the recovery code is at hand (offering a new one), then
+   QR code / `otpauth://` link / key and a first code; turning it on moves the
+   session generation (`AccountStore` and `hub.disconnect` as in `changePassword`).
+   Sign-in answers `403 { secondFactor: 'totp', challenge }`; a challenge token
+   of scope `2fa` (`TokenService`); `/auth/login/totp`. A recovery turns it off
+   (`AccountStore.recover`). `user 2fa-off <accountId>` in `cli.ts`. A QR code
+   needs a small library (e.g. `qrcode-generator`) or an encoder of our own.
 
-Code to start from: plugin `src/account/Session.ts`, `api.ts`, `PasswordModal.ts`,
-`settings.ts` (account screens), `sync/VaultSocket.ts` (close handling); server
-`src/accounts.ts`, `auth.ts`, `http.ts`, `server.ts` (socket upgrade), `wshub.ts`,
-`cli.ts`.
+Code to start from: plugin `src/account/Session.ts` (`login`, `recover`,
+`makeRecoveryCode` show the pattern), `RecoveryModals.ts`, `settings.ts`
+(`recoveryRow`); server `src/accounts.ts`, `auth.ts`, `http.ts` (`guarded`),
+`cli.ts`; tests `packages/plugin/scripts/account-selftest.mts` (with `Device` in
+`harness.mts`), `packages/server/scripts/rooms-selftest.mts`.
 
 ## In flight / half-finished
 
@@ -96,7 +105,9 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
   cleaned up from the server.
 - Notes beyond `maxLoadedDocuments` (500) stop receiving live updates until opened
   (0.9).
-- No password recovery, no 2FA (0.6 - next).
+- No 2FA yet (0.6.2 - next).
+- Signing out takes the server from a device, not the keys it unwrapped: the account
+  secret is never replaced (`docs/PHASE5.md`, "Known limit").
 - Frames authenticated by the note's key, not signed per author (0.9,
   `docs/PHASE3.md`).
 - Local copies of a purged note stay in IndexedDB on the devices that did not
@@ -106,12 +117,12 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
 
 ## Verification state
 
-At 0.6.0, run 2026-10-12 before its commit: `typecheck` and `build` pass;
-`test:merge` 130, `test:load` 12, `test:rooms` 165, `test:sync` 26, `test:recovery`
-56, `test:account` 10 (new) - all pass. Against a scratch server on 1235:
-`test:socket` 19 (one check adapted: no token is now let in and closed as signed
-out), `test:vault` 224 - all pass. Bug-back checks per version: `docs/CHANGELOG.md`.
-Not verified: 0.5.7 and 0.6.0 on a device, the Docker image.
+At 0.6.1, run 2026-10-12 before its commit: `typecheck` and `build` pass;
+`test:merge` 138, `test:load` 12, `test:rooms` 190, `test:sync` 26, `test:recovery`
+56, `test:account` 27 - all pass. Against a scratch server on 1235: `test:socket`
+19, `test:vault` 224 - all pass. Bug-back checks per version: `docs/CHANGELOG.md`.
+Not verified: 0.5.7, 0.6.0 and 0.6.1 on a device (the recovery dialogs and the
+settings rows are UI only), the Docker image.
 
 How to run the end-to-end suites without touching the user's server: CLAUDE.md,
 Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
@@ -123,7 +134,8 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 
 ### 2026-10-12
 - Milestone 0.6 designed with the user (`docs/PHASE5.md`). 0.6.0: a password change
-  signs out every other device on the server (session generation, `4401`).
+  signs out every other device on the server (session generation, `4401`). 0.6.1:
+  the recovery code.
 - 0.5.7: the plugin's menu section, the cloud for files and as a menu, the shared /
   read-only mark and header lock, "Version history" for files.
 - Docs brought up to date for a handoff: `docs/CHANGELOG.md` (new, the full version

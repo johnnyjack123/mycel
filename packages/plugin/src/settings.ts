@@ -46,14 +46,15 @@ export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
 /** Where a phone starts: its storage and data plan are not a desktop's. */
 export const MOBILE_DOWNLOAD_LIMIT_MB = 10
 
-/** Signed out, the account box leads to one of two forms, each a screen of its own. */
-type Screen = 'overview' | 'sign-in' | 'create'
+/** Signed out, the account box leads to one of these forms, each a screen of its own. */
+type Screen = 'overview' | 'sign-in' | 'create' | 'recover'
 
 export class ObsidianConnectSettingTab extends PluginSettingTab {
   private screen: Screen = 'overview'
   private username = ''
   private password = ''
   private repeat = ''
+  private recoveryCode = ''
   private reveal = new PasswordReveal()
   private invite = ''
   private contactCode = ''
@@ -238,6 +239,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
             .setWarning()
             .onClick(() => void this.run(() => this.plugin.signOut()))
         )
+      this.recoveryRow(containerEl)
       const ids = this.plugin.ids()
       if (ids) {
         // The server knows no names; these are what it knows, and what the
@@ -261,21 +263,110 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       .addButton((button) => button.setButtonText('Create account…').onClick(() => this.go('create')))
   }
 
-  /** The screen for signing in or creating an account. */
+  private recoveryRow(containerEl: HTMLElement): void {
+    const recovery = this.plugin.recoveryState()
+    if (!recovery) return
+    const row = new Setting(containerEl).setName('Recovery code')
+    if (recovery.state === 'unsupported') {
+      row.setDesc('This server does not keep recovery codes yet. It needs an update.')
+      return
+    }
+    if (recovery.state === 'none') {
+      row
+        .setDesc(
+          'None. Without one, a forgotten password means losing access to this account: your notes stay on your devices, but they no longer sync.'
+        )
+        .addButton((button) =>
+          button
+            .setButtonText('Make one…')
+            .setCta()
+            .onClick(() => this.plugin.openMakeRecoveryCode())
+        )
+      return
+    }
+    row
+      .setDesc(
+        `Made on ${new Date(recovery.createdAt).toLocaleDateString()}. It opens this account on its own if you forget your password or name - keep it apart from both.`
+      )
+      .addButton((button) => button.setButtonText('Make a new one…').onClick(() => this.plugin.openMakeRecoveryCode()))
+      .addButton((button) =>
+        button
+          .setButtonText('Delete…')
+          .setWarning()
+          .onClick(() => this.plugin.openDeleteRecoveryCode())
+      )
+  }
+
+  /** The screen for signing in, creating an account, or recovering one. */
   private accountForm(containerEl: HTMLElement): void {
-    const creating = this.screen === 'create'
+    const headings: Record<Exclude<Screen, 'overview'>, string> = {
+      'sign-in': 'Sign in',
+      create: 'Create an account',
+      recover: 'Recover your account'
+    }
     new Setting(containerEl)
-      .setName(creating ? 'Create an account' : 'Sign in')
+      .setName(headings[this.screen === 'overview' ? 'sign-in' : this.screen])
       .setHeading()
       .addExtraButton((button) =>
         button
           .setIcon('arrow-left')
           .setTooltip('Back')
-          .onClick(() => this.go('overview'))
+          .onClick(() => this.go(this.screen === 'recover' ? 'sign-in' : 'overview'))
       )
     this.serverStatusRow(containerEl, this.plugin.settings.serverUrl || 'Server')
-    if (creating) this.createForm(containerEl)
+    if (this.screen === 'create') this.createForm(containerEl)
+    else if (this.screen === 'recover') this.recoverForm(containerEl)
     else this.signInForm(containerEl)
+  }
+
+  private recoverForm(containerEl: HTMLElement): void {
+    containerEl.createEl('p', {
+      cls: 'setting-item-description',
+      text: 'Your recovery code opens your account on its own. Choose the name and password to sign in with from now on - your old name, or a new one. Your other devices sign in again with them.'
+    })
+    new Setting(containerEl).setName('Recovery code').addText((text) => {
+      text
+        .setPlaceholder('XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX')
+        .setValue(this.recoveryCode)
+        .onChange((value) => {
+          this.recoveryCode = value.trim()
+        })
+      text.inputEl.addClass('connect-code')
+      this.gated.push(text)
+    })
+    this.nameField(containerEl)
+    this.passwordField(containerEl, 'New password', 'Never leaves this device.', this.password, (value) => {
+      this.password = value
+    })
+    this.passwordField(containerEl, 'New password again', '', this.repeat, (value) => {
+      this.repeat = value
+    })
+    new Setting(containerEl)
+      .setDesc('Or let this device make one: 20 random characters. Keep it in a password manager.')
+      .addButton((button) => {
+        button.setButtonText('Generate').onClick(() => {
+          const generated = generatePassword()
+          this.password = generated
+          this.repeat = generated
+          this.reveal.set(true)
+          this.display()
+        })
+        this.gated.push(button)
+      })
+    new Setting(containerEl).addButton((button) => {
+      button
+        .setButtonText('Recover')
+        .setCta()
+        .onClick(
+          () =>
+            void this.run(async () => {
+              await this.plugin.recoverAccount(this.recoveryCode, this.username, this.password, this.repeat)
+              this.forgetPasswords()
+              this.screen = 'overview'
+            })
+        )
+      this.gated.push(button)
+    })
   }
 
   private passwordField(containerEl: HTMLElement, name: string, desc: string, value: string, set: (value: string) => void): void {
@@ -300,6 +391,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private forgetPasswords(): void {
     this.password = ''
     this.repeat = ''
+    this.recoveryCode = ''
     this.reveal.set(false)
   }
 
@@ -324,6 +416,9 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
         this.gated.push(button)
       })
       .addButton((button) => button.setButtonText('No account yet? Create one').onClick(() => this.go('create')))
+    new Setting(containerEl)
+      .setDesc('Forgot your password or name? Your recovery code gets you back in.')
+      .addButton((button) => button.setButtonText('Use a recovery code…').onClick(() => this.go('recover')))
   }
 
   private createForm(containerEl: HTMLElement): void {
@@ -331,7 +426,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     this.passwordField(
       containerEl,
       'Password',
-      'Never leaves this device. Without it your notes cannot be decrypted - there is no reset.',
+      'Never leaves this device. The recovery code you get next is the only other way into your account.',
       this.password,
       (value) => {
         this.password = value

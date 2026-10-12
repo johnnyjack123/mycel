@@ -476,3 +476,59 @@ export function decodeContactCode(code: string): { secret: Bytes; fingerprint: B
 export function contactContext(codeId: string, kind: 'request' | 'reply'): string {
   return `contact-${kind}:${codeId}`
 }
+
+// --- recovery ------------------------------------------------------------------------
+//
+// A recovery code opens the account on its own, so a forgotten password - or
+// name - is not the end of it. It is 128 random bits: nothing to stretch, no
+// salt, no name. From it come a key the server finds the account by (it keeps
+// only the hash) and a key that wraps the private key and the account secret a
+// second time, which never leaves a device. A 22-bit check rides along, so a
+// typo is caught here rather than counted against the address at the server.
+
+const RECOVERY_SECRET_BYTES = 16
+const RECOVERY_CHECK_BYTES = 3
+// 128 + 22 bits are 30 characters exactly; the last two bits of the check
+// bytes stay zero and their character is dropped.
+const RECOVERY_CODE_CHARS = 30
+
+export function newRecoverySecret(): Bytes {
+  return randomBytes(RECOVERY_SECRET_BYTES)
+}
+
+async function recoveryCheck(secret: Bytes): Promise<Bytes> {
+  const check = (await sha256(concat(utf8('obsidian-connect recovery-check'), secret))).slice(0, RECOVERY_CHECK_BYTES)
+  check[RECOVERY_CHECK_BYTES - 1] &= 0xfc
+  return check
+}
+
+/** Six groups of five characters, for writing down. */
+export async function encodeRecoveryCode(secret: Bytes): Promise<string> {
+  const text = toBase32(concat(secret, await recoveryCheck(secret))).slice(0, RECOVERY_CODE_CHARS)
+  return (text.match(/.{1,5}/g) ?? []).join('-')
+}
+
+/** The secret behind a code, or null for anything that is not one - a typo included. */
+export async function decodeRecoveryCode(code: string): Promise<Bytes | null> {
+  const compact = code.replace(/[\s-]/g, '')
+  if (compact.length !== RECOVERY_CODE_CHARS) return null
+  const data = fromBase32(`${compact}0`)
+  if (!data || data.length !== RECOVERY_SECRET_BYTES + RECOVERY_CHECK_BYTES) return null
+  const secret = data.slice(0, RECOVERY_SECRET_BYTES)
+  const check = await recoveryCheck(secret)
+  return check.every((byte, index) => byte === data[RECOVERY_SECRET_BYTES + index]) ? secret : null
+}
+
+export interface RecoveryKeys {
+  /** Sent to the server, which finds the account by its hash. */
+  recoveryKey: Bytes
+  /** Never leaves the device. Wraps the private key and the account secret. */
+  wrapKey: Bytes
+}
+
+export async function recoveryKeys(secret: Bytes): Promise<RecoveryKeys> {
+  return {
+    recoveryKey: await hkdf(secret, 'obsidian-connect recovery-login'),
+    wrapKey: await hkdf(secret, 'obsidian-connect recovery-wrap')
+  }
+}

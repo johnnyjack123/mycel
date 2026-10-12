@@ -27,6 +27,11 @@ import {
   type LoginRequest,
   type LogResponse,
   type PasswordChangeRequest,
+  type RecoverCommitRequest,
+  type RecoverRequest,
+  type RecoverResponse,
+  type RecoveryDeleteRequest,
+  type RecoverySetRequest,
   type RefreshResponse,
   type RegisterRequest,
   type RevokeRequest,
@@ -128,6 +133,23 @@ export class ConnectApi {
 
   changePassword(request: PasswordChangeRequest): Promise<SessionResponse> {
     return this.call('POST', API.password, request)
+  }
+
+  /** The second wrapping of the account's keys, for whoever has the recovery code. */
+  recover(request: RecoverRequest): Promise<RecoverResponse> {
+    return this.call('POST', API.recover, request, false)
+  }
+
+  recoverCommit(request: RecoverCommitRequest): Promise<SessionResponse> {
+    return this.call('POST', `${API.recover}/commit`, request, false)
+  }
+
+  setRecovery(request: RecoverySetRequest): Promise<AccountBundle> {
+    return this.call('POST', API.recovery, request)
+  }
+
+  deleteRecovery(request: RecoveryDeleteRequest): Promise<AccountBundle> {
+    return this.call('POST', `${API.recovery}/delete`, request)
   }
 
   account(): Promise<AccountBundle> {

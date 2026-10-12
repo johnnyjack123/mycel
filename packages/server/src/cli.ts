@@ -13,7 +13,7 @@ import { loadConfig, loadEnvFile } from './config.js'
 
 const USAGE = `usage:
   obsidian-connect invite                    print a code that lets one person create an account
-  obsidian-connect user list                 every account: id, created, number of vaults
+  obsidian-connect user list                 every account: id, created, number of vaults, whether it has a recovery code
   obsidian-connect user remove <accountId>   delete an account (its id is shown in the plugin's settings)`
 
 async function main(argv: string[]): Promise<number> {
@@ -40,7 +40,8 @@ async function main(argv: string[]): Promise<number> {
       if (all.length === 0) console.log('no accounts')
       for (const account of all) {
         const created = new Date(account.createdAt).toISOString().slice(0, 10)
-        console.log(`${account.accountId}  created ${created}  vaults ${Object.keys(account.vaults).length}`)
+        const recovery = account.recovery ? '  recovery code' : ''
+        console.log(`${account.accountId}  created ${created}  vaults ${Object.keys(account.vaults).length}${recovery}`)
       }
       const open = await accounts.invites()
       if (open > 0) console.log(`${open} invite code(s) not used yet`)

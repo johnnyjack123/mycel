@@ -1,20 +1,25 @@
-import type { AccountBundle, SessionResponse } from '@obsidian-connect/shared'
+import type { AccountBundle, AuthConfigResponse, RecoveryRecord, SessionResponse } from '@obsidian-connect/shared'
 import {
   CURRENT_KDF_VERSION,
   KDF_VERSIONS,
   accountKeys,
   accountSalt,
   aesKey,
+  decodeRecoveryCode,
   decrypt,
   derivePasswordKeys,
+  encodeRecoveryCode,
   encrypt,
   fromBase64,
   fromUtf8,
   generateIdentity,
   importPrivateKey,
+  newRecoverySecret,
   normalizeName,
   randomBytes,
+  recoveryKeys,
   toBase64,
+  toHex,
   unwrapSecret,
   utf8,
   wrapSecret,
@@ -60,7 +65,26 @@ const NAME = 'obsidian-connect:name'
 const SERVER = 'obsidian-connect:server'
 const PRIVATE_KEY = 'private-key'
 const ACCOUNT_SECRET = 'account-secret'
+// The recovery code's wrappings, under contexts of their own: neither can
+// stand in for the password's.
+const RECOVERY_PRIVATE_KEY = 'recovery-private-key'
+const RECOVERY_ACCOUNT_SECRET = 'recovery-account-secret'
 const VAULT_KEY = 'vault'
+
+/** A new account, or one recovered: signed in, and the recovery code to show once. */
+export interface Registered {
+  unlocked: Unlocked
+  recoveryCode: string | null
+}
+
+/** Whether `wrapped` opens under `key` to exactly `expected`. */
+async function opensTo(key: Bytes, wrapped: string, context: string, expected: Bytes): Promise<boolean> {
+  try {
+    return toHex(await unwrapSecret(key, wrapped, context)) === toHex(expected)
+  } catch {
+    return false
+  }
+}
 
 function parse<T>(raw: string | null): T | null {
   if (!raw) return null
@@ -100,32 +124,135 @@ export class Session {
    * that hands out an id of its choosing could have prepared for it.
    */
   private async serverId(): Promise<string> {
-    const { serverId } = await this.api.config()
+    return (await this.server()).serverId
+  }
+
+  /** The server's settings, its id checked against the pinned one. */
+  private async server(): Promise<AuthConfigResponse> {
+    const config = await this.api.config()
     const address = this.serverUrl()
     const pinned = parse<{ address: string; serverId: string }>(this.secrets.load(SERVER))
-    if (pinned && pinned.address === address && pinned.serverId !== serverId) {
+    if (pinned && pinned.address === address && pinned.serverId !== config.serverId) {
       throw new Error(
         'This is not the server this device knew: its id changed. If you set it up again on purpose, sign out first, then sign in.'
       )
     }
-    return serverId
+    return config
   }
 
-  async register(username: string, password: string, invite?: string): Promise<Unlocked> {
+  /**
+   * A new account, with its recovery code. The code is null when the server
+   * did not keep it - one from before recovery codes.
+   */
+  async register(username: string, password: string, invite?: string): Promise<Registered> {
     const name = normalizeName(username)
     const serverId = await this.serverId()
     const keys = await derivePasswordKeys(password, await accountSalt(serverId, name), CURRENT_KDF_VERSION, this.argon2id)
     const identity = await generateIdentity()
     const accountSecret = randomBytes(32)
+    const recovery = await this.newRecovery(identity.privateKey, accountSecret)
     const response = await this.api.register({
       invite: invite?.trim() || undefined,
       loginKey: toBase64(keys.loginKey),
       kdfVersion: CURRENT_KDF_VERSION,
       publicKey: toBase64(identity.publicKey),
       wrappedPrivateKey: await wrapSecret(keys.masterKey, identity.privateKey, PRIVATE_KEY),
-      wrappedAccountSecret: await wrapSecret(keys.masterKey, accountSecret, ACCOUNT_SECRET)
+      wrappedAccountSecret: await wrapSecret(keys.masterKey, accountSecret, ACCOUNT_SECRET),
+      recovery: recovery.record
     })
-    return this.adopt(response, keys.masterKey, name, serverId)
+    const unlocked = await this.adopt(response, keys.masterKey, name, serverId)
+    return { unlocked, recoveryCode: response.account.recovery ? recovery.code : null }
+  }
+
+  /** A new recovery code for these keys, and what the server keeps of it. */
+  private async newRecovery(privateKey: Bytes, accountSecret: Bytes): Promise<{ code: string; record: RecoveryRecord }> {
+    const secret = newRecoverySecret()
+    const keys = await recoveryKeys(secret)
+    const record: RecoveryRecord = {
+      recoveryKey: toBase64(keys.recoveryKey),
+      wrappedPrivateKey: await wrapSecret(keys.wrapKey, privateKey, RECOVERY_PRIVATE_KEY),
+      wrappedAccountSecret: await wrapSecret(keys.wrapKey, accountSecret, RECOVERY_ACCOUNT_SECRET)
+    }
+    // A wrapping of nothing would only show when the code is needed - and
+    // after a recovery it would be all the account's keys there are.
+    if (
+      !(await opensTo(keys.wrapKey, record.wrappedPrivateKey, RECOVERY_PRIVATE_KEY, privateKey)) ||
+      !(await opensTo(keys.wrapKey, record.wrappedAccountSecret, RECOVERY_ACCOUNT_SECRET, accountSecret))
+    ) {
+      throw new Error('making the recovery code failed')
+    }
+    return { code: await encodeRecoveryCode(secret), record }
+  }
+
+  /** The login key of the current password, which the server asks for before replacing anything. */
+  private async currentLoginKey(unlocked: Unlocked, password: string): Promise<string> {
+    const salt = await accountSalt(await this.serverId(), unlocked.username)
+    return toBase64((await derivePasswordKeys(password, salt, unlocked.bundle.kdfVersion, this.argon2id)).loginKey)
+  }
+
+  private withBundle(unlocked: Unlocked, bundle: AccountBundle): Unlocked {
+    this.secrets.save(BUNDLE, JSON.stringify(bundle))
+    return { ...unlocked, bundle }
+  }
+
+  /** Makes a recovery code, or a new one in place of the old - which stops working at once. */
+  async makeRecoveryCode(unlocked: Unlocked, password: string): Promise<{ unlocked: Unlocked; code: string }> {
+    const loginKey = await this.currentLoginKey(unlocked, password)
+    const privateKey = await unwrapSecret(unlocked.masterKey, unlocked.bundle.wrappedPrivateKey, PRIVATE_KEY)
+    const { code, record } = await this.newRecovery(privateKey, unlocked.accountSecret)
+    const bundle = await this.api.setRecovery({ loginKey, recovery: record })
+    return { unlocked: this.withBundle(unlocked, bundle), code }
+  }
+
+  async deleteRecoveryCode(unlocked: Unlocked, password: string): Promise<Unlocked> {
+    const bundle = await this.api.deleteRecovery({ loginKey: await this.currentLoginKey(unlocked, password) })
+    return this.withBundle(unlocked, bundle)
+  }
+
+  /**
+   * A forgotten password, or name: the recovery code opens the account's keys,
+   * which are wrapped anew under the name and password chosen now. The code is
+   * spent; the new one comes back and has to be shown. Every other device of
+   * the account is signed out.
+   */
+  async recover(code: string, username: string, password: string): Promise<Registered & { recoveryCode: string }> {
+    const secret = await decodeRecoveryCode(code)
+    if (!secret) throw new Error('That is not a recovery code. Check it for a typo.')
+    const server = await this.server()
+    if (!server.features?.includes('recovery')) throw new Error('This server does not take recovery codes yet. It needs an update.')
+    const name = normalizeName(username)
+    const keys = await recoveryKeys(secret)
+    const found = await this.api.recover({ recoveryKey: toBase64(keys.recoveryKey) })
+    let privateKey: Bytes
+    let accountSecret: Bytes
+    try {
+      privateKey = await unwrapSecret(keys.wrapKey, found.wrappedPrivateKey, RECOVERY_PRIVATE_KEY)
+      accountSecret = await unwrapSecret(keys.wrapKey, found.wrappedAccountSecret, RECOVERY_ACCOUNT_SECRET)
+    } catch {
+      throw new Error('The server answered this code with keys it does not open.')
+    }
+    const next = await derivePasswordKeys(password, await accountSalt(server.serverId, name), CURRENT_KDF_VERSION, this.argon2id)
+    const wrappedPrivateKey = await wrapSecret(next.masterKey, privateKey, PRIVATE_KEY)
+    const wrappedAccountSecret = await wrapSecret(next.masterKey, accountSecret, ACCOUNT_SECRET)
+    // These replace the account's only other wrapping; one that does not
+    // open would lose the account.
+    if (
+      !(await opensTo(next.masterKey, wrappedPrivateKey, PRIVATE_KEY, privateKey)) ||
+      !(await opensTo(next.masterKey, wrappedAccountSecret, ACCOUNT_SECRET, accountSecret))
+    ) {
+      throw new Error('re-encrypting the keys failed')
+    }
+    const fresh = await this.newRecovery(privateKey, accountSecret)
+    const request = {
+      recoveryKey: toBase64(keys.recoveryKey),
+      newLoginKey: toBase64(next.loginKey),
+      kdfVersion: CURRENT_KDF_VERSION,
+      wrappedPrivateKey,
+      wrappedAccountSecret,
+      recovery: fresh.record
+    }
+    const unlocked = await this.move(async () => this.adopt(await this.api.recoverCommit(request), next.masterKey, name, server.serverId))
+    return { unlocked, recoveryCode: fresh.code }
   }
 
   async login(username: string, password: string): Promise<Unlocked> {

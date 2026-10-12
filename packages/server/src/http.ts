@@ -27,8 +27,14 @@ import {
   type ForksResponse,
   type ImportRequest,
   type IncomingSharesResponse,
+  type AccountBundle,
   type LoginRequest,
   type PasswordChangeRequest,
+  type RecoverCommitRequest,
+  type RecoverRequest,
+  type RecoverResponse,
+  type RecoveryDeleteRequest,
+  type RecoverySetRequest,
   type RefreshResponse,
   type RegisterRequest,
   type RevokeRequest,
@@ -136,7 +142,12 @@ export function createHttpApp(
    * Sign-in, registration and password change: always the same time, and an
    * address that keeps failing is turned away before anything is looked at.
    */
-  async function guarded<T>(request: FastifyRequest, reply: FastifyReply, task: () => Promise<T | null>): Promise<T | undefined> {
+  async function guarded<T>(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    task: () => Promise<T | null>,
+    refusal = 'wrong name or password'
+  ): Promise<T | undefined> {
     const address = request.ip
     return paced(async () => {
       if (guard.blocked(address)) {
@@ -147,7 +158,7 @@ export function createHttpApp(
         const result = await task()
         if (result === null) {
           guard.failed(address)
-          await reply.code(401).send({ error: 'wrong name or password' })
+          await reply.code(401).send({ error: refusal })
           return undefined
         }
         return result
@@ -166,7 +177,8 @@ export function createHttpApp(
     registration: config.registration,
     protocol: PROTOCOL_VERSION,
     serverId: await accounts.serverId(),
-    maxFileBytes: blobs.limits.maxFileBytes
+    maxFileBytes: blobs.limits.maxFileBytes,
+    features: ['recovery']
   }))
 
   app.post(API.register, async (request, reply) =>
@@ -197,6 +209,63 @@ export function createHttpApp(
       await accounts.changePassword(accountId, request.body as PasswordChangeRequest)
       hub.disconnect(accountId)
       return session(accountId)
+    })
+  })
+
+  // --- recovery ------------------------------------------------------------------
+  // The code is the credential: whoever has it gets the second wrapping, and
+  // with it sets a new name and password. Unknown codes count against the
+  // address like wrong passwords.
+
+  const unknownCode = 'this recovery code is not known here'
+
+  app.post(API.recover, async (request, reply) =>
+    guarded(
+      request,
+      reply,
+      async (): Promise<RecoverResponse | null> => {
+        const account = await accounts.findByRecovery(((request.body ?? {}) as Partial<RecoverRequest>).recoveryKey)
+        if (!account?.recovery) return null
+        return {
+          accountId: account.accountId,
+          publicKey: account.publicKey,
+          wrappedPrivateKey: account.recovery.wrappedPrivateKey,
+          wrappedAccountSecret: account.recovery.wrappedAccountSecret
+        }
+      },
+      unknownCode
+    )
+  )
+
+  app.post(`${API.recover}/commit`, async (request, reply) =>
+    guarded(
+      request,
+      reply,
+      async (): Promise<SessionResponse | null> => {
+        const account = await accounts.recover((request.body ?? {}) as RecoverCommitRequest)
+        if (!account) return null
+        hub.disconnect(account.accountId)
+        return session(account.accountId)
+      },
+      unknownCode
+    )
+  )
+
+  app.post(API.recovery, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return guarded(request, reply, async (): Promise<AccountBundle> => {
+      const body = (request.body ?? {}) as Partial<RecoverySetRequest>
+      return accounts.bundle(await accounts.setRecovery(accountId, body.loginKey, body.recovery ?? {}))
+    })
+  })
+
+  app.post(`${API.recovery}/delete`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return guarded(request, reply, async (): Promise<AccountBundle> => {
+      const body = (request.body ?? {}) as Partial<RecoveryDeleteRequest>
+      return accounts.bundle(await accounts.setRecovery(accountId, body.loginKey, null))
     })
   })
 

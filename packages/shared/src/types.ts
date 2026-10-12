@@ -132,6 +132,17 @@ export interface AuthConfigResponse {
   serverId: string
   /** The largest file the server takes. Absent: a server from before attachments. */
   maxFileBytes?: number
+  /** What the server can beyond signing in, e.g. `recovery`. Absent: a server from before 0.6. */
+  features?: ServerFeature[]
+}
+
+export type ServerFeature = 'recovery'
+
+/** A recovery code as the server keeps it: the key it finds the account by, and the second wrapping. */
+export interface RecoveryRecord {
+  recoveryKey: string
+  wrappedPrivateKey: string
+  wrappedAccountSecret: string
 }
 
 export interface RegisterRequest {
@@ -143,6 +154,41 @@ export interface RegisterRequest {
   publicKey: string
   wrappedPrivateKey: string
   wrappedAccountSecret: string
+  /** The account's recovery code, made with it. A server from before 0.6 ignores it. */
+  recovery?: RecoveryRecord
+}
+
+/** Makes or replaces the account's recovery code. */
+export interface RecoverySetRequest {
+  /** Proves the current password: a token alone must not plant a code. */
+  loginKey: string
+  recovery: RecoveryRecord
+}
+
+export interface RecoveryDeleteRequest {
+  loginKey: string
+}
+
+export interface RecoverRequest {
+  recoveryKey: string
+}
+
+/** What a recovery code opens: the second wrapping of the account's keys. */
+export interface RecoverResponse {
+  accountId: string
+  publicKey: string
+  wrappedPrivateKey: string
+  wrappedAccountSecret: string
+}
+
+/** A new name and password for the account, and a new code; the old one is spent. */
+export interface RecoverCommitRequest {
+  recoveryKey: string
+  newLoginKey: string
+  kdfVersion: number
+  wrappedPrivateKey: string
+  wrappedAccountSecret: string
+  recovery: RecoveryRecord
 }
 
 export interface LoginRequest {
@@ -163,6 +209,8 @@ export interface AccountBundle {
   wrappedPrivateKey: string
   wrappedAccountSecret: string
   vaults: VaultRecord[]
+  /** When the recovery code was made; null without one, absent from a server before 0.6. */
+  recovery?: { createdAt: number } | null
 }
 
 export interface SessionResponse {

@@ -165,6 +165,17 @@
   user-select: all;
 }
 
+.connect-recovery-code {
+  font-size: 1.3em;
+  letter-spacing: 0.05em;
+  text-align: center;
+  padding: 0.75em;
+  margin: 0.5em 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  word-break: break-word;
+}
+
 /* Comparing the two versions of a note. */
 .connect-review-modal {
   width: min(900px, 95vw);

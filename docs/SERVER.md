@@ -63,13 +63,18 @@ A template sits in `docs/server.env`:
 
 ```bash
 docker compose exec obsidian-connect obsidian-connect invite                    # a code for one new account
-docker compose exec obsidian-connect obsidian-connect user list                 # account ids, created, vaults
+docker compose exec obsidian-connect obsidian-connect user list                 # account ids, created, vaults, recovery code
 docker compose exec obsidian-connect obsidian-connect user remove <accountId>
 ```
 
 There are no names to list: everyone finds their account id in the plugin's settings,
 under *Signed in as*. A code works once. Sign-in and registration always answer after
 one second, and an address that keeps failing is turned away for 15 minutes.
+
+The admin cannot reset a password: the server holds no key that could open an
+account. A forgotten password is what the account's **recovery code** is for - made
+with every new account, and in the plugin's settings for older ones. It is checked
+like a password, and an address trying unknown codes is turned away the same way.
 
 `user remove` stops the account from signing in at once. The running server then ends
 everything it shared, within a few minutes: everyone a note was shared with keeps it

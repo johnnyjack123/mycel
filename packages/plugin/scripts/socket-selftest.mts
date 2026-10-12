@@ -54,7 +54,7 @@ async function device(username: string, password: string, create: boolean) {
       token = next
     }
   )
-  const unlocked = create ? await session.register(username, password) : await session.login(username, password)
+  const unlocked = create ? (await session.register(username, password)).unlocked : await session.login(username, password)
   const vault = await session.openVault(unlocked, 'Socket test')
   const keys = new KeyRing(vault, unlocked, api, { load: () => null, save: () => undefined })
   const socket = new VaultSocket(serverUrl, vault.vaultId, () => token ?? '')

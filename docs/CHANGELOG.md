@@ -8,6 +8,19 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.6 - recovery codes and two-factor sign-in (from 2026-10-12, spec `docs/PHASE5.md`)
 
+- **0.6.1** (2026-10-12) - the recovery code. Every new account gets one, shown once
+  (`RecoveryCodeModal`: copy, "I have written it down"); the settings show whether
+  the account has one and make a new one or delete it, asking for the password
+  (`PasswordPromptModal`). "Use a recovery code…" on the sign-in screen opens the
+  account with the code alone and sets a new name and password; the code is spent,
+  the new one shown, every other device signed out. 30 characters in six groups,
+  128 random bits and a 22-bit check, so a typo is caught on the device
+  (`encodeRecoveryCode`); the server finds the account by the hash of a key from
+  it (`recoveries` in `accounts.json`) and keeps a second wrapping of private key
+  and account secret, which only the code opens. Every new wrapping is checked to
+  open again before it is sent. `user list` shows which accounts have a code.
+  `test:merge` 138, `test:rooms` 190, `test:account` 27.
+
 - **0.6.0** (2026-10-12) - a password change signs out every other device on the
   server, not only the honest ones. Every account has a session generation, every
   token carries it (`gen`; tokens from before count as 0, so the update signs

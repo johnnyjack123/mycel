@@ -199,6 +199,12 @@ someone's notes. Treat them as rules, not preferences.
   the server closes the account's sockets with `4401`, also its own device's: the
   close arrives before the new token, so `Session.stillSignedIn` waits for the
   device's own request (`Session.move`) before asking whether it is signed out.
+- **The recovery code** is a second wrapping of private key and account secret,
+  under a key from 128 random bits; the server finds the account by the hash of
+  another key from them (`recoveries`). The code alone opens the account and sets
+  a new name and password; using it spends it and signs out every other device.
+  Making, replacing or deleting one needs the current password, never a token
+  alone: a planted code would let its holder replace the account's keys.
 
 ### Identity
 
@@ -429,7 +435,7 @@ npm run test:load      # the built bundle imports, onload/start/unload run, Obsi
 npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart — in-process
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
-npm run test:account   # the account with real devices: signing the other devices out — in-process server
+npm run test:account   # the account with real devices: signing the other devices out, the recovery code — in-process server
 # needs a server that lets tests create accounts:
 npm run test:socket    # the encrypted transport, two devices of one account
 npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing, attachments
