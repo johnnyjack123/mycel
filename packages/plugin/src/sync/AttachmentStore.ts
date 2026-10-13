@@ -259,6 +259,9 @@ export class AttachmentStore {
   /** Offline or a blob not there yet: the next pass tries again. */
   private failed(error: unknown): void {
     if (error instanceof ApiError && error.status === 0) log.debug('attachment transfer postponed: the server is not reachable')
+    // Signed out elsewhere - a password change, a recovery, 2FA turned on. Said
+    // once where the device learns it; not a failure of this transfer.
+    else if (error instanceof ApiError && error.status === 401) log.info('attachment transfer stopped: this device is signed out')
     else if (error instanceof BlobMissing) log.warn(error.message)
     else log.error('syncing an attachment failed', error)
     this.scheduleRetry()
@@ -618,7 +621,7 @@ export class AttachmentStore {
       return
     }
     await this.overwrite(fileId, file, theirs, entry.hash)
-    log.info(`${file.path}: changed here and elsewhere; this device's version kept as ${copyPath}`)
+    log.error(`${file.path}: two versions kept - changed here and elsewhere; this device's version is ${copyPath}`)
     new Notice(`${file.name} was changed here and on another device. Both are kept: this device's version is ${nameOf(copyPath)}.`, 12_000)
   }
 
@@ -650,7 +653,7 @@ export class AttachmentStore {
     this.index.setContent(fileId, read.hash, read.data.length)
     this.agree(fileId, file.path, read.stat, read.hash)
     this.written.delete(fileId)
-    log.info(`${file.path}: saved by its open view over another device's version; that version kept as ${copyPath}`)
+    log.error(`${file.path}: two versions kept - saved by its open view over another device's version, which is ${copyPath}`)
     new Notice(
       `${file.name} was saved here just as another device's version arrived. Both are kept: the other version is ${nameOf(copyPath)}.`,
       12_000
@@ -1036,7 +1039,7 @@ export class AttachmentStore {
       const copyPath = this.freeConflictPath(current.path, new Date())
       await this.index.add(copyPath, current.hash, current.size)
       this.index.setContent(fileId, source.hash, source.size)
-      log.info(`${current.path}: changed here and in a shared note; this vault's version kept as ${copyPath}`)
+      log.error(`${current.path}: two versions kept - changed here and in a shared note; this vault's version is ${copyPath}`)
       return copyPath
     })
   }

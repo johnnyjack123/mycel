@@ -50,8 +50,9 @@ export interface EditorSession {
   readonly readOnly: boolean
   /**
    * True when the editor could show `text` without anyone having typed in it:
-   * it is what file and document last agreed on, or what this device wrote to
-   * the file moments ago.
+   * it is what file and document last agreed on, what this device wrote to
+   * the file moments ago, or a text the document held while an editor was
+   * bound to it.
    */
   isUnedited(text: string): boolean
   /** What this device wrote to the file within the last few seconds, if anything. */
@@ -59,12 +60,16 @@ export interface EditorSession {
   /**
    * The text editor and document should both take on when the editor holds
    * edits the document does not - typed while the note was still settling.
-   * Takes backups of whatever the result leaves out.
+   * Takes backups of whatever the result leaves out. `released`: what editor
+   * and document said when this editor last let go of the note.
    */
-  resolve(editorText: string, sharedText: string): Promise<string>
+  resolve(editorText: string, sharedText: string, released: string | null): Promise<string>
+  /** What the document says - or, once closed, said when it was closed. */
+  agreedText(): string
   /** True once the session no longer matches the store: restarted, unshared, deleted. */
   isStale(): boolean
-  release(): void
+  /** `rebinding`: the same editor binds again at once, so the file stays Obsidian's meanwhile. */
+  release(rebinding?: boolean): void
 }
 
 export interface EditorSyncHost {
@@ -166,6 +171,14 @@ export class EditorBinding implements PluginValue {
    * edits to the new one.
    */
   private contentPending = false
+  /**
+   * What editor and document said when this binding last let go of its
+   * note - the last text both agreed on. Rebinding compares the editor with
+   * that, not with what the file last agreed on: while someone typed on
+   * another device the file lagged far behind, and the editor's text, older
+   * than the document's, was merged in as if typed here.
+   */
+  private released: { note: NoteRef; text: string } | null = null
 
   private readonly observer = (event: Y.YTextEvent, transaction: Y.Transaction): void => {
     if (transaction.origin === EDITOR_ORIGIN) return
@@ -178,6 +191,7 @@ export class EditorBinding implements PluginValue {
   private refreshTimer: ReturnType<typeof setTimeout> | null = null
   /** The caret last announced, so an unchanged one is not sent again. */
   private published = ''
+  private drawnLogged = ''
 
   private readonly onAwarenessChange = (
     changes: { added: number[]; updated: number[]; removed: number[] },
@@ -242,7 +256,10 @@ export class EditorBinding implements PluginValue {
   /** Binds if possible, and rebinds a session the store has moved past. */
   refresh(): void {
     if (this.destroyed) return
-    if (this.session?.isStale()) this.unbind()
+    if (this.session?.isStale()) {
+      log.info(`${this.note?.path ?? 'a note'}: binding its editor again (shared or unshared, access changed, or sync restarted)`)
+      this.unbind(true)
+    }
     if (!this.session && this.cooldown === null) void this.connect()
   }
 
@@ -255,6 +272,7 @@ export class EditorBinding implements PluginValue {
       // state. Whatever changed the text belongs to the new note, not to the
       // document this binding was carrying.
       this.unbind()
+      this.released = null
       this.note = note
       this.contentPending = !loaded
       queueMicrotask(() => this.refresh())
@@ -298,10 +316,11 @@ export class EditorBinding implements PluginValue {
     this.cooldown = null
   }
 
-  unbind(): void {
+  unbind(rebinding = false): void {
     const session = this.session
     if (!session) return
     this.session = null
+    this.released = this.note ? { note: this.note, text: session.agreedText() } : null
     session.ytext.unobserve(this.observer)
     if (session.awareness) {
       session.awareness.off('change', this.onAwarenessChange)
@@ -310,7 +329,7 @@ export class EditorBinding implements PluginValue {
     this.published = ''
     this.decorations = Decoration.none
     if (session.readOnly) this.setReadOnly(false)
-    session.release()
+    session.release(rebinding)
   }
 
   /** Later, not now: unbinding happens inside updates too, where no dispatch may. */
@@ -341,6 +360,7 @@ export class EditorBinding implements PluginValue {
         return
       }
       this.session = session
+      this.released = null
       session.ytext.observe(this.observer)
       if (session.readOnly) this.setReadOnly(true)
       if (session.awareness) {
@@ -361,14 +381,15 @@ export class EditorBinding implements PluginValue {
    * changes between them, which only works while they are.
    */
   private async align(session: EditorSession): Promise<boolean> {
+    const released = this.released?.note === this.note ? this.released.text : null
     for (let attempt = 0; attempt < ALIGN_ATTEMPTS; attempt += 1) {
       const editorText = this.view.state.doc.toString()
       const sharedText = session.ytext.toString()
-      const unedited = editorText === sharedText || session.isUnedited(editorText)
+      const unedited = editorText === sharedText || editorText === released || session.isUnedited(editorText)
       // Until the note's own text has arrived, whatever differs is the
       // previous note's, not an edit to this one. Try again once it is in.
       if (!unedited && this.contentPending) return false
-      const target = unedited ? sharedText : await session.resolve(editorText, sharedText)
+      const target = unedited ? sharedText : await session.resolve(editorText, sharedText, released)
       if (this.destroyed || this.noteOf(this.view.state) !== this.note) return false
       // Someone typed, or the document moved, while that was being worked
       // out. The result would be applied to texts it was not computed for.
@@ -382,7 +403,7 @@ export class EditorBinding implements PluginValue {
       this.contentPending = false
       return true
     }
-    log.warn('the editor kept changing while it was being bound; retrying later')
+    log.warn(`${this.note?.path ?? 'a note'}: the editor kept changing while it was being bound; retrying later`)
     return false
   }
 
@@ -508,7 +529,6 @@ export class EditorBinding implements PluginValue {
     const key = `${range.anchor}:${range.head}:${session.ytext.length}`
     if (key === this.published) return
     this.published = key
-    log.debug(`caret announced at ${range.head}`)
     // The editor can be ahead of Y.Text while an update is still settling;
     // an out-of-range index would throw out of the update handler.
     const limit = session.ytext.length
@@ -557,7 +577,10 @@ export class EditorBinding implements PluginValue {
       }
       ranges.push(Decoration.widget({ widget: new CaretWidget(user), side: 1 }).range(head))
     })
-    log.debug(`carets drawn: ${ranges.filter((range) => range.value.spec.widget).length} of ${awareness.getStates().size - 1} other(s)`)
+    // Drawn on every keystroke; worth a line only when it comes out different.
+    const drawn = `${ranges.filter((range) => range.value.spec.widget).length} of ${awareness.getStates().size - 1}`
+    if (drawn !== this.drawnLogged) log.debug(`carets drawn: ${drawn} other(s)`)
+    this.drawnLogged = drawn
     return Decoration.set(ranges, true)
   }
 }

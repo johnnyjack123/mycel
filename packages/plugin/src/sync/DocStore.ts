@@ -66,6 +66,23 @@ const OWN_WRITE_TTL_MS = 10_000
 // Upper bound on how long stopping waits for running file operations, so
 // unloading the plugin never hangs on a server that stopped answering.
 const STOP_DRAIN_MS = 2_000
+// Texts remembered per note with an editor. A save lags the editor by
+// seconds, not by hundreds of changes.
+const HELD_TEXTS = 512
+
+/** Length and a 53-bit hash (cyrb53): tells texts apart without keeping them. */
+function fingerprint(text: string): string {
+  let h1 = 0xdeadbeef
+  let h2 = 0x41c6ce57
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i)
+    h1 = Math.imul(h1 ^ code, 2654435761)
+    h2 = Math.imul(h2 ^ code, 1597334677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return `${text.length}:${(4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)}`
+}
 
 /** `extra` folded into `base` without removing anything already there. */
 function mergeAdditively(base: string, extra: string): string {
@@ -101,6 +118,14 @@ export class DocStore {
   // two reconciles interleaving on one note is how text gets applied twice.
   private readonly locks = new Map<string, Promise<void>>()
   private readonly ownWrites = new Map<string, { text: string; timer: number }>()
+  /**
+   * The texts a note's document held while an editor was bound to it, as
+   * fingerprints. Obsidian saves that editor whenever it likes, so its file
+   * holds one of them, usually a few keystrokes behind. Rebinding while
+   * someone typed on another device took such a save for an edit made here,
+   * and merging it against an older base wrapped both in conflict markers.
+   */
+  private readonly held = new Map<string, Set<string>>()
   /** Documents whose file and document have agreed at least once this session. */
   private readonly agreed = new Set<string>()
   private readonly readyListeners = new Set<() => void>()
@@ -196,6 +221,8 @@ export class DocStore {
   setEditorOwned(docId: string, owned: boolean): void {
     if (owned) {
       this.editorOwned.add(docId)
+      const handle = this.handles.get(docId)
+      if (handle && !handle.isDestroyed) this.hold(docId, handle.text())
       return
     }
     if (!this.editorOwned.delete(docId)) return
@@ -206,6 +233,28 @@ export class DocStore {
 
   isEditorOwned(docId: string): boolean {
     return this.editorOwned.has(docId)
+  }
+
+  private hold(docId: string, text: string): void {
+    let texts = this.held.get(docId)
+    if (!texts) {
+      texts = new Set()
+      this.held.set(docId, texts)
+    }
+    const print = fingerprint(text)
+    // Re-added, so it is the newest again.
+    texts.delete(print)
+    texts.add(print)
+    if (texts.size > HELD_TEXTS) texts.delete(texts.values().next().value as string)
+  }
+
+  /**
+   * Whether the document held exactly this text while an editor was bound to
+   * it: a file or an editor showing it is an older copy of the document, not
+   * an edit, whatever the base says.
+   */
+  heldBefore(docId: string, text: string): boolean {
+    return this.held.get(docId)?.has(fingerprint(text)) === true
   }
 
   private withLock<T>(docId: string, task: () => Promise<T>): Promise<T> {
@@ -394,6 +443,7 @@ export class DocStore {
       this.touch(docId)
       await handle.open()
       handle.ytext.observe((_event, transaction) => {
+        if (this.editorOwned.has(docId)) this.hold(docId, handle.text())
         if (transaction.origin === SYNC_ORIGIN) return
         this.scheduleWrite(docId)
       })
@@ -441,6 +491,7 @@ export class DocStore {
     const handle = this.handles.get(docId)
     this.handles.delete(docId)
     this.lastUsed.delete(docId)
+    this.held.delete(docId)
     await handle?.destroy(clearLocal)
   }
 
@@ -515,7 +566,10 @@ export class DocStore {
       // document this session, and whose file has not changed since. Anything
       // else - a document whose state was never confirmed, a file edit not yet
       // taken in - goes through the reconcile, which knows how to keep both.
-      if (!this.agreed.has(docId) || (current !== base && current !== this.recentWrite(docId))) {
+      if (
+        !this.agreed.has(docId) ||
+        (current !== base && current !== this.recentWrite(docId) && !this.heldBefore(docId, current))
+      ) {
         await this.reconcileFile(docId, file)
         return
       }
@@ -609,8 +663,10 @@ export class DocStore {
       // keystroke, and Obsidian writes the file from that editor. The file is
       // at best a slightly older copy of the same text; merging it back in
       // is what duplicated everything typed since it was saved.
+      // A save the document has moved past is still an agreement: the text
+      // both held, which a later merge has to take as its base.
       const local = await this.app.vault.read(file)
-      if (local === handle.text()) await this.recordAgreement(docId, file, local)
+      if (local === handle.text() || this.heldBefore(docId, local)) await this.recordAgreement(docId, file, local)
       return
     }
 
@@ -643,7 +699,10 @@ export class DocStore {
       return
     }
 
-    const base = await this.state.baseText(docId)
+    // A file Obsidian saved from an editor that has since let go: the
+    // document went on from that text, so that is where file and document
+    // last agreed - whatever base was recorded before.
+    const base = this.heldBefore(docId, local) ? local : await this.state.baseText(docId)
     const outcome = reconcile({ base, local, remote, pristine: handle.pristine, markers: this.options.conflictMarkers })
     await this.applyOutcome(docId, file, handle, local, remote, base, outcome)
   }
@@ -680,10 +739,11 @@ export class DocStore {
         return
 
       case 'adopt-remote':
-        // Text this device wrote itself a moment ago needs no copy, and while
-        // someone types elsewhere every write is superseded by the next one -
-        // a backup each time would bury the real ones.
-        if (!(local === base && local === this.recentWrite(docId))) {
+        // Text this device wrote itself a moment ago needs no copy, nor does a
+        // save the document went on from, and while someone types elsewhere
+        // every write is superseded by the next one - a backup each time
+        // would bury the real ones.
+        if (!(local === base && (local === this.recentWrite(docId) || this.heldBefore(docId, local)))) {
           await this.backups.write(file.path, 'local', local)
         }
         await this.writeFile(docId, file, remote)
@@ -726,18 +786,27 @@ export class DocStore {
   /**
    * Edits made in an editor before it was bound - typed while the note was
    * still being settled. Returns the text editor and document both take on;
-   * the caller applies it to both at once.
+   * the caller applies it to both at once. `released`: what editor and
+   * document said when this editor last let go of the note - where they
+   * last agreed, and so the base, rather than whatever the file last agreed on.
    */
-  async resolveEditorEdits(docId: string, local: string, remote: string): Promise<string> {
+  async resolveEditorEdits(docId: string, local: string, remote: string, released: string | null = null): Promise<string> {
     const file = this.fileFor(docId)
     const path = file?.path ?? this.index.pathFor(docId) ?? docId
-    const base = await this.state.baseText(docId)
+    if (this.heldBefore(docId, local)) return remote
+    const base = released ?? (await this.state.baseText(docId))
     if (this.isReadOnly(docId)) {
       if (local !== base) await this.backups.write(path, 'local', local)
       return remote
     }
     const pristine = this.handles.get(docId)?.pristine ?? false
     const outcome = reconcile({ base, local, remote, pristine, markers: this.options.conflictMarkers })
+    if (outcome.kind !== 'agree') {
+      const detail = outcome.kind === 'merge' ? ` (${outcome.additiveOnly ? 'no common base, union' : `${outcome.conflicts} conflict(s)`})` : ''
+      log.info(
+        `${path}: editor held text the note did not; ${outcome.kind}${detail}, editor ${local.length} chars, note ${remote.length}, base ${base === null ? 'none' : `${base.length}${released === null ? '' : ', from the editor'}`}`
+      )
+    }
     switch (outcome.kind) {
       case 'agree':
         return remote
@@ -766,7 +835,8 @@ export class DocStore {
 
   private review(docId: string, path: string, kind: ReviewKind, mine: string, theirs: string, merged: string): void {
     if (mine === theirs) return
-    log.info(`${path}: two versions kept (${kind}); waiting for a review`)
+    // An error: not that anything failed, but someone has to look at it.
+    log.error(`${path}: two versions kept (${kind}); choose with "Compare versions"`)
     for (const listener of this.reviewListeners) listener({ docId, path, at: Date.now(), kind, mine, theirs, merged })
   }
 

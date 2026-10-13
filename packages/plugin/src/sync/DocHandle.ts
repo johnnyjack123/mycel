@@ -142,6 +142,7 @@ export class DocHandle {
   private readonly persistence: LocalStore
   private cursor: LocalCursor | null = null
   private destroyed = false
+  private closedWith: string | null = null
   private sharedNow: boolean
   private readOnlyNow: boolean
 
@@ -233,6 +234,15 @@ export class DocHandle {
   }
 
   /**
+   * The text while open; once closed, the text it was closed with - what this
+   * device kept, and what the next handle of the note starts from. An editor
+   * can go on writing into a closed document until it notices.
+   */
+  lastText(): string {
+    return this.closedWith ?? this.text()
+  }
+
+  /**
    * No change was ever applied to this document, here or on the server. Every
    * insertion leaves a trace in the store, deleted or not, so an emptied note
    * is not pristine.
@@ -253,6 +263,7 @@ export class DocHandle {
   async destroy(clearLocal = false): Promise<void> {
     if (this.destroyed) return
     this.destroyed = true
+    this.closedWith = this.text()
     this.socket.unregister(this.room)
     this.awareness.destroy()
     try {

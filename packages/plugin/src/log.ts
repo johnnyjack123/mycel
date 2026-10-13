@@ -5,8 +5,29 @@
 // Never the text of a note: paths, ids, sizes and outcomes only. The vault
 // holds the text in plain sight anyway, but a log is what gets pasted into
 // an issue.
+//
+// The levels say what to look at:
+//   ERROR  something failed, or a note or file is now kept in two versions -
+//          someone has to look at it
+//   WARN   something unusual the plugin dealt with itself
+//   INFO   what happened: connecting, notes merged, created, deleted
+//   DEBUG  only with "Detailed logging": every change sent and received,
+//          presence and carets when they change
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+
+const IMPORTANT = /^\S+ (ERROR|WARN) /
+
+/**
+ * A stretch of the log with its errors and warnings gathered ahead of it -
+ * the first line of each, without stacks - so what matters is not buried
+ * under every frame.
+ */
+export function withSummary(text: string, header: string): string {
+  const important = text.split('\n').filter((line) => IMPORTANT.test(line))
+  const summary = important.length === 0 ? 'Errors and warnings: none' : `Errors and warnings (${important.length}):\n${important.join('\n')}`
+  return `${header}\n\n${summary}\n\nThe whole log:\n${text}`
+}
 
 /** What the log needs of Obsidian's DataAdapter. */
 export interface LogFiles {

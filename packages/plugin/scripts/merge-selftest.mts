@@ -741,5 +741,28 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(!forgotten.includes('offline'), 'and so does one the server could not be asked about')
 }
 
+// --- the log for a bug report ---------------------------------------------------------------
+{
+  const { withSummary } = await import('../src/log.js')
+  const text = [
+    '2026-10-13T20:00:40.070Z DEBUG doc:1: push 1, 24 B, epoch 0',
+    '2026-10-13T20:00:41.000Z INFO  connected to ws://localhost:1234, 1 room(s)',
+    '2026-10-13T20:00:42.000Z ERROR Typing.md: two versions kept (conflict); choose with "Compare versions"',
+    '2026-10-13T20:00:43.000Z WARN  presence for doc:1 could not be read Error: bad',
+    'Error: bad',
+    '    at somewhere (plugin:obsidian-connect:1:1)',
+    ''
+  ].join('\n')
+  const report = withSummary(text, 'Obsidian Connect 0.6.4')
+  const [head, rest] = report.split('\n\nThe whole log:\n')
+  check(
+    head === 'Obsidian Connect 0.6.4\n\nErrors and warnings (2):\n' + `${text.split('\n')[2]}\n${text.split('\n')[3]}`,
+    'a copied log starts with its errors and warnings, one line each, without stacks',
+    head
+  )
+  check(rest === text, 'followed by the whole log, unchanged')
+  check(withSummary('2026-10-13T20:00:41.000Z INFO  connected\n', 'h').includes('Errors and warnings: none'), 'and says so when there are none')
+}
+
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)
 process.exit(failures.length === 0 ? 0 : 1)

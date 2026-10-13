@@ -672,18 +672,21 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Log')
       .setDesc(
-        'What the plugin does is written to a log in its folder - never the text of a note. Detailed logging also records every change sent and received, and every caret.'
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setTooltip('Detailed logging')
-          .setValue(settings.verboseLog)
-          .onChange(async (value) => {
-            settings.verboseLog = value
-            await this.plugin.saveSettings()
-          })
+        'Always on: what the plugin does is written to a log in its folder, a week of it - never the text of a note. "Copy log" puts the last two days on the clipboard, errors and warnings first.'
       )
       .addButton((button) => button.setButtonText('Copy log').onClick(() => void this.plugin.copyLog()))
+    // A row of its own: next to "Log", the switch read as turning the log on and off.
+    new Setting(containerEl)
+      .setName('Detailed logging')
+      .setDesc(
+        'Adds every change sent and received, and who comes and goes in a shared note, to the log above. Makes it much longer; turn it on to follow a problem, and off again after.'
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(settings.verboseLog).onChange(async (value) => {
+          settings.verboseLog = value
+          await this.plugin.saveSettings()
+        })
+      )
   }
 
   private shared(containerEl: HTMLElement): void {

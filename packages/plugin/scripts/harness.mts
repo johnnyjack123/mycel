@@ -461,8 +461,9 @@ export class Device {
     this.attachments?.setOptions(this.attachmentOptions())
   }
 
-  open(path: string): ViewT {
-    const view = new FakeMarkdownView(this.vault, this.vault.file(path), this.editors.extension, document.body)
+  /** `saveEveryMs`: how often the view saves while it changes; Obsidian takes about two seconds. */
+  open(path: string, saveEveryMs?: number): ViewT {
+    const view = new FakeMarkdownView(this.vault, this.vault.file(path), this.editors.extension, document.body, saveEveryMs)
     this.views.push(view)
     return view
   }

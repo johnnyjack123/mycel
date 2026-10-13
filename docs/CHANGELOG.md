@@ -8,6 +8,29 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.6 - recovery codes and two-factor sign-in (from 2026-10-12, spec `docs/PHASE5.md`)
 
+- **0.6.4** (2026-10-13) - conflict markers on a device nobody typed on, and keystrokes
+  lost while an editor bound again (invariant 25). Reported by the user: two devices
+  online, fast typing on one, and the note came out with nested `<<<<<<<` blocks.
+  When an editor binds again while someone types elsewhere - the note shared or
+  unshared, its access changed, the editor letting go - the file Obsidian last saved
+  lags the document by a few keystrokes, and so does the editor. Both were taken for
+  edits made on that device and merged three ways against an older base, which saw
+  both sides change the same line. Now a text the document already held is an older
+  copy, never an edit (`DocStore.heldBefore`: fingerprints of every text a note with
+  an editor had), and a save the document went past counts as an agreement. An editor
+  binding again compares itself with what it and the document said when it let go
+  (`released`), and the file stays Obsidian's meanwhile (`EditorSync.rebinding`):
+  writing it made Obsidian reload the editor, and whatever was typed in between was
+  gone. The log: a note or file kept in two versions is an error, "Copy log" puts
+  errors and warnings first, presence and carets are logged only when they change, an
+  editor binding again is logged, and a signed-out device's file transfers no longer
+  log an error with a stack. "Detailed logging" is a setting of its own, apart from
+  "Log". `test:vault` 230, `test:merge` 145. Checked by putting the bug back: with the
+  0.6.3 sources, the three new checks of A typing while the note is shared and
+  unshared and B's editor binds again failed (conflict markers, characters lost), and
+  nothing else. Neither of the user's two logs shows the merge that happened; a third
+  client was present in the note (`3 present`), and its log is asked for.
+
 - **0.6.3** (2026-10-12) - a recovery can keep two-factor sign-in. Asked by the user
   after trying 0.6.2: a forgotten password meant a new entry in the authenticator app.
   `/auth/recover` now says whether the account has 2FA, and the plugin asks

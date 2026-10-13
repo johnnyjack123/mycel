@@ -61,7 +61,7 @@ import { ReviewListModal, ReviewModal } from './history/ReviewModal'
 import { VaultIndex } from './sync/VaultIndex'
 import { VaultSocket, type SocketStatus } from './sync/VaultSocket'
 import { ObsidianConnectSettingTab, DEFAULT_SETTINGS, MOBILE_DOWNLOAD_LIMIT_MB, type ObsidianConnectSettings } from './settings'
-import { log } from './log'
+import { log, withSummary } from './log'
 
 // Settings of earlier versions that moved to the account, and are handed over
 // once to its settings document.
@@ -322,7 +322,8 @@ export default class ObsidianConnectPlugin extends Plugin {
 
   /** The recent log, onto the clipboard - for a bug report. */
   async copyLog(): Promise<void> {
-    await navigator.clipboard.writeText(await log.recent())
+    const header = `Obsidian Connect ${this.manifest.version}${Platform.isMobile ? ' on mobile' : ''}, log of today and yesterday (UTC)`
+    await navigator.clipboard.writeText(withSummary(await log.recent(), header))
     new Notice('Obsidian Connect: the log of today and yesterday is on the clipboard.')
   }
 

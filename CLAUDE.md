@@ -167,6 +167,15 @@ someone's notes. Treat them as rules, not preferences.
     replaced (`prev`), every replacement leaves a version record, and
     `AttachmentIndex.replaced` decides: a version that never saw this device's
     content is a conflict, and both files are kept. The same for a delete.
+25. **A text the document already held is an older copy, never an edit.**
+    Obsidian saves a bound editor whenever it likes, so its file lags the
+    document, and an editor that let go lags it too. When an editor bound again
+    while someone typed on another device, both were merged in as edits made
+    here, against an older base - conflict markers on a device nobody typed on.
+    `DocStore.heldBefore` knows every text a note with an editor had, and a
+    binding starts again from what it and the document said when it let go
+    (`released`). Meanwhile the file stays Obsidian's (`EditorSync.rebinding`):
+    writing it made Obsidian reload the editor and drop what was typed in between.
 
 ## Architecture
 
@@ -315,8 +324,11 @@ and the server holds immutable blobs of its versions:
 
 - **The log** (`src/log.ts`): every `log.*` call also goes to a file per day in
   the plugin folder's `logs/`, a week of them; "Copy the log" puts two days on
-  the clipboard. Never note text — paths, ids, sizes, outcomes. `log.debug`
-  (every frame, every caret) only with "Detailed logging" on.
+  the clipboard, errors and warnings gathered first (`withSummary`). Never note
+  text — paths, ids, sizes, outcomes. The levels say what to look at: `error`
+  for a failure *and* for a note or file kept in two versions, `warn` for the
+  unusual handled, `info` for what happened, `debug` (every frame; presence and
+  carets when they change) only with "Detailed logging" on.
 - **The cloud** in the status bar is `DocStore.noteState` for the active note,
   `AttachmentStore.fileState` for any other file, polled: `unsent` while
   anything this device holds is unconfirmed, `waiting` while the server's state

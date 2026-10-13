@@ -502,6 +502,58 @@ try {
   )
   check(await eventually(() => B.vault.text('Welcome.md') === bView.text()), 'and the next save puts the file right')
 
+  // Editors binding again while someone types. What Obsidian last saved
+  // lags the document then: B took that file - and the text its editor had
+  // when it let go - for edits made on B, merged them against an older base
+  // and wrapped both in conflict markers, on a device nobody typed on. And
+  // A wrote the file under its own editor while binding again, so Obsidian
+  // reloaded it and dropped what was typed in between.
+  {
+    await A.vault.userCreate('Typing.md', 'hellotet\n')
+    check(await eventually(() => B.vault.text('Typing.md') === 'hellotet\n'), 'B has a note to watch A typing in')
+    const aTyping = A.open('Typing.md', 300)
+    const bTyping = B.open('Typing.md', 700)
+    check(await eventually(() => A.editors.boundCount() === 2 && B.editors.boundCount() === 2), 'both editors bind it')
+    const backupsBefore = A.vault.adapter.backups().length + B.vault.adapter.backups().length
+    const reviewsBefore = A.reviews.length + B.reviews.length
+    const docId = A.index?.docIdForPath('Typing.md') as string
+    const typed = 'tesrwarhhddddddjjjjjjjlllddddddddsdfsafdsfasdfw4r'
+    for (let i = 0; i < typed.length; i += 1) {
+      aTyping.type(typed[i] as string)
+      await delay(40 + ((i * 37) % 90))
+      // Sharing or unsharing the note binds every editor of it again.
+      if (i % 7 === 6 && i < 28) {
+        A.store?.share(docId, !A.store.isShared(docId))
+        A.editors.refresh()
+      }
+      // And B's editor letting go and binding again on its own.
+      if (i % 9 === 8) {
+        B.editors.unbindAll()
+        B.editors.refresh()
+      }
+    }
+    const expected = `hellotet\n${typed}`
+    check(
+      await eventually(() => aTyping.text() === expected && bTyping.text() === expected),
+      'every keystroke typed while editors bound again arrives, once, in order',
+      { a: aTyping.text(), b: bTyping.text() }
+    )
+    check(
+      await eventually(() => A.vault.text('Typing.md') === expected && B.vault.text('Typing.md') === expected),
+      'and both files end up with it',
+      { a: A.vault.text('Typing.md'), b: B.vault.text('Typing.md') }
+    )
+    check(
+      A.reviews.length + B.reviews.length === reviewsBefore &&
+        A.vault.adapter.backups().length + B.vault.adapter.backups().length === backupsBefore,
+      'with no merge, no review and no backup on either device',
+      { reviews: A.reviews.slice(reviewsBefore).concat(B.reviews), backups: B.vault.adapter.backups() }
+    )
+    check(!A.store?.isShared(docId), 'the note is unshared again')
+    A.close(aTyping)
+    B.close(bTyping)
+  }
+
   // A change with several parts in one transaction. Mapping its delta onto
   // the editor used to shift every later part by the length of the earlier
   // insertions. At the start of lines, so a misplaced second part still lands

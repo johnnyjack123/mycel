@@ -153,9 +153,11 @@ earlier versions for the history retention, with a preview for pictures. The
 server takes files up to 100 MB by default (`docs/SERVER.md`); a larger one stays
 on its device.
 
-**The log** lives in the plugin folder (`logs/`, a week of it) and never contains
-the text of a note. *Copy the log* is for bug reports; *Detailed logging* in the
-settings adds every change sent and received.
+**The log** lives in the plugin folder (`logs/`, a week of it), is always on, and
+never contains the text of a note. *Copy the log* is for bug reports: it starts
+with the errors and warnings of the last two days - a note or file kept in two
+versions counts as an error, so it is easy to find - followed by everything.
+*Detailed logging* in the settings adds every change sent and received.
 
 **Deleted notes and files…** (also in every folder's menu and the settings) lists
 what was deleted on any of your devices and brings it back. Deleted notes and

@@ -130,6 +130,8 @@ interface Registration {
   /** Whether the frame the cursor ends at came back unchanged in this catch-up. */
   verify: { seq: number; hash: string | null; state: Verification }
   sendTimer: number | null
+  /** How many were present when last logged; presence is logged when that changes. */
+  present: number
   dead: boolean
   onDocUpdate: (update: Uint8Array, origin: unknown) => void
   onAwarenessUpdate: (changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void
@@ -488,7 +490,10 @@ export class VaultSocket {
         return
       }
       applyAwarenessUpdate(awareness, plaintext, this)
-      log.debug(`${registration.room}: presence received, epoch ${epoch}, ${awareness.getStates().size} present`)
+      // Every client renews its presence every 15 seconds; only who comes and goes is news.
+      const present = awareness.getStates().size
+      if (present !== registration.present) log.debug(`${registration.room}: ${present} present, epoch ${epoch}`)
+      registration.present = present
     } catch (error) {
       log.warn(`presence for ${registration.room} could not be read`, error)
     }
@@ -566,7 +571,6 @@ export class VaultSocket {
       log.warn(`${registration.room}: no key to send presence under epoch ${epoch}`)
       return
     }
-    log.debug(`${registration.room}: presence sent, epoch ${epoch}`)
     const data = await encrypt(key, bytes(update), awarenessAad(registration.room, epoch))
     this.send((encoder) => {
       encoding.writeVarUint(encoder, MUX.awareness)
@@ -601,6 +605,7 @@ export class VaultSocket {
       sendingTs: null,
       verify: { seq: 0, hash: null, state: 'none' },
       sendTimer: null,
+      present: 0,
       dead: false,
       onDocUpdate: (update, origin) => {
         // What this socket applied came from the server already.
