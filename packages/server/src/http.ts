@@ -332,7 +332,7 @@ export function createHttpApp(
     if (!accountId) return undefined
     return guarded(request, reply, async (): Promise<AccountBundle> => {
       const body = (request.body ?? {}) as Partial<TotpDisableRequest>
-      return accounts.bundle(await accounts.disableTotp(accountId, body.loginKey, body.code, now()))
+      return accounts.bundle(await accounts.disableTotp(accountId, body.loginKey))
     })
   })
 

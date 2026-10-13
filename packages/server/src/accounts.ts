@@ -474,17 +474,18 @@ export class AccountStore {
     })
   }
 
-  /** In the settings: the password and a current code. */
-  disableTotp(accountId: string, loginKey: unknown, code: unknown, now = Date.now()): Promise<StoredAccount> {
+  /**
+   * In the settings, on a device signed in: the password alone. Asking for a
+   * code as well added nothing - session and password already make a new
+   * recovery code, and that turns it off - and it locked out exactly the
+   * person it is for: someone whose phone is gone.
+   */
+  disableTotp(accountId: string, loginKey: unknown): Promise<StoredAccount> {
     const current = decoded(loginKey, 32)
     if (!current) return Promise.reject(new AccountError(400, 'the login key is missing'))
     return this.update((data) => {
       const account = data.accounts[accountId]
       if (!account || account.loginHash !== loginHash(current)) throw new AccountError(403, 'the current password is wrong')
-      if (!account.totp) return account
-      if (totpMatch(Buffer.from(account.totp.secret, 'base64'), code, now, account.totp.lastStep) === null) {
-        throw new AccountError(403, 'the code does not match')
-      }
       delete account.totp
       return account
     })

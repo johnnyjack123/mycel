@@ -370,8 +370,18 @@ export class Session {
     return this.move(async () => this.adopt(await this.api.enableTotp(request), unlocked.masterKey, unlocked.username, serverId))
   }
 
-  async disableTotp(unlocked: Unlocked, password: string, code: string): Promise<Unlocked> {
-    const bundle = await this.api.disableTotp({ loginKey: await this.currentLoginKey(unlocked, password), code: code.replace(/\s/g, '') })
+  /** The password alone: whoever has it and this device could make a recovery code, which turns it off anyway. */
+  async disableTotp(unlocked: Unlocked, password: string): Promise<Unlocked> {
+    let bundle: AccountBundle
+    try {
+      bundle = await this.api.disableTotp({ loginKey: await this.currentLoginKey(unlocked, password) })
+    } catch (error) {
+      // A server from 0.6.2 to 0.6.5 still asks for a code as well.
+      if (error instanceof ApiError && error.message === 'the code does not match') {
+        throw new Error('This server still wants a code from the app to turn it off. It needs an update.')
+      }
+      throw error
+    }
     return this.withBundle(unlocked, bundle)
   }
 

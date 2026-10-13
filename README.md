@@ -109,8 +109,9 @@ they sign in again with the new password.
 **Two-factor sign-in** is optional: turned on in the settings, signing in on a
 device also asks for a code from an authenticator app (Aegis, 2FAS, Google
 Authenticator, …). It guards the sign-in to the server; your notes stay encrypted
-with your password either way. A lost phone is what the recovery code is for, and
-the server's admin can turn it off too. If you recover the account with the phone
+with your password either way. Lost your phone? On a device that is still signed in,
+your password alone turns it off; elsewhere the recovery code gets you in, and the
+server's admin can turn it off too. If you recover the account with the phone
 still at hand, a code from the app keeps two-factor sign-in with the entry the app
 already has.
 

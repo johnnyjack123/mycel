@@ -168,7 +168,7 @@ try {
   check(A3.askedForCode.slice(-2).join() === 'false,true', 'after asking again for a wrong one', A3.askedForCode)
   await A1.vault.userWrite('Two.md', 'second\nwith two factors\n')
   check(await eventually(() => A3.vault.text('Two.md') === 'second\nwith two factors\n'), 'and syncs as before')
-  check(await A1.disableTotp('000000').then(() => false, () => true), 'turning it off needs a current code')
+  check(await A1.disableTotp('not the password at all').then(() => false, () => true), 'turning it off needs the password')
 
   // The password is forgotten, the phone is not: the recovery keeps two-factor
   // sign-in, and the entry in the app goes on working.
@@ -225,8 +225,12 @@ try {
   const newPhone = new Phone()
   await A4.enableTotp(newPhone.secret, await newPhone.code())
   check(A4.hasTotp === true, 'it can be turned on again, with the new phone')
-  await A4.disableTotp(await newPhone.code())
-  check(A4.hasTotp === false, 'and off, with password and a current code')
+  // The phone gone again, the device still signed in: the password is enough.
+  await A4.disableTotp()
+  check(A4.hasTotp === false, 'and off with the password alone, no code from the app')
+  check(await eventually(() => A1.signedOut === 4), 'A1 was signed out when it went on', { a1: A1.signedOut })
+  const askedBefore = A1.askedForCode.length
+  check((await A1.boot()) && A1.askedForCode.length === askedBefore, 'and signs in again with no code', A1.askedForCode)
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {

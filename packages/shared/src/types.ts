@@ -162,9 +162,11 @@ export interface TotpEnableRequest {
   code: string
 }
 
+/** Turns two-factor sign-in off: the password is enough. */
 export interface TotpDisableRequest {
   loginKey: string
-  code: string
+  /** Sent by 0.6.2 to 0.6.5, and ignored since. */
+  code?: string
 }
 
 /** A recovery code as the server keeps it: the key it finds the account by, and the second wrapping. */

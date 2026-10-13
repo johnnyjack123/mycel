@@ -44,6 +44,11 @@ with a second factor, that factor's TOTP secret, and when a code was last used.
   keeping it is never weaker than that. The code proves the app still has the entry,
   so nobody keeps a factor they no longer have. The dialog says to turn it off when a
   phone with the entry was lost, even if the entry survives elsewhere.
+- **Turning 2FA off in the settings needs the password only** (asked by the user on
+  2026-10-14, built in 0.6.6; it needed a current code as well before). Turning it
+  off is what someone does whose phone is gone while a device is still signed in. And
+  the code added no security: a signed-in device and the password already make a new
+  recovery code, and a recovery with it turns 2FA off.
 - **Signing in is two steps:** name and password, then the code.
 
 ## Signing out the other devices *(step 1, built 0.6.0)*
@@ -206,7 +211,9 @@ In the settings, signed in:
 
 ### Turning it off
 
-- In the settings: the password and a current code. Moves no generation.
+- In the settings, on a signed-in device: the password (0.6.2 to 0.6.5: and a current
+  code; an older server answering "the code does not match" is told to update). Moves
+  no generation.
 - By a recovery without a code from the app (above).
 - By the admin: `obsidian-connect user 2fa-off <accountId>`.
 

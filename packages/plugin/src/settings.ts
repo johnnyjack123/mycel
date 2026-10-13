@@ -315,7 +315,9 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       return
     }
     row
-      .setDesc('On. Signing in on a device asks for a code from your authenticator app. Lost your phone? Your recovery code gets you in without one.')
+      .setDesc(
+        'On. Signing in on a device asks for a code from your authenticator app. Lost your phone? On a device still signed in, your password turns it off; elsewhere, your recovery code gets you in without one.'
+      )
       .addButton((button) =>
         button
           .setButtonText('Turn off…')

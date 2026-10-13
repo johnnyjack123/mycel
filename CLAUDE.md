@@ -226,7 +226,8 @@ someone's notes. Treat them as rules, not preferences.
   of scope `2fa`), the code turns it into a session. Turning it on signs out the
   other devices. A recovery keeps it when given a current code from the app, the
   same entry going on working, and turns it off otherwise; so can the admin
-  (`user 2fa-off`).
+  (`user 2fa-off`), and a signed-in device with the password alone - a code would
+  add nothing there, since device and password can make a recovery code.
 
 ### Identity
 

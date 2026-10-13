@@ -8,6 +8,15 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.6 - recovery codes and two-factor sign-in (from 2026-10-12, spec `docs/PHASE5.md`)
 
+- **0.6.6** (2026-10-14) - turning two-factor sign-in off takes the password alone.
+  Asked by the user: it is what someone does whose phone is gone while a device is
+  still signed in, and the code added no security - device and password already make
+  a new recovery code, and a recovery with it turns 2FA off. Server and plugin both
+  change: `/account/totp/off` ignores a code, the dialog is the password prompt, and
+  a plugin talking to an older server that still wants a code says to update it.
+  `test:rooms` 233, `test:account` 48. With the 0.6.5 server code, the new steps of
+  both suites failed.
+
 - **0.6.5** (2026-10-13) - the cause of the conflict markers the user saw (invariant
   26). The user had typed on one device; on the other the note was only open, and no
   third device was online. That other computer had loaded 0.6.3 at 19:59:47 and was

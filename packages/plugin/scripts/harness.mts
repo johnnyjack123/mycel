@@ -402,9 +402,9 @@ export class Device {
     this.unlocked = await this.session.enableTotp(this.unlocked, password, new Uint8Array(secret), code)
   }
 
-  async disableTotp(code: string, password = this.password): Promise<void> {
+  async disableTotp(password = this.password): Promise<void> {
     if (!this.unlocked) throw new Error('not signed in')
-    this.unlocked = await this.session.disableTotp(this.unlocked, password, code)
+    this.unlocked = await this.session.disableTotp(this.unlocked, password)
   }
 
   /** Whether signing in asks for a code, as this device last heard. */

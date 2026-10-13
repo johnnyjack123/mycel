@@ -28,7 +28,7 @@ import { hashWasmArgon2id } from './account/argon2'
 import { KeyRing } from './account/KeyRing'
 import { PasswordModal } from './account/PasswordModal'
 import { PasswordPromptModal, RecoveryCodeModal } from './account/RecoveryModals'
-import { TotpOffModal, TotpSetupModal, askKeepTotp, askTotpCode } from './account/TotpModals'
+import { TotpSetupModal, askKeepTotp, askTotpCode } from './account/TotpModals'
 import { Session, type OpenVault, type SecretStore, type Unlocked } from './account/Session'
 import { EditorSync } from './editor/EditorSync'
 import { BackupModal } from './history/BackupModal'
@@ -509,11 +509,19 @@ export default class ObsidianConnectPlugin extends Plugin {
   }
 
   openTotpOff(): void {
-    new TotpOffModal(this.app, async (password, code) => {
-      if (!this.unlocked) throw new Error('Sign in first.')
-      this.unlocked = await this.session.disableTotp(this.unlocked, password, code)
-      this.settingTab?.display()
-    }).open()
+    new PasswordPromptModal(
+      this.app,
+      'Turn off two-factor sign-in',
+      'Signing in will ask for your name and password only. Devices signed in now stay signed in. Your password confirms it is you - no code needed, so a lost phone is no obstacle.',
+      'Turn off',
+      async (password) => {
+        if (!this.unlocked) throw new Error('Sign in first.')
+        this.unlocked = await this.session.disableTotp(this.unlocked, password)
+        this.settingTab?.display()
+        new Notice('Obsidian Connect: two-factor sign-in is off.')
+      },
+      true
+    ).open()
   }
 
   /** What the settings show about the recovery code; null while not signed in. */

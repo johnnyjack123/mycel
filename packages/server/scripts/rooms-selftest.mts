@@ -281,10 +281,9 @@ try {
     check((await accounts.checkTotp(hen, codeAt(t0 + 90_000, 1), t0 + 90_000)) === true, 'a clock a step ahead is allowed')
     check((await accounts.checkTotp(hen, codeAt(t0 + 300_000, 3), t0 + 300_000)) === false, 'three steps off is not')
     check((await accounts.checkTotp(bob, '123456', t0)) === null, 'an account without it has no code to check')
-    check((await status(() => accounts.disableTotp(hen, henKeys.loginKey, '000000', t0 + 330_000))) === 403, 'turning it off needs a current code')
-    check((await status(() => accounts.disableTotp(hen, b64(32), codeAt(t0 + 330_000), t0 + 330_000))) === 403, 'and the password')
-    await accounts.disableTotp(hen, henKeys.loginKey, codeAt(t0 + 330_000), t0 + 330_000)
-    check(accounts.bundle(await henNow()).totp === false, 'with both it is off')
+    check((await status(() => accounts.disableTotp(hen, b64(32)))) === 403, 'turning it off needs the password')
+    await accounts.disableTotp(hen, henKeys.loginKey)
+    check(accounts.bundle(await henNow()).totp === false, 'and nothing else - a lost phone is what it is for')
 
     await enable(henKeys.loginKey, codeAt(t0 + 600_000), t0 + 600_000)
     check((await accounts.turnOffTotp(hen)) && accounts.bundle(await henNow()).totp === false, 'the admin can turn it off')
@@ -632,8 +631,11 @@ try {
       const blocked = await second({ challenge, code: code() })
       check(blocked.statusCode === 429, 'five wrong codes block codes for that account, even the right one', blocked.body)
 
-      const off = await app.inject({ method: 'POST', url: '/account/totp/off', headers: signedIn, payload: { loginKey: ivyKeys.loginKey, code: code() } })
-      check(off.statusCode === 200 && (off.json() as { totp?: boolean }).totp === false, 'turning it off with password and code', off.body)
+      const wrongPassword = await app.inject({ method: 'POST', url: '/account/totp/off', headers: signedIn, payload: { loginKey: b64(32) } })
+      check(wrongPassword.statusCode === 403, 'turning it off with a wrong password is refused', wrongPassword.body)
+      // While codes are blocked, too: the password alone does it.
+      const off = await app.inject({ method: 'POST', url: '/account/totp/off', headers: signedIn, payload: { loginKey: ivyKeys.loginKey } })
+      check(off.statusCode === 200 && (off.json() as { totp?: boolean }).totp === false, 'turning it off with the password alone', off.body)
       const plain = await app.inject({ method: 'POST', url: '/auth/login', payload: { loginKey: ivyKeys.loginKey } })
       check(plain.statusCode === 200 && typeof (plain.json() as { token?: string }).token === 'string', 'afterwards the password alone signs in again')
       await app.close()
