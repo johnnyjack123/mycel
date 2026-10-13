@@ -1,4 +1,5 @@
 import { App, Component, MarkdownRenderer, Modal, Notice, Setting, getLinkpath, type TFile } from 'obsidian'
+import { busy } from '../busy.js'
 import type { EmbedTarget } from '../sync/AttachmentStore.js'
 import type { NoteHistory, Version } from './NoteHistory.js'
 import { formatSize, imageType, imageUrl } from './media.js'
@@ -142,9 +143,7 @@ export class HistoryModal extends Modal {
       button
         .setButtonText('Restore this version')
         .setCta()
-        .onClick(() => {
-          void this.restore(selected)
-        })
+        .onClick(() => void busy(button, () => this.restore(selected)))
     )
   }
 
@@ -198,17 +197,17 @@ export class HistoryModal extends Modal {
       })
       if (target.deleted) {
         const button = note.createEl('button', { text: 'Restore' })
-        button.onclick = async () => {
-          button.disabled = true
-          try {
-            const file = await embeds.restore(target.fileId)
-            new Notice(file ? `Restored as ${file.path}.` : `${target.path} comes back as soon as the server answers.`)
-            this.render()
-          } catch (error) {
-            new Notice(`Restoring failed: ${error instanceof Error ? error.message : String(error)}`)
-            button.disabled = false
-          }
-        }
+        const spinning = { buttonEl: button, setDisabled: (disabled: boolean) => (button.disabled = disabled) }
+        button.onclick = () =>
+          void busy(spinning, async () => {
+            try {
+              const file = await embeds.restore(target.fileId)
+              new Notice(file ? `Restored as ${file.path}.` : `${target.path} comes back as soon as the server answers.`)
+              this.render()
+            } catch (error) {
+              new Notice(`Restoring failed: ${error instanceof Error ? error.message : String(error)}`)
+            }
+          })
       }
     }
   }

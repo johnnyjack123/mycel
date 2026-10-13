@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
 import type { ShareMembersResponse, ShareRole } from '@obsidian-connect/shared'
+import { busy } from '../busy.js'
 import type { Sharing } from './Sharing.js'
 import { log } from '../log.js'
 
@@ -62,7 +63,7 @@ export class AccessModal extends Modal {
           button
             .setButtonText('Remove')
             .setWarning()
-            .onClick(() => void this.revoke(member.account))
+            .onClick(() => void busy(button, () => this.revoke(member.account)))
         )
     }
     if (this.attachments !== null) {

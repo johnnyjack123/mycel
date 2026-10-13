@@ -741,6 +741,44 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(!forgotten.includes('offline'), 'and so does one the server could not be asked about')
 }
 
+// --- a button busy with its click -----------------------------------------------------------
+{
+  const { busy } = await import('../src/busy.js')
+  const classes = new Set<string>()
+  const disabled: boolean[] = []
+  const button = {
+    buttonEl: {
+      classList: {
+        add: (name: string) => void classes.add(name),
+        remove: (name: string) => void classes.delete(name),
+        contains: (name: string) => classes.has(name)
+      }
+    } as unknown as HTMLElement,
+    setDisabled: (value: boolean) => void disabled.push(value)
+  }
+  let release = (): void => undefined
+  let runs = 0
+  const first = busy(button, () => {
+    runs += 1
+    return new Promise<void>((resolve) => (release = resolve))
+  })
+  check(classes.has('connect-busy') && disabled.join() === 'true', 'a clicked button is greyed out and spins at once')
+  await busy(button, async () => {
+    runs += 1
+  })
+  check(runs === 1, 'and a second click meanwhile starts nothing')
+  release()
+  await first
+  check(!classes.has('connect-busy') && disabled.at(-1) === false, 'once the work is done it is a button again')
+  const failed = await busy(button, async () => {
+    throw new Error('refused')
+  }).then(
+    () => null,
+    (error: unknown) => (error instanceof Error ? error.message : String(error))
+  )
+  check(failed === 'refused' && !classes.has('connect-busy') && disabled.at(-1) === false, 'also when it failed, and the error still reaches the caller')
+}
+
 // --- the log for a bug report ---------------------------------------------------------------
 {
   const { withSummary } = await import('../src/log.js')

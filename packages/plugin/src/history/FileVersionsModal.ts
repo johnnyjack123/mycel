@@ -1,4 +1,5 @@
 import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
+import { busy, type BusyButton } from '../busy.js'
 import type { AttachmentStore, FileVersion } from '../sync/AttachmentStore.js'
 import { formatSize as size, imageType, imageUrl } from './media.js'
 import { log } from '../log.js'
@@ -88,7 +89,7 @@ export class FileVersionsModal extends Modal {
           .onClick(() => void this.run(async () => {
             const copy = await this.attachments.saveVersionCopy(this.file, selected)
             new Notice(`Saved as ${copy.path}.`)
-          }))
+          }, button))
       )
       .addButton((button) =>
         button
@@ -98,16 +99,16 @@ export class FileVersionsModal extends Modal {
           .onClick(() => void this.run(async () => {
             await this.attachments.restoreVersion(this.file, selected.hash)
             new Notice(`${this.file.name} restored. The version it replaced is kept, so this can be undone.`, 8_000)
-          }))
+          }, button))
       )
   }
 
-  private async run(task: () => Promise<void>): Promise<void> {
+  /** `button` spins meanwhile; rendering anew would take it away from under the click. */
+  private async run(task: () => Promise<void>, button: BusyButton): Promise<void> {
     if (this.busy) return
     this.busy = true
-    this.render()
     try {
-      await task()
+      await busy(button, task)
       this.close()
     } catch (error) {
       log.error(`working with an earlier version of ${this.file.path} failed`, error)

@@ -2,6 +2,7 @@ import { App, Notice, PluginSettingTab, Setting } from 'obsidian'
 import { generatePassword } from './account/password'
 import type { ServerProbe } from './account/probe'
 import { PasswordReveal } from './account/reveal'
+import { busy, type BusyButton } from './busy'
 import type ObsidianConnectPlugin from './main'
 import type { OpenCode } from './share/Contacts'
 import type { SharedSettings } from './sync/AccountSettings'
@@ -162,11 +163,12 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     }
   }
 
-  private async run(task: () => Promise<void>): Promise<void> {
+  /** `button`: the one clicked, greyed out and spinning until the task is done. */
+  private async run(task: () => Promise<void>, button?: BusyButton): Promise<void> {
     if (this.busy) return
     this.busy = true
     try {
-      await task()
+      await busy(button, task)
     } catch (error) {
       new Notice(`Obsidian Connect: ${error instanceof Error ? error.message : String(error)}`, 8_000)
     } finally {
@@ -184,7 +186,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private serverStatusRow(containerEl: HTMLElement, name: string): void {
     this.serverStatus = new Setting(containerEl)
       .setName(name)
-      .addButton((button) => button.setButtonText('Check again').onClick(() => void this.checkServer()))
+      .addButton((button) => button.setButtonText('Check again').onClick(() => void busy(button, () => this.checkServer())))
   }
 
   private account(containerEl: HTMLElement): void {
@@ -222,7 +224,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       )
     if (settings.username) {
       vaultName.addButton((button) =>
-        button.setButtonText('Switch').onClick(() => void this.run(() => this.plugin.restartSync()))
+        button.setButtonText('Switch').onClick(() => void this.run(() => this.plugin.restartSync(), button))
       )
     }
 
@@ -237,7 +239,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           button
             .setButtonText('Sign out')
             .setWarning()
-            .onClick(() => void this.run(() => this.plugin.signOut()))
+            .onClick(() => void this.run(() => this.plugin.signOut(), button))
         )
       this.recoveryRow(containerEl)
       this.totpRow(containerEl)
@@ -392,7 +394,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
               await this.plugin.recoverAccount(this.recoveryCode, this.username, this.password, this.repeat)
               this.forgetPasswords()
               this.screen = 'overview'
-            })
+            }, button)
         )
       this.gated.push(button)
     })
@@ -440,7 +442,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
                 await this.plugin.signIn(this.username, this.password)
                 this.forgetPasswords()
                 this.screen = 'overview'
-              })
+              }, button)
           )
         this.gated.push(button)
       })
@@ -501,7 +503,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
                 await this.plugin.createAccount(this.username, this.password, this.repeat, this.invite)
                 this.forgetPasswords()
                 this.screen = 'overview'
-              })
+              }, button)
           )
         this.gated.push(button)
       })
@@ -531,7 +533,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
                 const code = await this.plugin.createContactCode()
                 await navigator.clipboard.writeText(code).catch(() => undefined)
                 new Notice('Code created and copied.')
-              })
+              }, button)
           )
       )
     const codes = containerEl.createDiv({ cls: 'connect-open-codes' })
@@ -555,7 +557,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
               await this.plugin.redeemContactCode(this.contactCode)
               this.contactCode = ''
               new Notice('Added. Their name appears once one of their devices answers.')
-            })
+            }, button)
         )
       )
 
@@ -583,7 +585,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
               }
               this.removing = null
               // Ends every share between the two first; each keeps what they have.
-              void this.run(() => this.plugin.removeContact(contact.accountId))
+              void this.run(() => this.plugin.removeContact(contact.accountId), button)
             })
         )
     }
@@ -609,7 +611,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           button
             .setIcon('trash')
             .setTooltip('Delete: nobody can redeem it any more')
-            .onClick(() => void this.run(() => this.plugin.revokeContactCode(open.codeId)))
+            .onClick(() => void this.run(() => this.plugin.revokeContactCode(open.codeId), button))
         )
       setting.nameEl.addClass('connect-code')
     }
@@ -660,15 +662,13 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           })
       )
       .addButton((button) =>
-        button.setButtonText('Download everything now').onClick(async () => {
-          button.setDisabled(true)
-          try {
-            const fetched = await this.plugin.downloadAllAttachments()
-            new Notice(fetched > 0 ? `Obsidian Connect: ${fetched} attachment(s) downloaded.` : 'Obsidian Connect: every attachment is already here.')
-          } finally {
-            button.setDisabled(false)
-          }
-        })
+        button.setButtonText('Download everything now').onClick(
+          () =>
+            void busy(button, async () => {
+              const fetched = await this.plugin.downloadAllAttachments()
+              new Notice(fetched > 0 ? `Obsidian Connect: ${fetched} attachment(s) downloaded.` : 'Obsidian Connect: every attachment is already here.')
+            })
+        )
       )
 
     new Setting(containerEl)
@@ -676,7 +676,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       .setDesc(
         'Always on: what the plugin does is written to a log in its folder, a week of it - never the text of a note. "Copy log" puts the last two days on the clipboard, errors and warnings first.'
       )
-      .addButton((button) => button.setButtonText('Copy log').onClick(() => void this.plugin.copyLog()))
+      .addButton((button) => button.setButtonText('Copy log').onClick(() => void busy(button, () => this.plugin.copyLog())))
     // A row of its own: next to "Log", the switch read as turning the log on and off.
     new Setting(containerEl)
       .setName('Detailed logging')

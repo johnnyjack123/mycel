@@ -8,6 +8,16 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.6 - recovery codes and two-factor sign-in (from 2026-10-12, spec `docs/PHASE5.md`)
 
+- **0.6.7** (2026-10-14) - every button that waits for the server or the disk greys
+  out and spins the moment it is clicked, and takes no second click meanwhile
+  (`busy`, `src/busy.ts`; `.connect-busy` in `styles.css`). Asked by the user: clicks
+  in the settings often showed nothing for seconds. The settings (sign in, create,
+  recover, sign out, switch vault, contacts, check the server, download, copy log),
+  the password, recovery-code and 2FA dialogs - Enter spins the button it stands
+  for - and sharing, access, incoming shares, the trash, backups, version history and
+  "Compare versions". `test:merge` 149. Seen only in tests with a stand-in button;
+  how it looks is for a device.
+
 - **0.6.6** (2026-10-14) - turning two-factor sign-in off takes the password alone.
   Asked by the user: it is what someone does whose phone is gone while a device is
   still signed in, and the code added no security - device and password already make

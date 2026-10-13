@@ -1,4 +1,5 @@
 import { App, Modal, Notice, Setting } from 'obsidian'
+import { busy } from '../busy.js'
 import { assemble, compare, type Choice, type Hunk, type Review } from '../sync/Reviews.js'
 
 const CONTEXT_LINES = 2
@@ -75,13 +76,13 @@ export class ReviewModal extends Modal {
         button
           .setButtonText('Apply')
           .setCta()
-          .onClick(() => void this.submit())
+          .onClick(() => void busy(button, () => this.submit()))
       )
       .addButton((button) =>
         button
           .setButtonText('Keep it as it is')
           .setTooltip('Both versions stay in the note, and this review goes away')
-          .onClick(() => void this.keep())
+          .onClick(() => void busy(button, () => this.keep()))
       )
   }
 

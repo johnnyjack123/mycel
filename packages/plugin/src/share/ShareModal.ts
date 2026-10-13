@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
 import type { ShareRole } from '@obsidian-connect/shared'
+import { busy } from '../busy.js'
 import { formatSize } from '../history/media.js'
 import type { Contact } from '../sync/AccountSettings.js'
 import type { LinkedNote } from './LinkedNotes.js'
@@ -144,7 +145,7 @@ export class ShareModal extends Modal {
       button
         .setButtonText(current ? 'Share again' : 'Share')
         .setCta()
-        .onClick(() => void this.submit())
+        .onClick(() => void busy(button, () => this.submit()))
     )
   }
 

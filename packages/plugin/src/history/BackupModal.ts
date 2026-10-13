@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting, TFile, normalizePath } from 'obsidian'
 import type { BackupRecord, BackupStore } from '../sync/BackupStore'
+import { busy } from '../busy.js'
 import { log } from '../log.js'
 
 // Backups live in the plugin folder, which keeps them out of search and the
@@ -91,7 +92,12 @@ export class BackupModal extends Modal {
         button
           .setButtonText('Write this back to the note')
           .setWarning()
-          .onClick(() => void this.restore(selected))
+          .onClick(() =>
+            busy(button, () => this.restore(selected)).catch((error: unknown) => {
+              log.error('writing a backup back failed', error)
+              new Notice(`Writing the backup back failed: ${error instanceof Error ? error.message : String(error)}`)
+            })
+          )
       )
     }
   }

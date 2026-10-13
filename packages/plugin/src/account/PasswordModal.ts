@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting, TextComponent } from 'obsidian'
 import { generatePassword, judgePassword } from './password'
+import { busy, type BusyButton } from '../busy'
 import { PasswordReveal } from './reveal'
 
 /** Asks for the current and a new password. The change itself happens on this device. */
@@ -54,11 +55,11 @@ export class PasswordModal extends Modal {
       button
         .setButtonText('Change')
         .setCta()
-        .onClick(() => void this.submit())
+        .onClick(() => void this.submit(button))
     )
   }
 
-  private async submit(): Promise<void> {
+  private async submit(button: BusyButton): Promise<void> {
     if (this.busy) return
     const verdict = judgePassword(this.next)
     if (!verdict.ok) {
@@ -71,7 +72,7 @@ export class PasswordModal extends Modal {
     }
     this.busy = true
     try {
-      await this.change(this.current, this.next)
+      await busy(button, () => this.change(this.current, this.next))
       new Notice('Password changed.')
       this.close()
     } catch (error) {

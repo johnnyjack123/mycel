@@ -1,4 +1,5 @@
 import { App, Modal, Notice, Setting, TextComponent } from 'obsidian'
+import { busy, type BusyButton } from '../busy'
 import { PasswordReveal } from './reveal'
 
 /**
@@ -85,22 +86,24 @@ export class PasswordPromptModal extends Modal {
       this.password = value
     })
     reveal.attach(setting, text.inputEl)
+    let action: BusyButton | null = null
     text.inputEl.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') void this.submit()
+      if (event.key === 'Enter') void this.submit(action)
     })
     new Setting(this.contentEl).addButton((button) => {
-      button.setButtonText(this.action).onClick(() => void this.submit())
+      action = button
+      button.setButtonText(this.action).onClick(() => void this.submit(button))
       if (this.warning) button.setWarning()
       else button.setCta()
     })
     window.setTimeout(() => text.inputEl.focus(), 0)
   }
 
-  private async submit(): Promise<void> {
+  private async submit(button: BusyButton | null): Promise<void> {
     if (this.busy || !this.password) return
     this.busy = true
     try {
-      await this.run(this.password)
+      await busy(button, () => this.run(this.password))
       this.close()
     } catch (error) {
       new Notice(`Obsidian Connect: ${error instanceof Error ? error.message : String(error)}`, 8_000)

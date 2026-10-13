@@ -263,3 +263,29 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* A button whose click is still being worked on: greyed out, spinning. */
+.connect-busy {
+  opacity: 0.6;
+  cursor: progress;
+  pointer-events: none;
+}
+
+.connect-busy::after {
+  content: '';
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  margin-left: 0.5em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.15em;
+  animation: connect-spin 0.7s linear infinite;
+}
+
+@keyframes connect-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

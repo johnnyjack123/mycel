@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting } from 'obsidian'
 import type { IncomingShare } from '@obsidian-connect/shared'
+import { busy } from '../busy.js'
 import type { Sharing } from './Sharing.js'
 import { log } from '../log.js'
 
@@ -44,7 +45,7 @@ export class IncomingModal extends Modal {
           button
             .setButtonText(`Add to "${this.vaultName}"`)
             .setCta()
-            .onClick(() => void this.accept(share))
+            .onClick(() => void busy(button, () => this.accept(share)))
         )
     }
   }

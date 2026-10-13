@@ -1,6 +1,7 @@
 import { App, Modal, Notice, Setting, TextComponent } from 'obsidian'
 import qrcode from 'qrcode-generator'
 import { newTotpSecret, totpKeyText, totpMatches, totpUri, type Bytes } from '@obsidian-connect/shared/crypto'
+import { busy, type BusyButton } from '../busy'
 import { PasswordReveal } from './reveal'
 import type { KeepProblem } from './Session.js'
 
@@ -257,11 +258,12 @@ export class TotpSetupModal extends Modal {
     else this.appStep()
   }
 
-  private async busyWith(task: () => Promise<void>): Promise<void> {
+  /** `button`: the one clicked, or the one Enter stands for; it spins meanwhile. */
+  private async busyWith(task: () => Promise<void>, button: BusyButton | null): Promise<void> {
     if (this.busy) return
     this.busy = true
     try {
-      await task()
+      await busy(button, task)
     } catch (error) {
       new Notice(`Obsidian Connect: ${error instanceof Error ? error.message : String(error)}`, 8_000)
     } finally {
@@ -284,31 +286,30 @@ export class TotpSetupModal extends Modal {
       this.password = value
     })
     reveal.attach(setting, text.inputEl)
+    let action: BusyButton | null = null
     const next = (): void =>
       void this.busyWith(async () => {
         if (!this.password) return
         if (!(await this.setup.checkPassword(this.password))) throw new Error('The password is not right.')
         this.go('recovery')
-      })
+      }, action)
     text.inputEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') next()
     })
-    new Setting(this.contentEl).addButton((button) =>
-      button
-        .setButtonText('Continue')
-        .setCta()
-        .onClick(next)
-    )
+    new Setting(this.contentEl).addButton((button) => {
+      action = button
+      button.setButtonText('Continue').setCta().onClick(next)
+    })
     window.setTimeout(() => text.inputEl.focus(), 0)
   }
 
   private recoveryStep(): void {
-    const makeCode = (): void =>
+    const makeCode = (button: BusyButton): void =>
       void this.busyWith(async () => {
         this.recoveryCode = await this.setup.makeRecoveryCode(this.password)
         this.noted = false
         this.go('new-code')
-      })
+      }, button)
     if (!this.setup.hasRecoveryCode()) {
       this.contentEl.createEl('p', {
         text: 'Your account has no recovery code. If you lose your phone, the recovery code is the way back in without a code - make one first.'
@@ -317,7 +318,7 @@ export class TotpSetupModal extends Modal {
         button
           .setButtonText('Make a recovery code')
           .setCta()
-          .onClick(makeCode)
+          .onClick(() => makeCode(button))
       )
       return
     }
@@ -331,7 +332,7 @@ export class TotpSetupModal extends Modal {
           .setCta()
           .onClick(() => this.go('app'))
       )
-      .addButton((button) => button.setButtonText('No, make a new one').onClick(makeCode))
+      .addButton((button) => button.setButtonText('No, make a new one').onClick(() => makeCode(button)))
   }
 
   private newCodeStep(): void {
@@ -389,6 +390,7 @@ export class TotpSetupModal extends Modal {
         })
       )
       .nameEl.addClass('connect-code')
+    let action: BusyButton | null = null
     const turnOn = (): void =>
       void this.busyWith(async () => {
         if (!/^\d{6}$/.test(this.code)) throw new Error('The code has six digits.')
@@ -400,7 +402,7 @@ export class TotpSetupModal extends Modal {
         await this.setup.enable(this.password, secret, this.code)
         new Notice('Obsidian Connect: two-factor sign-in is on. Your other devices sign in again, with a code.', 10_000)
         this.close()
-      })
+      }, action)
     const field = codeField(
       new Setting(this.contentEl).setName('Code from the app'),
       (value) => {
@@ -408,12 +410,10 @@ export class TotpSetupModal extends Modal {
       },
       turnOn
     )
-    new Setting(this.contentEl).addButton((button) =>
-      button
-        .setButtonText('Turn on')
-        .setCta()
-        .onClick(turnOn)
-    )
+    new Setting(this.contentEl).addButton((button) => {
+      action = button
+      button.setButtonText('Turn on').setCta().onClick(turnOn)
+    })
     window.setTimeout(() => field.inputEl.focus(), 0)
   }
 

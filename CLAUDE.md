@@ -589,6 +589,9 @@ pull snapshots from on a schedule, in two forms:
 - **Push right after every commit** — the user asked for that (2026-09-27);
   it replaces "never push without being asked" for this repository.
 - Comments explain *why*, never narrate *what*.
+- **A button that waits for the server or the disk runs its work through `busy`**
+  (`src/busy.ts`): greyed out and spinning at once, no second click. Without it a
+  click that waited looked like one that went nowhere (asked for by the user).
 - **Every change the user installs gets a new version**, so the version
   Obsidian shows tells whether a device is current. One version for
   everything: `manifest.json`, `versions.json` (plus its entry), and every

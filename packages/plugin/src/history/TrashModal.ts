@@ -1,4 +1,5 @@
 import { App, Modal, Notice, Setting } from 'obsidian'
+import { busy } from '../busy.js'
 import type { DeletedItem, Trash } from '../sync/Trash.js'
 import { formatSize as size } from './media.js'
 
@@ -44,7 +45,7 @@ export class TrashModal extends Modal {
           button
             .setButtonText('Restore')
             .setCta()
-            .onClick(() => void this.restore(item))
+            .onClick(() => void busy(button, () => this.restore(item)))
         )
     }
   }
