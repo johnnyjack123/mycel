@@ -276,6 +276,35 @@ if (exported) {
   } catch (error) {
     check(false, 'the plugin can be constructed', error?.stack ?? String(error))
   }
+
+  // Unloaded while its start still waits for the server - the plugin turned off
+  // and on again. A start that went on afterwards left a second copy running
+  // unseen, with a connection of its own, which merged the note open in the
+  // new copy with conflict markers.
+  try {
+    registered.layoutReady.length = 0
+    const instance = new PluginClass()
+    await instance.onload()
+    let answer
+    const session = instance.session
+    session.unlock = () => new Promise((resolve) => (answer = resolve))
+    session.openVault = async () => ({ vaultId: 'vault', name: 'Test vault', key: new Uint8Array(32) })
+    const starting = Promise.all(registered.layoutReady.map((callback) => callback()))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await instance.onunload()
+    answer({ accountId: 'account', username: 'someone', accountSecret: new Uint8Array(32), bundle: { vaults: [] } })
+    await starting
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    check(
+      instance.socket === null && instance.store === null && instance.unlocked === null,
+      'a start the plugin was unloaded during builds nothing afterwards',
+      { socket: Boolean(instance.socket), store: Boolean(instance.store), unlocked: Boolean(instance.unlocked) }
+    )
+    for (const callback of registered.layoutReady) await callback()
+    check(instance.socket === null && instance.opening === false, 'and an unloaded plugin does not start again when called back')
+  } catch (error) {
+    check(false, 'a start the plugin was unloaded during builds nothing afterwards', error?.stack ?? String(error))
+  }
 }
 
 // A bundle built from other sources than the ones here - once from a stash that

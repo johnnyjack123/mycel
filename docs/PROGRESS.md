@@ -1,11 +1,11 @@
 # Progress
 
-_Last updated: 2026-10-13 · **0.6.4 on `feat/accounts`: milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built; 0.6.4 fixes conflict markers the user saw on a device nobody typed on (invariant 25) and makes the log easier to read. Next: the user installs 0.6.4 and checks it; then milestone 0.7 (plugins and their settings) is designed with the user.**_
+_Last updated: 2026-10-13 · **0.6.5 on `feat/accounts`: milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built; the conflict markers the user saw came from a second copy of the plugin left running by an unload during its start (fixed in 0.6.5, invariant 26), and 0.6.4 fixed a related rebinding bug (invariant 25) and made the log easier to read. Next: the user installs 0.6.5, restarts Obsidian on every device and checks it; then milestone 0.7 (plugins and their settings) is designed with the user.**_
 
 ## Where we are
 
 Monorepo (`npm` workspaces): `packages/shared`, `packages/server`, `packages/plugin`.
-**Read `CLAUDE.md` first** - invariants (25 of them, each from a real bug), the
+**Read `CLAUDE.md` first** - invariants (26 of them, each from a real bug), the
 architecture, the version roadmap to 1.0.0 and the conventions. Designs:
 `docs/PHASE2.md` (keys, sharing), `docs/PHASE3.md` (accounts without names,
 contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments),
@@ -42,9 +42,15 @@ online, and the note came out with nested conflict markers. Reproduced in `test:
 an editor binding again while someone types elsewhere merged Obsidian's lagging save
 and its own lagging text in as edits (invariant 25); the typing device also lost the
 keystrokes typed during its own rebind. Fixed, and the log made easier to read
-(conflicts as errors, errors and warnings first when copied). The user installs 0.6.4
-(plugin only; the server is unchanged since 0.6.3) on every device, including any
-third one (see the open questions), and tries fast typing again.
+(conflicts as errors, errors and warnings first when copied).
+
+**0.6.5** (2026-10-13): the user said nothing happened on the other device and no
+third one was online. The third client was a second copy of the plugin on that other
+computer: loaded at 19:59:47, unloaded 12 s later while its start still waited, and
+the start went on and built everything after the unload (invariant 26). Fixed and
+checked in `test:load`. The user installs 0.6.5 (plugin only; the server is unchanged
+since 0.6.3) and **restarts Obsidian fully** on every device - a copy left running by
+0.6.3 survives turning the plugin off and on - then tries fast typing again.
 
 Then **milestone 0.7: syncing plugins and their settings** - not designed yet. The
 direction the user gave is in CLAUDE.md ("Not built yet"): snapshots from a chosen
@@ -89,16 +95,16 @@ Nothing. Everything is committed and pushed.
 
 ## Open questions for the user
 
-0. **The conflict markers of 2026-10-13: which device merged?** The device that
-   typed (detailed logging, `ws://localhost:1234`) received the conflict as frames
-   #248 (121 B) and #249 (224 B) at 20:03:22.66 from another client, which sent
-   presence 30 ms before them - consistent with an editor letting go and binding
-   again. Neither that log nor the other computer's (INFO only, last line 20:00:16)
-   shows a `merge (...)` or `two versions kept` line, which every merge logs. But
-   the note had `3 present` - three clients, where the user counted two devices.
-   Asked: which third Obsidian (another vault, a phone, the contact the note is
-   shared with) was open, and its log. The mechanism is reproduced and fixed either
-   way; the log would show what made that editor bind again.
+0. **The conflict markers of 2026-10-13 - answered by 0.6.5.** The device that
+   typed received the conflict as frames #248 and #249 at 20:03:22.66 from another
+   client. Neither log file shows a merge, and the note had `3 present` while the
+   user had two devices online (the account it is shared with had its vault
+   closed). Of the two others, one renewed its presence in all three shared notes
+   at the same moment and never had a caret - the copy of 0.6.3 on the other
+   computer that outlived its unload at 19:59:59; the other matches that computer's
+   live copy, loaded at 20:00:16, with the note open. Not confirmed on the device:
+   if Obsidian on that computer was not restarted since, its developer console
+   would show the copy's `merge (...)` lines - offered to the user as a check.
 1. **"Compare versions" on a note (2026-10-12).** The user asked whether an editor
    is not bound locally, so offline edits merge cleanly. Answer: yes - typing in a
    bound editor, offline too, goes into the CRDT and merges without a review. A
@@ -148,15 +154,15 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
 
 ## Verification state
 
-At 0.6.4, run 2026-10-13 before its commit: `typecheck` and `build` pass;
-`test:merge` 145, `test:load` 12, `test:rooms` 233, `test:sync` 26, `test:recovery`
+At 0.6.5, run 2026-10-13 before its commit: `typecheck` and `build` pass;
+`test:merge` 145, `test:load` 14, `test:rooms` 233, `test:sync` 26, `test:recovery`
 56, `test:account` 46 - all pass. Against a scratch server on 1235: `test:socket`
 19, `test:vault` 230 - all pass (the user's server on 1234 was not running, before
 or after). The test scripts' own `tsc` (against the Obsidian stub) shows the same 8
 errors in `scripts/` as before. CI green up to 0.6.4. Bug-back checks per version:
 `docs/CHANGELOG.md`. Seen on a device by the user: 0.6.2 (recovery and 2FA). Not
-verified: 0.6.3's question in the recovery on a device, 0.6.4 on a device, the
-Docker image.
+verified: 0.6.3's question in the recovery on a device, 0.6.4 and 0.6.5 on a
+device, the Docker image.
 
 How to run the end-to-end suites without touching the user's server: CLAUDE.md,
 Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
@@ -173,6 +179,9 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
   online. Reproduced (an editor binding again while someone types elsewhere), fixed
   (invariant 25), together with keystrokes lost during the typing device's own
   rebind; the log restructured as asked.
+- 0.6.5: the user said nothing happened on the other device and no third one was
+  online. The third client was a copy of the plugin that outlived its unload there
+  (invariant 26); that was the cause. Fixed and checked in `test:load`.
 
 ### 2026-10-12
 - Milestone 0.6 designed with the user (`docs/PHASE5.md`). 0.6.0: a password change

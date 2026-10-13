@@ -8,6 +8,24 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.6 - recovery codes and two-factor sign-in (from 2026-10-12, spec `docs/PHASE5.md`)
 
+- **0.6.5** (2026-10-13) - the cause of the conflict markers the user saw (invariant
+  26). The user had typed on one device; on the other the note was only open, and no
+  third device was online. That other computer had loaded 0.6.3 at 19:59:47 and was
+  unloaded 12 s later without having connected: its start was still waiting, went on
+  after the unload and built a whole second copy of the plugin - connection, store,
+  documents - with no editor and a log already closed. That copy wrote the file on
+  every change from the typing device and took Obsidian's saves of the editor of the
+  live copy, a few keystrokes behind, for edits made there: two merges, nested
+  conflict markers, and no merge in any log file. It was the third client in
+  `3 present` - one that renewed its presence in all three shared notes at the same
+  moment, never with a caret. 0.6.4's fix covers a rebinding editor, not this, since
+  that copy never had an editor. Now every stop bumps a run number (`syncRun`), a
+  start checks it after every wait and builds nothing once it moved, and an unloaded
+  plugin never starts again (`onLayoutReady` calls it back too). A stop during
+  `store.start()` no longer leaves `started` set for the next start. `test:load` 14.
+  Checked by putting the bug back: with the 0.6.4 `main.ts`, the start went on after
+  the unload and built a socket, and both new checks failed.
+
 - **0.6.4** (2026-10-13) - conflict markers on a device nobody typed on, and keystrokes
   lost while an editor bound again (invariant 25). Reported by the user: two devices
   online, fast typing on one, and the note came out with nested `<<<<<<<` blocks.
@@ -28,8 +46,9 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
   "Log". `test:vault` 230, `test:merge` 145. Checked by putting the bug back: with the
   0.6.3 sources, the three new checks of A typing while the note is shared and
   unshared and B's editor binds again failed (conflict markers, characters lost), and
-  nothing else. Neither of the user's two logs shows the merge that happened; a third
-  client was present in the note (`3 present`), and its log is asked for.
+  nothing else. Neither of the user's two logs shows the merge that happened; the
+  third client present in the note turned out to be a second copy of the plugin
+  (0.6.5).
 
 - **0.6.3** (2026-10-12) - a recovery can keep two-factor sign-in. Asked by the user
   after trying 0.6.2: a forgotten password meant a new entry in the authenticator app.

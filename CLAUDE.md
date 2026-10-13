@@ -176,6 +176,12 @@ someone's notes. Treat them as rules, not preferences.
     binding starts again from what it and the document said when it let go
     (`released`). Meanwhile the file stays Obsidian's (`EditorSync.rebinding`):
     writing it made Obsidian reload the editor and drop what was typed in between.
+26. **Nothing of the plugin outlives its unload, or a stop.** A start waits for
+    the server and the disk; a plugin turned off and on again meanwhile kept the
+    old start going, and it built a second, unseen copy of the plugin - its own
+    connection, no editor, a closed log - that took the live copy's editor saves
+    for edits and merged them with conflict markers. Every stop bumps `syncRun`,
+    `openSync` checks it after every wait, and an unloaded plugin never starts.
 
 ## Architecture
 

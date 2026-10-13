@@ -217,6 +217,16 @@ export default class ObsidianConnectPlugin extends Plugin {
   private started = false
   private starting = false
   private opening = false
+  /**
+   * Bumped by every stop. A start still waiting for the server or the disk
+   * when it happens builds nothing after it: one that went on after the
+   * plugin was unloaded left a second copy of the plugin running, unseen -
+   * its own connection, no editor, a log nobody reads - which took
+   * Obsidian's saves of the note open in the live copy for edits, and
+   * merged them in with conflict markers.
+   */
+  private syncRun = 0
+  private unloaded = false
 
   async onload(): Promise<void> {
     await this.loadSettings()
@@ -300,6 +310,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   }
 
   async onunload(): Promise<void> {
+    this.unloaded = true
     await this.stopSync()
     log.info('unloaded')
     await log.detach()
@@ -590,17 +601,23 @@ export default class ObsidianConnectPlugin extends Plugin {
   // --- lifecycle -----------------------------------------------------------
 
   private async startSync(): Promise<void> {
-    if (!this.settings.syncEnabled || this.store || this.opening) return
+    // Obsidian still calls back an unloaded plugin, `onLayoutReady` included.
+    if (this.unloaded || !this.settings.syncEnabled || this.store || this.opening) return
+    const run = this.syncRun
     this.opening = true
     try {
-      await this.openSync()
+      await this.openSync(run)
     } finally {
-      this.opening = false
+      // A stop in between let a newer start begin; the flag is its flag then.
+      if (run === this.syncRun) this.opening = false
     }
   }
 
-  private async openSync(): Promise<void> {
+  /** Checked after every wait: whatever it built is torn down by the stop that bumped `syncRun`. */
+  private async openSync(run: number): Promise<void> {
+    const stopped = (): boolean => run !== this.syncRun
     const unlocked = await this.session.unlock()
+    if (stopped()) return
     if (!unlocked) {
       if (this.settings.username) {
         new Notice('Obsidian Connect: sign in again in the plugin settings.', 10_000)
@@ -615,10 +632,12 @@ export default class ObsidianConnectPlugin extends Plugin {
     try {
       vault = await this.session.openVault(unlocked, this.vaultName())
     } catch (error) {
+      if (stopped()) return
       log.error('opening the vault failed', error)
       new Notice(`Obsidian Connect could not open the vault "${this.vaultName()}". Is the server reachable?`, 10_000)
       return
     }
+    if (stopped()) return
     this.vault = vault
     const keys = new KeyRing(vault, unlocked, this.api, this.secrets)
     this.keys = keys
@@ -643,9 +662,13 @@ export default class ObsidianConnectPlugin extends Plugin {
     // The account's settings first: the scan depends on what is excluded.
     const accountSettings = new AccountSettings()
     this.accountSettings = accountSettings
-    this.settingsStore = openIndexedDb(`obsidian-connect/${vault.vaultId}/set`, accountSettings.doc)
-    await this.settingsStore.whenSynced
-    this.settingsCursor = await LocalCursor.load(this.settingsStore)
+    const settingsStore = openIndexedDb(`obsidian-connect/${vault.vaultId}/set`, accountSettings.doc)
+    this.settingsStore = settingsStore
+    await settingsStore.whenSynced
+    if (stopped()) return
+    const settingsCursor = await LocalCursor.load(settingsStore)
+    if (stopped()) return
+    this.settingsCursor = settingsCursor
     socket.register(settingsRoom(vault.vaultId), accountSettings.doc, {
       crypto: keys.settingsCrypto(),
       cursor: this.settingsCursor
@@ -737,6 +760,7 @@ export default class ObsidianConnectPlugin extends Plugin {
 
     socket.connect()
     await Promise.race([socket.whenSynced(settingsRoom(vault.vaultId)), delay(this.settings.syncTimeoutMs)])
+    if (stopped()) return
     if (this.movedSettings && accountSettings.empty) accountSettings.set(this.movedSettings)
     this.movedSettings = null
     store.setOptions(this.storeOptions())
@@ -750,7 +774,10 @@ export default class ObsidianConnectPlugin extends Plugin {
     if (!store || this.started || this.starting) return
     this.starting = true
     try {
-      this.started = await store.start()
+      const started = await store.start()
+      // Stopped meanwhile: that stop reset these, for the next start.
+      if (this.store !== store) return
+      this.started = started
       if (!this.started) {
         new Notice(
           `Obsidian Connect: no answer from ${this.settings.serverUrl}. Nothing is synced until it responds.`,
@@ -785,7 +812,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       log.error('starting sync failed', error)
       new Notice('Obsidian Connect could not start; see the console.')
     } finally {
-      this.starting = false
+      if (this.store === store) this.starting = false
     }
     this.editors.refresh()
     this.renderStatus()
@@ -882,6 +909,9 @@ export default class ObsidianConnectPlugin extends Plugin {
   }
 
   private async stopSync(): Promise<void> {
+    // A start under way stops at its next step; what it built so far goes below.
+    this.syncRun += 1
+    this.opening = false
     // Editors first: releasing them hands their files back to the store,
     // which must still be there to take them.
     this.editors.unbindAll()
