@@ -13,7 +13,7 @@ contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments),
 `docs/SERVER.md` for running the server; `docs/CHANGELOG.md` for every version and
 how its fixes were verified.
 
-Branch `feat/accounts`, pushed, CI green up to `bdb0c5d` (0.6.3). Not merged to
+Branch `feat/accounts`, pushed, CI green up to `354c1c4` (0.6.4). Not merged to
 `main` - merging is what first builds and publishes the Docker image. The user
 runs the server with npm on the laptop (port 1234, `packages/server/data` - never
 touch either; see CLAUDE.md, Gotchas) and installs the plugin by copying
@@ -153,7 +153,7 @@ At 0.6.4, run 2026-10-13 before its commit: `typecheck` and `build` pass;
 56, `test:account` 46 - all pass. Against a scratch server on 1235: `test:socket`
 19, `test:vault` 230 - all pass (the user's server on 1234 was not running, before
 or after). The test scripts' own `tsc` (against the Obsidian stub) shows the same 8
-errors in `scripts/` as before. CI green up to 0.6.3. Bug-back checks per version:
+errors in `scripts/` as before. CI green up to 0.6.4. Bug-back checks per version:
 `docs/CHANGELOG.md`. Seen on a device by the user: 0.6.2 (recovery and 2FA). Not
 verified: 0.6.3's question in the recovery on a device, 0.6.4 on a device, the
 Docker image.
