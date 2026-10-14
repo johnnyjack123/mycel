@@ -13,7 +13,7 @@ contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments),
 `docs/SERVER.md` for running the server; `docs/CHANGELOG.md` for every version and
 how its fixes were verified.
 
-Branch `feat/accounts`, pushed, CI green up to `b955954` (0.6.7). Not merged to
+Branch `feat/accounts`, pushed, CI green up to `c625e14` (0.6.8). Not merged to
 `main` - merging is what first builds and publishes the Docker image. The user
 runs the server with npm on the laptop (port 1234, `packages/server/data` - never
 touch either; see CLAUDE.md, Gotchas) and installs the plugin by copying
@@ -172,7 +172,7 @@ At 0.6.8, run 2026-10-14 before its commit: `typecheck` and `build` pass;
 `test:merge` 150, `test:load` 14, `test:rooms` 236, `test:sync` 26, `test:recovery`
 56, `test:account` 50 - all pass. Against a scratch server on 1235: `test:socket`
 19, `test:vault` 230 - all pass (the user's server on 1234 was not running, before
-or after). CI green up to 0.6.7. Bug-back checks per version: `docs/CHANGELOG.md`.
+or after). CI green up to 0.6.8. Bug-back checks per version: `docs/CHANGELOG.md`.
 Seen on a device by the user: 0.6.2 (recovery and 2FA), 2FA in depth on 0.6.5
 (2026-10-14). Not verified on a device: 0.6.3's question in the recovery, 0.6.4 and
 0.6.5 with fast typing, 0.6.6 to 0.6.8 (2FA off, spinners, live settings), the Docker
