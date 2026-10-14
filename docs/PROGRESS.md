@@ -207,7 +207,9 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
   the file Obsidian's only while the same store binds the editor again
   (`EditorSync.rebinding`); a new store has to settle against the server first.
 - The plugin id contains "obsidian", which the community directory refuses (0.9).
-- The Docker image has never been built (CI builds it on `main` only).
+- The Docker image is private, like the repository: pulling it needs `docker login
+  ghcr.io` with a token that may read packages. It has passed CI's smoke test but
+  has not run on a real server yet.
 
 ## Verification state
 
@@ -216,6 +218,10 @@ At 0.6.8, run 2026-10-14 before its commit: `typecheck` and `build` pass;
 56, `test:account` 50 - all pass. Against a scratch server on 1235: `test:socket`
 19, `test:vault` 230 - all pass (the user's server on 1234 was not running, before
 or after). CI green up to 0.6.8. Bug-back checks per version: `docs/CHANGELOG.md`.
+The merge into `main` (`b870381`, 2026-10-14): CI green, its `docker` job built
+the image, started it (health check, `invite` through the CLI) and published
+`ghcr.io/johnnyjack123/obsidian-connect-server:latest` and `:sha-b870381`; the
+`latest-build` pre-release holds 0.6.8.
 Seen on a device by the user: 0.6.2 (recovery and 2FA), 2FA in depth on 0.6.5
 (2026-10-14), 0.6.8 - 2FA off with the password, spinners, live settings - "works as
 expected" (2026-10-14). Not reported on a device: 0.6.3's question in the recovery,
