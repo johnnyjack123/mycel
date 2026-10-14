@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-14 · **0.6.8 merged into `main`: milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built, and 0.6.8 confirmed working on the user's devices. The roadmap was reordered by the user: 0.7 the backup API, 0.8 sharing a folder and the small fixes, 0.9 hardening and a security audit, plugin sync after 1.0.0. Next: milestone 0.7 (the backup API), designed with the user first, on its own branch `feat/backup-api` from `main`.**_
+_Last updated: 2026-10-15 · **0.6.8 merged into `main` (`feat/accounts` deleted): milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built, and 0.6.8 confirmed working on the user's devices. The roadmap was reordered by the user: 0.7 the backup API, 0.8 sharing a folder and the small fixes, 0.9 hardening and a security audit, plugin sync after 1.0.0. Next: milestone 0.7 (the backup API), designed with the user first, on its own branch `feat/backup-api` from `main`.**_
 
 ## Where we are
 
@@ -92,7 +92,9 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
     devices until then.
 - **0.9 - hardening and a security audit.** Frames signed per author, not only
   authenticated by the note's key (`docs/PHASE3.md`); every note live without all
-  of them in memory (CLAUDE.md, "Not built yet"); a name and plugin id without
+  of them in memory - the device watches every note's room without loading it,
+  the server announces new frames, and the note is loaded briefly, written and let
+  go (direction in CLAUDE.md, "Not built yet"); a name and plugin id without
   "Obsidian" (the community directory refuses an id containing `obsidian`; the
   plugin folder, `data.json` and the `localStorage` keys move with the id, so it
   needs a migration); a review of the cryptography and the server's API, including

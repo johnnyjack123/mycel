@@ -580,8 +580,13 @@ note, including what is added to it later. Not designed yet.
 **Every note live (0.9).** A device holds at most `maxLoadedDocuments` notes open
 (500 by default, a setting under *This device*); the others get another device's
 change only when opened or at the next start, and their files stay old until
-then. Raising the setting is the workaround; the fix keeps memory bounded and
-still brings every change in.
+then. Raising the setting is the workaround (measured: about 6 to 32 KB of memory
+per loaded note of 3000 characters, plus an IndexedDB database and a subscription
+each). The fix, to be designed in 0.9, keeps memory bounded and still brings every
+change in: the device watches every note without loading it - only its room and
+last seq, no document -, the server announces new frames in a watched room, and
+the device loads that note briefly, catches up, writes its file and lets it go
+again (`evict`). A setting of 0 for "no limit" would only be the workaround.
 
 **Syncing plugins and their settings (wanted, optional, after 1.0.0).** Moved
 back by the user on 2026-10-14. Not through the
