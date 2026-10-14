@@ -481,6 +481,26 @@ export default class ObsidianConnectPlugin extends Plugin {
     return bundle.totp ? 'on' : 'off'
   }
 
+  /**
+   * What the server says about the account now - 2FA, the recovery code - and
+   * an open settings tab shows it. Another device changed it, or this one was
+   * away when that happened. Offline, what this device knew stays.
+   */
+  async refreshAccount(): Promise<void> {
+    const unlocked = this.unlocked
+    if (!unlocked) return
+    try {
+      const refreshed = await this.session.refreshBundle(unlocked)
+      // Signed out or in again meanwhile: that is the account now.
+      if (this.unlocked !== unlocked) return
+      this.unlocked = refreshed
+    } catch (error) {
+      log.debug(`asking the server about the account failed: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+    this.settingTab?.refresh()
+  }
+
   openTotpSetup(intro: string | null = null): void {
     new TotpSetupModal(
       this.app,
@@ -494,14 +514,14 @@ export default class ObsidianConnectPlugin extends Plugin {
           if (!this.unlocked) throw new Error('Sign in first.')
           const made = await this.session.makeRecoveryCode(this.unlocked, password)
           this.unlocked = made.unlocked
-          this.settingTab?.display()
+          this.settingTab?.refresh()
           return made.code
         },
         label: () => this.settings.username,
         enable: async (password, secret, code) => {
           if (!this.unlocked) throw new Error('Sign in first.')
           this.unlocked = await this.session.enableTotp(this.unlocked, password, secret, code)
-          this.settingTab?.display()
+          this.settingTab?.refresh()
         }
       },
       intro
@@ -517,7 +537,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       async (password) => {
         if (!this.unlocked) throw new Error('Sign in first.')
         this.unlocked = await this.session.disableTotp(this.unlocked, password)
-        this.settingTab?.display()
+        this.settingTab?.refresh()
         new Notice('Obsidian Connect: two-factor sign-in is off.')
       },
       true
@@ -545,7 +565,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         if (!this.unlocked) throw new Error('Sign in first.')
         const made = await this.session.makeRecoveryCode(this.unlocked, password)
         this.unlocked = made.unlocked
-        this.settingTab?.display()
+        this.settingTab?.refresh()
         new RecoveryCodeModal(this.app, made.code, replacing ? 'The code before this one no longer works.' : 'Your account now has a recovery code.').open()
       }
     ).open()
@@ -560,7 +580,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       async (password) => {
         if (!this.unlocked) throw new Error('Sign in first.')
         this.unlocked = await this.session.deleteRecoveryCode(this.unlocked, password)
-        this.settingTab?.display()
+        this.settingTab?.refresh()
         new Notice('Obsidian Connect: the recovery code is deleted.')
       },
       true
@@ -592,7 +612,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     await this.stopSync()
     this.unlocked = null
     this.renderStatus()
-    this.settingTab?.display()
+    this.settingTab?.refresh()
     new Notice(
       'Obsidian Connect: this device was signed out - on another device the password was changed, the account recovered or two-factor sign-in turned on. Sign in again in the plugin settings.',
       0
@@ -740,9 +760,11 @@ export default class ObsidianConnectPlugin extends Plugin {
     store.onReview((review) => {
       void reviews.add(review).catch((error: unknown) => log.error(`keeping the review of ${review.path} failed`, error))
     })
-    this.unwatchSettings = accountSettings.onChange(() => {
+    this.unwatchSettings = accountSettings.onChange((_settings, remote) => {
       this.store?.setOptions(this.storeOptions())
       this.attachments?.setOptions(this.attachmentOptions())
+      // Changed on another device: an open settings tab shows it at once.
+      if (remote) this.settingTab?.refresh()
     })
     this.unwatchSocket = socket.onStatus((status) => {
       this.status = status
@@ -755,6 +777,8 @@ export default class ObsidianConnectPlugin extends Plugin {
       else {
         void store.resume().then(() => this.editors.refresh())
         void this.resumeAttachments()
+        // What changed on the account while this device was away was not told to it.
+        void this.refreshAccount()
       }
     })
     const unwatchNotes = this.index.onChange(() => this.scheduleIndexApply())
@@ -1227,7 +1251,11 @@ export default class ObsidianConnectPlugin extends Plugin {
     }
     if (kind === 'contact-removed') {
       this.contacts?.forget((payload as ContactNotice).account)
-      this.settingTab?.display()
+      this.settingTab?.refresh()
+      return
+    }
+    if (kind === 'account-changed') {
+      void this.refreshAccount()
       return
     }
     void this.sharing?.onNotify(kind, payload as ShareNotice).then(() => this.editors.refresh())
@@ -1238,7 +1266,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       const added = (await this.contacts?.processInbox()) ?? 0
       if (added > 0) {
         new Notice(`Obsidian Connect: ${added} contact(s) added.`)
-        this.settingTab?.display()
+        this.settingTab?.refresh()
       }
     } catch (error) {
       log.warn('reading the contact inbox failed', error)

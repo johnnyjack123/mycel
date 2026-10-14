@@ -233,6 +233,11 @@ export class Session {
     return { ...unlocked, bundle }
   }
 
+  /** What the server says about the account now: 2FA or a recovery code changed on another device. */
+  async refreshBundle(unlocked: Unlocked): Promise<Unlocked> {
+    return this.withBundle(unlocked, await this.api.account())
+  }
+
   /** Makes a recovery code, or a new one in place of the old - which stops working at once. */
   async makeRecoveryCode(unlocked: Unlocked, password: string): Promise<{ unlocked: Unlocked; code: string }> {
     const loginKey = await this.currentLoginKey(unlocked, password)

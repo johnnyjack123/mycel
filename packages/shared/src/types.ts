@@ -359,8 +359,13 @@ export interface AcceptRequest {
   vaultId: string
 }
 
-/** Why a notification was sent to an account. */
-export type NotifyKind = 'share-added' | 'share-changed' | 'share-removed' | 'contact' | 'contact-removed'
+/**
+ * Why a notification was sent to an account. `account-changed` (0.6.8): what the
+ * account bundle says changed - two-factor sign-in turned off, a recovery code
+ * made or deleted - and the devices still signed in show it; its notice names
+ * the account. Older plugins ignore kinds they do not know.
+ */
+export type NotifyKind = 'share-added' | 'share-changed' | 'share-removed' | 'contact' | 'contact-removed' | 'account-changed'
 
 export interface ShareNotice {
   docId: string
@@ -368,7 +373,7 @@ export interface ShareNotice {
   role?: ShareRole
 }
 
-/** For `contact` (something waits in the inbox) and `contact-removed`. */
+/** For `contact` (something waits in the inbox), `contact-removed` and `account-changed`. */
 export interface ContactNotice {
   account: string
 }

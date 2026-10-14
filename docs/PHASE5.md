@@ -213,7 +213,9 @@ In the settings, signed in:
 
 - In the settings, on a signed-in device: the password (0.6.2 to 0.6.5: and a current
   code; an older server answering "the code does not match" is told to update). Moves
-  no generation.
+  no generation; since 0.6.8 the server tells the account's devices
+  (`account-changed`, also for a recovery code made or deleted), and their settings
+  show it at once.
 - By a recovery without a code from the app (above).
 - By the admin: `obsidian-connect user 2fa-off <accountId>`.
 

@@ -741,6 +741,25 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(!forgotten.includes('offline'), 'and so does one the server could not be asked about')
 }
 
+// --- settings of all devices, changed elsewhere -----------------------------------------------
+{
+  const { AccountSettings } = await import('../src/sync/AccountSettings.js')
+  const here = new AccountSettings()
+  const there = new AccountSettings()
+  const remote: boolean[] = []
+  here.onChange((_settings, fromElsewhere) => remote.push(fromElsewhere))
+  here.set({ conflictMarkers: false })
+  there.set({ historyRetentionDays: 7 })
+  Y.applyUpdate(here.doc, Y.encodeStateAsUpdate(there.doc), 'socket')
+  check(
+    remote.join() === 'false,true' && here.get().historyRetentionDays === 7,
+    'a change from another device is told apart from one made here - the open settings show it',
+    remote
+  )
+  here.destroy()
+  there.destroy()
+}
+
 // --- a button busy with its click -----------------------------------------------------------
 {
   const { busy } = await import('../src/busy.js')

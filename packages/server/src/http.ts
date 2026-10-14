@@ -261,6 +261,15 @@ export function createHttpApp(
     })
   })
 
+  /**
+   * Tells the account's devices that its bundle changed: they show 2FA and the
+   * recovery code from it, and otherwise learned of a change only on a restart.
+   */
+  const changed = (accountId: string, bundle: AccountBundle): AccountBundle => {
+    hub.notify(accountId, 'account-changed', { account: accountId })
+    return bundle
+  }
+
   // --- recovery ------------------------------------------------------------------
   // The code is the credential: whoever has it gets the second wrapping, and
   // with it sets a new name and password. Unknown codes count against the
@@ -332,7 +341,7 @@ export function createHttpApp(
     if (!accountId) return undefined
     return guarded(request, reply, async (): Promise<AccountBundle> => {
       const body = (request.body ?? {}) as Partial<TotpDisableRequest>
-      return accounts.bundle(await accounts.disableTotp(accountId, body.loginKey))
+      return changed(accountId, accounts.bundle(await accounts.disableTotp(accountId, body.loginKey)))
     })
   })
 
@@ -341,7 +350,7 @@ export function createHttpApp(
     if (!accountId) return undefined
     return guarded(request, reply, async (): Promise<AccountBundle> => {
       const body = (request.body ?? {}) as Partial<RecoverySetRequest>
-      return accounts.bundle(await accounts.setRecovery(accountId, body.loginKey, body.recovery ?? {}))
+      return changed(accountId, accounts.bundle(await accounts.setRecovery(accountId, body.loginKey, body.recovery ?? {})))
     })
   })
 
@@ -350,7 +359,7 @@ export function createHttpApp(
     if (!accountId) return undefined
     return guarded(request, reply, async (): Promise<AccountBundle> => {
       const body = (request.body ?? {}) as Partial<RecoveryDeleteRequest>
-      return accounts.bundle(await accounts.setRecovery(accountId, body.loginKey, null))
+      return changed(accountId, accounts.bundle(await accounts.setRecovery(accountId, body.loginKey, null)))
     })
   })
 

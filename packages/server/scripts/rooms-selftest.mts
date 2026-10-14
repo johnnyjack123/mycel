@@ -541,12 +541,21 @@ try {
       const record = { recoveryKey: code, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) }
       const wrongPassword = await app.inject({ method: 'POST', url: '/account/recovery', headers: await freshNow(), payload: { loginKey: b64(32), recovery: record } })
       check(wrongPassword.statusCode === 403, 'a token alone does not make a recovery code', wrongPassword.body)
+      const watching = new Client(erin, hexId())
+      httpHub.attach(watching)
+      bystander.take()
       const made = await app.inject({ method: 'POST', url: '/account/recovery', headers: await freshNow(), payload: { loginKey: erinLogin, recovery: record } })
       check(
         made.statusCode === 200 && typeof (made.json() as { recovery?: { createdAt?: number } }).recovery?.createdAt === 'number',
         'with the password it does, and the answer is the bundle with it',
         made.body
       )
+      check(
+        watching.take().some((message) => message.type === 'notify' && message.kind === 'account-changed'),
+        "the account's devices are told, so they show it without a restart"
+      )
+      check(!bystander.take().some((message) => message.type === 'notify'), "and nobody else's")
+      httpHub.detach(watching)
       const unknown = await app.inject({ method: 'POST', url: '/auth/recover', payload: { recoveryKey: b64(32) } })
       check(unknown.statusCode === 401 && (unknown.json() as { error?: string }).error === 'this recovery code is not known here', 'an unknown code is refused', unknown.body)
       const opened = await app.inject({ method: 'POST', url: '/auth/recover', payload: { recoveryKey: code } })
@@ -634,8 +643,15 @@ try {
       const wrongPassword = await app.inject({ method: 'POST', url: '/account/totp/off', headers: signedIn, payload: { loginKey: b64(32) } })
       check(wrongPassword.statusCode === 403, 'turning it off with a wrong password is refused', wrongPassword.body)
       // While codes are blocked, too: the password alone does it.
+      const watching = new Client(ivy, hexId())
+      httpHub.attach(watching)
       const off = await app.inject({ method: 'POST', url: '/account/totp/off', headers: signedIn, payload: { loginKey: ivyKeys.loginKey } })
       check(off.statusCode === 200 && (off.json() as { totp?: boolean }).totp === false, 'turning it off with the password alone', off.body)
+      check(
+        watching.take().some((message) => message.type === 'notify' && message.kind === 'account-changed'),
+        'and the devices still signed in are told, without being signed out'
+      )
+      httpHub.detach(watching)
       const plain = await app.inject({ method: 'POST', url: '/auth/login', payload: { loginKey: ivyKeys.loginKey } })
       check(plain.statusCode === 200 && typeof (plain.json() as { token?: string }).token === 'string', 'afterwards the password alone signs in again')
       await app.close()

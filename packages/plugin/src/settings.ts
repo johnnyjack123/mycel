@@ -61,6 +61,9 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private contactCode = ''
   private removing: string | null = null
   private busy = false
+  /** Between Obsidian opening the tab and closing it: only then is there anything to bring up to date. */
+  private shown = false
+  private refreshWaits = false
 
   /** What the configured server answered; undefined while asking. */
   private probe: ServerProbe | undefined = undefined
@@ -79,6 +82,10 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
   display(): void {
     const { containerEl } = this
+    // Opened just now: what the account says may have changed on another
+    // device while this one was not listening.
+    if (!this.shown && this.plugin.settings.username) void this.plugin.refreshAccount()
+    this.shown = true
     containerEl.empty()
     this.gated = []
     this.serverStatus = null
@@ -102,8 +109,35 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     }
   }
 
+  /**
+   * Shows what changed - on another device, or here outside the tab - if the
+   * tab is open. Not while something typed here would be lost: rebuilding
+   * takes the focus from the field, so it waits until the focus leaves it.
+   * Not during a click being worked on either; that one rebuilds when done.
+   */
+  refresh(): void {
+    if (!this.shown || this.busy) return
+    const focused = document.activeElement
+    if (focused instanceof HTMLElement && this.containerEl.contains(focused) && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA')) {
+      if (this.refreshWaits) return
+      this.refreshWaits = true
+      focused.addEventListener(
+        'blur',
+        () => {
+          this.refreshWaits = false
+          // After the field's own change was taken in.
+          window.setTimeout(() => this.refresh(), 0)
+        },
+        { once: true }
+      )
+      return
+    }
+    this.display()
+  }
+
   /** Asked again every time the settings open: the server may have come up meanwhile. */
   hide(): void {
+    this.shown = false
     if (this.probeTimer !== null) window.clearTimeout(this.probeTimer)
     this.probeTimer = null
     this.probing = 0

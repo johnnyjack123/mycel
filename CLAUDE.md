@@ -344,6 +344,12 @@ and the server holds immutable blobs of its versions:
   plugin's menu for that file. Beside it a mark says whether the note is shared
   and whether only to read; a note shared to read only also gets a lock in the
   header of every view showing it - a phone has no status bar.
+- **The settings tab is live** (`settings.ts` `refresh`): a change of the
+  account-wide settings from another device draws it again, and so does the
+  account's state - 2FA, the recovery code - which the server announces with
+  `account-changed` and a device also asks for on reconnecting and when the tab
+  opens (`refreshAccount`). A field with the focus is never rebuilt under the
+  cursor; the tab waits for it to lose the focus.
 - **The note's menus** (its "…" menu, the file explorer, the editor's right
   click) carry sharing, access, detaching, history and "Compare versions", in
   a section of their own under a label with the plugin's name (Obsidian's menus

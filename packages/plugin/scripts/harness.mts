@@ -218,6 +218,8 @@ export class Device {
       notify: (kind, payload) => {
         if (kind === 'contact') void this.contacts?.processInbox()
         else if (kind === 'contact-removed') this.contacts?.forget((payload as { account: string }).account)
+        // What main.ts's `refreshAccount` does.
+        else if (kind === 'account-changed') void this.refreshAccount()
         else void this.sharing?.onNotify(kind, payload as never).then(() => this.editors.refresh())
       },
       revoked: (room) => void this.sharing?.onRevoked(room).then(() => this.editors.refresh()),
@@ -320,6 +322,7 @@ export class Device {
       if (status === 'connected' && started) {
         void store.resume().then(() => this.editors.refresh())
         void attachments.resume()
+        void this.refreshAccount()
       }
     })
     this.refs = [
@@ -382,6 +385,19 @@ export class Device {
   /** Whether the server keeps a recovery code for the account, as this device last heard. */
   get hasRecoveryCode(): boolean | undefined {
     return this.unlocked?.bundle.recovery === undefined ? undefined : this.unlocked.bundle.recovery !== null
+  }
+
+  /** When the account's recovery code was made, as this device last heard; null for none. */
+  get recoveryMadeAt(): number | null | undefined {
+    const recovery = this.unlocked?.bundle.recovery
+    return recovery === undefined ? undefined : (recovery?.createdAt ?? null)
+  }
+
+  private async refreshAccount(): Promise<void> {
+    const unlocked = this.unlocked
+    if (!unlocked) return
+    const refreshed = await this.session.refreshBundle(unlocked).catch(() => null)
+    if (refreshed && this.unlocked === unlocked) this.unlocked = refreshed
   }
 
   /** The sign-in screen's "Forgot your password?": signs this device in under the name and password chosen. */

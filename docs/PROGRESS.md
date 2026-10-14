@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-13 · **0.6.5 on `feat/accounts`: milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built; the conflict markers the user saw came from a second copy of the plugin left running by an unload during its start (fixed in 0.6.5, invariant 26), and 0.6.4 fixed a related rebinding bug (invariant 25) and made the log easier to read. Next: the user installs 0.6.5, restarts Obsidian on every device and checks it; then milestone 0.7 (plugins and their settings) is designed with the user.**_
+_Last updated: 2026-10-14 · **0.6.8 on `feat/accounts`: milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built and tried by the user ("2FA works great"); 0.6.4/0.6.5 fixed the conflict markers the user saw (invariants 25, 26); 0.6.6 turns 2FA off with the password alone, 0.6.7 spins every button that waits, 0.6.8 shows changes from other devices in the open settings at once. Next: the user installs 0.6.8 (server and plugin) and checks it; then milestone 0.7 (plugins and their settings) is designed with the user.**_
 
 ## Where we are
 
@@ -13,7 +13,7 @@ contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments),
 `docs/SERVER.md` for running the server; `docs/CHANGELOG.md` for every version and
 how its fixes were verified.
 
-Branch `feat/accounts`, pushed, CI green up to `56cf533` (0.6.5). Not merged to
+Branch `feat/accounts`, pushed, CI green up to `b955954` (0.6.7). Not merged to
 `main` - merging is what first builds and publishes the Docker image. The user
 runs the server with npm on the laptop (port 1234, `packages/server/data` - never
 touch either; see CLAUDE.md, Gotchas) and installs the plugin by copying
@@ -51,6 +51,13 @@ the start went on and built everything after the unload (invariant 26). Fixed an
 checked in `test:load`. The user installs 0.6.5 (plugin only; the server is unchanged
 since 0.6.3) and **restarts Obsidian fully** on every device - a copy left running by
 0.6.3 survives turning the plugin off and on - then tries fast typing again.
+
+**0.6.6 to 0.6.8** (2026-10-14), after the user tested 2FA in depth and found it
+working: turning 2FA off takes the password alone (0.6.6, server and plugin); every
+button that waits greys out and spins (0.6.7); the open settings tab shows changes
+from other devices - the account-wide settings and the account's 2FA and recovery
+code - without a restart (0.6.8, server and plugin). The user restarts their server
+with 0.6.8 and installs the plugin on every device.
 
 Then **milestone 0.7: syncing plugins and their settings** - not designed yet. The
 direction the user gave is in CLAUDE.md ("Not built yet"): snapshots from a chosen
@@ -90,6 +97,13 @@ Nothing. Everything is committed and pushed.
   warnings ahead of the log, presence and carets are logged only when they change
   (the renewal every 15 s and every caret move buried the frames), and "Detailed
   logging" moved to a row of its own.
+- 0.6.6 to 0.6.8, asked for by the user: 2FA off with the password alone (no security
+  given up - device and password make a recovery code anyway); spinners on buttons;
+  live settings. Taken without asking: the settings tab is not rebuilt while a field
+  in it has the focus (it waits for the blur), the account is asked again on every
+  reconnect and when the tab opens, and the server's notice is a new kind
+  (`account-changed`) that older plugins ignore. Toggles have no spinner (they take
+  effect at once, except "Sync this vault").
 - Later wishes, not designed: sharing a whole folder; plugin and settings sync (0.7,
   snapshots from a chosen device, never through the CRDT - reasons in CLAUDE.md).
 
@@ -154,15 +168,15 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
 
 ## Verification state
 
-At 0.6.5, run 2026-10-13 before its commit: `typecheck` and `build` pass;
-`test:merge` 145, `test:load` 14, `test:rooms` 233, `test:sync` 26, `test:recovery`
-56, `test:account` 46 - all pass. Against a scratch server on 1235: `test:socket`
+At 0.6.8, run 2026-10-14 before its commit: `typecheck` and `build` pass;
+`test:merge` 150, `test:load` 14, `test:rooms` 236, `test:sync` 26, `test:recovery`
+56, `test:account` 50 - all pass. Against a scratch server on 1235: `test:socket`
 19, `test:vault` 230 - all pass (the user's server on 1234 was not running, before
-or after). The test scripts' own `tsc` (against the Obsidian stub) shows the same 8
-errors in `scripts/` as before. CI green up to 0.6.5. Bug-back checks per version:
-`docs/CHANGELOG.md`. Seen on a device by the user: 0.6.2 (recovery and 2FA). Not
-verified: 0.6.3's question in the recovery on a device, 0.6.4 and 0.6.5 on a
-device, the Docker image.
+or after). CI green up to 0.6.7. Bug-back checks per version: `docs/CHANGELOG.md`.
+Seen on a device by the user: 0.6.2 (recovery and 2FA), 2FA in depth on 0.6.5
+(2026-10-14). Not verified on a device: 0.6.3's question in the recovery, 0.6.4 and
+0.6.5 with fast typing, 0.6.6 to 0.6.8 (2FA off, spinners, live settings), the Docker
+image.
 
 How to run the end-to-end suites without touching the user's server: CLAUDE.md,
 Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
@@ -171,6 +185,11 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 ---
 
 ## Log
+
+### 2026-10-14
+- The user tested 2FA in depth and found it working. Asked for, and built: 2FA off
+  with the password alone (0.6.6), spinners on every button that waits (0.6.7),
+  settings and account state shown live on every device (0.6.8).
 
 ### 2026-10-13
 - The user asked whether closing the recovery's 2FA question spends the code: no,

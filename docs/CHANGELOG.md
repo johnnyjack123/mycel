@@ -8,6 +8,21 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.6 - recovery codes and two-factor sign-in (from 2026-10-12, spec `docs/PHASE5.md`)
 
+- **0.6.8** (2026-10-14) - an open settings tab shows what changed on another device,
+  without a restart. Asked by the user: 2FA turned off on one device still showed as
+  on elsewhere, and so did every setting of all devices. Those settings were applied
+  live all along (they are a synced document); only the tab was not drawn again - now
+  it is, on every change from elsewhere (`AccountSettings.onChange(…, remote)`). The
+  account's state - 2FA, the recovery code - lives on the server: it now tells the
+  account's devices (`account-changed`) when 2FA is turned off or a recovery code
+  made or deleted, and a device asks again on reconnecting and whenever the tab
+  opens (`refreshAccount`). A field being typed in is not rebuilt under the cursor:
+  the tab waits until it loses the focus. Turning 2FA on, a password change and a
+  recovery sign the other devices out, as before. Server and plugin both change; an
+  older plugin ignores the notice. `test:rooms` 236, `test:account` 50, `test:merge`
+  150. Checked by putting the bug back: without the server's notice, the two new
+  checks in `test:rooms` and the two in `test:account` failed, and nothing else.
+
 - **0.6.7** (2026-10-14) - every button that waits for the server or the disk greys
   out and spins the moment it is clicked, and takes no second click meanwhile
   (`busy`, `src/busy.ts`; `.connect-busy` in `styles.css`). Asked by the user: clicks

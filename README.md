@@ -118,7 +118,9 @@ already has.
 Every markdown note is synced automatically; there is no per-note switch. So is
 every other file (see *Attachments* below). Settings under *All your devices*
 (exclusions, conflict markers, retention, share folder) are the same on every
-device; the ones under *This device* are not.
+device, and an open settings tab shows a change made on another device at once -
+two-factor sign-in and the recovery code too; the ones under *This device* are not
+shared.
 
 Commands: *Show sync status*, *Open version history* (a note's or a file's),
 *Browse backups*, *Deleted notes and files…*, *Notes with two versions…*, *Force

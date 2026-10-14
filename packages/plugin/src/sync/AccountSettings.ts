@@ -81,13 +81,14 @@ function wholeNumber(value: unknown): number | null {
 export class AccountSettings {
   readonly doc = new Y.Doc()
   private readonly map: Y.Map<unknown>
-  private readonly listeners = new Set<(settings: SharedSettings) => void>()
+  private readonly listeners = new Set<(settings: SharedSettings, remote: boolean) => void>()
 
   constructor() {
     this.map = this.doc.getMap<unknown>(SETTINGS_FIELD)
-    this.map.observe(() => {
+    this.map.observe((event) => {
       const current = this.get()
-      for (const listener of this.listeners) listener(current)
+      const remote = event.transaction.origin !== 'local'
+      for (const listener of this.listeners) listener(current, remote)
     })
   }
 
@@ -185,7 +186,8 @@ export class AccountSettings {
     this.put(`${PENDING}${codeId}`, pending)
   }
 
-  onChange(listener: (settings: SharedSettings) => void): () => void {
+  /** `remote`: the change came from another device - or from this device's copy as it loaded. */
+  onChange(listener: (settings: SharedSettings, remote: boolean) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
   }

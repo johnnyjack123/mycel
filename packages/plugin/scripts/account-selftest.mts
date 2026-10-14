@@ -231,6 +231,19 @@ try {
   check(await eventually(() => A1.signedOut === 4), 'A1 was signed out when it went on', { a1: A1.signedOut })
   const askedBefore = A1.askedForCode.length
   check((await A1.boot()) && A1.askedForCode.length === askedBefore, 'and signs in again with no code', A1.askedForCode)
+
+  // What the account says changes on one device, and the others show it at
+  // once - before, only after a restart.
+  // Both connected, so the server's word is what brings it, not a reconnect.
+  await eventually(() => A1.socket?.connected === true && A4.socket?.connected === true)
+  await A1.makeRecoveryCode()
+  check(
+    await eventually(() => typeof A1.recoveryMadeAt === 'number' && A4.recoveryMadeAt === A1.recoveryMadeAt),
+    'a recovery code made on A1 shows on A4 without a restart',
+    { a1: A1.recoveryMadeAt, a4: A4.recoveryMadeAt }
+  )
+  await A4.deleteRecoveryCode()
+  check(await eventually(() => A1.hasRecoveryCode === false), 'and deleted on A4, on A1')
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {
