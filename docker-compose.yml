@@ -1,0 +1,20 @@
+# Values come from a `.env` file next to this one; see docs/SERVER.md.
+# The image is built and published by CI on every push to main.
+services:
+  obsidian-connect:
+    image: ghcr.io/johnnyjack123/obsidian-connect-server:latest
+    restart: unless-stopped
+    environment:
+      OBSIDIAN_CONNECT_JWT_SECRET: ${OBSIDIAN_CONNECT_JWT_SECRET:?set OBSIDIAN_CONNECT_JWT_SECRET in .env}
+      OBSIDIAN_CONNECT_REGISTRATION: ${OBSIDIAN_CONNECT_REGISTRATION:-invite}
+      OBSIDIAN_CONNECT_TOKEN_TTL: ${OBSIDIAN_CONNECT_TOKEN_TTL:-2592000}
+      OBSIDIAN_CONNECT_LOG_UPDATES: ${OBSIDIAN_CONNECT_LOG_UPDATES:-false}
+      OBSIDIAN_CONNECT_MAX_FILE_MB: ${OBSIDIAN_CONNECT_MAX_FILE_MB:-100}
+      OBSIDIAN_CONNECT_QUOTA_MB: ${OBSIDIAN_CONNECT_QUOTA_MB:-}
+    ports:
+      - "${PORT:-1234}:1234"
+    volumes:
+      - obsidian-connect-data:/data
+
+volumes:
+  obsidian-connect-data:

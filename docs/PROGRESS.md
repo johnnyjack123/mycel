@@ -1,100 +1,271 @@
 # Progress
 
-_Last updated: 2026-09-20 · Phase 1 built, renamed to **Obsidian Connect**, two pairing bugs fixed. Everything testable headlessly is green; **the in-Obsidian path has still never completed a successful two-device run**._
+_Last updated: 2026-10-14 · **0.6.8 merged into `main`: milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built, and 0.6.8 confirmed working on the user's devices. The roadmap was reordered by the user: 0.7 the backup API, 0.8 sharing a folder and the small fixes, 0.9 hardening and a security audit, plugin sync after 1.0.0. Next: milestone 0.7 (the backup API), designed with the user first, on its own branch `feat/backup-api` from `main`.**_
 
 ## Where we are
 
 Monorepo (`npm` workspaces): `packages/shared`, `packages/server`, `packages/plugin`.
-Architecture, invariants and the Phase 2 plan live in **`CLAUDE.md`** — read that first.
+**Read `CLAUDE.md` first** - invariants (26 of them, each from a real bug), the
+architecture, the version roadmap to 1.0.0 and the conventions. Designs:
+`docs/PHASE2.md` (keys, sharing), `docs/PHASE3.md` (accounts without names,
+contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments),
+`docs/PHASE5.md` (recovery codes, 2FA);
+`docs/SERVER.md` for running the server; `docs/CHANGELOG.md` for every version and
+how its fixes were verified.
 
-Phase 1 is implemented end to end: every markdown note is permanently CRDT-backed, one
-multiplexed WebSocket per vault, local persistence via `y-indexeddb`, file write-back with
-agreement detection, three-way reconcile with backups, rename/delete through the vault index,
-and server-side version history with rollback.
+Everything up to 0.6.8 was built on one branch, `feat/accounts`, and merged into
+`main` on 2026-10-14, which also built the Docker image for the first time (see
+"Verification state"). From now on every milestone gets a branch of its own from
+`main`, merged when it is done (CLAUDE.md, Conventions). The user
+runs the server with npm on the laptop (port 1234, `packages/server/data` - never
+touch either; see CLAUDE.md, Gotchas) and installs the plugin by copying
+`main.js`, `manifest.json`, `styles.css`. 0.6 changes the server too: the user's
+server needs restarting with it (tokens from before stay valid, nobody is signed
+out by the update).
+
+Confirmed on the user's devices: sign-in and account creation, note sync, sharing
+and live editing, attachments syncing with conflict copies, restoring notes and
+files from the trash, the version history with rendered Markdown, linked notes
+(2026-10-12). On 2026-10-12 the user said that with 0.5.7's changes (plugin menu
+section, cloud for files, read-only mark) milestone 0.5 is done. 0.5.7 itself has
+not been seen on a device yet.
 
 ## Next step
 
-**The user is about to run the first real two-device test.** Nothing else should be built until
-that passes.
+**Milestone 0.6 is built** (`docs/PHASE5.md`, decided with the user on
+2026-10-12): 0.6.0 signing out the other devices, 0.6.1 the recovery code, 0.6.2
+two-factor sign-in, 0.6.3 a recovery keeping 2FA. The user tried 0.6.2 on a device
+and found it working well, except that a recovery meant a new entry in the
+authenticator app - 0.6.3 answers that. What only a device can show is listed under
+"To verify on a device" in `docs/PHASE5.md`.
 
-The plugin id changed, so a clean install is required:
+**0.6.4** (2026-10-13): while testing, the user typed fast on one device with another
+online, and the note came out with nested conflict markers. Reproduced in `test:vault`:
+an editor binding again while someone types elsewhere merged Obsidian's lagging save
+and its own lagging text in as edits (invariant 25); the typing device also lost the
+keystrokes typed during its own rebind. Fixed, and the log made easier to read
+(conflicts as errors, errors and warnings first when copied).
 
-1. Delete `.obsidian/plugins/crdt-sync/`, install into `.obsidian/plugins/obsidian-connect/`
-2. Delete `packages/server/data/` (old rooms are path-keyed leftovers)
-3. **Set the identical Vault ID on both devices** — the vault *name* is irrelevant
-4. Status bar reads `Connect: <state> · loaded/tracked`. `0/0` means nothing was adopted,
-   which is an index problem, not a sync problem
+**0.6.5** (2026-10-13): the user said nothing happened on the other device and no
+third one was online. The third client was a second copy of the plugin on that other
+computer: loaded at 19:59:47, unloaded 12 s later while its start still waited, and
+the start went on and built everything after the unload (invariant 26). Fixed and
+checked in `test:load`. The user installs 0.6.5 (plugin only; the server is unchanged
+since 0.6.3) and **restarts Obsidian fully** on every device - a copy left running by
+0.6.3 survives turning the plugin off and on - then tries fast typing again.
 
-Scenario that matters most, because it is the bug everything started with: both devices offline,
-edit the same note on both, bring the server back. Both texts must survive; backups land in
-`.obsidian/plugins/obsidian-connect/backups/`.
+**0.6.6 to 0.6.8** (2026-10-14), after the user tested 2FA in depth and found it
+working: turning 2FA off takes the password alone (0.6.6, server and plugin); every
+button that waits greys out and spins (0.6.7); the open settings tab shows changes
+from other devices - the account-wide settings and the account's 2FA and recovery
+code - without a restart (0.6.8, server and plugin). The user installed 0.6.8 and
+said it works as expected (2026-10-14).
 
-## Fixed in this session
+Next is **milestone 0.7: the backup API** - not designed yet. The direction is in
+CLAUDE.md ("Not built yet"): an encrypted form (the data directory, ciphertext
+only, behind a revocable backup token) and a decrypted one (a command-line client
+on the backup machine signs in, pulls the ciphertext and decrypts there - the
+server never holds a key), both pullable by restic on a schedule. Start the branch
+`feat/backup-api` from `main`, design it with the user (AskUserQuestion; the user
+writes German and decides product questions), write `docs/PHASE6.md`, then build in
+steps with tests, and merge when it is done.
 
-- **Pairing was broken because document ids were random.** `crypto.randomUUID()` was minted by
-  whichever device saw a file first, so two devices scanning before either had received the
-  other's index created two documents for one note and then synced faithfully past each other.
-  Ids are now `stableDocId(vaultId, path)`. `duplicatePaths()` + `mergeDuplicates()` fold
-  together any pair that still diverges, keeping the lower id and merging the other's text
-  additively.
-- **`DocStore.start()` waited on the vault index forever.** With the server unreachable the
-  plugin looked loaded, reported a connection and tracked nothing. Now: timeout, a notice, and a
-  retry when the socket reconnects.
-- **The status bar now shows `loaded/tracked`**, so "nothing was adopted" is visible at a glance.
-- **Removed `HistoryStore.compact()` and `logBytes()`** — dead code, and `compact()` deleted the
-  whole log, i.e. every rollback point, if anyone had ever called it.
-- **Removed a raw NUL byte** used as a placeholder in the glob matcher; the matcher moved to
-  `sync/glob.ts` so it can be tested without importing Obsidian.
-- **Renamed to Obsidian Connect** throughout: plugin id, display name, log prefix
-  `[obsidian-connect]`, CSS classes, workspace scope `@obsidian-connect/*`, env vars
-  `OBSIDIAN_CONNECT_*`.
-- **CI produces a second, flat zip** (`<id>-<version>-update.zip`) holding just `main.js`,
-  `manifest.json` and `styles.css` at the root, for overwriting an existing install.
+## Roadmap
+
+Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
+
+- **0.7 - the backup API.** See "Next step".
+- **0.8 - sharing a folder, and the small fixes.** Sharing a whole folder,
+  including what is added to it later (not designed yet). Besides, every fix that
+  has to be in before 0.9:
+  - Typing into an open note while sync itself restarts (signing out and in, the
+    plugin reloaded) can lose the keystrokes of that moment (details under "Known
+    issues").
+  - Content uploaded but never named in the index (a crash between the two) is
+    never cleaned up from the server.
+  - Local copies of a purged note stay in IndexedDB on the devices that did not
+    purge it.
+  - To investigate: after a device turns 2FA on, its own socket took seconds to
+    connect again in `test:account` (A4 still disconnected) - find out whether a
+    device shows that too and why.
+  - Whatever the open questions below turn up, and anything the user finds on the
+    devices until then.
+- **0.9 - hardening and a security audit.** Frames signed per author, not only
+  authenticated by the note's key (`docs/PHASE3.md`); every note live without all
+  of them in memory (CLAUDE.md, "Not built yet"); a name and plugin id without
+  "Obsidian" (the community directory refuses an id containing `obsidian`; the
+  plugin folder, `data.json` and the `localStorage` keys move with the id, so it
+  needs a migration); a review of the cryptography and the server's API, including
+  the known limit that signing out does not replace the account secret
+  (`docs/PHASE5.md`).
+- **1.0.0** - all of the above done and verified on devices.
+- **Later:** syncing plugins and their settings (moved back by the user; the
+  direction is in CLAUDE.md).
+
+## In flight / half-finished
+
+Nothing. Everything is committed and pushed.
+
+## Decisions made (not visible in the code)
+
+- Attachments: the decisions taken with the user are in `docs/PHASE4.md` (top and
+  "As built" notes per step). Taken without asking and accepted since: shared files
+  are copied into each account's own store (server space once per account); the
+  base per shared file belongs to the vault, not the device; a note shared before
+  0.5.4 shares no files until the owner turns it on; a linked note the person has
+  already is skipped; links are followed only through notes that go along.
+- Menus: our items stay in Obsidian's file menus (the only place on a phone, which
+  has no status bar), grouped under a label with the plugin's name; the cloud opens
+  the same menu on desktop. Submenus were not used: not public API.
+- Recovery codes and 2FA: the decisions taken with the user are at the top of
+  `docs/PHASE5.md`. Taken without asking: the code has 30 characters, not the 26
+  the question named - four more carry a check that catches typos on the device; a
+  removed account's sockets are closed as signed out too; the 2FA setup checks the
+  password on the device first; the QR code comes from `qrcode-generator` 2.0.4.
+  Not built: a "sign out all other devices" button of its own (offered in the
+  questions, not chosen - the mechanism is there if it is wanted). 0.6.3: the user
+  asked whether a recovery could keep 2FA without a security tradeoff; built as a
+  question in the recovery. Keeping needs a current code from the app (no plain
+  "keep" switch), so nobody keeps a factor they no longer have. Closing the
+  question cancels the recovery.
+- The log (0.6.4, asked for by the user): a note or file kept in two versions is
+  logged as an error, as the user asked, although nothing failed - it is what
+  someone has to look at. Taken without asking: "Copy log" gathers errors and
+  warnings ahead of the log, presence and carets are logged only when they change
+  (the renewal every 15 s and every caret move buried the frames), and "Detailed
+  logging" moved to a row of its own.
+- 0.6.6 to 0.6.8, asked for by the user: 2FA off with the password alone (no security
+  given up - device and password make a recovery code anyway); spinners on buttons;
+  live settings. Taken without asking: the settings tab is not rebuilt while a field
+  in it has the focus (it waits for the blur), the account is asked again on every
+  reconnect and when the tab opens, and the server's notice is a new kind
+  (`account-changed`) that older plugins ignore. Toggles have no spinner (they take
+  effect at once, except "Sync this vault").
+- Wishes not designed yet: sharing a whole folder (0.8); plugin and settings sync
+  (after 1.0.0, snapshots from a chosen device, never through the CRDT - reasons in
+  CLAUDE.md).
+- The roadmap order (2026-10-14) and the rule of a branch per milestone, merged when
+  done, are the user's.
+
+## Open questions for the user
+
+0. **The conflict markers of 2026-10-13 - answered by 0.6.5.** The device that
+   typed received the conflict as frames #248 and #249 at 20:03:22.66 from another
+   client. Neither log file shows a merge, and the note had `3 present` while the
+   user had two devices online (the account it is shared with had its vault
+   closed). Of the two others, one renewed its presence in all three shared notes
+   at the same moment and never had a caret - the copy of 0.6.3 on the other
+   computer that outlived its unload at 19:59:59; the other matches that computer's
+   live copy, loaded at 20:00:16, with the note open. Not confirmed on the device:
+   if Obsidian on that computer was not restarted since, its developer console
+   would show the copy's `merge (...)` lines - offered to the user as a check.
+1. **"Compare versions" on a note (2026-10-12).** The user asked whether an editor
+   is not bound locally, so offline edits merge cleanly. Answer: yes - typing in a
+   bound editor, offline too, goes into the CRDT and merges without a review. A
+   review comes only from a note changing as a file outside a bound editor (another
+   plugin or program, typing before the binding settled, a device without a base)
+   with both sides changing the same lines (`conflict`) or no base (`no-base`); it
+   appears only on the device that merged (`sync/Reviews.ts` is device-local). The
+   log the user pasted (one device, 2026-10-10 23:02 to 10-12 09:06) has no
+   `merge (...)` or `two versions kept` line. Asked: on which device it appeared and
+   the date the dialog names; then that device's log of that day.
+2. **The user's server dropped out on 2026-10-12.** Their device lost
+   `ws://localhost:1234` at 08:54:07Z, 3 s after a scratch server was started on
+   1235 (08:54:04.716Z), and was still retrying at 09:06. No mechanism found: the
+   scratch server listened only on 1235 with its own data directory, no test used
+   1234, the user's `start:server` runs `tsx src/index.ts` without watch, and
+   nothing then changed server or shared sources (only `package.json` versions).
+   Asked the user what their server's console showed. If it recurs when a scratch
+   server starts, find out why before running the end-to-end tests again.
+
+To check on a device: 0.5.7's menu section, the cloud on a canvas and its menu, the
+lock for a read-only note (status bar and note header, also on a phone); Obsidian
+resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
+`Shared/Attachments/x.png`, and which file wins when two share a name.
 
 ## Known issues / debt
 
-- **Attachments are not synced.** Binary files do not travel through Yjs.
-- **Notes beyond `maxLoadedDocuments` (500) stop receiving live updates** until opened again.
-- **No accounts or ACLs yet.** Dev mode lets anyone who can reach the server read and write every
-  room, and anyone who knows a Vault ID reads that whole vault. Do not expose it to the internet.
-- **Conflicts keep both versions** rather than resolving them — deliberate, but a conflicted note
-  needs manual cleanup.
-- **Edits made while the editor is detached are discarded** when it re-attaches; the shared
-  document wins that reconcile.
-- Main-editor integration uses the Obsidian-internal `(editor as any).cm`; version-fragile, with
-  the dedicated collab view as fallback.
-- The plugin name contains "Obsidian", which the community catalogue forbids. Irrelevant while
-  self-hosted, blocking for a later submission.
+- **On a device only** (untestable headless): menus, modals, the settings tab, the
+  status bar marks, the header lock, `requestUrl` with binary bodies on mobile,
+  binary file events, `file-open` fetching, memory with large files on a phone.
+- Content uploaded but never named in the index (a crash between the two) is never
+  cleaned up from the server (0.8).
+- Notes beyond `maxLoadedDocuments` (500) stop receiving live updates until opened
+  or the next start, when every note is loaded once (0.9). Raising the setting
+  above the number of notes is the workaround; measured with Yjs alone, a loaded
+  note of 3000 characters takes about 6 KB seeded and 32 KB typed key by key with
+  revisions, plus an IndexedDB database and a subscription each.
+- Signing out takes the server from a device, not the keys it unwrapped: the account
+  secret is never replaced (`docs/PHASE5.md`, "Known limit"; the audit in 0.9).
+- Frames authenticated by the note's key, not signed per author (0.9,
+  `docs/PHASE3.md`).
+- Local copies of a purged note stay in IndexedDB on the devices that did not
+  purge it (0.8).
+- Typing into an open note while sync itself restarts (signing out and in, the
+  plugin reloaded) can still lose the keystrokes of that moment (0.8): the new store
+  settles the note by writing its file, and Obsidian reloads the editor. 0.6.4 keeps
+  the file Obsidian's only while the same store binds the editor again
+  (`EditorSync.rebinding`); a new store has to settle against the server first.
+- The plugin id contains "obsidian", which the community directory refuses (0.9).
+- The Docker image has never been built (CI builds it on `main` only).
 
 ## Verification state
 
-- `npm run typecheck`, `npm run build:plugin`: pass.
-- `test:merge` 33, `test:load` 4, `ws-test` 1, `test:socket` 7, `test:history` 7, `test:sync` 21 —
-  all pass, in the working tree and in a fresh clone with its own server.
-- `.github/workflows/build.yml`: YAML parses, every `run` block passes `bash -n`, the packaging
-  step and all release paths were executed locally against a stubbed `gh`.
-- **On-device Obsidian test: still outstanding.** `DocStore`, `DocHandle`, the startup scan, vault
-  events, file write-back and both modals have never run.
+At 0.6.8, run 2026-10-14 before its commit: `typecheck` and `build` pass;
+`test:merge` 150, `test:load` 14, `test:rooms` 236, `test:sync` 26, `test:recovery`
+56, `test:account` 50 - all pass. Against a scratch server on 1235: `test:socket`
+19, `test:vault` 230 - all pass (the user's server on 1234 was not running, before
+or after). CI green up to 0.6.8. Bug-back checks per version: `docs/CHANGELOG.md`.
+Seen on a device by the user: 0.6.2 (recovery and 2FA), 2FA in depth on 0.6.5
+(2026-10-14), 0.6.8 - 2FA off with the password, spinners, live settings - "works as
+expected" (2026-10-14). Not reported on a device: 0.6.3's question in the recovery,
+0.6.4 and 0.6.5 with fast typing.
+
+How to run the end-to-end suites without touching the user's server: CLAUDE.md,
+Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
+1234 when no URL is given - always pass `ws://localhost:1235`.
+
+---
 
 ## Log
 
-### 2026-09-20
-- Renamed to Obsidian Connect; made document ids deterministic; fixed the index-sync hang;
-  removed dead and dangerous history code; added the flat update zip; wrote `CLAUDE.md`.
-- Agreed the Phase 2 design: account-derived vault ids, the share/detach/revoke rules, and the
-  end-to-end encryption scheme with key epochs. All recorded in `CLAUDE.md`.
+### 2026-10-14
+- The user tested 2FA in depth and found it working. Asked for, and built: 2FA off
+  with the password alone (0.6.6), spinners on every button that waits (0.6.7),
+  settings and account state shown live on every device (0.6.8).
+- The user confirmed 0.6.8, reordered the roadmap (0.7 backup API, 0.8 sharing a
+  folder and the small fixes, 0.9 hardening and a security audit, plugin sync
+  after 1.0.0), asked for a branch per milestone, merged when done, and had
+  `feat/accounts` merged into `main`.
 
-### 2026-09-19
-- Built Phase 1: vault-wide CRDT sync, multiplexed transport, local persistence, file bridge,
-  three-way reconcile with backups, vault index, server history with rollback, history and
-  backup UI. Added `test:merge`, `test:socket`, `test:history`, `test:load`.
-- `test:merge` immediately caught a real bug: the no-base union spliced local text into the
-  middle of a remote line because a minimal character replacement ignores line boundaries.
+### 2026-10-13
+- The user asked whether closing the recovery's 2FA question spends the code: no,
+  the code is spent only by `/auth/recover/commit`, which closing never sends.
+- 0.6.4: the user saw nested conflict markers after typing fast with a second device
+  online. Reproduced (an editor binding again while someone types elsewhere), fixed
+  (invariant 25), together with keystrokes lost during the typing device's own
+  rebind; the log restructured as asked.
+- 0.6.5: the user said nothing happened on the other device and no third one was
+  online. The third client was a copy of the plugin that outlived its unload there
+  (invariant 26); that was the cause. Fixed and checked in `test:load`.
 
-### 2026-09-18
-- Diagnosed "connected but no sync": the CodeMirror view plugin dispatched from its constructor,
-  which CodeMirror answers by silently deactivating the plugin. Fixed and regression-tested.
-- Hardened seeding, editor targeting, server-side room loading and saving; added re-attach after
-  Obsidian rebuilds the editor state; added the build/release GitHub Action.
-- Fixed CI: the self-tests relied on a global `WebSocket` (Node 22+) and jsdom 30 does not support
-  the Node 20 the workflow pinned. Baseline is now Node 22+, CI builds on 24.
+### 2026-10-12
+- Milestone 0.6 designed with the user (`docs/PHASE5.md`). 0.6.0: a password change
+  signs out every other device on the server (session generation, `4401`). 0.6.1:
+  the recovery code. 0.6.2: two-factor sign-in (TOTP) - milestone 0.6 built. 0.6.3,
+  after the user tried 0.6.2: a recovery keeps 2FA with a code from the app.
+- 0.5.7: the plugin's menu section, the cloud for files and as a menu, the shared /
+  read-only mark and header lock, "Version history" for files.
+- Docs brought up to date for a handoff: `docs/CHANGELOG.md` (new, the full version
+  history), README (attachments, shared files, linked notes, menus), CLAUDE.md
+  (doc index), PLAN.md (marked historical).
+
+### 2026-10-11
+- 0.5.4 to 0.5.6: shared notes carry their files; the compaction misread as a
+  restored server fixed; linked notes; "Share again".
+
+### 2026-10-10
+- 0.5.0 to 0.5.3: attachments between own devices, hardened for canvases; the trash
+  and earlier versions of files. Attachments designed with the user (`PHASE4.md`).
+
+Older: `docs/CHANGELOG.md`.

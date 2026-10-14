@@ -1,12 +1,10 @@
-// End-to-end check of the editor integration against a running server, in jsdom.
+// The editor binding on its own, in real CodeMirror editors in jsdom, with
+// two documents kept in sync through a relay that delays every update a
+// little, like a network. `test:vault` covers the binding together with the
+// store and the real server; this one pins down the details of keeping an
+// editor and a Y.Text identical.
 //
-// `ws-selftest.mjs` only proves the server relays Yjs updates. This one drives
-// the real MainEditorCollabAdapter, which is where live sharing actually broke:
-// a view plugin that throws during construction is silently deactivated by
-// CodeMirror, so attaching "succeeds" while typing never reaches Yjs.
-//
-//   npm run start:server
-//   npm run test:sync -w @obsidian-connect/plugin -- ws://localhost:1234
+//   npm run test:sync
 import { JSDOM } from 'jsdom'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true })
@@ -23,122 +21,215 @@ for (const key of [
   const value = (dom.window as unknown as Record<string, unknown>)[key]
   if (globals[key] === undefined && value !== undefined) globals[key] = value
 }
+// jsdom has no layout. CodeMirror measures text in an animation frame and
+// throws there without this - harmless, but it buries the test output.
+const rangeProto = dom.window.Range.prototype as unknown as { getClientRects?: () => unknown }
+rangeProto.getClientRects ??= () => []
 
 // Imported after the DOM globals exist; CodeMirror reads them at module scope.
 const { EditorState } = await import('@codemirror/state')
 const { EditorView } = await import('@codemirror/view')
+const { history, undo } = await import('@codemirror/commands')
 const Y = await import('yjs')
-const { WebsocketProvider } = await import('y-websocket')
-const { WebSocket } = await import('ws')
-const { MainEditorCollabAdapter } = await import('../src/editor/MainEditorCollabAdapter.js')
+const { deltaToChanges, editorSyncExtension } = await import('../src/editor/binding.js')
+const { reconcile } = await import('../src/sync/Reconciler.js')
+const { noteField, noteOf, showNote } = await import('./stubs/fake-vault.js')
+const { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } = await import('y-protocols/awareness')
 
-const serverUrl = process.argv[2] ?? process.env.OBSIDIAN_CONNECT_URL ?? 'ws://localhost:1234'
-const room = `binding-selftest-${Date.now().toString(36)}`
+type Binding = import('../src/editor/binding.js').EditorBinding
+type Session = import('../src/editor/binding.js').EditorSession
+type NoteRef = import('../src/editor/binding.js').NoteRef
+type YDoc = InstanceType<typeof Y.Doc>
+
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
-const failures: string[] = []
-function check(ok: boolean, label: string): void {
-  console.log(`${ok ? 'PASS' : 'FAIL'}: ${label}`)
-  if (!ok) failures.push(label)
+/**
+ * Stands in for the server: every update reaches the others a few
+ * milliseconds later, so edits on both sides are truly concurrent.
+ */
+class Relay {
+  readonly state = new Y.Doc()
+  private readonly members = new Set<YDoc>()
+
+  join(doc: YDoc): Promise<void> {
+    this.members.add(doc)
+    doc.on('update', (update: Uint8Array, origin: unknown) => {
+      if (origin === this) return
+      setTimeout(() => {
+        Y.applyUpdate(this.state, update, this)
+        for (const other of this.members) if (other !== doc) Y.applyUpdate(other, update, this)
+      }, 5)
+    })
+    return new Promise((resolve) =>
+      setTimeout(() => {
+        Y.applyUpdate(doc, Y.encodeStateAsUpdate(this.state), this)
+        resolve()
+      }, 5)
+    )
+  }
+
+  leave(doc: YDoc): void {
+    this.members.delete(doc)
+  }
 }
 
-function makeClient(label: string, editorText: string) {
-  const doc = new Y.Doc()
-  const ytext = doc.getText('content')
-  // BroadcastChannel would sync these clients inside this process and hide a
-  // broken server, so the test forces everything through the WebSocket. The
-  // polyfill is explicit because Node only exposes a global WebSocket from v22
-  // on, and `engines` allows Node 20.
-  const provider = new WebsocketProvider(serverUrl, room, doc, {
-    connect: true,
-    disableBc: true,
-    WebSocketPolyfill: WebSocket
+const relay = new Relay()
+
+const failures: string[] = []
+function check(ok: boolean, label: string, detail?: unknown): void {
+  console.log(`${ok ? 'PASS' : 'FAIL'}: ${label}`)
+  if (!ok) {
+    failures.push(label)
+    if (detail !== undefined) console.log('      got:', JSON.stringify(detail))
+  }
+}
+
+async function eventually(predicate: () => boolean, timeoutMs = 5_000): Promise<boolean> {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    if (predicate()) return true
+    await delay(30)
+  }
+  return predicate()
+}
+
+// --- the delta mapping, without a server ------------------------------------
+{
+  const source = new Y.Doc()
+  const sourceText = source.getText('content')
+  sourceText.insert(0, '0123456789')
+  const target = new Y.Doc()
+  Y.applyUpdate(target, Y.encodeStateAsUpdate(source))
+  let delta: Parameters<typeof deltaToChanges>[0] = []
+  target.getText('content').observe((event) => {
+    delta = event.delta
   })
-  const view = new EditorView({
-    state: EditorState.create({ doc: editorText }),
-    parent: dom.window.document.body
+  source.transact(() => {
+    sourceText.insert(2, 'ab')
+    sourceText.delete(7, 2)
   })
-  // Stands in for "the note is open in a Markdown leaf". Setting it to false is
-  // how the test closes the note without destroying the editor.
-  let noteIsOpen = true
-  const adapter = new MainEditorCollabAdapter(
-    () => (noteIsOpen ? view : null),
-    ytext,
-    provider.awareness
+  Y.applyUpdate(target, Y.encodeStateAsUpdate(source, Y.encodeStateVector(target)))
+  const applied = EditorState.create({ doc: '0123456789' }).update({ changes: deltaToChanges(delta) }).state.doc
+  check(
+    applied.toString() === target.getText('content').toString(),
+    'a delta with several parts maps onto the editor in the right places',
+    applied.toString()
   )
-  return {
-    label,
-    doc,
-    ytext,
-    provider,
-    view,
-    adapter,
-    text: (): string => view.state.doc.toString(),
-    setNoteOpen: (open: boolean): void => {
-      noteIsOpen = open
-    },
-    // Obsidian throws the EditorState away on a file switch or an edit/preview
-    // mode change, which takes every appendConfig extension with it.
-    simulateObsidianRebuild: (fileText: string): void => {
-      view.setState(EditorState.create({ doc: fileText }))
+}
+
+// --- two editors through the relay ---------------------------------------------
+
+class Host {
+  releases = 0
+  acquired = 0
+  recent: string | null = null
+  readOnly = false
+  awareness: InstanceType<typeof Awareness> | null = null
+
+  constructor(
+    readonly note: NoteRef,
+    readonly ytext: InstanceType<typeof Y.Text>,
+    readonly base: string,
+    // Stands in for settling: the real host only hands out a document whose
+    // server state has arrived.
+    private readonly settled: Promise<void>
+  ) {}
+
+  attached(): void {}
+  detached(): void {}
+
+  async acquire(note: NoteRef, _binding: Binding): Promise<Session | null> {
+    if (note !== this.note) return null
+    await this.settled
+    this.acquired += 1
+    return {
+      ytext: this.ytext,
+      awareness: this.awareness,
+      readOnly: this.readOnly,
+      isUnedited: (text: string) => text === this.base || text === this.recent,
+      recentWrite: () => this.recent,
+      resolve: async (local: string, remote: string, released: string | null) => {
+        const pristine = (this.ytext.doc?.store.clients.size ?? 0) === 0
+        const outcome = reconcile({ base: released ?? this.base, local, remote, pristine, markers: false })
+        if (outcome.kind === 'merge') return outcome.text
+        return outcome.kind === 'seed' || outcome.kind === 'adopt-local' ? local : remote
+      },
+      agreedText: () => this.ytext.toString(),
+      isStale: () => false,
+      release: () => {
+        this.releases += 1
+      }
     }
   }
 }
 
-type Client = ReturnType<typeof makeClient>
-
-function attach(client: Client): void {
-  client.adapter.attach()
-  check(client.adapter.ensureAttached() === false, `${client.label}: binding plugin is live`)
+function client(label: string, editorText: string, base: string) {
+  const doc = new Y.Doc()
+  const ytext = doc.getText('content')
+  const synced = relay.join(doc)
+  const note: NoteRef = { path: `${label}.md` }
+  const host = new Host(note, ytext, base, synced)
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: editorText,
+      extensions: [noteField.init(() => note), history(), editorSyncExtension(host, noteOf)]
+    }),
+    parent: document.body
+  })
+  return {
+    label,
+    doc,
+    ytext,
+    synced,
+    host,
+    view,
+    note,
+    text: (): string => view.state.doc.toString(),
+    type: (text: string, at = view.state.doc.length): void => {
+      view.dispatch({ changes: { from: at, insert: text }, userEvent: 'input.type' })
+    }
+  }
 }
 
-function whenSynced(provider: InstanceType<typeof WebsocketProvider>): Promise<void> {
-  if (provider.synced) return Promise.resolve()
-  return new Promise((resolve) => provider.once('sync', () => resolve()))
-}
+// The binding only ever starts on a settled note, so the room holds the text
+// before either editor binds.
+relay.state.getText('content').insert(0, 'Hello world')
 
-console.log(`server=${serverUrl} room=${room}`)
+// A shows what the file said at the last agreement; B shows a copy nobody
+// has typed in since an older agreement, which the document has moved past.
+const a = client('A', 'Hello world', 'Hello world')
+const b = client('B', 'Hello', 'Hello')
+await Promise.all([a.synced, b.synced])
+check(a.ytext.toString() === 'Hello world' && b.ytext.toString() === 'Hello world', 'both clients synced')
 
-// The editors start on content that differs from the room. That is the normal
-// case whenever a room already holds state, and it used to kill the binding.
-const a = makeClient('A', 'local content that differs from the room')
-const b = makeClient('B', 'local content that differs from the room')
+check(await eventually(() => a.host.acquired === 1 && b.host.acquired === 1), 'both editors bind on their own')
+check(await eventually(() => b.text() === 'Hello world'), 'an unedited editor takes on the document', b.text())
 
-await Promise.race([Promise.all([whenSynced(a.provider), whenSynced(b.provider)]), delay(6_000)])
-check(a.provider.synced && b.provider.synced, 'both clients synced')
+a.type(' from A')
+check(await eventually(() => b.text() === 'Hello world from A'), 'A -> B')
+b.type('B: ', 0)
+check(await eventually(() => a.text() === 'B: Hello world from A'), 'B -> A')
 
-a.doc.transact(() => a.ytext.insert(0, 'Hello world'))
-await delay(500)
-
-attach(a)
-attach(b)
-await delay(300)
-check(a.text() === 'Hello world', 'A reconciled to the room content')
-check(b.text() === 'Hello world', 'B reconciled to the room content')
-
-a.view.dispatch({ changes: { from: a.view.state.doc.length, insert: ' from A' } })
-await delay(1_000)
-check(b.text() === a.text(), 'A -> B propagates')
-
-b.view.dispatch({ changes: { from: 0, insert: 'B: ' } })
-await delay(1_000)
-check(a.text() === b.text(), 'B -> A propagates')
-
-a.view.dispatch({ changes: { from: a.view.state.doc.length, insert: '<A>' } })
-b.view.dispatch({ changes: { from: 0, insert: '<B>' } })
-await delay(1_500)
-check(a.text() === b.text(), 'concurrent edits converge')
+a.type('<A>')
+b.type('<B>', 0)
+check(await eventually(() => a.text() === b.text() && a.text().length === 'B: Hello world from A<A><B>'.length), 'concurrent edits converge')
 check(a.text() === a.ytext.toString() && b.text() === b.ytext.toString(), 'editors match their Y.Text')
 
-a.view.dispatch({ changes: { from: 3, to: 9 } })
-await delay(1_000)
-check(a.text() === b.text(), 'deletions propagate')
+// Undo is for your own typing.
+b.type('!')
+await eventually(() => a.text().endsWith('!'))
+a.type('?')
+await eventually(() => b.text().endsWith('?'))
+undo(b.view)
+check(
+  await eventually(() => a.text() === b.text() && b.text().endsWith('?') && !b.text().includes('!')),
+  'undo takes back your own typing and leaves the other side alone',
+  b.text()
+)
 
-// Obsidian reloads an open buffer when it thinks the file changed, replacing
-// the whole document even when the text is identical. Treated as a user edit
-// that is "delete everything, insert everything", and two devices doing it
-// concurrently keep both insertions - the text doubled on every round trip
-// until the note was unusable.
+// Obsidian reloading an unchanged file replaces the whole buffer with the
+// same text. Taken literally that is "delete everything, insert everything",
+// and two devices doing it at once doubled the note on every round trip.
 {
   let updates = 0
   const count = (): void => {
@@ -146,72 +237,143 @@ check(a.text() === b.text(), 'deletions propagate')
   }
   a.doc.on('update', count)
   const before = a.text()
-  a.view.dispatch({ changes: { from: 0, to: a.view.state.doc.length, insert: before } })
-  await delay(800)
-  a.doc.off('update', count)
-
-  check(updates === 0, 'replacing the buffer with identical text emits no update', updates)
-  check(a.text() === before, 'and leaves the document untouched')
-  check(b.text() === before, 'and does not reach the other client', b.text())
-}
-
-// The same replacement repeated must not accumulate either.
-{
-  const before = a.text()
   for (let i = 0; i < 5; i += 1) {
     a.view.dispatch({ changes: { from: 0, to: a.view.state.doc.length, insert: before } })
-    b.view.dispatch({ changes: { from: 0, to: b.view.state.doc.length, insert: before } })
+    b.view.dispatch({ changes: { from: 0, to: b.view.state.doc.length, insert: b.text() } })
   }
-  await delay(1_200)
-  check(a.text() === before && b.text() === before, 'repeated no-op replacements do not grow the text', {
-    a: a.text().length,
-    b: b.text().length,
-    expected: before.length
-  })
+  await delay(600)
+  a.doc.off('update', count)
+  check(updates === 0, 'replacing the buffer with identical text changes nothing', updates)
+  check(a.text() === before && b.text() === before, 'and nothing grows', { a: a.text(), b: b.text() })
 }
 
-// --- Obsidian rebuilding the editor state -----------------------------------
-const beforeRebuild = a.text()
-a.simulateObsidianRebuild('whatever is on disk')
-check(a.text() === 'whatever is on disk', 'rebuild replaced the editor state')
+// A wholesale replacement that does change something becomes that change
+// alone. Taken literally it re-inserts every character, which undoes what
+// the other side deleted at the same moment.
+{
+  const long = `${'word '.repeat(80)}end`
+  a.view.dispatch({ changes: { from: 0, to: a.view.state.doc.length, insert: long }, userEvent: 'input.paste' })
+  await eventually(() => b.text() === long)
+  const changed = long.replace('word word word end', 'word WORD word end')
+  a.view.dispatch({ changes: { from: 0, to: a.view.state.doc.length, insert: changed } })
+  b.view.dispatch({ changes: { from: 0, to: 5 }, userEvent: 'delete' })
+  check(
+    await eventually(() => a.text() === b.text() && a.text() === changed.slice(5)),
+    'a wholesale replacement keeps what the other side deleted at the same moment',
+    { a: a.text().slice(0, 30), b: b.text().slice(0, 30), length: a.text().length, expected: changed.length - 5 }
+  )
+}
 
-a.view.dispatch({ changes: { from: a.view.state.doc.length, insert: ' typed while detached' } })
-await delay(800)
-check(b.text() === beforeRebuild, 'a detached editor does not corrupt the room')
+// Obsidian reloading, into an editor bound in the meantime, a file this
+// device wrote before the binding started. The document has moved on.
+{
+  const current = a.text()
+  a.host.recent = current.slice(0, -4)
+  a.view.dispatch({ changes: { from: 0, to: a.view.state.doc.length, insert: a.host.recent } })
+  check(
+    await eventually(() => a.text() === current && a.ytext.toString() === current),
+    'reloading our own earlier write does not revert the document',
+    { editor: a.text().slice(-20), doc: a.ytext.toString().slice(-20) }
+  )
+  a.host.recent = null
+}
 
-check(a.adapter.ensureAttached() === true, 'ensureAttached re-installs after a rebuild')
-await delay(500)
-check(a.text() === beforeRebuild, 'A is back on the room content after re-attach')
-check(a.adapter.ensureAttached() === false, 'a healthy adapter is not re-installed')
+// Obsidian puts another note into the editor without rebuilding the state.
+{
+  const shared = a.ytext.toString()
+  const other: NoteRef = { path: 'Other.md' }
+  a.view.dispatch({
+    changes: { from: 0, to: a.view.state.doc.length, insert: 'a different note' },
+    effects: showNote.of(other)
+  })
+  a.view.dispatch({ changes: { from: 0, insert: 'typed in the other note ' }, userEvent: 'input.type' })
+  await delay(500)
+  check(a.ytext.toString() === shared && b.text() === shared, 'the next note does not leak into this one')
+  check(a.host.releases === 1, 'and the binding let go of the document')
 
-a.view.dispatch({ changes: { from: a.view.state.doc.length, insert: ' after re-attach' } })
-await delay(1_000)
-check(b.text() === a.text(), 'A -> B propagates again after re-attach')
+  // Back to the note, as Obsidian does on a file switch: a fresh state, with
+  // what is on disk.
+  a.view.setState(
+    EditorState.create({
+      doc: shared,
+      extensions: [noteField.init(() => a.note), history(), editorSyncExtension(a.host, noteOf)]
+    })
+  )
+  check(await eventually(() => a.host.acquired === 2), 'switching back binds again')
+  a.type(' back')
+  check(await eventually(() => b.text() === `${shared} back`), 'and typing reaches the other side', b.text().slice(-20))
+}
 
-// --- The note is closed while the session keeps running ----------------------
-const beforeClose = b.text()
-a.setNoteOpen(false)
-a.view.dispatch({ changes: { from: 0, insert: 'NOT MY NOTE ' } })
-await delay(800)
-check(b.text() === beforeClose, 'edits in a closed note are not pushed to the room')
-check(a.adapter.ensureAttached() === false, 'a closed note is not re-attached')
+// Edits made before the binding started are merged, not dropped.
+{
+  const shared = b.ytext.toString()
+  const c = client('C', `${shared}\nwritten before binding`, shared)
+  await c.synced
+  check(
+    await eventually(() => b.text() === `${shared}\nwritten before binding` && c.text() === b.text()),
+    'text typed before the binding started reaches the document once',
+    { b: b.text().slice(-40), c: c.text().slice(-40) }
+  )
+  c.view.destroy()
+  check(c.host.releases === 1, 'destroying the editor releases the document')
+  relay.leave(c.doc)
+}
 
-a.setNoteOpen(true)
-check(a.adapter.ensureAttached() === false, 'reopening keeps the still-live extension')
+// A note someone shared to read only.
+{
+  const shared = b.ytext.toString()
+  const reader = client('R', shared, shared)
+  reader.host.readOnly = true
+  await reader.synced
+  check(await eventually(() => reader.host.acquired === 1 && reader.view.state.readOnly), 'a read-only note binds, and the editor refuses input')
+  reader.view.dispatch({ changes: { from: 0, insert: 'slipped in ' } })
+  check(
+    await eventually(() => reader.text() === shared) && reader.ytext.toString() === shared && b.text() === shared,
+    'a change that gets into its buffer anyway is taken back, not sent'
+  )
+  b.type(' more')
+  check(await eventually(() => reader.text() === `${shared} more`), 'while what the others write still arrives')
+  relay.leave(reader.doc)
+}
 
-// --- Rejoining a room that has to come back from disk ------------------------
-const finalText = b.text()
-a.provider.destroy()
-b.provider.destroy()
-await delay(500)
-
-const c = makeClient('C', 'stale local content')
-await Promise.race([whenSynced(c.provider), delay(6_000)])
-await delay(500)
-attach(c)
-await delay(300)
-check(c.text() === finalText, 'a rejoining client gets the persisted room state')
-c.provider.destroy()
+// Presence on a shared note: carets that only move, without anyone typing.
+// Typing rebuilds the carets anyway, which is why that alone proved nothing.
+{
+  const shared = b.ytext.toString()
+  const p = client('P', shared, shared)
+  const q = client('Q', shared, shared)
+  const presence = [p, q].map((side) => {
+    const awareness = new Awareness(side.doc)
+    awareness.setLocalStateField('user', { id: side.label, name: side.label, color: '#f00', colorLight: '#fcc' })
+    side.host.awareness = awareness
+    return awareness
+  })
+  // The socket's part: every update of one side reaches the other a moment later.
+  presence.forEach((awareness, index) => {
+    const other = presence[1 - index] as InstanceType<typeof Awareness>
+    awareness.on('update', ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
+      if (origin === 'relay') return
+      const update = encodeAwarenessUpdate(awareness, added.concat(updated, removed))
+      setTimeout(() => applyAwarenessUpdate(other, update, 'relay'), 5)
+    })
+  })
+  await Promise.all([p.synced, q.synced])
+  check(await eventually(() => p.host.acquired === 1 && q.host.acquired === 1), 'two editors of a shared note bind')
+  const caretOn = (side: typeof p): number => {
+    const caret = side.view.dom.querySelector('.connect-remote-caret')
+    return caret ? side.view.posAtDOM(caret) : -1
+  }
+  p.view.dispatch({ selection: { anchor: 3 } })
+  check(await eventually(() => caretOn(q) === 3), "Q sees P's caret", caretOn(q))
+  p.view.dispatch({ selection: { anchor: 9 } })
+  check(await eventually(() => caretOn(q) === 9), "and follows it when P only moves it, typing nothing", caretOn(q))
+  q.view.dispatch({ selection: { anchor: 5 } })
+  check(await eventually(() => caretOn(p) === 5), "P sees Q's caret move too", caretOn(p))
+  for (const side of [p, q]) {
+    side.view.destroy()
+    relay.leave(side.doc)
+  }
+}
 
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)
 process.exit(failures.length === 0 ? 0 : 1)

@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { INDEX_FIELD, type IndexEntry } from '@obsidian-connect/shared'
+import { INDEX_FIELD, type IndexEntry, type ShareRole } from '@obsidian-connect/shared'
 
 // The index is the only thing that knows which file a document belongs to.
 // Keying rooms by path instead would turn every rename into a new, empty
@@ -10,10 +10,14 @@ import { INDEX_FIELD, type IndexEntry } from '@obsidian-connect/shared'
  * adopt the same note before either has seen the other's index arrive at the
  * same id. A random id per device produced two documents for one file, and
  * both sides then synced happily past each other.
+ *
+ * `generation` counts earlier documents that were created under the same
+ * path; generation 0 keeps the ids notes already have.
  */
-export async function stableDocId(vaultId: string, path: string): Promise<string> {
+export async function stableDocId(vaultId: string, path: string, generation = 0): Promise<string> {
   try {
-    const data = new TextEncoder().encode(`${vaultId}::${path}`)
+    const seed = generation === 0 ? `${vaultId}::${path}` : `${vaultId}::${path}::${generation}`
+    const data = new TextEncoder().encode(seed)
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', data))
     return Array.from(digest.slice(0, 16))
       .map((byte) => byte.toString(16).padStart(2, '0'))
@@ -24,13 +28,34 @@ export async function stableDocId(vaultId: string, path: string): Promise<string
   }
 }
 
+/** The entry without its tombstone, keeping everything else - notably `shared`. */
+function live(entry: IndexEntry): IndexEntry {
+  const { deletedAt: _deletedAt, forkedTo: _forkedTo, purgedAt: _purgedAt, ...rest } = entry
+  return rest
+}
+
+/** How a path and a generation become a document id. */
+export type DeriveDocId = (path: string, generation: number) => Promise<string>
+
+export interface AdoptOptions {
+  shared?: boolean
+  owner?: string
+  role?: ShareRole
+}
+
 export class VaultIndex {
   readonly doc = new Y.Doc()
   private readonly files: Y.Map<IndexEntry>
   private readonly byPath = new Map<string, string>()
   private readonly listeners = new Set<() => void>()
+  private readonly derive: DeriveDocId
 
-  constructor(private readonly vaultId: string) {
+  /**
+   * `derive` defaults to hashing the vault id and path; with an account it is
+   * an HMAC under the vault key, so nobody else can predict a note's id.
+   */
+  constructor(vaultId: string, derive?: DeriveDocId) {
+    this.derive = derive ?? ((path, generation) => stableDocId(vaultId, path, generation))
     this.files = this.doc.getMap<IndexEntry>(INDEX_FIELD)
     this.files.observeDeep(() => {
       this.rebuild()
@@ -82,18 +107,34 @@ export class VaultIndex {
     return result
   }
 
-  /** Returns the existing id for a path, or registers a new one. */
+  /**
+   * Returns the existing id for a path, or registers a new document for it.
+   *
+   * A new file never takes over an id the index already knows. Obsidian
+   * names every new note "Untitled" before it is renamed, so the id derived
+   * from a path usually belongs to a note that now lives elsewhere - or to one
+   * that was deleted. Reusing it handed the new, empty note that other note's
+   * text. The first unused generation is still derived, so devices adopting
+   * the same file arrive at the same id.
+   */
   async ensure(path: string): Promise<string> {
     const existing = this.docIdForPath(path)
     if (existing) return existing
-    const docId = await stableDocId(this.vaultId, path)
-    const known = this.files.get(docId)
-    // A tombstone at the same id means the note is being re-created.
-    if (known?.deletedAt) this.revive(docId, path)
-    else if (!known) {
-      this.doc.transact(() => {
-        this.files.set(docId, { path, updatedAt: Date.now() })
-      }, 'local')
+    const docId = await this.nextId(path)
+    // Another caller may have registered this path while the id was hashed.
+    const raced = this.docIdForPath(path)
+    if (raced) return raced
+    this.doc.transact(() => {
+      this.files.set(docId, { path, updatedAt: Date.now() })
+    }, 'local')
+    return docId
+  }
+
+  /** The id `ensure` would give a new document at this path, without registering it. */
+  async nextId(path: string): Promise<string> {
+    let docId = await this.derive(path, 0)
+    for (let generation = 1; this.files.has(docId); generation += 1) {
+      docId = await this.derive(path, generation)
     }
     return docId
   }
@@ -118,9 +159,21 @@ export class VaultIndex {
     return duplicates
   }
 
-  adopt(docId: string, path: string): void {
+  adopt(docId: string, path: string, options: AdoptOptions = {}): void {
+    const entry: IndexEntry = { path, updatedAt: Date.now() }
+    if (options.shared) entry.shared = true
+    if (options.owner) entry.owner = options.owner
+    if (options.role) entry.role = options.role
     this.doc.transact(() => {
-      this.files.set(docId, { path, updatedAt: Date.now() })
+      this.files.set(docId, entry)
+    }, 'local')
+  }
+
+  setRole(docId: string, role: ShareRole): void {
+    const entry = this.files.get(docId)
+    if (!entry || entry.deletedAt || !entry.owner || entry.role === role) return
+    this.doc.transact(() => {
+      this.files.set(docId, { ...entry, role, updatedAt: Date.now() })
     }, 'local')
   }
 
@@ -128,7 +181,22 @@ export class VaultIndex {
     const entry = this.files.get(docId)
     if (!entry || entry.path === path) return
     this.doc.transact(() => {
-      this.files.set(docId, { ...entry, path, updatedAt: Date.now(), deletedAt: undefined })
+      this.files.set(docId, live({ ...entry, path, updatedAt: Date.now() }))
+    }, 'local')
+  }
+
+  isShared(docId: string): boolean {
+    return this.files.get(docId)?.shared === true
+  }
+
+  setShared(docId: string, shared: boolean): void {
+    const entry = this.files.get(docId)
+    if (!entry || entry.deletedAt || (entry.shared === true) === shared) return
+    const next: IndexEntry = { ...entry, updatedAt: Date.now() }
+    if (shared) next.shared = true
+    else delete next.shared
+    this.doc.transact(() => {
+      this.files.set(docId, next)
     }, 'local')
   }
 
@@ -142,6 +210,30 @@ export class VaultIndex {
     }, 'local')
   }
 
+  /** The server let go of a deleted note; no device offers it for restoring any more. */
+  markPurged(docId: string): void {
+    const entry = this.files.get(docId)
+    if (!entry?.deletedAt || entry.purgedAt) return
+    this.doc.transact(() => {
+      this.files.set(docId, { ...entry, purgedAt: Date.now(), updatedAt: Date.now() })
+    }, 'local')
+  }
+
+  /**
+   * One note's file handed to a new document of this vault's own, in a single
+   * change. The tombstone names the new document, so another device folds
+   * what it still holds of the old one into it rather than dropping it.
+   */
+  replace(oldDocId: string, newDocId: string, path: string): void {
+    const old = this.files.get(oldDocId)
+    this.doc.transact(() => {
+      if (old && !old.deletedAt) {
+        this.files.set(oldDocId, { ...old, deletedAt: Date.now(), updatedAt: Date.now(), forkedTo: newDocId })
+      }
+      this.files.set(newDocId, { path, updatedAt: Date.now() })
+    }, 'local')
+  }
+
   revive(docId: string, path: string): void {
     const entry = this.files.get(docId)
     if (!entry) {
@@ -149,7 +241,7 @@ export class VaultIndex {
       return
     }
     this.doc.transact(() => {
-      this.files.set(docId, { path, updatedAt: Date.now() })
+      this.files.set(docId, live({ ...entry, path, updatedAt: Date.now() }))
     }, 'local')
   }
 

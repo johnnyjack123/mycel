@@ -11,6 +11,17 @@
 /** A change the editor binding pushed into the document. */
 export const EDITOR_ORIGIN = 'obsidian-connect-editor'
 
-/** A change the sync layer applied to the document (reconcile, merge, restore). */
+/** A change the sync layer applied to the document (reconcile, merge). */
 export const SYNC_ORIGIN = 'obsidian-connect-sync'
 
+/**
+ * A rollback from the history view. Unlike a reconcile it did not come from
+ * the file, so the file has to follow.
+ */
+export const RESTORE_ORIGIN = 'obsidian-connect-restore'
+
+/**
+ * What a device still held of a share that ended, merged into the note it
+ * carries on in. Not from the file either, so the file follows.
+ */
+export const FORK_ORIGIN = 'obsidian-connect-fork'

@@ -1,27 +1,27 @@
-// Exercises the multiplexed vault transport against a running server: many
-// documents over one WebSocket, which is what makes syncing a whole vault
-// possible at all.
+// The encrypted vault transport against a running server: two devices of one
+// account, many documents over one socket each, the outbox across a
+// disconnect and a crash, presence, and who may open a vault's connection.
+// Everything the server sees is ciphertext.
 //
-//   npm run start:server
-//   npm run test:socket -w @obsidian-connect/plugin -- ws://localhost:1234
-import { WebSocket as NodeWebSocket } from 'ws'
+//   PORT=1235 OBSIDIAN_CONNECT_REGISTRATION=open OBSIDIAN_CONNECT_DATA_DIR=<scratch> npm run start:server
+//   npm run test:socket -- ws://localhost:1235
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
-import { CONTENT_FIELD, docRoom, indexRoom } from '@obsidian-connect/shared'
+import { CLOSE_SIGNED_OUT, CONTENT_FIELD, docRoom, indexRoom } from '@obsidian-connect/shared'
 
-// VaultSocket targets the browser environment Obsidian runs in. Supplying the
-// two globals it uses is lighter than a full DOM.
-const globals = globalThis as Record<string, unknown>
-globals.WebSocket = NodeWebSocket
-globals.window = {
-  setTimeout: (handler: () => void, ms?: number) => setTimeout(handler, ms) as unknown as number,
-  clearTimeout: (id?: number) => clearTimeout(id as unknown as NodeJS.Timeout)
-}
+// VaultSocket targets the browser Obsidian runs in: Node 22+ has a WebSocket,
+// the timers need a `window`.
+;(globalThis as Record<string, unknown>).window = globalThis
 
-const { VaultSocket } = await import('../src/sync/VaultSocket.js')
+const { ConnectApi, fetchHttp } = await import('../src/account/api.js')
+const { Session } = await import('../src/account/Session.js')
+const { KeyRing } = await import('../src/account/KeyRing.js')
+const { hashWasmArgon2id } = await import('../src/account/argon2.js')
+const { VaultSocket, memoryCursor } = await import('../src/sync/VaultSocket.js')
+const { LocalCursor } = await import('../src/sync/DocHandle.js')
 
 const serverUrl = process.argv[2] ?? process.env.OBSIDIAN_CONNECT_URL ?? 'ws://localhost:1234'
-const vaultId = `socket-selftest-${Date.now().toString(36)}`
+const run = Date.now().toString(36)
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 const failures: string[] = []
@@ -33,99 +33,231 @@ function check(ok: boolean, label: string, detail?: unknown): void {
   }
 }
 
-const user = { id: 'tester', name: 'Tester', color: '#30bced', colorLight: '#30bced33' }
+async function eventually(predicate: () => boolean, timeoutMs = 6_000): Promise<boolean> {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    if (predicate()) return true
+    await delay(40)
+  }
+  return predicate()
+}
 
-const socketA = new VaultSocket(serverUrl, vaultId, '')
-const socketB = new VaultSocket(serverUrl, vaultId, '')
-socketA.connect()
-socketB.connect()
+async function device(username: string, password: string, create: boolean) {
+  let token: string | null = null
+  const secrets = new Map<string, string>()
+  const api = new ConnectApi(() => serverUrl, fetchHttp, () => token)
+  const session = new Session(
+    api,
+    { load: (key) => secrets.get(key) ?? null, save: (key, value) => (value === null ? secrets.delete(key) : secrets.set(key, value)) },
+    hashWasmArgon2id,
+    async (next) => {
+      token = next
+    }
+  )
+  const unlocked = create ? (await session.register(username, password)).unlocked : await session.login(username, password)
+  const vault = await session.openVault(unlocked, 'Socket test')
+  const keys = new KeyRing(vault, unlocked, api, { load: () => null, save: () => undefined })
+  const socket = new VaultSocket(serverUrl, vault.vaultId, () => token ?? '')
+  return { api, session, unlocked, vault, keys, socket, token: () => token }
+}
 
-const rooms = ['alpha', 'bravo', 'charlie'].map((name) => docRoom(`${vaultId}-${name}`))
-const docsA = rooms.map(() => new Y.Doc())
-const docsB = rooms.map(() => new Y.Doc())
+// What the settings ask before anyone signs in.
+{
+  const { probeServer } = await import('../src/account/probe.js')
+  const live = await probeServer(new ConnectApi(() => serverUrl, fetchHttp, () => null))
+  check(live.state === 'ok' && live.registration === 'open', 'the running server can be signed in to, and takes new accounts', live)
+  const nobody = await probeServer(new ConnectApi(() => 'ws://127.0.0.1:9', fetchHttp, () => null))
+  check(nobody.state === 'unreachable', 'a port nobody listens on is unreachable', nobody)
+}
 
-const readyA = rooms.map((room, i) => socketA.register(room, docsA[i] as Y.Doc, null))
-const readyB = rooms.map((room, i) => socketB.register(room, docsB[i] as Y.Doc, null))
+const username = `socket-${run}`
+const one = await device(username, 'a long enough password', true)
+const two = await device(username, 'a long enough password', false)
+check(one.vault.vaultId === two.vault.vaultId, 'both devices open the same vault by name')
 
-await Promise.race([Promise.all([...readyA, ...readyB]), delay(8_000)])
+one.socket.connect()
+two.socket.connect()
+
+const ids = await Promise.all(['alpha', 'bravo', 'charlie'].map((name) => one.keys.docId(`${name}.md`, 0)))
+check(ids.join() === (await Promise.all(['alpha', 'bravo', 'charlie'].map((name) => two.keys.docId(`${name}.md`, 0)))).join(), 'and derive the same note ids')
+
+const docsOne = ids.map(() => new Y.Doc())
+const docsTwo = ids.map(() => new Y.Doc())
+const readyOne = ids.map((id, i) =>
+  one.socket.register(docRoom(id), docsOne[i] as Y.Doc, { crypto: one.keys.ownDocCrypto(id), cursor: memoryCursor() })
+)
+const readyTwo = ids.map((id, i) =>
+  two.socket.register(docRoom(id), docsTwo[i] as Y.Doc, { crypto: two.keys.ownDocCrypto(id), cursor: memoryCursor() })
+)
+await Promise.race([Promise.all([...readyOne, ...readyTwo]), delay(8_000)])
+check(ids.every((id) => one.socket.isSynced(docRoom(id)) && two.socket.isSynced(docRoom(id))), 'three documents synced over one socket each')
+
+ids.forEach((_id, i) => (docsOne[i] as Y.Doc).getText(CONTENT_FIELD).insert(0, `content ${i}`))
 check(
-  rooms.every((room) => socketA.isSynced(room) && socketB.isSynced(room)),
-  'three documents synced over one socket each'
+  await eventually(() => ids.every((_id, i) => (docsTwo[i] as Y.Doc).getText(CONTENT_FIELD).toString() === `content ${i}`)),
+  'each document arrives in the right room, decrypted',
+  docsTwo.map((doc) => doc.getText(CONTENT_FIELD).toString())
 )
 
-// Every document must stay independent even though they share a connection.
-rooms.forEach((_room, i) => {
-  ;(docsA[i] as Y.Doc).getText(CONTENT_FIELD).insert(0, `content ${i}`)
-})
-await delay(1_200)
+;(docsOne[0] as Y.Doc).getText(CONTENT_FIELD).insert(0, 'A:')
+;(docsTwo[0] as Y.Doc).getText(CONTENT_FIELD).insert(0, 'B:')
 check(
-  rooms.every((_room, i) => (docsB[i] as Y.Doc).getText(CONTENT_FIELD).toString() === `content ${i}`),
-  'each document arrives in the right room',
-  rooms.map((_r, i) => (docsB[i] as Y.Doc).getText(CONTENT_FIELD).toString())
+  await eventually(
+    () =>
+      (docsOne[0] as Y.Doc).getText(CONTENT_FIELD).toString() === (docsTwo[0] as Y.Doc).getText(CONTENT_FIELD).toString() &&
+      (docsOne[0] as Y.Doc).getText(CONTENT_FIELD).length === 'A:B:content 0'.length
+  ),
+  'concurrent edits converge',
+  (docsOne[0] as Y.Doc).getText(CONTENT_FIELD).toString()
 )
 
-// Concurrent edits on the same document still converge.
-;(docsA[0] as Y.Doc).getText(CONTENT_FIELD).insert(0, 'A:')
-;(docsB[0] as Y.Doc).getText(CONTENT_FIELD).insert(0, 'B:')
-await delay(1_500)
-check(
-  (docsA[0] as Y.Doc).getText(CONTENT_FIELD).toString() ===
-    (docsB[0] as Y.Doc).getText(CONTENT_FIELD).toString(),
-  'concurrent edits converge over the multiplexed socket',
-  (docsA[0] as Y.Doc).getText(CONTENT_FIELD).toString()
-)
+// What the server stores is ciphertext.
+{
+  const log = await one.api.log(docRoom(ids[1] as string))
+  const stored = log.frames.map((frame) => Buffer.from(frame.data, 'base64').toString('latin1')).join('')
+  check(log.frames.length > 0 && !stored.includes('content 1'), 'the server holds no readable text', stored.slice(0, 40))
+}
 
-// The vault index travels over the same connection as the notes.
-const indexA = new Y.Doc()
-const indexB = new Y.Doc()
-await Promise.race([
-  Promise.all([
-    socketA.register(indexRoom(vaultId), indexA, null),
-    socketB.register(indexRoom(vaultId), indexB, null)
-  ]),
-  delay(6_000)
-])
-indexA.getMap('files').set('doc-1', { path: 'Note.md', updatedAt: Date.now() })
-await delay(1_200)
-check(
-  (indexB.getMap('files').get('doc-1') as { path?: string } | undefined)?.path === 'Note.md',
-  'the vault index syncs alongside the notes'
-)
+// The vault index travels over the same connection, under its own key.
+{
+  const indexOne = new Y.Doc()
+  const indexTwo = new Y.Doc()
+  await Promise.race([
+    Promise.all([
+      one.socket.register(indexRoom(one.vault.vaultId), indexOne, { crypto: one.keys.indexCrypto(), cursor: memoryCursor() }),
+      two.socket.register(indexRoom(two.vault.vaultId), indexTwo, { crypto: two.keys.indexCrypto(), cursor: memoryCursor() })
+    ]),
+    delay(6_000)
+  ])
+  indexOne.getMap('files').set('doc-1', { path: 'Note.md', updatedAt: Date.now() })
+  check(
+    await eventually(() => (indexTwo.getMap('files').get('doc-1') as { path?: string } | undefined)?.path === 'Note.md'),
+    'the vault index syncs alongside the notes'
+  )
+}
 
-// Awareness is per document, not per connection.
-const awarenessA = new Awareness(docsA[1] as Y.Doc)
-awarenessA.setLocalStateField('user', user)
-const awarenessB = new Awareness(docsB[1] as Y.Doc)
-socketA.unregister(rooms[1] as string)
-socketB.unregister(rooms[1] as string)
-await socketA.register(rooms[1] as string, docsA[1] as Y.Doc, awarenessA)
-await socketB.register(rooms[1] as string, docsB[1] as Y.Doc, awarenessB)
-awarenessA.setLocalStateField('cursor', { anchor: 0, head: 0 })
-await delay(1_200)
-const seen = Array.from(awarenessB.getStates().values()).some(
-  (state) => (state as { user?: { name?: string } }).user?.name === 'Tester'
-)
-check(seen, 'awareness reaches the other client')
+// Changes made while disconnected stay in the outbox and go out on reconnect.
+{
+  const id = await one.keys.docId('offline.md', 0)
+  const docOne = new Y.Doc()
+  const docTwo = new Y.Doc()
+  const cursorTwo = memoryCursor()
+  await one.socket.register(docRoom(id), docOne, { crypto: one.keys.ownDocCrypto(id), cursor: memoryCursor() })
+  // A device without a connection: registered, but nothing gets through.
+  const offline = new VaultSocket('ws://127.0.0.1:9', two.vault.vaultId, () => two.token() ?? '')
+  void offline.register(docRoom(id), docTwo, { crypto: two.keys.ownDocCrypto(id), cursor: cursorTwo })
+  docTwo.getText(CONTENT_FIELD).insert(0, 'written offline')
+  await delay(200)
+  check(Boolean(cursorTwo.outbox ?? cursorTwo.sending), 'an edit made offline waits in the outbox')
+  offline.destroy()
+  const again = new VaultSocket(serverUrl, two.vault.vaultId, () => two.token() ?? '')
+  again.connect()
+  await again.register(docRoom(id), docTwo, { crypto: two.keys.ownDocCrypto(id), cursor: cursorTwo })
+  check(
+    await eventually(() => docOne.getText(CONTENT_FIELD).toString() === 'written offline'),
+    'and reaches the other device after reconnecting',
+    docOne.getText(CONTENT_FIELD).toString()
+  )
+  check(await eventually(() => !cursorTwo.outbox && !cursorTwo.sending), 'the outbox empties once acknowledged')
+  again.destroy()
+}
 
-// Unsubscribing must stop traffic for that document only.
-socketB.unregister(rooms[2] as string)
-await delay(300)
-;(docsA[2] as Y.Doc).getText(CONTENT_FIELD).insert(0, 'after unsubscribe ')
-await delay(1_000)
+// The document is stored locally the moment it changes. The outbox has to be
+// stored with it: a crash in between leaves an edit on this device that is
+// never sent, and every later edit built on it undecodable elsewhere.
+{
+  const id = await one.keys.docId('crash.md', 0)
+  const saved = new Map<string, string>()
+  const store = {
+    whenSynced: Promise.resolve(),
+    destroy: () => undefined,
+    get: async (key: string) => saved.get(key) ?? null,
+    set: async (key: string, value: string) => {
+      saved.set(key, value)
+    }
+  }
+  const cursor = await LocalCursor.load(store)
+  const doc = new Y.Doc()
+  const offline = new VaultSocket('ws://127.0.0.1:9', one.vault.vaultId, () => one.token() ?? '')
+  void offline.register(docRoom(id), doc, { crypto: one.keys.ownDocCrypto(id), cursor })
+  doc.getText(CONTENT_FIELD).insert(0, 'typed just before a crash')
+  await delay(30)
+  const stored = saved.get('cursor')
+  check(Boolean(stored && (JSON.parse(stored) as { outbox?: string | null }).outbox), 'an unsent edit is stored as soon as it is made')
+  offline.destroy()
+}
+
+// Presence travels encrypted too, and only where a room registers it.
+{
+  const id = await one.keys.docId('together.md', 0)
+  const docOne = new Y.Doc()
+  const docThree = new Y.Doc()
+  const awarenessOne = new Awareness(docOne)
+  awarenessOne.setLocalStateField('user', { name: 'Tester' })
+  const awarenessThree = new Awareness(docThree)
+  const three = new VaultSocket(serverUrl, one.vault.vaultId, () => one.token() ?? '')
+  three.connect()
+  await one.socket.register(docRoom(id), docOne, { crypto: one.keys.ownDocCrypto(id), cursor: memoryCursor(), awareness: awarenessOne })
+  await three.register(docRoom(id), docThree, { crypto: one.keys.ownDocCrypto(id), cursor: memoryCursor(), awareness: awarenessThree })
+  awarenessOne.setLocalStateField('cursor', { anchor: 0, head: 0 })
+  check(
+    await eventually(() =>
+      Array.from(awarenessThree.getStates().values()).some((state) => (state as { user?: { name?: string } }).user?.name === 'Tester')
+    ),
+    'presence reaches the other client'
+  )
+  three.destroy()
+}
+
+// A vault's connection carries its index and settings, so only the account
+// that owns the vault may open it - checked at the upgrade, before any room.
+{
+  const other = await device(`socket-other-${run}`, 'another long password', true)
+  const opens = (token: string): Promise<'open' | 'refused' | 'signed out'> =>
+    new Promise((resolve) => {
+      const ws = new WebSocket(`${serverUrl.replace(/\/+$/, '')}/vault/${one.vault.vaultId}?token=${encodeURIComponent(token)}`)
+      const settle = (outcome: 'open' | 'refused' | 'signed out'): void => {
+        clearTimeout(timer)
+        resolve(outcome)
+      }
+      const timer = setTimeout(() => {
+        ws.close()
+        resolve('refused')
+      }, 5_000)
+      // A token that does not hold is let in and closed at once, so a device
+      // can tell "signed out" from "unreachable"; open means it stays open.
+      ws.onopen = () =>
+        setTimeout(() => {
+          if (ws.readyState !== WebSocket.OPEN) return
+          ws.close()
+          settle('open')
+        }, 300)
+      ws.onclose = (event) => {
+        if (event.code === CLOSE_SIGNED_OUT) settle('signed out')
+      }
+      ws.onerror = () => settle('refused')
+    })
+  check((await opens(other.token() ?? '')) === 'refused', "another account's token does not open this vault")
+  check((await opens('')) === 'signed out', 'nor does no token, which is closed as signed out')
+  check((await opens(one.token() ?? '')) === 'open', 'while its own does')
+  other.socket.destroy()
+}
+
+// Unsubscribing stops one room only.
+two.socket.unregister(docRoom(ids[2] as string))
+;(docsOne[2] as Y.Doc).getText(CONTENT_FIELD).insert(0, 'after unsubscribe ')
+;(docsOne[0] as Y.Doc).getText(CONTENT_FIELD).insert(0, 'still live ')
 check(
-  !(docsB[2] as Y.Doc).getText(CONTENT_FIELD).toString().startsWith('after unsubscribe'),
-  'an unsubscribed document stops receiving updates'
-)
-;(docsA[0] as Y.Doc).getText(CONTENT_FIELD).insert(0, 'still live ')
-await delay(1_000)
-check(
-  (docsB[0] as Y.Doc).getText(CONTENT_FIELD).toString().startsWith('still live'),
+  await eventually(() => (docsTwo[0] as Y.Doc).getText(CONTENT_FIELD).toString().startsWith('still live')),
   'the other documents keep syncing'
 )
+check(
+  !(docsTwo[2] as Y.Doc).getText(CONTENT_FIELD).toString().startsWith('after unsubscribe'),
+  'an unsubscribed document stops receiving updates'
+)
 
-socketA.destroy()
-socketB.destroy()
-for (const doc of [...docsA, ...docsB, indexA, indexB]) doc.destroy()
+one.socket.destroy()
+two.socket.destroy()
 
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)
 process.exit(failures.length === 0 ? 0 : 1)

@@ -2,96 +2,284 @@ import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import { CONTENT_FIELD, docRoom, type CollabUser } from '@obsidian-connect/shared'
-import type { VaultSocket } from './VaultSocket.js'
+import { fromBase64, toBase64 } from '@obsidian-connect/shared/crypto'
+import type { HistoryStore } from './History.js'
+import type { RoomCrypto, RoomCursor, VaultSocket } from './VaultSocket.js'
+import { log } from '../log.js'
 
 // One note. The document is persisted locally before anything touches the
-// network, so edits made offline survive closing Obsidian - previously they
-// lived only in RAM and were gone on restart.
+// network, so edits made offline survive closing Obsidian. Next to it lives
+// the note's place in the server's log and whatever the server has not yet
+// acknowledged - an edit made offline must still be sent after a restart.
+
+/** Where a device keeps its copy of a document between sessions. */
+export interface LocalStore {
+  whenSynced: Promise<unknown>
+  destroy(): Promise<unknown> | void
+  /** Deletes what this store kept - document and log position - and closes it. */
+  clear(): Promise<void>
+  get(key: string): Promise<string | null>
+  set(key: string, value: string): Promise<void>
+}
+
+export type OpenLocalStore = (name: string, doc: Y.Doc) => LocalStore
+
+export const openIndexedDb: OpenLocalStore = (name, doc) => {
+  const persistence = new IndexeddbPersistence(name, doc)
+  return {
+    whenSynced: persistence.whenSynced,
+    destroy: () => persistence.destroy(),
+    clear: () => persistence.clearData(),
+    get: async (key) => {
+      const value: unknown = await persistence.get(key)
+      return typeof value === 'string' ? value : null
+    },
+    set: async (key, value) => {
+      await persistence.set(key, value)
+    }
+  }
+}
+
+const CURSOR_KEY = 'cursor'
+const PERSIST_DELAY_MS = 250
+
+interface SavedCursor {
+  lastSeq: number
+  lastHash?: string | null
+  held?: boolean
+  syncedAt?: number
+  epoch: number
+  sending: string | null
+  outbox: string | null
+}
+
+/** A room cursor kept next to the document it belongs to. */
+export class LocalCursor implements RoomCursor {
+  lastSeq = 0
+  lastHash: string | null = null
+  held = false
+  syncedAt = 0
+  epoch = 0
+  sending: Uint8Array | null = null
+  outbox: Uint8Array | null = null
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private writes: Promise<void> = Promise.resolve()
+
+  private constructor(private readonly store: LocalStore) {}
+
+  static async load(store: LocalStore): Promise<LocalCursor> {
+    const cursor = new LocalCursor(store)
+    try {
+      const raw = await store.get(CURSOR_KEY)
+      if (raw) {
+        const saved = JSON.parse(raw) as SavedCursor
+        cursor.lastSeq = saved.lastSeq ?? 0
+        cursor.lastHash = saved.lastHash ?? null
+        cursor.held = saved.held ?? false
+        cursor.syncedAt = saved.syncedAt ?? 0
+        cursor.epoch = saved.epoch ?? 0
+        cursor.sending = saved.sending ? fromBase64(saved.sending) : null
+        cursor.outbox = saved.outbox ? fromBase64(saved.outbox) : null
+      }
+    } catch (error) {
+      // Starting from zero only costs a full catch-up.
+      log.error('the local log position is unreadable', error)
+    }
+    return cursor
+  }
+
+  persist(urgent = false): void {
+    if (urgent) {
+      void this.flush()
+      return
+    }
+    if (this.timer !== null) return
+    this.timer = setTimeout(() => {
+      this.timer = null
+      void this.flush()
+    }, PERSIST_DELAY_MS)
+  }
+
+  flush(): Promise<void> {
+    if (this.timer !== null) clearTimeout(this.timer)
+    this.timer = null
+    const saved: SavedCursor = {
+      lastSeq: this.lastSeq,
+      lastHash: this.lastHash,
+      held: this.held,
+      syncedAt: this.syncedAt,
+      epoch: this.epoch,
+      sending: this.sending ? toBase64(this.sending) : null,
+      outbox: this.outbox ? toBase64(this.outbox) : null
+    }
+    this.writes = this.writes
+      .then(() => this.store.set(CURSOR_KEY, JSON.stringify(saved)))
+      .catch((error) => log.error('saving the local log position failed', error))
+    return this.writes
+  }
+}
+
+export interface DocHandleOptions {
+  shared: boolean
+  readOnly: boolean
+  crypto: RoomCrypto
+  /** Where every change seen is kept on this device. */
+  history?: HistoryStore | null
+  /** This account owns the note, so the server may create it if it lost it. */
+  owned?: boolean
+}
 
 export class DocHandle {
   readonly doc = new Y.Doc()
   readonly ytext: Y.Text
+  /**
+   * Exists for every note but is registered with the socket only while the
+   * note is shared: syncing your own devices must not broadcast a caret.
+   */
   readonly awareness: Awareness
   readonly room: string
 
-  private readonly persistence: IndexeddbPersistence
-  private readonly socketSynced: Promise<void>
+  private readonly persistence: LocalStore
+  private cursor: LocalCursor | null = null
   private destroyed = false
+  private closedWith: string | null = null
+  private sharedNow: boolean
+  private readOnlyNow: boolean
 
   constructor(
     readonly docId: string,
     vaultId: string,
-    socket: VaultSocket,
-    user: CollabUser,
-    readonly collabEnabled: boolean
+    private readonly socket: VaultSocket,
+    private readonly user: CollabUser,
+    private readonly options: DocHandleOptions,
+    openLocal: OpenLocalStore = openIndexedDb
   ) {
     this.ytext = this.doc.getText(CONTENT_FIELD)
     this.room = docRoom(docId)
-    // The awareness object always exists because the fallback view's `yCollab`
-    // needs one, but with collaboration off it is never registered with the
-    // socket: no presence leaves this device and no remote cursors arrive.
-    // Syncing your own devices should not broadcast where your caret is.
     this.awareness = new Awareness(this.doc)
-    if (collabEnabled) this.awareness.setLocalStateField('user', user)
-    this.persistence = new IndexeddbPersistence(`obsidian-connect/${vaultId}/${docId}`, this.doc)
-    this.socketSynced = socket.register(
-      this.room,
-      this.doc,
-      collabEnabled ? this.awareness : null
-    )
-  }
-
-  /** Resolves once the locally stored state is loaded. */
-  whenLocalReady(): Promise<unknown> {
-    return this.persistence.whenSynced
+    this.sharedNow = options.shared
+    this.readOnlyNow = options.readOnly
+    if (options.shared) this.awareness.setLocalStateField('user', user)
+    this.persistence = openLocal(`obsidian-connect/${vaultId}/${docId}`, this.doc)
   }
 
   /**
-   * Resolves once the server state has arrived, or after `timeoutMs` if it has
-   * not. Callers must treat the timeout as "state unknown" and never seed or
-   * reconcile against it.
+   * Loads the local copy and its log position, then joins the room. Nothing
+   * registers before the local state is in, or loading it would be taken for
+   * edits and sent again.
+   */
+  async open(): Promise<void> {
+    await this.persistence.whenSynced
+    this.cursor = await LocalCursor.load(this.persistence)
+    if (this.destroyed) return
+    const history = this.options.history
+    this.socket.register(this.room, this.doc, {
+      crypto: this.options.crypto,
+      cursor: this.cursor,
+      awareness: this.sharedNow ? this.awareness : null,
+      readOnly: this.readOnlyNow,
+      history: history ? (entry) => history.add(this.room, entry) : null,
+      create: this.options.owned ?? true
+    })
+  }
+
+  get shared(): boolean {
+    return this.sharedNow
+  }
+
+  get readOnly(): boolean {
+    return this.readOnlyNow
+  }
+
+  setShared(shared: boolean): void {
+    if (this.destroyed || shared === this.sharedNow) return
+    this.sharedNow = shared
+    if (shared) this.awareness.setLocalStateField('user', this.user)
+    this.socket.setAwareness(this.room, shared ? this.awareness : null)
+  }
+
+  setReadOnly(readOnly: boolean): void {
+    if (this.destroyed || readOnly === this.readOnlyNow) return
+    this.readOnlyNow = readOnly
+    this.socket.setReadOnly(this.room, readOnly)
+  }
+
+  /**
+   * Resolves once the server state has arrived since the last (re)connect, or
+   * after `timeoutMs` if it has not. Callers must treat `false` as "state
+   * unknown" and never seed or reconcile against it.
    */
   async whenRemoteReady(timeoutMs: number): Promise<boolean> {
+    if (this.socket.isSynced(this.room)) return true
+    // Offline, waiting only costs time: nothing is going to arrive.
+    if (!this.socket.connected) return false
     let timer: number | undefined
     const timeout = new Promise<boolean>((resolve) => {
       timer = window.setTimeout(() => resolve(false), timeoutMs)
     })
     try {
-      return await Promise.race([this.socketSynced.then(() => true), timeout])
+      return await Promise.race([this.socket.whenSynced(this.room).then(() => true), timeout])
     } finally {
       if (timer !== undefined) window.clearTimeout(timer)
     }
+  }
+
+  /** The last frame of the server's log this copy has applied. */
+  get lastSeq(): number {
+    return this.cursor?.lastSeq ?? 0
   }
 
   text(): string {
     return this.ytext.toString()
   }
 
+  /**
+   * The text while open; once closed, the text it was closed with - what this
+   * device kept, and what the next handle of the note starts from. An editor
+   * can go on writing into a closed document until it notices.
+   */
+  lastText(): string {
+    return this.closedWith ?? this.text()
+  }
+
+  /**
+   * No change was ever applied to this document, here or on the server. Every
+   * insertion leaves a trace in the store, deleted or not, so an emptied note
+   * is not pristine.
+   */
+  get pristine(): boolean {
+    return this.doc.store.clients.size === 0
+  }
+
   get isDestroyed(): boolean {
     return this.destroyed
   }
 
-  async destroy(socket: VaultSocket): Promise<void> {
+  /**
+   * `clearLocal`: also deletes this device's copy - document, log position
+   * and history - so the next handle starts from what the server has. Only
+   * after the text was backed up.
+   */
+  async destroy(clearLocal = false): Promise<void> {
     if (this.destroyed) return
     this.destroyed = true
-    socket.unregister(this.room)
+    this.closedWith = this.text()
+    this.socket.unregister(this.room)
     this.awareness.destroy()
-    // Flush before tearing the document down, or the last edits never reach
-    // IndexedDB.
     try {
-      await this.persistence.destroy()
+      if (clearLocal) {
+        await this.cursor?.flush()
+        await this.persistence.clear()
+        await this.options.history?.clear(this.room)
+      } else {
+        // Flush before tearing the document down, or the last edits and the
+        // unacknowledged ones never reach local storage.
+        await this.cursor?.flush()
+        await this.persistence.destroy()
+      }
     } catch (error) {
-      console.error(`[obsidian-connect] closing local storage for ${this.docId} failed`, error)
+      log.error(`closing local storage for ${this.docId} failed`, error)
     }
     this.doc.destroy()
-  }
-
-  /** Removes this note's locally stored copy. */
-  async clearLocal(): Promise<void> {
-    try {
-      await this.persistence.clearData()
-    } catch (error) {
-      console.error(`[obsidian-connect] clearing local storage for ${this.docId} failed`, error)
-    }
   }
 }

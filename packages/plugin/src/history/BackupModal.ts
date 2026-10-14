@@ -1,5 +1,7 @@
 import { App, Modal, Notice, Setting, TFile, normalizePath } from 'obsidian'
 import type { BackupRecord, BackupStore } from '../sync/BackupStore'
+import { busy } from '../busy.js'
+import { log } from '../log.js'
 
 // Backups live in the plugin folder, which keeps them out of search and the
 // graph but also out of sight. This makes them reachable without a file
@@ -23,7 +25,7 @@ export class BackupModal extends Modal {
     try {
       this.records = await this.backups.list()
     } catch (error) {
-      console.error('[obsidian-connect] listing backups failed', error)
+      log.error('listing backups failed', error)
     }
     this.render()
   }
@@ -33,7 +35,7 @@ export class BackupModal extends Modal {
     try {
       this.preview = await this.backups.read(record.path)
     } catch (error) {
-      console.error('[obsidian-connect] reading a backup failed', error)
+      log.error('reading a backup failed', error)
       this.preview = ''
     }
     this.render()
@@ -90,7 +92,12 @@ export class BackupModal extends Modal {
         button
           .setButtonText('Write this back to the note')
           .setWarning()
-          .onClick(() => void this.restore(selected))
+          .onClick(() =>
+            busy(button, () => this.restore(selected)).catch((error: unknown) => {
+              log.error('writing a backup back failed', error)
+              new Notice(`Writing the backup back failed: ${error instanceof Error ? error.message : String(error)}`)
+            })
+          )
       )
     }
   }

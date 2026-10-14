@@ -1,5 +1,10 @@
 # Obsidian Connect for Obsidian — Plan
 
+> The original plan from before Phase 1, kept for its reasoning (why CRDTs, why not
+> CouchDB). It is not maintained: the current architecture is in `CLAUDE.md`, the
+> state of work in `docs/PROGRESS.md`, what each version changed in
+> `docs/CHANGELOG.md`.
+
 CRDT-based (Yjs) vault synchronization and live collaboration for Obsidian.
 
 ## Goals

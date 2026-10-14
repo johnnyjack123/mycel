@@ -1,9 +1,9 @@
 {
   "name": "obsidian-connect",
-  "version": "0.0.1",
+  "version": "0.6.8",
   "private": true,
   "type": "module",
-  "description": "CRDT-based (Yjs) synchronization and live collaboration for Obsidian vaults.",
+  "description": "End-to-end encrypted CRDT (Yjs) synchronization and live collaboration for Obsidian vaults.",
   "workspaces": [
     "packages/*"
   ],
@@ -14,12 +14,15 @@
     "build:plugin": "npm run build -w @obsidian-connect/plugin",
     "dev:server": "npm run dev -w @obsidian-connect/server",
     "start:server": "npm run start -w @obsidian-connect/server",
-    "ws-test": "node packages/server/scripts/ws-selftest.mjs",
+    "cli": "npm run cli -w @obsidian-connect/server --",
     "test:merge": "npm run test:merge -w @obsidian-connect/plugin",
-    "test:socket": "npm run test:socket -w @obsidian-connect/plugin",
+    "test:load": "npm run test:load -w @obsidian-connect/plugin",
+    "test:rooms": "npm run test:rooms -w @obsidian-connect/server",
     "test:sync": "npm run test:sync -w @obsidian-connect/plugin",
-    "test:history": "node packages/server/scripts/history-selftest.mjs",
-    "test:load": "npm run test:load -w @obsidian-connect/plugin"
+    "test:socket": "npm run test:socket -w @obsidian-connect/plugin",
+    "test:vault": "npm run test:vault -w @obsidian-connect/plugin",
+    "test:recovery": "npm run test:recovery -w @obsidian-connect/plugin",
+    "test:account": "npm run test:account -w @obsidian-connect/plugin"
   },
   "overrides": {
     "@codemirror/state": "6.5.0",

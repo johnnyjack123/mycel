@@ -34,6 +34,17 @@
   border-radius: 6px;
 }
 
+.connect-linked-notes {
+  max-height: 12em;
+  overflow-y: auto;
+  margin: 0 0 1em;
+  font-size: var(--font-ui-small);
+}
+
+.connect-linked-reason {
+  color: var(--text-muted);
+}
+
 .connect-history-row {
   display: flex;
   justify-content: space-between;
@@ -63,6 +74,38 @@
   white-space: nowrap;
 }
 
+/* A version of a note, rendered: room for its pictures, no code-block wrapping. */
+.connect-history-preview.connect-history-rendered {
+  max-height: 50vh;
+  white-space: normal;
+  font-size: inherit;
+}
+
+.connect-history-rendered img {
+  max-width: 100%;
+}
+
+.connect-embed-from-server {
+  display: block;
+  margin: 0.5em 0;
+}
+
+.connect-embed-note {
+  display: flex;
+  align-items: center;
+  gap: 0.75em;
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.connect-version-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 40vh;
+  margin: 0.5em auto;
+  border-radius: 6px;
+}
+
 .connect-history-preview {
   max-height: 30vh;
   overflow: auto;
@@ -72,4 +115,177 @@
   font-size: 0.85em;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* The cloud in the status bar: where the active note or file stands. Next to
+   it, whether the note is shared, and whether only to read. */
+.connect-note-status,
+.connect-share-status {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.connect-note-status svg,
+.connect-share-status svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.connect-share-status {
+  color: var(--text-muted);
+}
+
+.connect-share-status.is-read-only {
+  color: var(--color-orange);
+}
+
+.connect-note-status.is-local {
+  color: var(--color-orange);
+}
+
+.connect-note-status.is-synced {
+  color: var(--color-green);
+}
+
+.connect-note-status.is-unsent {
+  color: var(--color-red);
+}
+
+.connect-note-status.is-waiting {
+  color: var(--text-muted);
+}
+
+.connect-note-status.is-held {
+  color: var(--color-orange);
+}
+
+.connect-code {
+  font-family: var(--font-monospace);
+  user-select: all;
+}
+
+/* Dark on light whatever the theme, with a quiet zone: scanners need both. */
+.connect-qr {
+  width: min(240px, 70vw);
+  margin: 0.5em auto;
+}
+
+.connect-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.connect-recovery-code {
+  font-size: 1.3em;
+  letter-spacing: 0.05em;
+  text-align: center;
+  padding: 0.75em;
+  margin: 0.5em 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  word-break: break-word;
+}
+
+/* Comparing the two versions of a note. */
+.connect-review-modal {
+  width: min(900px, 95vw);
+}
+
+.connect-review-list {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 0.5em 0 1em;
+}
+
+.connect-review-list pre,
+.connect-review-same {
+  margin: 0;
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.connect-review-same {
+  padding: 0.25em 0.6em;
+  color: var(--text-muted);
+}
+
+.connect-review-hunk {
+  margin: 0.4em 0;
+  padding: 0.5em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+
+.connect-review-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5em;
+}
+
+.connect-review-side {
+  padding: 0.4em 0.6em;
+  border-radius: 4px;
+  background-color: var(--background-secondary);
+}
+
+.connect-review-side.is-mine {
+  border-left: 3px solid var(--color-blue);
+}
+
+.connect-review-side.is-theirs {
+  border-left: 3px solid var(--color-purple);
+}
+
+.connect-review-label,
+.connect-review-heading {
+  margin-bottom: 0.25em;
+  color: var(--text-muted);
+  font-size: 0.8em;
+  font-weight: 600;
+}
+
+.connect-review-choices {
+  display: flex;
+  gap: 0.4em;
+  margin-top: 0.5em;
+}
+
+.connect-review-choices button.is-active {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+@media (max-width: 600px) {
+  .connect-review-sides {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* A button whose click is still being worked on: greyed out, spinning. */
+.connect-busy {
+  opacity: 0.6;
+  cursor: progress;
+  pointer-events: none;
+}
+
+.connect-busy::after {
+  content: '';
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  margin-left: 0.5em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.15em;
+  animation: connect-spin 0.7s linear infinite;
+}
+
+@keyframes connect-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

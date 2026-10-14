@@ -33,8 +33,9 @@ jobs:
       - run: npm run build:plugin
 
       # Pure logic, no server: the merge is the only code path able to delete a
-      # user's text, so it is checked before anything else runs.
-      - name: Merge self-test
+      # user's text, and the encryption the only thing between it and the
+      # server, so both are checked before anything else runs.
+      - name: Merge and crypto self-test
         run: npm run test:merge
 
       # Imports the built bundle with Obsidian stubbed. A plugin that throws at
@@ -42,9 +43,35 @@ jobs:
       - name: Bundle load self-test
         run: npm run test:load
 
-      # The sync self-tests need a live server, so start one and wait for it.
-      # Both survive the end of this step on the Linux runners.
+      # In-process, scratch directory: accounts, access, epochs, sharing,
+      # compaction, and all of it surviving a restart.
+      - name: Rooms and accounts self-test
+        run: npm run test:rooms
+
+      # The editor binding on its own, through an in-process relay: a view
+      # plugin that throws while being constructed is silently deactivated,
+      # remote changes must stay out of undo, a wholesale reload must not
+      # become a rewrite.
+      - name: Editor binding self-test
+        run: npm run test:sync
+
+      # Runs its own server in-process, so it can take the server's data away
+      # and restore an old copy: devices must notice, ask once, and lose
+      # nothing either way.
+      - name: Server data loss and rollback self-test
+        run: npm run test:recovery
+
+      # Also its own server in-process: a password change signing the other
+      # devices out while they run, and nothing on them lost by it.
+      - name: Account self-test
+        run: npm run test:account
+
+      # The end-to-end self-tests need a live server that lets them create
+      # accounts, so start one and wait for it.
       - name: Start the sync server
+        env:
+          OBSIDIAN_CONNECT_REGISTRATION: open
+          OBSIDIAN_CONNECT_JWT_SECRET: ci-only-secret
         run: |
           npm run start:server > server.log 2>&1 &
           for _ in $(seq 1 30); do
@@ -58,20 +85,14 @@ jobs:
           cat server.log
           exit 1
 
-      - name: Relay self-test
-        run: npm run ws-test -- ws://localhost:1234
-
-      - name: Multiplexed vault socket self-test
+      - name: Encrypted vault socket self-test
         run: npm run test:socket -- ws://localhost:1234
 
-      - name: Version history self-test
-        run: npm run test:history -- ws://localhost:1234
-
-      # Guards the bug this workflow exists for: a CodeMirror view plugin that
-      # throws while being constructed is silently deactivated, so the plugin
-      # connects and then quietly ignores every keystroke.
-      - name: Live sync self-test
-        run: npm run test:sync -- ws://localhost:1234
+      # Three devices and a collaborator through the real store, keys and
+      # binding, with Obsidian's save-and-reload modelled: that interplay
+      # doubled text.
+      - name: Vault sync self-test
+        run: npm run test:vault -- ws://localhost:1234
 
       - name: Server log
         if: always()
@@ -160,3 +181,89 @@ jobs:
             packages/plugin/main.js \
             packages/plugin/manifest.json \
             packages/plugin/styles.css
+
+  # The server image, published to the GitHub container registry once every
+  # test above has passed. Only from main: `latest` is what a server pulls on
+  # its next update.
+  docker:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The registry only takes lowercase names; account names need not be.
+      - name: Image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/obsidian-connect-server" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Nothing else runs this image before a server pulls it, so start it
+      # once here: the server has to answer, and the CLI has to be able to
+      # create an account in the data volume as the unprivileged user.
+      - name: Build for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: obsidian-connect-server:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke -p 1234:1234 -e OBSIDIAN_CONNECT_JWT_SECRET=smoke-only obsidian-connect-server:smoke
+          healthy=false
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:1234/health > /dev/null; then
+              healthy=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$healthy" != true ]; then
+            echo "::error::the container never became healthy"
+            docker logs smoke
+            exit 1
+          fi
+          docker exec smoke obsidian-connect invite
+          if ! docker exec smoke obsidian-connect user list | grep -q 'invite code(s) not used yet'; then
+            echo "::error::the CLI did not write the data volume"
+            docker logs smoke
+            exit 1
+          fi
+          docker rm -f smoke
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=raw,value=latest
+            type=sha
+
+      # arm64 as well: a Raspberry Pi or a NAS is a likely home for it.
+      - name: Build and publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

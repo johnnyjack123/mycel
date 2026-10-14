@@ -5,21 +5,32 @@ Obsidian plugin plus a small self-hosted server. Two features, one mechanism:
 1. **Vault sync** across the owner's own devices. This is the primary purpose.
 2. **Live collaboration** on single notes shared with other people. Secondary.
 
-Both run on Yjs CRDTs. Every markdown note is CRDT-backed permanently — there is
-no per-note on/off switch, because leaving CRDT territory is what makes merging
-impossible and destroys data.
+Both run on Yjs CRDTs, end-to-end encrypted: the server stores and relays
+ciphertext and cannot read a note. Every markdown note is CRDT-backed
+permanently — there is no per-note on/off switch, because leaving CRDT territory
+is what makes merging impossible and destroys data. Every other file of the
+vault (images, PDFs, `.canvas`) is an **attachment**: an encrypted, immutable
+blob per version, named in the vault index (`docs/PHASE4.md`).
 
 ```
 packages/
-  shared/   protocol constants, types, text diff and three-way merge
-  server/   Fastify + own room layer + append-only history + JWT
+  shared/   protocol, types, text diff and three-way merge; `shared/crypto` for E2E
+  server/   Fastify + accounts + an encrypted log per room + JWT + admin CLI
   plugin/   the Obsidian plugin
 ```
 
+The design of accounts, keys, sharing and the encrypted transport is specified in
+**`docs/PHASE2.md`**, Phase 3 in **`docs/PHASE3.md`**, attachments (0.5) in
+**`docs/PHASE4.md`**, recovery codes and 2FA (0.6) in **`docs/PHASE5.md`**; running
+the server in **`docs/SERVER.md`**. Where the work stands and what is next:
+**`docs/PROGRESS.md`**; what each version changed and how its fixes were verified:
+**`docs/CHANGELOG.md`**. A new milestone gets its design document (`docs/PHASE6.md`
+for 0.7) written with the user before it is built.
+
 ## Non-negotiable invariants
 
-Violating any of these has already caused data loss once. Treat them as rules,
-not preferences.
+Violating any of these has already caused data loss once, or would expose
+someone's notes. Treat them as rules, not preferences.
 
 1. **Never act on a document state the server never sent.** Seeding or merging
    against an unknown state duplicates notes or deletes the other side's work.
@@ -31,48 +42,215 @@ not preferences.
    additive union, which can duplicate but cannot destroy.
 4. **Conflicts keep both sides.** Duplication is recoverable, deletion often is
    not. `threeWayMerge` never picks a winner.
-5. **Document ids are derived, never random.** `stableDocId(vaultId, path)`.
-   Random ids let two devices mint different ids for the same file and sync past
-   each other — the bug that looked exactly like "sync is broken".
+5. **Document ids are derived, never random — and never reused.** An HMAC of
+   `path` and `generation` under the vault key (`deriveDocId`): the same on every
+   device of the account, unguessable for anyone else. Random ids let two devices
+   mint different ids for the same file and sync past each other — the bug that
+   looked exactly like "sync is broken". But the id a path derives usually
+   belongs to an earlier note: Obsidian creates every note as "Untitled" and it
+   is renamed afterwards, and deleted notes leave tombstones. `ensure` takes the
+   first generation the index does not know; taking the known one handed a new
+   note the other note's text.
 6. **Never dispatch a CodeMirror transaction from a ViewPlugin constructor.**
    CodeMirror catches the exception and silently deactivates the plugin forever,
    so the editor reports success and then ignores every keystroke. Defer with
    `queueMicrotask`.
-7. **Only one writer per file, and only one binding per editor.** While an
-   editor is bound, Obsidian saves that buffer — `DocStore.setEditorOwned`
-   suppresses our own write. Writing anyway made Obsidian reload the open
+7. **Only one writer per file, and only one binding per note.** While an
+   editor is bound, Obsidian saves that buffer and nothing else writes the file
+   — `DocStore.setEditorOwned`. Writing anyway made Obsidian reload the open
    buffer, which the binding read back as a user edit; two devices doing that
-   concurrently doubled the text on every round trip. Likewise, `bindEditor`
-   guards with a synchronous `binding` set: opening a note fires three workspace
-   events, and without the guard each one attached another binding to the same
-   editor, applying every keystroke several times.
-8. **A change whose result already equals the document is not an edit.**
+   concurrently doubled the text on every round trip. `EditorSync` binds only
+   the first editor showing a note: Obsidian mirrors a note between its panes
+   itself, and a second binding applies every remote change twice.
+8. **While an editor is bound, never reconcile its file against the
+   document.** Obsidian takes the text for a save before writing it, so the
+   save lags whatever was typed meanwhile. Merging that lagging copy back in
+   saw "both sides changed this line" on every save and kept both — the text
+   duplicated itself, travelled to the other device and came back. This was the
+   escalation that filled a note with `t`s. `reconcileFile` only records
+   agreement for an owned note.
+9. **A change whose result already equals the document is not an edit.**
    `applyLocalChanges` returns early in that case. Obsidian replaces the whole
    buffer on reload even when the text is identical, and taken literally that
-   becomes "delete everything, insert everything".
+   becomes "delete everything, insert everything". Larger replacements are
+   turned into a diff against the document for the same reason.
+10. **Bind an editor only to a settled note** — `DocStore.settle`, file and
+    document agreed with the server state known. Binding to an empty document
+    the server had not sent yet put keystrokes at positions that did not exist
+    and then seeded the room with a second copy of the note. And only once the
+    buffer holds that note: Obsidian names the new file before it has read it,
+    and binding in between took the previous note's text for edits to the new
+    one (`contentPending`).
+11. **Map a Yjs delta onto CodeMirror in pre-change coordinates**
+    (`deltaToChanges`): advance over retained and deleted text, not over
+    inserted text. Getting this wrong shifts every later part of a multi-part
+    change, keeps the length right and so goes unnoticed while editor and
+    document drift apart.
+12. **Never sync a file object that has left the vault** (`DocStore.exists`).
+    An editor keeps its `TFile` after the note is deleted underneath it;
+    syncing it registered the note again and it came back, empty, everywhere.
+13. **A rename event looks up the new path first.** Applying another device's
+    rename fires one here too, and by then the old path may belong to a new
+    note — looking that up first moved the wrong one.
+14. **Nothing readable leaves the device.** Frames, snapshots, presence, titles
+    and keys are encrypted before they reach the socket or the REST API, and
+    every ciphertext is bound to its room and epoch through the associated data
+    (`frameAad`, `snapshotAad`, `awarenessAad`). The password never leaves the
+    device; the server gets a key derived from it for login only, and the master
+    key derived next to it wraps everything else.
+15. **A local edit is not stored until it is in the outbox.** `y-indexeddb`
+    writes the document at once; the outbox (`RoomCursor.persist(true)`) must
+    not lag behind it, or a crash in between leaves an edit that is on the
+    device and never sent — and every later edit built on it undecodable
+    elsewhere.
+16. **An epoch moves before anything is awaited.** Sharing without history and
+    revoking bump `meta.epoch` synchronously, so no push under the old key lands
+    after the snapshot or the revocation. Pushes under any other epoch are
+    answered with `rekey` and re-encrypted by the client.
+17. **Only the owner compacts, and the server drops no frame before a snapshot
+    supersedes it.** A participant with a shorter retention would otherwise
+    shorten everyone's history, silently.
+18. **Seeding a note from its file is the same insertion on every device**
+    (`sync/seed.ts`: client id from docId and text). Two devices starting at
+    once with the same existing notes both saw empty documents and both
+    inserted the file under their own client ids — every note came out twice.
+    If the same seed was applied and deleted before, Yjs ignores it, so
+    `seedDocument` inserts the text itself then; without that a device with an
+    old copy emptied its file, with no backup. And whatever arrived while the
+    seed waited is kept as a union, never replaced. Seeding depends on whether
+    the document *ever* carried anything (`DocHandle.pristine`), not on text or
+    base: a note emptied on purpose is empty too.
+19. **A seq number alone does not identify a log position.** A server restored
+    from a backup numbers new frames from where the backup ended, and a device
+    that was away took them for frames it had. Every cursor keeps the
+    fingerprint of its last frame, and every subscribe asks for that frame
+    again (`afterSeq = lastSeq - 1`); gone or different means the log is
+    another one - except that a snapshot reaching up to or past it is
+    compaction, which folded the frame in: one ending exactly at the last
+    frame (a note untouched for longer than the retention) was once taken for
+    another server, and every old note was held and asked about. The room is then caught up from zero, merged, and **held** —
+    nothing is sent until the user decided (`Recovery`), because uploading
+    would undo a restore made on purpose and taking the server's state would
+    drop what the devices wrote since. Index and settings always keep the
+    union; only note contents can be rolled back, and only with a backup.
+20. **A share that ends is forked, never dropped** — revoked, detached, a
+    contact removed, the owner's account removed. The participant's note
+    carries on as their own, with the history they could read and what they
+    had not sent yet. The server keeps that history for them until one of
+    their devices forked, and keeps the record after that as a tombstone, so
+    a device returning later hears "ended" instead of finding a missing room
+    to wait for or to claim.
+21. **The server deletes only accounts marked as removed.** `user remove`
+    lists the account under `removed` in `accounts.json`; the sweep clears
+    exactly those. An account that is merely missing — a damaged or
+    half-restored file — must never take its folder with it.
+22. **Another device's rename is applied with `vault.rename`, never
+    `fileManager.renameFile`.** The latter rewrites the links in other notes,
+    which the renaming device has already done and sent along with those
+    notes. When both rewrote before seeing each other's edit, every link came
+    out twice (`[[RenamedRenamed]]`, reproduced in `test:vault`). Applying the
+    rename plainly also keeps the renaming user's choice about links.
+23. **An attachment entry names only content the server has confirmed, and a
+    file is replaced or trashed only once the server holds its own content.**
+    Upload, then write the entry; before overwriting or trashing a file, ask
+    whether the server has its blob and upload it if not. The blob is the
+    backup — invariant 2 for files. And check right before writing that the
+    file still holds what was read (`stillHolds`): a canvas saving while the
+    other version downloaded was overwritten and lost. mtime and size only
+    ever let a scan skip work; they decide nothing, and a base records the
+    stat the file had *when read* — recording the later one made a canvas
+    saved during its upload look sent, and its card names never left.
+24. **Take another device's version of a file only if it knew yours.** An
+    attachment entry is replaced whole, so of two devices writing at once one
+    write simply vanishes from the index, and its device would take the other
+    version for news and overwrite its own file. Every entry names what it
+    replaced (`prev`), every replacement leaves a version record, and
+    `AttachmentIndex.replaced` decides: a version that never saw this device's
+    content is a conflict, and both files are kept. The same for a delete.
+25. **A text the document already held is an older copy, never an edit.**
+    Obsidian saves a bound editor whenever it likes, so its file lags the
+    document, and an editor that let go lags it too. When an editor bound again
+    while someone typed on another device, both were merged in as edits made
+    here, against an older base - conflict markers on a device nobody typed on.
+    `DocStore.heldBefore` knows every text a note with an editor had, and a
+    binding starts again from what it and the document said when it let go
+    (`released`). Meanwhile the file stays Obsidian's (`EditorSync.rebinding`):
+    writing it made Obsidian reload the editor and drop what was typed in between.
+26. **Nothing of the plugin outlives its unload, or a stop.** A start waits for
+    the server and the disk; a plugin turned off and on again meanwhile kept the
+    old start going, and it built a second, unseen copy of the plugin - its own
+    connection, no editor, a closed log - that took the live copy's editor saves
+    for edits and merged them with conflict markers. Every stop bumps `syncRun`,
+    `openSync` checks it after every wait, and an unloaded plugin never starts.
 
 ## Architecture
 
+### Accounts and keys
+
+- **The server knows no names.** An account is a random id; `accounts.json`
+  finds it by the hash of a **login key**. Accounts come from an invite code
+  (`obsidian-connect invite`, naming nobody) or, with
+  `OBSIDIAN_CONNECT_REGISTRATION=open`, from anyone.
+- Salt = hash of the server's random id (`server.json`, public, pinned by the
+  plugin per address) and the name — derived, never stored or secret. Password
+  → Argon2id with parameters pinned in the code (`KDF_VERSIONS`, not taken from
+  the server) → HKDF into the login key (sent) and the **master key** (never
+  sent). Names are therefore not unique; name *and* password find an account.
+- The master key wraps the ECDH P-256 private key and a random **account
+  secret**. Vault ids (HMAC of the name), vault names (encrypted) and vault keys
+  hang off the account secret, so a password change re-wraps two things.
+- Passwords need 12 characters and 10¹² estimated guesses (zxcvbn, checked in
+  the plugin only); sign-in answers after a fixed second, and an address that
+  keeps failing is blocked (`server/src/throttle.ts`). There is no per-account
+  limit, by design: a wrong password is another login key.
+- The owner derives every room key from the vault key — index, settings, and
+  each note per epoch — so nothing needs storing. People a note is shared with
+  receive epoch keys **sealed** to their public key.
+- The device keeps the token in `data.json`, the master key, the account bundle
+  and sealed keys in Obsidian's per-vault `localStorage`, so it starts offline.
+- **Signing the other devices out** (`docs/PHASE5.md`): every token carries the
+  account's session generation (`sessions` in `accounts.json`, `gen` in the token,
+  absent = 0), and only the current one is accepted. A password change moves it and
+  the server closes the account's sockets with `4401`, also its own device's: the
+  close arrives before the new token, so `Session.stillSignedIn` waits for the
+  device's own request (`Session.move`) before asking whether it is signed out.
+- **The recovery code** is a second wrapping of private key and account secret,
+  under a key from 128 random bits; the server finds the account by the hash of
+  another key from them (`recoveries`). The code alone opens the account and sets
+  a new name and password; using it spends it and signs out every other device.
+  Making, replacing or deleting one needs the current password, never a token
+  alone: a planted code would let its holder replace the account's keys.
+- **Two-factor sign-in** (TOTP, optional) guards the sign-in only - nothing is
+  encrypted with it, and it cannot be: six digits that change every 30 seconds,
+  checked by the server. The right password answers `403` with a challenge (a token
+  of scope `2fa`), the code turns it into a session. Turning it on signs out the
+  other devices. A recovery keeps it when given a current code from the app, the
+  same entry going on working, and turns it off otherwise; so can the admin
+  (`user 2fa-off`), and a signed-in device with the password alone - a code would
+  add nothing there, since device and password can make a recovery code.
+
 ### Identity
 
-- A note is a **document id**, not a path. `stableDocId` = SHA-256 of
-  `vaultId::path`, first 128 bits, hex.
+- A note is a **document id**, not a path (see invariant 5).
 - The **vault index** (`idx:<vaultId>`, a Y.Doc holding a `Y.Map` of
-  `docId -> { path, updatedAt, deletedAt? }`) maps ids to paths per vault. A
-  rename updates the entry; the id and its history survive.
+  `docId -> { path, updatedAt, deletedAt?, shared?, owner?, role? }`) maps ids to
+  paths per vault. A rename updates the entry; the id and its history survive.
+  It is persisted on the device like every note.
 - Deletes are tombstones, so an offline peer learns a note is gone instead of
   re-creating it from its own copy.
-- Note rooms are `doc:<docId>` and are global, not vault-scoped. That is what
-  makes sharing possible later without new machinery: two vaults can hold the
-  same docId under different paths.
+- Note rooms are `doc:<docId>` and are global: two vaults hold the same docId
+  under paths of their own when a note is shared.
+- Account-wide settings (exclusions, conflict markers, retentions, share folder)
+  live in `set:<vaultId>`; device-local ones in `data.json`.
 
 ### Transport
 
-One WebSocket per vault (`/vault/<vaultId>`), multiplexed — a socket per note
-does not survive a real vault. Frames are
-`[varUint type][varString room][varUint8Array payload]`; see `MUX` in
-`shared/protocol.ts`. The legacy single-room endpoint (`/<room>`) speaks plain
-`y-websocket` and exists for the relay self-test.
+One WebSocket per vault (`/vault/<vaultId>?token=`), multiplexed — a socket per
+note does not survive a real vault. The server holds an **ordered log of
+ciphertext frames** per room and fans them out; it has no `Y.Doc`. A client
+subscribes with the last seq it applied and gets a snapshot if needed, the
+frames after it and `caughtUp`; it sends `push(ref, epoch, data)` and keeps the
+payload until `ack`. See `MUX` in `shared/protocol.ts` and `VaultSocket`.
 
 ### File <-> document
 
@@ -81,24 +259,202 @@ The file on disk is a **projection** of the document, not the source of truth.
 Disagreement is detected by comparing the file text against the document text
 directly — no "who wrote last" bookkeeping, which also removes the echo problem
 (our own write-back reads back identical and is ignored). `StateStore` keeps
-`mtime`/`size` so startup can skip unchanged files without reading them, plus
-the **base text** per note: the last text where file and document agreed. The
-base is what lets `Reconciler` tell an addition from a deletion.
+`mtime`/`size` per note, plus the **base text**: the last text where file and
+document agreed. The base is what lets `Reconciler` tell an addition from a
+deletion.
 
-### History
+Every file operation on a note runs under a per-document lock in `DocStore`
+(scan, vault events, write-back, pull, deletes, editor settling). The index
+drives the vault: notes it knows but the vault lacks are **pulled** (created,
+folders included); remote renames are applied; a remote delete is applied only
+to a file this device agreed on and that is unchanged since — an edit here wins
+over a delete there and revives the note. Renames and deletes that happen before
+the index arrives are queued and replayed.
 
-Per room: `snapshot.bin` plus an append-only `log.bin` of raw Yjs updates
-(`[8B BE timestamp][4B BE length][update]`). Replaying to a timestamp
-reconstructs the note as it was then. A Y.Doc alone cannot do this — with GC on,
-deleted content is unrecoverable from the document.
+A merge without a base (typically two existing vaults meeting for the first
+time), a base-less adopt that pulled the other side's lines in, and a merge that
+kept conflicts are recorded as a **review** (`sync/Reviews.ts`, device-local in
+the plugin folder): "Compare versions" in the note's menu shows the two
+versions passage by passage and lets the user keep this device's, the other's
+or both. `DocStore.applyReview` backs up, then applies the choice as an edit —
+merged three ways into the note if it changed since. Choosing "both"
+everywhere is exactly the merge that happened (checked in `test:merge`).
 
-**Restore edits the live document** (`textEdits` + `applyTextEdits`) rather than
-replacing it, so the rollback travels the normal sync path to every client and
-is itself recorded as a version. A restore can be undone.
+### Attachments
 
-`prune(retentionDays)` folds frames older than the cutoff into the snapshot and
-keeps newer ones. No content is lost; only the granularity of old states.
-Default 30 days, `OBSIDIAN_CONNECT_HISTORY_DAYS`.
+Every file that is not Markdown (`sync/AttachmentStore.ts`, `AttachmentIndex.ts`,
+`Blobs.ts`; spec in `docs/PHASE4.md`). Here the **file is the source of truth**
+and the server holds immutable blobs of its versions:
+
+- The index document has two more maps: `attachments` (`fileId -> { path, hash,
+  size, prev, deletedAt? }`, ids derived like docIds under the label `file::`)
+  and `versions` (`fileId:hash`, the lineage and the earlier versions). Maps of
+  their own, because 0.4 devices take every entry of `files` for a note.
+- A blob is named `HMAC(vault-derived key, SHA-256 of the content)` and keyed
+  from the vault key, so the same content is one blob and nothing is stored. It
+  is encrypted in 4 MiB chunks bound to blob, index and count, and travels raw
+  over REST (`/blobs/:account/:vaultId/...`), resumable; the server keeps it under
+  `users/<account>/<vault>/blobs/`.
+- The device keeps a **base** per file (`StateStore.attachment`: path, mtime,
+  size, hash): what file and index last agreed on. Changed here and there, or no
+  base, means both are kept as two files (`name (conflict <date time>).ext`).
+- Remote renames use `vault.rename` (invariant 22); a remote delete trashes only
+  an unchanged file whose content the deleter had seen (invariant 24).
+- A per-device download limit (`attachmentDownloadLimitMb`, 10 MB on a phone)
+  leaves larger files on the server until a note that needs them is opened
+  (`fetchFor`, on `file-open`).
+- Every start and reconnect sends one `have` for all held files and uploads
+  what the server lost. At most 64 MB of file content is in memory at once.
+- An event always means "read it"; a scan every minute catches what raised no
+  event. A view that saves what it held right after another device's version
+  was written into it (within 5 s, file open in a leaf) is not taken as an
+  edit on top: that version is kept next to it (`keepTheirsAside`).
+- The trash lists notes and files (command, settings, every folder's menu); a
+  file's menu has "Version history", like a note's; a note's history renders each version,
+  pictures deleted since shown from the trash. The trash pass also cleans up:
+  content no live entry, recent tombstone or lasting version names goes, and
+  only what the server confirms gone leaves the index.
+  The server keeps a blob 10 minutes past its last upload whatever it is asked.
+- **Shared notes carry their files** (`share/SharedFiles.ts`), both ways, when
+  the owner chose so (`share.attachments` in the note's document). The note's
+  document holds a list `link -> { account, vault, blob, key, hash, prev }`;
+  what comes in is copied into this vault's own store at once and lands in
+  `<share folder>/Attachments/<link>` with `via`, an ordinary file from then
+  on. The base per link is the vault's (`sharedBases` in the index), so every
+  device of an account decides the same. Deleting such a file declines it for
+  the account (`declined`); the trash rejoins. The server lets a note's
+  members read the blobs its list names and never purges those.
+- Built: own devices (step 1), the trash and versions (step 2), shared notes'
+  files and the notes they link to (step 3).
+
+### Around the notes
+
+- **The log** (`src/log.ts`): every `log.*` call also goes to a file per day in
+  the plugin folder's `logs/`, a week of them; "Copy the log" puts two days on
+  the clipboard, errors and warnings gathered first (`withSummary`). Never note
+  text — paths, ids, sizes, outcomes. The levels say what to look at: `error`
+  for a failure *and* for a note or file kept in two versions, `warn` for the
+  unusual handled, `info` for what happened, `debug` (every frame; presence and
+  carets when they change) only with "Detailed logging" on.
+- **The cloud** in the status bar is `DocStore.noteState` for the active note,
+  `AttachmentStore.fileState` for any other file, polled: `unsent` while
+  anything this device holds is unconfirmed, `waiting` while the server's state
+  is unknown (for a file: another device's version on its way), `held` during a
+  recovery, `local` for a file too large for the server. Clicking it opens the
+  plugin's menu for that file. Beside it a mark says whether the note is shared
+  and whether only to read; a note shared to read only also gets a lock in the
+  header of every view showing it - a phone has no status bar.
+- **The settings tab is live** (`settings.ts` `refresh`): a change of the
+  account-wide settings from another device draws it again, and so does the
+  account's state - 2FA, the recovery code - which the server announces with
+  `account-changed` and a device also asks for on reconnecting and when the tab
+  opens (`refreshAccount`). A field with the focus is never rebuilt under the
+  cursor; the tab waits for it to lose the focus.
+- **The note's menus** (its "…" menu, the file explorer, the editor's right
+  click) carry sharing, access, detaching, history and "Compare versions", in
+  a section of their own under a label with the plugin's name (Obsidian's menus
+  have no headings, and its submenus are not public API).
+
+### Editor
+
+One ViewPlugin (`editor/binding.ts`), installed through
+`registerEditorExtension`, so Obsidian itself carries it into every Markdown
+editor and across file switches and mode changes. It identifies its note through
+`editorInfoField` and gets the `Y.Text` from `EditorSync`, which settles the note
+first and claims the file for Obsidian as the only writer. Edits typed before
+the binding started are merged in (`resolveEditorEdits`, with backups), remote
+changes stay out of the undo history, and Obsidian reloading a file this device
+wrote just before is recognised and not taken as an edit (`recentWrite`).
+Remote carets are anchored the way CodeMirror maps a selection — a caret stays
+in front of text inserted exactly at it — so everyone sees a caret where its
+owner has it. A caret moving along with text typed *before* it is correct. A
+note shared to read only gets a read-only editor. Remote carets are redrawn on
+any update once their version moved, not only by the refresh the awareness
+change dispatches — typing redraws them anyway, which is why only carets that
+merely move showed the difference. Announcing and drawing carets never throw
+out of `update` (invariant 6's reason applies to every exception there).
+
+### Sharing
+
+Per note, in the UI: "Share this note…" picks a contact, read or write, with or
+without history (`share/Sharing.ts`, `docs/PHASE2.md`). The recipient's plugin
+adds the note to its own index under the share folder.
+
+- **Only contacts, and their keys are pinned.** Two accounts become contacts
+  when one redeems the other's one-time friend code (`share/Contacts.ts`,
+  `server/src/contacts.ts`), which travels outside the server and carries the
+  fingerprint of its creator's key. The code yields a redeem key (the server
+  keeps its hash) and a MAC key that never leaves a device, so the server can
+  pass the sealed names back and forth but not forge them. Keys are taken from
+  the contact list, never fetched again from the server when sealing. The
+  server refuses a share with anyone else. Removing a contact ends every share
+  between the two.
+Presence (cursors, selections) follows from a note being shared: the `shared`
+flag on the index entry, and `DocHandle` only registers awareness while it is
+set. Syncing your own devices never shows a caret: a note nobody else is in
+is not shared (the server tells the owner when the last one leaves, and
+`Sharing.refreshShared` clears the flag), and in a shared note a caret of the
+same account — the user's id in the awareness state is the account id, not
+the name, which is not unique — is never drawn. There is no global
+"collaboration on/off" switch — that was built once and was wrong.
+
+- A share folder is only a **default landing spot**. Moving a note out keeps it
+  shared; the link lives in the index.
+- **"Also share the notes it links to"** (`share/LinkedNotes.ts`) shares, once
+  and with the same choices, every note the note reaches through links. Each
+  lands below the share folder at its link's path - the sealed title carries
+  the folders - so the links between them resolve there. A note the person has
+  already is left alone: sharing it again would overwrite their access.
+- **Sharing again with a member changes their access** on the server (role and
+  title replaced, history never taken back). The share dialog therefore says
+  when the person has the note, starts from their current access and reads
+  "Share again".
+- **Revoke is a protocol message** (`revoked`), also answered to a later
+  subscribe, and moves the note to a new epoch.
+- **Every end of a share is a fork** (invariant 20). The server writes what the
+  participant could read — frames, their starting snapshot, their sealed keys —
+  into *their* folder (`server/src/forks.ts`), so the owner's folder can go at
+  once: without a limit while the owner exists, 90 days after the owner's
+  account was removed. The device (`Sharing.endShare`) imports that plus its
+  own history (`sync/History.ts`) into a new note of its own at the same path,
+  the rest of its local Yjs state last — unsent edits included —, and
+  `DocStore.forkInto` hands the file over. The old index entry's tombstone
+  names the new note (`forkedTo`); every other device of the account folds
+  what it holds of the old note into it as Yjs state. The new note was built
+  from the same changes, so that adds only what is missing and duplicates
+  nothing. The base text moves along, so a file edited offline merges three
+  ways.
+- **Removing an account** (`user remove`) only marks it (invariant 21). The
+  running server's sweep (`RoomHub.sweep`, on start and every few minutes)
+  ends its shares as above, ends its memberships, forgets its contacts and
+  deletes its folder.
+- **Deleting is asymmetric.** A participant deleting leaves the share. The owner
+  deleting removes the note from the owner's vault only.
+- **No remote delete.** Participants already hold the content, and destroying
+  what they wrote after the share has unbounded downside. The share dialog says
+  that copies remain.
+
+### History and retention
+
+On the client, because only the client can read the log: `NoteHistory` decrypts
+and replays, ordered by the author's time inside each frame — not the server's
+seq or clock, which re-uploaded history would scramble and which the server
+could fake. Restore edits the live document, so the rollback travels like any
+edit and can itself be undone. Every device also keeps the history it saw,
+decrypted, in its own IndexedDB (`sync/History.ts`) — to upload it again after
+the server lost it. Retention is account-wide; the owner's
+`Compactor` folds frames older than it into a snapshot under the current epoch
+and uploads it; the server drops those frames only then, and keeps a member's
+join snapshot while it is still their starting point.
+
+The retention is also the **trash** (`sync/Trash.ts`, "Deleted notes…"): a
+deleted note of one's own stays restorable for that long, on any device —
+restoring revives its index entry and pulls it from its document, next to a
+note that took its name meanwhile. After that the owner's device asks the
+server to delete the room (`POST /log/:room/purge`), which it refuses while the
+note is still shared, and marks the tombstone `purgedAt`. A retention of 0 keeps
+everything, deleted notes included. Local copies of a purged note are cleared
+only on the device that purged it; the others keep their IndexedDB copy.
 
 ## Testing
 
@@ -106,46 +462,84 @@ Nothing that touches Obsidian's API can be tested headlessly. Everything else is
 covered, and all of it must stay green.
 
 ```bash
-npm run test:merge     # merge/reconcile/identity — no server, no DOM
-npm run test:load      # the built bundle imports with Obsidian stubbed
-npm run start:server   # needed for the three below
-npm run ws-test        # legacy relay
-npm run test:socket    # multiplexed transport
-npm run test:history   # versions, replay, rollback
-npm run test:sync      # the real editor binding in jsdom
+npm run test:merge     # merge/reconcile/identity and the crypto — no server, no DOM
+npm run test:load      # the built bundle imports, onload/start/unload run, Obsidian stubbed; current and versioned
+npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart — in-process
+npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
+npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
+npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
+# needs a server that lets tests create accounts:
+npm run test:socket    # the encrypted transport, two devices of one account
+npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing, attachments
 ```
 
-**Untested, because it only runs inside Obsidian:** `DocStore`, `DocHandle`
-(y-indexeddb), the startup scan, vault events, file write-back, and both modals.
-Changes there need on-device verification.
+The end-to-end tests share their devices through `scripts/harness.mts`.
+`test:recovery` starts the server in-process (`startServer` in
+`server/src/server.ts`) so it can stop it, take its data away or restore an old
+copy, and start it again on the same port.
+
+`test:vault` runs the real sync layer against `scripts/stubs/fake-vault.ts`: an
+in-memory vault and a Markdown view that save the way Obsidian does (text taken
+first, written a moment later, periodically while typing) and reload wholesale
+when something else writes the file. That model is what makes the doubling bug
+reproducible; a fake that saves instantly passes with the bug in place. `obsidian`
+is replaced through `paths` in `scripts/tsconfig.json`.
+
+**Still only verifiable on a device:** `editorInfoField` and the real timing of
+Obsidian's saves and reloads, IndexedDB, `requestUrl` (binary bodies too, on
+mobile), `localStorage`, the modals and the settings tab, Obsidian's binary
+file events and link resolution, memory with large files on a phone, the QR code
+scanned by an authenticator app and the `otpauth://` link opening one.
 
 ## Gotchas
 
 - **Node 22+ required.** jsdom 30 does not support Node 20, and Node 20 is EOL.
-  CI builds on 24, which is also the development baseline.
-- **`y-websocket` falls back to a global `WebSocket`**, which Node only has from
-  v22. The self-tests pass `WebSocketPolyfill` explicitly.
-- **Obsidian drops `StateEffect.appendConfig` extensions** whenever it rebuilds
-  the EditorState (file switch inside a leaf, edit/preview toggle). The adapter
-  re-attaches on `layout-change`, `active-leaf-change` and `file-open`, and the
-  binding refuses local edits while the view shows a different note — otherwise
-  a file switch pushes the next note's text into the shared room.
+  CI builds on 24, which is also the development baseline. Node's own
+  `WebSocket` and WebCrypto are what the tests use.
+- **TypeScript 5.9 types `Uint8Array` by its buffer.** WebCrypto wants
+  `Uint8Array<ArrayBuffer>` (`Bytes` in `shared/crypto`); Yjs and lib0 hand out
+  `Uint8Array<ArrayBufferLike>`. Convert with `bytes()`.
+- **`shared/crypto` is not in the package index.** The server compiles the
+  shared sources without DOM types and never encrypts; import it as
+  `@obsidian-connect/shared/crypto`.
+- **Never add the editor extension with `StateEffect.appendConfig`.** Obsidian
+  drops such extensions whenever it rebuilds the EditorState (file switch inside
+  a leaf, edit/preview toggle), and re-attaching from workspace events while it
+  was still laying out crashed CodeMirror and opened fallback panes. Use
+  `registerEditorExtension`. The binding still compares the note on every update
+  and lets go when it changes — otherwise a file switch pushes the next note's
+  text into the shared room.
+- **There is no Docker on the development machine.** The image is only ever
+  built in CI: the `docker` job in `build.yml` runs after the tests, on `main`
+  only, starts the image once (health check, `invite` through the CLI) and
+  publishes it to `ghcr.io/johnnyjack123/obsidian-connect-server`. A broken
+  `Dockerfile` shows up there and nowhere earlier.
 - **`main.js` is CommonJS inside a `"type": "module"` package.** Obsidian
   evaluates it itself; Node needs a `.cjs` copy (see `load-selftest.mjs`).
 - **Never put raw control characters in source.** A NUL sentinel in the glob
-  matcher survived two rewrites unnoticed.
+  matcher survived two rewrites unnoticed, and a byte order mark written as its
+  `\u` escape in an edit landed as the invisible character itself. Write such characters by code
+  (`0xfeff`, `String.fromCharCode`). To look for them, read the files with Node:
+  `grep -P` in Git Bash has no UTF-8 locale and fails, which with `2>/dev/null`
+  looks exactly like "nothing found".
+- **The server reads the `.env` in the repository root** (`loadEnvFile`), for
+  npm and the CLI alike; compose reads the same file. Shell variables win, so a
+  local `.env` cannot redirect the self-tests. Writing `.env*` is blocked by a
+  permission rule — the user creates it.
 - **Never test on port 1234 and never delete `packages/server/data/`.** That is
-  the user's server and the user's history. Assuming otherwise has, three times,
+  the user's server and the user's data. Assuming otherwise has, three times,
   meant killing their server, wiping its data while it ran, and writing test
   rooms into it — and because `npm run start:server` then fails with
   `EADDRINUSE` while the tests happily keep going, it looks like everything
-  passed.
+  passed. (The user once asked for their test data to be wiped; that was a
+  one-off, not a licence.)
 
-  Always use a separate port and a scratch data directory:
+  Always use a separate port and a scratch data directory, with registration
+  open so the tests can create accounts:
 
   ```bash
-  PORT=1235 OBSIDIAN_CONNECT_DATA_DIR="$TMPDIR/oc-test-data" npm run start:server
-  npm run test:socket -- ws://localhost:1235
+  PORT=1235 OBSIDIAN_CONNECT_REGISTRATION=open OBSIDIAN_CONNECT_DATA_DIR="$TMPDIR/oc-test-data" npm run start:server
+  npm run test:vault -- ws://localhost:1235
   ```
 
   Check the server log for `EADDRINUSE` before trusting a green run, and stop
@@ -157,126 +551,90 @@ Changes there need on-device verification.
     ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
   ```
 
-## Planned — Phase 2
+## Phase 3
 
-Decided with the user, not yet implemented.
+Built: surviving a server that lost or rolled back data, accounts without
+names, contacts by one-time friend code, forking a share with its history,
+removing accounts, the trash. Specified in **`docs/PHASE3.md`**, which also
+names what is known and left for later (signatures per author).
 
-### Accounts
+## Not built yet
 
-- **`vaultId` must become derived, not random:** `username + vault name`. One
-  vault per name per user, so a new device pairs by signing in instead of
-  copying a UUID. Today it is a generated UUID the user copies by hand.
+In the order of the roadmap (Conventions); what goes into 0.8 and 0.9 besides
+is listed in `docs/PROGRESS.md`, "Roadmap". (Recovery codes and 2FA: built in
+0.6, `docs/PHASE5.md`.)
 
-### Settings: account-wide vs device-local
+**Backup API (0.7).** A secured endpoint a backup tool such as restic can
+pull snapshots from on a schedule, in two forms:
 
-Some settings must be identical on every device of an account, others must not.
-Syncing all of them would be wrong.
+- *Encrypted:* the data directory as it is — ciphertext only — authenticated with
+  a dedicated, revocable backup token rather than an account.
+- *Decrypted:* the notes as Markdown. Decryption must happen outside the server,
+  or the server would hold the keys: a small command-line client on the backup
+  machine signs in with the account's credentials, pulls the ciphertext through
+  the API, decrypts locally and writes the files restic then snapshots.
 
-- **Account-wide** (belongs in a settings document next to the vault index):
-  history retention, backup retention, exclude globs, conflict markers.
-- **Device-local** (must stay in `data.json`): the access token, and anything
-  that legitimately differs per machine — `maxLoadedDocuments` (lower on
-  mobile), `writeDebounceMs`, and the server URL, which may differ between a
-  LAN address and a VPN one.
+**Sharing a folder (0.8).** Share a whole folder with someone instead of note by
+note, including what is added to it later. Not designed yet.
 
-History retention in particular *has* to be account-wide: pruning is
-client-driven, so a device with a shorter setting silently prunes for all the
-others.
+**Every note live (0.9).** A device holds at most `maxLoadedDocuments` notes open
+(500 by default, a setting under *This device*); the others get another device's
+change only when opened or at the next start, and their files stay old until
+then. Raising the setting is the workaround; the fix keeps memory bounded and
+still brings every change in.
 
-### Retention on a shared document
-
-Same failure mode across accounts, and the answer is a rule, not a negotiation:
-**the owner's retention governs the shared log, and only the owner's client may
-instruct compaction.** Without that, whichever participant has the shortest
-retention destroys history for everyone, silently.
-
-A participant who wants more can keep more: every client fetches and holds the
-frames locally anyway, so a longer *local* archive is always possible. What a
-participant cannot do is change how long the shared log lives.
-
-### Sharing
-
-Granting account B access to `doc:<docId>` plus an entry in B's vault index.
-
-**Sharing is per document and lives in the UI, not in the settings.** The flow
-is: open a note, "Share this note", pick a person the server knows, done. There
-must be no global "collaboration on/off" switch — that was built once and was
-wrong. Presence (cursors, selections) follows from a document being shared:
-`DocStore.sharedDocs` is the seam, and `DocHandle` only registers awareness with
-the socket for documents in it. Syncing your own devices never broadcasts a
-caret.
-
-Agreed rules:
-
-- A dedicated share folder is only a **default landing spot**, never the source
-  of truth. Moving a note out must not unshare it; the link lives in the index.
-- **Detaching re-keys the document.** B's copy gets a new docId in B's own
-  namespace, otherwise B's personal sync keeps writing into the shared room.
-  The history is copied along with it.
-- **Deleting is asymmetric.** A participant deleting = leaving the share. Only
-  the owner deletes the document.
-- **Revoke needs its own protocol message,** not a connection error, or a client
-  that was offline retries forever and looks broken.
-- **No remote delete.** Explicitly rejected: no security benefit (participants
-  already hold the content) and unbounded downside (destroying text the other
-  person wrote after the share). A notice when the share is created states that
-  copies remain.
-
-### Encryption (approved design)
-
-End-to-end, server sees ciphertext only.
-
-```
-password + salt -> Argon2id -> master key   (never leaves the device)
-master key                  -> wraps the account private key and the vault key
-private key                 -> receives document keys wrapped for this account
-document key                -> symmetric, one per document, per epoch
-```
-
-- Derive a **separate auth verifier** for the server; the wrapping key must never
-  be sent.
-- Documents are **not** encrypted with the password-derived key directly, so a
-  password change only re-wraps the master key instead of the whole vault.
-- **Key epochs.** There is no "document" next to the log — the current state *is*
-  the result of applying every update. A snapshot is only a compaction artifact.
-  So:
-  - One key, never rotated: works, no epochs, no snapshot. But anyone who ever
-    held the key can read future updates too if they can reach the frames, which
-    makes access control purely server-enforced — exactly what E2E is meant to
-    avoid.
-  - **Rotating on revoke** is therefore the real reason epochs exist.
-  - **Rotating on share** additionally hides the prior history from the new
-    participant. It requires handing them a **snapshot re-encrypted under the
-    new epoch key**: the newer frames are deltas against a base they cannot
-    read, so without it they get a broken document, not a shorter history.
-  - The owner keeps every epoch key and therefore always sees the full history.
-  - Sharing every epoch instead (full history, with a notice) needs no snapshot
-    at all: hand over both keys and nothing special happens.
-
-  **This is a per-share choice, not a global default.** The share dialog asks
-  whether to include the history:
-  - *with history* — hand over every epoch key. No rotation, no snapshot.
-  - *without history* — rotate to a new epoch, hand over only the new key plus
-    a snapshot re-encrypted under it.
-
-  Two consequences worth surfacing in the dialog: "without history" only hides
-  what came before, not what the participant sees from then on; and producing
-  the snapshot needs the owner's client to have the document loaded, so an
-  owner who is offline cannot create that kind of share.
-- Later: recovery codes, strength estimation instead of composition rules, 2FA.
-
-**What E2E costs, concretely:** the server can no longer maintain a `Y.Doc`, so
-the state-vector sync in `RoomManager` goes away and the server becomes an
-ordered encrypted log with fanout; clients fetch "everything after sequence N"
-and merge locally (correct, because Yjs updates are commutative and idempotent).
-Server-side `restore`, `/history/:room/text`, the `chars` field and `prune` all
-need plaintext and must move to the client — **the server must never drop a frame
-until a client has supplied a snapshot that supersedes it.** Metadata (which
-docIds, which accounts, update sizes and timing) stays visible.
+**Syncing plugins and their settings (wanted, optional, after 1.0.0).** Moved
+back by the user on 2026-10-14. Not through the
+CRDT: a plugin's `data.json` is JSON, not text two people edit, many plugins
+rewrite it on every start (ping-pong between devices), a merge of two edits
+can be invalid JSON, and some of it is per device (paths, window state, our
+own token). Instead snapshots with an explicit source: "take the plugins and
+settings of *this* device" uploads them encrypted; another device shows what
+differs and applies it on request, after a backup of its own. Per plugin
+opt-in, this plugin's own `data.json` never included, plugin code and its
+settings only together (a `data.json` for another version can break it). An
+edit on two devices before either applied the other's is then a choice
+between two snapshots, never a merge.
 
 ## Conventions
 
 - Commit messages, comments and identifiers in English; the user writes German.
 - Conventional Commits, `Co-Authored-By` trailer — see the `git-flow` skill.
-- Never push without being asked.
+- **Push right after every commit** — the user asked for that (2026-09-27);
+  it replaces "never push without being asked" for this repository.
+- **A branch per milestone or larger feature, merged when it is done** — the
+  user asked for that (2026-10-14). Start it from `main` without asking
+  (`feat/<name>`, e.g. `feat/backup-api`). Once the feature is done - built,
+  every test and CI green, the docs current - merge it into `main` without being
+  asked (`git merge --no-ff`, pushed) and watch the CI run on `main`: only there
+  are the Docker image and the `latest-build` release built, so a broken
+  `Dockerfile` shows up nowhere else. Fixes found afterwards, and other small
+  fixes, go straight to `main` or on a short `fix/<name>` branch. Everything up to
+  0.6.8 was built on one branch, `feat/accounts`, and reached `main` only then.
 - Comments explain *why*, never narrate *what*.
+- **A button that waits for the server or the disk runs its work through `busy`**
+  (`src/busy.ts`): greyed out and spinning at once, no second click. Without it a
+  click that waited looked like one that went nowhere (asked for by the user).
+- **Every change the user installs gets a new version**, so the version
+  Obsidian shows tells whether a device is current. One version for
+  everything: `manifest.json`, `versions.json` (plus its entry), and every
+  `package.json` via `npm version <v> --workspaces --include-workspace-root
+  --no-git-tag-version`; `test:load` fails when they differ. A fix is a patch
+  (`0.4.1`), a milestone below the minor:
+
+  | Version | Milestone |
+  |---|---|
+  | 0.1 | Phase 1: vault sync (before versions were kept) |
+  | 0.2 | Phase 2: accounts, end-to-end encryption, sharing |
+  | 0.3 | Phase 3: surviving the server, accounts without names, contacts, forks, trash |
+  | 0.4 | the first device run: comparing versions, the log, the note cloud, menus |
+  | 0.5 | attachments, in an encrypted blob store |
+  | 0.6 | recovery codes and 2FA |
+  | 0.7 | the backup API |
+  | 0.8 | sharing a folder, and the small fixes listed for it in `docs/PROGRESS.md` |
+  | 0.9 | hardening and a security audit: signatures per author, every note live, a name without "Obsidian" |
+  | 1.0.0 | all of the above done and verified on devices |
+  | later | syncing plugins and their settings (moved back by the user, 2026-10-14) |
+- **Rebuild after anything that swaps the sources.** A bundle built during a
+  `git stash` check held the older settings screen and went to the user as
+  the new one; `test:load` now fails when a source is newer than `main.js`.
