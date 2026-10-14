@@ -97,7 +97,12 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
   plugin folder, `data.json` and the `localStorage` keys move with the id, so it
   needs a migration); a review of the cryptography and the server's API, including
   the known limit that signing out does not replace the account secret
-  (`docs/PHASE5.md`).
+  (`docs/PHASE5.md`). What the community directory asks for besides (checked
+  2026-10-14; submission through community.obsidian.md, reviewed automatically
+  within minutes): a public repository (it is private, and new closed-source
+  plugins are refused), a `LICENSE` (there is none), a release tagged `x.y.z`
+  (CI makes one per tag), and the README saying that the plugin needs a server
+  and an account. Whether to publish at all is the user's decision.
 - **1.0.0** - all of the above done and verified on devices.
 - **Later:** syncing plugins and their settings (moved back by the user; the
   direction is in CLAUDE.md).
