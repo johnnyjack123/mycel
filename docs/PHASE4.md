@@ -22,7 +22,7 @@ belong to which shared note. It sees no names, paths or content.
   safely, so it is a blob like the rest.
 - Not synced: what the exclude globs match (the same list as for notes), Obsidian's
   config folder and everything else Obsidian hides (dot folders; plugins and their
-  settings are 0.7), and files over the server's limit.
+  settings are a milestone of their own, after 1.0.0), and files over the server's limit.
 - A file over the limit stays on the device, and the log says so once. *(A mark in
   the file's menu is not built yet.)*
 

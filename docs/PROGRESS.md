@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-14 · **0.6.8 on `feat/accounts`: milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built and tried by the user ("2FA works great"); 0.6.4/0.6.5 fixed the conflict markers the user saw (invariants 25, 26); 0.6.6 turns 2FA off with the password alone, 0.6.7 spins every button that waits, 0.6.8 shows changes from other devices in the open settings at once. Next: the user installs 0.6.8 (server and plugin) and checks it; then milestone 0.7 (plugins and their settings) is designed with the user.**_
+_Last updated: 2026-10-14 · **0.6.8 merged into `main`: milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built, and 0.6.8 confirmed working on the user's devices. The roadmap was reordered by the user: 0.7 the backup API, 0.8 sharing a folder and the small fixes, 0.9 hardening and a security audit, plugin sync after 1.0.0. Next: milestone 0.7 (the backup API), designed with the user first, on its own branch `feat/backup-api` from `main`.**_
 
 ## Where we are
 
@@ -13,8 +13,10 @@ contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments),
 `docs/SERVER.md` for running the server; `docs/CHANGELOG.md` for every version and
 how its fixes were verified.
 
-Branch `feat/accounts`, pushed, CI green up to `c625e14` (0.6.8). Not merged to
-`main` - merging is what first builds and publishes the Docker image. The user
+Everything up to 0.6.8 was built on one branch, `feat/accounts`, and merged into
+`main` on 2026-10-14, which also built the Docker image for the first time (see
+"Verification state"). From now on every milestone gets a branch of its own from
+`main`, merged when it is done (CLAUDE.md, Conventions). The user
 runs the server with npm on the laptop (port 1234, `packages/server/data` - never
 touch either; see CLAUDE.md, Gotchas) and installs the plugin by copying
 `main.js`, `manifest.json`, `styles.css`. 0.6 changes the server too: the user's
@@ -56,14 +58,49 @@ since 0.6.3) and **restarts Obsidian fully** on every device - a copy left runni
 working: turning 2FA off takes the password alone (0.6.6, server and plugin); every
 button that waits greys out and spins (0.6.7); the open settings tab shows changes
 from other devices - the account-wide settings and the account's 2FA and recovery
-code - without a restart (0.6.8, server and plugin). The user restarts their server
-with 0.6.8 and installs the plugin on every device.
+code - without a restart (0.6.8, server and plugin). The user installed 0.6.8 and
+said it works as expected (2026-10-14).
 
-Then **milestone 0.7: syncing plugins and their settings** - not designed yet. The
-direction the user gave is in CLAUDE.md ("Not built yet"): snapshots from a chosen
-device, never through the CRDT, per plugin opt-in. Design it with the user first
-(AskUserQuestion; the user writes German and decides product questions), write
-`docs/PHASE6.md`, then build in steps with tests.
+Next is **milestone 0.7: the backup API** - not designed yet. The direction is in
+CLAUDE.md ("Not built yet"): an encrypted form (the data directory, ciphertext
+only, behind a revocable backup token) and a decrypted one (a command-line client
+on the backup machine signs in, pulls the ciphertext and decrypts there - the
+server never holds a key), both pullable by restic on a schedule. Start the branch
+`feat/backup-api` from `main`, design it with the user (AskUserQuestion; the user
+writes German and decides product questions), write `docs/PHASE6.md`, then build in
+steps with tests, and merge when it is done.
+
+## Roadmap
+
+Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
+
+- **0.7 - the backup API.** See "Next step".
+- **0.8 - sharing a folder, and the small fixes.** Sharing a whole folder,
+  including what is added to it later (not designed yet). Besides, every fix that
+  has to be in before 0.9:
+  - Typing into an open note while sync itself restarts (signing out and in, the
+    plugin reloaded) can lose the keystrokes of that moment (details under "Known
+    issues").
+  - Content uploaded but never named in the index (a crash between the two) is
+    never cleaned up from the server.
+  - Local copies of a purged note stay in IndexedDB on the devices that did not
+    purge it.
+  - To investigate: after a device turns 2FA on, its own socket took seconds to
+    connect again in `test:account` (A4 still disconnected) - find out whether a
+    device shows that too and why.
+  - Whatever the open questions below turn up, and anything the user finds on the
+    devices until then.
+- **0.9 - hardening and a security audit.** Frames signed per author, not only
+  authenticated by the note's key (`docs/PHASE3.md`); every note live without all
+  of them in memory (CLAUDE.md, "Not built yet"); a name and plugin id without
+  "Obsidian" (the community directory refuses an id containing `obsidian`; the
+  plugin folder, `data.json` and the `localStorage` keys move with the id, so it
+  needs a migration); a review of the cryptography and the server's API, including
+  the known limit that signing out does not replace the account secret
+  (`docs/PHASE5.md`).
+- **1.0.0** - all of the above done and verified on devices.
+- **Later:** syncing plugins and their settings (moved back by the user; the
+  direction is in CLAUDE.md).
 
 ## In flight / half-finished
 
@@ -104,8 +141,11 @@ Nothing. Everything is committed and pushed.
   reconnect and when the tab opens, and the server's notice is a new kind
   (`account-changed`) that older plugins ignore. Toggles have no spinner (they take
   effect at once, except "Sync this vault").
-- Later wishes, not designed: sharing a whole folder; plugin and settings sync (0.7,
-  snapshots from a chosen device, never through the CRDT - reasons in CLAUDE.md).
+- Wishes not designed yet: sharing a whole folder (0.8); plugin and settings sync
+  (after 1.0.0, snapshots from a chosen device, never through the CRDT - reasons in
+  CLAUDE.md).
+- The roadmap order (2026-10-14) and the rule of a branch per milestone, merged when
+  done, are the user's.
 
 ## Open questions for the user
 
@@ -149,21 +189,24 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
   status bar marks, the header lock, `requestUrl` with binary bodies on mobile,
   binary file events, `file-open` fetching, memory with large files on a phone.
 - Content uploaded but never named in the index (a crash between the two) is never
-  cleaned up from the server.
+  cleaned up from the server (0.8).
 - Notes beyond `maxLoadedDocuments` (500) stop receiving live updates until opened
-  (0.9).
+  or the next start, when every note is loaded once (0.9). Raising the setting
+  above the number of notes is the workaround; measured with Yjs alone, a loaded
+  note of 3000 characters takes about 6 KB seeded and 32 KB typed key by key with
+  revisions, plus an IndexedDB database and a subscription each.
 - Signing out takes the server from a device, not the keys it unwrapped: the account
-  secret is never replaced (`docs/PHASE5.md`, "Known limit").
+  secret is never replaced (`docs/PHASE5.md`, "Known limit"; the audit in 0.9).
 - Frames authenticated by the note's key, not signed per author (0.9,
   `docs/PHASE3.md`).
 - Local copies of a purged note stay in IndexedDB on the devices that did not
-  purge it.
+  purge it (0.8).
 - Typing into an open note while sync itself restarts (signing out and in, the
-  plugin reloaded) can still lose the keystrokes of that moment: the new store
+  plugin reloaded) can still lose the keystrokes of that moment (0.8): the new store
   settles the note by writing its file, and Obsidian reloads the editor. 0.6.4 keeps
   the file Obsidian's only while the same store binds the editor again
   (`EditorSync.rebinding`); a new store has to settle against the server first.
-- The plugin name contains "Obsidian", which the community catalogue forbids (0.9).
+- The plugin id contains "obsidian", which the community directory refuses (0.9).
 - The Docker image has never been built (CI builds it on `main` only).
 
 ## Verification state
@@ -174,9 +217,9 @@ At 0.6.8, run 2026-10-14 before its commit: `typecheck` and `build` pass;
 19, `test:vault` 230 - all pass (the user's server on 1234 was not running, before
 or after). CI green up to 0.6.8. Bug-back checks per version: `docs/CHANGELOG.md`.
 Seen on a device by the user: 0.6.2 (recovery and 2FA), 2FA in depth on 0.6.5
-(2026-10-14). Not verified on a device: 0.6.3's question in the recovery, 0.6.4 and
-0.6.5 with fast typing, 0.6.6 to 0.6.8 (2FA off, spinners, live settings), the Docker
-image.
+(2026-10-14), 0.6.8 - 2FA off with the password, spinners, live settings - "works as
+expected" (2026-10-14). Not reported on a device: 0.6.3's question in the recovery,
+0.6.4 and 0.6.5 with fast typing.
 
 How to run the end-to-end suites without touching the user's server: CLAUDE.md,
 Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
@@ -190,6 +233,10 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 - The user tested 2FA in depth and found it working. Asked for, and built: 2FA off
   with the password alone (0.6.6), spinners on every button that waits (0.6.7),
   settings and account state shown live on every device (0.6.8).
+- The user confirmed 0.6.8, reordered the roadmap (0.7 backup API, 0.8 sharing a
+  folder and the small fixes, 0.9 hardening and a security audit, plugin sync
+  after 1.0.0), asked for a branch per milestone, merged when done, and had
+  `feat/accounts` merged into `main`.
 
 ### 2026-10-13
 - The user asked whether closing the recovery's 2FA question spends the code: no,

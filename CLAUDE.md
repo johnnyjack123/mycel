@@ -560,13 +560,31 @@ names what is known and left for later (signatures per author).
 
 ## Not built yet
 
-Notes beyond `maxLoadedDocuments` staying live. (Recovery codes and 2FA: built
-in 0.6, `docs/PHASE5.md`.)
+In the order of the roadmap (Conventions); what goes into 0.8 and 0.9 besides
+is listed in `docs/PROGRESS.md`, "Roadmap". (Recovery codes and 2FA: built in
+0.6, `docs/PHASE5.md`.)
 
-**Sharing a folder (wanted, later).** Share a whole folder with someone instead
-of note by note, including what is added to it later. Not designed yet.
+**Backup API (0.7).** A secured endpoint a backup tool such as restic can
+pull snapshots from on a schedule, in two forms:
 
-**Syncing plugins and their settings (wanted, optional).** Not through the
+- *Encrypted:* the data directory as it is — ciphertext only — authenticated with
+  a dedicated, revocable backup token rather than an account.
+- *Decrypted:* the notes as Markdown. Decryption must happen outside the server,
+  or the server would hold the keys: a small command-line client on the backup
+  machine signs in with the account's credentials, pulls the ciphertext through
+  the API, decrypts locally and writes the files restic then snapshots.
+
+**Sharing a folder (0.8).** Share a whole folder with someone instead of note by
+note, including what is added to it later. Not designed yet.
+
+**Every note live (0.9).** A device holds at most `maxLoadedDocuments` notes open
+(500 by default, a setting under *This device*); the others get another device's
+change only when opened or at the next start, and their files stay old until
+then. Raising the setting is the workaround; the fix keeps memory bounded and
+still brings every change in.
+
+**Syncing plugins and their settings (wanted, optional, after 1.0.0).** Moved
+back by the user on 2026-10-14. Not through the
 CRDT: a plugin's `data.json` is JSON, not text two people edit, many plugins
 rewrite it on every start (ping-pong between devices), a merge of two edits
 can be invalid JSON, and some of it is per device (paths, window state, our
@@ -578,22 +596,21 @@ settings only together (a `data.json` for another version can break it). An
 edit on two devices before either applied the other's is then a choice
 between two snapshots, never a merge.
 
-**Backup API (wanted).** A secured endpoint a backup tool such as restic can
-pull snapshots from on a schedule, in two forms:
-
-- *Encrypted:* the data directory as it is — ciphertext only — authenticated with
-  a dedicated, revocable backup token rather than an account.
-- *Decrypted:* the notes as Markdown. Decryption must happen outside the server,
-  or the server would hold the keys: a small command-line client on the backup
-  machine signs in with the account's credentials, pulls the ciphertext through
-  the API, decrypts locally and writes the files restic then snapshots.
-
 ## Conventions
 
 - Commit messages, comments and identifiers in English; the user writes German.
 - Conventional Commits, `Co-Authored-By` trailer — see the `git-flow` skill.
 - **Push right after every commit** — the user asked for that (2026-09-27);
   it replaces "never push without being asked" for this repository.
+- **A branch per milestone or larger feature, merged when it is done** — the
+  user asked for that (2026-10-14). Start it from `main` without asking
+  (`feat/<name>`, e.g. `feat/backup-api`). Once the feature is done - built,
+  every test and CI green, the docs current - merge it into `main` without being
+  asked (`git merge --no-ff`, pushed) and watch the CI run on `main`: only there
+  are the Docker image and the `latest-build` release built, so a broken
+  `Dockerfile` shows up nowhere else. Fixes found afterwards, and other small
+  fixes, go straight to `main` or on a short `fix/<name>` branch. Everything up to
+  0.6.8 was built on one branch, `feat/accounts`, and reached `main` only then.
 - Comments explain *why*, never narrate *what*.
 - **A button that waits for the server or the disk runs its work through `busy`**
   (`src/busy.ts`): greyed out and spinning at once, no second click. Without it a
@@ -613,10 +630,11 @@ pull snapshots from on a schedule, in two forms:
   | 0.4 | the first device run: comparing versions, the log, the note cloud, menus |
   | 0.5 | attachments, in an encrypted blob store |
   | 0.6 | recovery codes and 2FA |
-  | 0.7 | syncing plugins and their settings |
-  | 0.8 | the backup API |
-  | 0.9 | hardening: signatures per author, every note live, a name without "Obsidian" |
+  | 0.7 | the backup API |
+  | 0.8 | sharing a folder, and the small fixes listed for it in `docs/PROGRESS.md` |
+  | 0.9 | hardening and a security audit: signatures per author, every note live, a name without "Obsidian" |
   | 1.0.0 | all of the above done and verified on devices |
+  | later | syncing plugins and their settings (moved back by the user, 2026-10-14) |
 - **Rebuild after anything that swaps the sources.** A bundle built during a
   `git stash` check held the older settings screen and went to the user as
   the new one; `test:load` now fails when a source is newer than `main.js`.
