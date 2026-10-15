@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-15 · **Milestone 0.7 designed with the user: a backup server of its own (`docs/PHASE6.md`), built on `feat/backup-api` in five steps, 0.7.0 to 0.7.4. The operator's encrypted backup of the data directory moved to later. 0.6.8 is on `main` and confirmed on the user's devices.**_
+_Last updated: 2026-10-15 · **Milestone 0.7 designed with the user: a backup server of its own (`docs/PHASE6.md`), built on `feat/backup-api` in five steps, 0.7.0 to 0.7.4. 0.7.0 (the sync server's backup keys and read scope) is built; next 0.7.1, the run in `packages/backup`. The operator's encrypted backup of the data directory moved to later. 0.6.8 is on `main` and confirmed on the user's devices.**_
 
 ## Where we are
 
@@ -219,6 +219,12 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
   has not run on a real server yet.
 
 ## Verification state
+
+At 0.7.0, run 2026-10-15 before its commit: `typecheck` and `build` pass; `test:merge`,
+`test:load`, `test:rooms` (268), `test:sync`, `test:recovery`, `test:account` pass;
+against a scratch server on 1235, `test:socket` and `test:vault` (230) pass (the
+user's server on 1234 was not running, before or after). 0.7.0 is not merged and has
+not been on a device.
 
 At 0.6.8, run 2026-10-14 before its commit: `typecheck` and `build` pass;
 `test:merge` 150, `test:load` 14, `test:rooms` 236, `test:sync` 26, `test:recovery`

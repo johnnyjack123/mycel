@@ -162,6 +162,15 @@ additions for fetching only what changed:
 - a room's log after a seq, with the fingerprint of the frame there (invariant 19:
   a seq alone does not identify a log position).
 
+*As built (0.7.0):* the rooms come with a `tag` made of epoch, compaction point, the
+newest snapshot and the size of `log.bin`, so listing them loads no log; a frame still
+being written shows in the next listing. The log from a seq answers the frame at that
+seq and every one after it (`from` set in the answer), so the caller compares that
+frame with its own; a seq the log no longer has, or never had, gets the whole readable
+log. The backup token lives an hour and names its key (`kid`), which every request
+looks up. Making a key needs the password, deleting one only the signed-in device -
+it only takes access away. At most 32 keys per account.
+
 ## Where the settings live
 
 In the vault's account-wide settings document (`set:<vaultId>`), encrypted under the

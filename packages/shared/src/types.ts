@@ -136,7 +136,7 @@ export interface AuthConfigResponse {
   features?: ServerFeature[]
 }
 
-export type ServerFeature = 'recovery' | 'totp'
+export type ServerFeature = 'recovery' | 'totp' | 'backup'
 
 /**
  * The answer to the right login key of an account with two-factor sign-in
@@ -251,6 +251,70 @@ export interface AccountBundle {
   recovery?: { createdAt: number } | null
   /** Whether signing in asks for a code from an authenticator app. */
   totp?: boolean
+  /** The account's backup keys. Absent from a server before 0.7. */
+  backupKeys?: BackupKeyInfo[]
+}
+
+// --- backup keys -------------------------------------------------------------------
+//
+// A backup server reads one vault with a key of its own: the server keeps only
+// its hash, and a token signed in with it reads that vault and writes nothing.
+
+export interface BackupKeyInfo {
+  id: string
+  vaultId: string
+  /** What the person called the backup server it is for. */
+  label: string
+  createdAt: number
+  /** When a backup server last signed in with it. */
+  lastUsedAt?: number
+}
+
+export interface BackupKeyRequest {
+  /** Proves the current password: a token alone must not hand out a vault. */
+  loginKey: string
+  vaultId: string
+  /** 32 random bytes, base64; the server keeps only the hash. */
+  backupKey: string
+  label: string
+}
+
+export interface BackupKeyCreated {
+  id: string
+  account: AccountBundle
+}
+
+export interface BackupKeyDeleteRequest {
+  id: string
+}
+
+export interface BackupLoginRequest {
+  backupKey: string
+}
+
+export interface BackupSessionResponse {
+  /** Reads the vault and nothing else; short-lived, signed in for again with the key. */
+  token: string
+  expiresIn: number
+  accountId: string
+  vaultId: string
+  keyId: string
+}
+
+/** One room of the vault, and what tells whether it changed. */
+export interface BackupRoom {
+  room: string
+  /** The room's owner: the account itself, or whoever shared the note into the vault. */
+  owner: string
+  epoch: number
+  compactedUpTo: number
+  /** Changes whenever the room's log does; nothing to read from it. */
+  tag: string
+}
+
+export interface BackupRoomsResponse {
+  vaultId: string
+  rooms: BackupRoom[]
 }
 
 export interface SessionResponse {
@@ -493,6 +557,12 @@ export interface LogResponse {
   headSeq: number
   snapshot: LogSnapshot | null
   frames: LogFrame[]
+  /**
+   * Asked `?from=` a seq whose frame is still there: only the frames from it on,
+   * that one included, so the caller can tell its log is this one. Absent: the
+   * whole readable part, snapshot and all.
+   */
+  from?: number
 }
 
 export interface SnapshotRequest {

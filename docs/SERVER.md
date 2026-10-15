@@ -63,7 +63,7 @@ A template sits in `docs/server.env`:
 
 ```bash
 docker compose exec obsidian-connect obsidian-connect invite                    # a code for one new account
-docker compose exec obsidian-connect obsidian-connect user list                 # account ids, created, vaults, recovery code, 2fa
+docker compose exec obsidian-connect obsidian-connect user list                 # account ids, created, vaults, recovery code, 2fa, backup keys
 docker compose exec obsidian-connect obsidian-connect user remove <accountId>
 docker compose exec obsidian-connect obsidian-connect user 2fa-off <accountId>  # a lost phone, no recovery code
 ```

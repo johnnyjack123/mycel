@@ -1,4 +1,4 @@
-import { rm } from 'node:fs/promises'
+import { rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   CLOSE_SIGNED_OUT,
@@ -7,6 +7,7 @@ import {
   roomKind,
   roomSubject,
   type AttachBlobsRequest,
+  type BackupRoom,
   type BlobRef,
   type ForkReason,
   type ForkResponse,
@@ -26,7 +27,7 @@ import {
 import { isAccountId, type AccountStore } from './accounts.js'
 import type { ContactStore } from './contacts.js'
 import type { ForkStore } from './forks.js'
-import { RoomLog, loadAllMeta, type Frame, type RoomMeta, type SnapshotInfo } from './log.js'
+import { RoomLog, loadAllMeta, roomDir, type Frame, type RoomMeta, type SnapshotInfo } from './log.js'
 
 // The server's side of an end-to-end encrypted vault: it keeps every room's
 // frames in order, decides who may read and write, and fans frames out. It
@@ -731,10 +732,69 @@ export class RoomHub {
     }
   }
 
-  /** Everything the caller may read, for the history view: a starting snapshot and the frames after it. */
-  async log(account: string, room: string): Promise<LogResponse> {
+  /**
+   * Everything the caller may read, for the history view: a starting snapshot
+   * and the frames after it. With `from`, only the frames from that seq on -
+   * if its frame is still there to show the caller's log is this one.
+   */
+  async log(account: string, room: string, from?: number): Promise<LogResponse> {
     const { open, access } = await this.readable(account, room)
-    return this.logResponse(open, this.readablePart(open, access), open.log.meta.epoch, open.log.headSeq)
+    const meta = open.log.meta
+    if (from !== undefined && Number.isInteger(from) && from >= access.fromSeq && from > meta.compactedUpTo) {
+      const start = open.log.frames.findIndex((frame) => frame.seq === from)
+      if (start >= 0) {
+        const response = await this.logResponse(open, { snapshot: null, frames: open.log.frames.slice(start) }, meta.epoch, open.log.headSeq)
+        return { ...response, from }
+      }
+    }
+    return this.logResponse(open, this.readablePart(open, access), meta.epoch, open.log.headSeq)
+  }
+
+  // --- backups -------------------------------------------------------------------
+
+  /**
+   * Whether a room is part of the account's vault: its index and settings, its
+   * own notes, and the notes others shared into it. A backup key reads these
+   * and nothing else.
+   */
+  private belongsTo(meta: RoomMeta, account: string, vault: string): boolean {
+    const kind = roomKind(meta.room)
+    if (kind === 'idx' || kind === 'set') return meta.owner === account && roomSubject(meta.room) === vault
+    return (meta.owner === account && meta.vaultId === vault) || meta.members[account]?.acceptedInto === vault
+  }
+
+  async inVault(account: string, vault: string, room: string): Promise<boolean> {
+    await this.ready
+    const meta = this.metas.get(room)
+    return meta !== undefined && this.belongsTo(meta, account, vault)
+  }
+
+  /**
+   * Every room of the vault and a tag that changes with its log, so a backup
+   * server asks only for the rooms that changed. From the metadata and the size
+   * of the log on disk - no log is loaded for it.
+   */
+  async backupRooms(account: string, vault: string): Promise<BackupRoom[]> {
+    await this.ready
+    const rooms: BackupRoom[] = []
+    for (const meta of Array.from(this.metas.values())) {
+      if (!this.belongsTo(meta, account, vault)) continue
+      let bytes = 0
+      try {
+        bytes = (await stat(join(roomDir(this.options.dataDir, meta), 'log.bin'))).size
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      const snapshotHead = meta.snapshots.reduce((max, snapshot) => Math.max(max, snapshot.uptoSeq), 0)
+      rooms.push({
+        room: meta.room,
+        owner: meta.owner,
+        epoch: meta.epoch,
+        compactedUpTo: meta.compactedUpTo,
+        tag: `${meta.epoch}.${meta.compactedUpTo}.${snapshotHead}.${bytes}`
+      })
+    }
+    return rooms
   }
 
   /** The owner's compaction: frames up to `uptoSeq` are replaced by the uploaded state. */

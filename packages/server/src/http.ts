@@ -7,6 +7,12 @@ import {
   isHexId,
   type AcceptRequest,
   type AttachBlobsRequest,
+  type BackupKeyCreated,
+  type BackupKeyDeleteRequest,
+  type BackupKeyRequest,
+  type BackupLoginRequest,
+  type BackupRoomsResponse,
+  type BackupSessionResponse,
   type BlobHaveResponse,
   type BlobIdsRequest,
   type BlobInfo,
@@ -126,20 +132,64 @@ export function createHttpApp(
     return reply.code(status).send({ error: status === 500 ? 'internal error' : (message ?? 'error') })
   })
 
-  /** The account behind the bearer token, or a 401 already sent. */
-  async function user(request: FastifyRequest, reply: FastifyReply): Promise<string | null> {
+  function bearer(request: FastifyRequest): string {
     const header = request.headers.authorization ?? ''
-    const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : ''
+    return header.startsWith('Bearer ') ? header.slice('Bearer '.length) : ''
+  }
+
+  /** The account behind a device's token, or null. */
+  async function userOf(token: string): Promise<string | null> {
     try {
       const { accountId, gen } = await tokens.verify(token)
       const account = await accounts.get(accountId)
       // A token from before the password changed was signed out with it.
       if (account && sessionOf(account) === gen) return accountId
     } catch {
+      // not a device's token
+    }
+    return null
+  }
+
+  /** The account behind the bearer token, or a 401 already sent. Backup tokens never pass here. */
+  async function user(request: FastifyRequest, reply: FastifyReply): Promise<string | null> {
+    const accountId = await userOf(bearer(request))
+    if (accountId) return accountId
+    await reply.code(401).send({ error: 'sign in again' })
+    return null
+  }
+
+  /**
+   * Whoever may read: a device of the account (`vaultId` null), or a backup
+   * server whose key still stands, limited to its one vault. The key is looked
+   * up on every request, so deleting it ends its tokens at once.
+   */
+  async function reader(request: FastifyRequest, reply: FastifyReply): Promise<{ accountId: string; vaultId: string | null } | null> {
+    const token = bearer(request)
+    const accountId = await userOf(token)
+    if (accountId) return { accountId, vaultId: null }
+    try {
+      const backup = await tokens.verifyBackup(token)
+      const account = await accounts.get(backup.accountId)
+      const key = account?.backupKeys?.[backup.keyId]
+      if (account && sessionOf(account) === backup.gen && key?.vaultId === backup.vaultId && account.vaults[backup.vaultId]) {
+        return { accountId: backup.accountId, vaultId: backup.vaultId }
+      }
+    } catch {
       // falls through to 401
     }
     await reply.code(401).send({ error: 'sign in again' })
     return null
+  }
+
+  /** A reader of this room: any room the account may read, or for a backup server one of its vault. */
+  async function roomReader(request: FastifyRequest, reply: FastifyReply, room: string): Promise<string | null> {
+    const who = await reader(request, reply)
+    if (!who) return null
+    if (who.vaultId !== null && !(await hub.inVault(who.accountId, who.vaultId, room))) {
+      await reply.code(403).send({ error: 'not part of this vault' })
+      return null
+    }
+    return who.accountId
   }
 
   async function session(accountId: string): Promise<SessionResponse> {
@@ -189,7 +239,7 @@ export function createHttpApp(
     protocol: PROTOCOL_VERSION,
     serverId: await accounts.serverId(),
     maxFileBytes: blobs.limits.maxFileBytes,
-    features: ['recovery', 'totp']
+    features: ['recovery', 'totp', 'backup']
   }))
 
   app.post(API.register, async (request, reply) =>
@@ -361,6 +411,51 @@ export function createHttpApp(
       const body = (request.body ?? {}) as Partial<RecoveryDeleteRequest>
       return changed(accountId, accounts.bundle(await accounts.setRecovery(accountId, body.loginKey, null)))
     })
+  })
+
+  // --- backup keys -----------------------------------------------------------------
+
+  app.post(API.backupKeys, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return guarded(request, reply, async (): Promise<BackupKeyCreated> => {
+      const body = (request.body ?? {}) as Partial<BackupKeyRequest>
+      const id = await accounts.addBackupKey(accountId, body.loginKey, body.vaultId, body.backupKey, body.label, now())
+      const account = await accounts.get(accountId)
+      if (!account) throw new AccountError(401, 'unknown account')
+      return { id, account: changed(accountId, accounts.bundle(account)) }
+    })
+  })
+
+  app.post(`${API.backupKeys}/delete`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    const body = (request.body ?? {}) as Partial<BackupKeyDeleteRequest>
+    return changed(accountId, accounts.bundle(await accounts.deleteBackupKey(accountId, body.id)))
+  })
+
+  // Guarded like a sign-in: an unknown key counts against the address.
+  app.post(API.backupLogin, async (request, reply) =>
+    guarded(
+      request,
+      reply,
+      async (): Promise<BackupSessionResponse | null> => {
+        const found = await accounts.findBackupKey(((request.body ?? {}) as Partial<BackupLoginRequest>).backupKey)
+        if (!found || !found.account.vaults[found.key.vaultId]) return null
+        const { account, id, key } = found
+        await accounts.touchBackupKey(account.accountId, id, now())
+        const issued = await tokens.issueBackup(account.accountId, sessionOf(account), key.vaultId, id)
+        return { token: issued.token, expiresIn: issued.expiresIn, accountId: account.accountId, vaultId: key.vaultId, keyId: id }
+      },
+      'this backup key is not known here'
+    )
+  )
+
+  app.get(API.backupRooms, async (request, reply): Promise<BackupRoomsResponse | undefined> => {
+    const who = await reader(request, reply)
+    if (!who) return undefined
+    if (who.vaultId === null) return reply.code(403).send({ error: 'for backup servers' })
+    return { vaultId: who.vaultId, rooms: await hub.backupRooms(who.accountId, who.vaultId) }
   })
 
   app.get(API.account, async (request, reply) => {
@@ -542,15 +637,16 @@ export function createHttpApp(
   // --- keys and log --------------------------------------------------------------
 
   app.get<{ Params: RoomParams }>(`${API.keys}/:room`, async (request, reply) => {
-    const accountId = await user(request, reply)
+    const accountId = await roomReader(request, reply, request.params.room)
     if (!accountId) return undefined
     return hub.keys(accountId, request.params.room)
   })
 
-  app.get<{ Params: RoomParams }>(`${API.log}/:room`, async (request, reply) => {
-    const accountId = await user(request, reply)
+  app.get<{ Params: RoomParams; Querystring: { from?: string } }>(`${API.log}/:room`, async (request, reply) => {
+    const accountId = await roomReader(request, reply, request.params.room)
     if (!accountId) return undefined
-    return hub.log(accountId, request.params.room)
+    const from = request.query.from === undefined ? undefined : Number(request.query.from)
+    return hub.log(accountId, request.params.room, from)
   })
 
   app.post<{ Params: RoomParams }>(`${API.log}/:room/snapshot`, async (request, reply) => {
@@ -602,12 +698,15 @@ export function createHttpApp(
     request: FastifyRequest<{ Params: BlobParams; Querystring: { room?: string } }>,
     reply: FastifyReply
   ): Promise<boolean> {
-    const accountId = await user(request, reply)
-    if (!accountId) return false
+    const who = await reader(request, reply)
+    if (!who) return false
+    const { accountId } = who
     const { account, vaultId, blobId } = request.params
-    if (account === accountId && isHexId(vaultId) && (await accounts.get(accountId))?.vaults[vaultId]) return true
+    const ownVault = who.vaultId === null || who.vaultId === vaultId
+    if (ownVault && account === accountId && isHexId(vaultId) && (await accounts.get(accountId))?.vaults[vaultId]) return true
     const room = request.query.room
-    if (room && (await hub.canReadBlob(accountId, room, { account, vault: vaultId, blob: blobId }))) return true
+    const roomAllowed = room !== undefined && (who.vaultId === null || (await hub.inVault(accountId, who.vaultId, room)))
+    if (room && roomAllowed && (await hub.canReadBlob(accountId, room, { account, vault: vaultId, blob: blobId }))) return true
     await reply.code(403).send({ error: 'not yours, and no note you can read names it' })
     return false
   }

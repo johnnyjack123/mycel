@@ -160,6 +160,12 @@ export const API = {
   loginTotp: '/auth/login/totp',
   /** Turns two-factor sign-in on; `/off` turns it off. */
   totp: '/account/totp',
+  /** Makes a backup key for one vault; `/delete` removes one. */
+  backupKeys: '/account/backup-keys',
+  /** A backup server signing in with its backup key. */
+  backupLogin: '/auth/backup',
+  /** The rooms of the vault a backup token reads. */
+  backupRooms: '/backup/rooms',
   vaults: '/vaults',
   /** `/accounts/:accountId/key`: someone's public key, by account id. */
   accounts: '/accounts',

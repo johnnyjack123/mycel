@@ -6,6 +6,25 @@ verified. `docs/PROGRESS.md` holds only the current state.
 "Checked by putting the bug back" means: the old behaviour was restored in the source,
 the suite run, the new checks seen failing (and nothing else), the fix restored.
 
+## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
+
+- **0.7.0** (2026-10-15) - the sync server's side of backups; nothing for the user to
+  see yet. A **backup key** reads one vault: made by a signed-in device with the
+  current password (`POST /account/backup-keys`), listed in the account bundle,
+  deleted from a device (`/delete`), and ended with every other by a password change,
+  a recovery and the account's removal. `POST /auth/backup` signs a backup server in
+  with it (paced and guarded like a sign-in) and answers a token of scope `backup`,
+  valid an hour: it reads the vault's index, settings, notes - its own and those
+  shared into it - their sealed keys and the vault's blobs, and nothing else; every
+  route that writes refuses it, and the key is looked up on every request, so deleting
+  it ends its tokens at once. For fetching only what changed: `GET /backup/rooms` (the
+  vault's rooms with a tag that changes with the log, from the metadata and the log's
+  size - no log loaded) and `GET /log/:room?from=<seq>` (the frames from that seq on,
+  that frame included, while it is still there; the whole log otherwise). `/auth/config`
+  names the feature `backup`; `user list` counts backup keys. `test:rooms` 268 (32
+  new). Checked by taking the protections out: without the vault check on reading
+  routes, and without a password change ending the keys, exactly their checks failed.
+
 ## 0.6 - recovery codes and two-factor sign-in (from 2026-10-12, spec `docs/PHASE5.md`)
 
 - **0.6.8** (2026-10-14) - an open settings tab shows what changed on another device,
