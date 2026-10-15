@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-15 · **Milestone 0.7 designed with the user: a backup server of its own (`docs/PHASE6.md`), built on `feat/backup-api` in five steps, 0.7.0 to 0.7.4. 0.7.0 (the sync server's backup keys and read scope) is built; next 0.7.1, the run in `packages/backup`. The operator's encrypted backup of the data directory moved to later. 0.6.8 is on `main` and confirmed on the user's devices.**_
+_Last updated: 2026-10-15 · **Milestone 0.7 designed with the user: a backup server of its own (`docs/PHASE6.md`), built on `feat/backup-api` in five steps, 0.7.0 to 0.7.4. Built: 0.7.0 (the sync server's backup keys and read scope) and 0.7.1 (the run, `packages/backup`, `test:backup` with a real restic). Next 0.7.2: the relay, the backup server's code and the encrypted session. The operator's encrypted backup of the data directory moved to later. 0.6.8 is on `main` and confirmed on the user's devices.**_
 
 ## Where we are
 
@@ -219,6 +219,18 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
   has not run on a real server yet.
 
 ## Verification state
+
+restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_windows_amd64.exe`
+(the official release, checksum checked, put there with the user's consent on
+2026-10-15; nothing on the PATH). `test:backup` needs
+`OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
+It takes about three minutes here.
+
+At 0.7.1, run 2026-10-15 before its commit: `typecheck` and `build` pass; `test:merge`
+150, `test:load` 14, `test:rooms` 268, `test:sync` 26, `test:recovery` 56,
+`test:account` 50, `test:backup` 55 - all pass; against a scratch server on 1235,
+`test:socket` 19 and `test:vault` 230 pass (the user's server on 1234 was not running,
+before or after). Not merged, not on a device.
 
 At 0.7.0, run 2026-10-15 before its commit: `typecheck` and `build` pass; `test:merge`,
 `test:load`, `test:rooms` (268), `test:sync`, `test:recovery`, `test:account` pass;

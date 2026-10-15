@@ -253,6 +253,46 @@ restic dump <files snapshot> "/<Vault> files.tar" | tar -x -C /tmp/restore
 
 The trusted copy holds all of it as one folder.
 
+*As built (0.7.1),* in `packages/backup/src` (`run.ts` drives it), taken without
+asking:
+
+- **The cache** keeps a room as the sync server's answer, extended - a starting
+  snapshot, the frames after it, sealed keys - one JSON file per room; blobs exactly
+  as the sync server stores them. A room the sync server stops listing (a share that
+  ended) is kept and used as it was, marked held, until the index stops naming it.
+  Once a week every room is fetched again from its last frame, not only those whose
+  tag changed. A sync server that answers with another frame at that seq gave
+  another log: the room is fetched whole, and the run reports it.
+- **A blob** is checked against the index's hash while it arrives, hashed chunk by
+  chunk. One the sync server lacks, or one that does not decrypt to its hash, is left
+  out and reported; the run goes on - a backup without one picture beats none.
+- **The notes folder** is written afresh into the RAM disk on every run and removed
+  after it; restic reads every note again (they are in memory, and few megabytes)
+  instead of trusting times and sizes. Notes get the time the sync server took their
+  last change, attachments their index time.
+- **The files snapshot** is skipped while the files' paths, hashes and times are as
+  at the destination's last one and that snapshot is still in the repository.
+- **The check**, every run: `restic check`, the notes snapshot's listing against every
+  note's path and size, the three newest notes read back with `restic dump`, and the
+  stream's length. Once a week per destination, deep: `check --read-data-subset=5%`,
+  and the whole files stream read back and every file hashed (`TarHasher`). `forget`
+  only with a retention set; then `prune` once a week.
+- **restic** gets the repository's password and credentials in the environment of
+  that one call; nothing of the backup server's own `RESTIC_*` or `OBSIDIAN_CONNECT_*`
+  passes. A stream whose producer fails kills restic before the stream ends -
+  checked: ended instead, restic stored the stream cut short.
+- **The trusted copy** keeps `.obsidian-connect-backup.json` - its files and their
+  hashes - and refuses a folder that is neither empty nor its own, or another vault's.
+  Deletions go first (a file may stand where a folder has to go), files are written
+  under a temporary name and renamed. A note that could only be read in part, and a
+  file the sync server lacks, keep what the copy had. With at least ten notes at the
+  last copy and less than half of them now, the copy waits until the person confirms
+  (`acceptShrink`; the plugin asks from 0.7.3).
+- **The sync client** sends a request again when the network failed under it: a sync
+  server that restarted leaves pooled connections that reset on first use. Every
+  request of a backup token only reads.
+- **restic 0.19.1**, pinned: CI installs the release checked against its checksum.
+
 ## The plugin
 
 *Settings → Backups*, per vault:

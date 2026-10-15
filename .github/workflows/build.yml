@@ -66,6 +66,24 @@ jobs:
       - name: Account self-test
         run: npm run test:account
 
+      # The backup server hands vaults to restic, so its self-test runs a real
+      # one: the release the image will carry, checked against its checksum.
+      - name: Install restic
+        run: |
+          set -euo pipefail
+          curl -fsSL -o restic.bz2 https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_amd64.bz2
+          echo "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c  restic.bz2" | sha256sum -c -
+          bunzip2 restic.bz2
+          chmod +x restic
+          sudo mv restic /usr/local/bin/restic
+          restic version
+
+      # Its own sync server in-process and real devices: a vault backed up,
+      # read back with restic and tar and compared, through edits, deletions,
+      # a stream that breaks off and a sync server restored from a copy.
+      - name: Backup self-test
+        run: npm run test:backup
+
       # The end-to-end self-tests need a live server that lets them create
       # accounts, so start one and wait for it.
       - name: Start the sync server

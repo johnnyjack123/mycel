@@ -317,6 +317,26 @@ export interface BackupRoomsResponse {
   rooms: BackupRoom[]
 }
 
+/**
+ * Everything a backup server needs to read and decrypt one vault, handed over
+ * by a device of the account - never through the sync server in the clear.
+ * Byte values are base64.
+ */
+export interface BackupGrant {
+  /** The sync server, as the device reaches it (`ws(s)://` or `http(s)://`). */
+  server: string
+  accountId: string
+  vaultId: string
+  vaultName: string
+  vaultKey: string
+  /** The account's key pair: notes others share are sealed to it. */
+  publicKey: string
+  /** PKCS#8. */
+  privateKey: string
+  backupKey: string
+  keyId: string
+}
+
 export interface SessionResponse {
   token: string
   expiresIn: number

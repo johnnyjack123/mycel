@@ -382,6 +382,20 @@ export class Device {
     this.unlocked = await this.session.deleteRecoveryCode(this.unlocked, password)
   }
 
+  /** What connecting a backup server does on the device: a backup key for this vault, and the grant it hands over. */
+  async makeBackupGrant(label = 'backup server', password = this.password): Promise<import('@obsidian-connect/shared').BackupGrant> {
+    if (!this.unlocked) throw new Error('not signed in')
+    const vault = await this.session.openVault(this.unlocked, VAULT)
+    const made = await this.session.makeBackupGrant(this.unlocked, password, vault, label)
+    this.unlocked = made.unlocked
+    return made.grant
+  }
+
+  async deleteBackupKey(keyId: string): Promise<void> {
+    if (!this.unlocked) throw new Error('not signed in')
+    this.unlocked = await this.session.deleteBackupKey(this.unlocked, keyId)
+  }
+
   /** Whether the server keeps a recovery code for the account, as this device last heard. */
   get hasRecoveryCode(): boolean | undefined {
     return this.unlocked?.bundle.recovery === undefined ? undefined : this.unlocked.bundle.recovery !== null

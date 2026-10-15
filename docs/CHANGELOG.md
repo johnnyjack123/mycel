@@ -8,6 +8,25 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.1** (2026-10-15) - the backup run, in a new package `packages/backup`; not
+  reachable from the plugin yet (that comes with the relay, 0.7.2, and the settings,
+  0.7.3). A device grants a backup server one vault (`Session.makeBackupGrant`: a
+  backup key and the vault's keys); a run fetches what changed into an encrypted cache,
+  decides from the index what the backup holds - the vault, the trash, the settings
+  without contacts -, lays the notes and canvases out in a RAM disk for restic and
+  streams the attachments to it as a tar, per destination, checks the snapshots back,
+  and brings the trusted copy level (details under "As built (0.7.1)" in
+  `docs/PHASE6.md`). New `test:backup` (55, with a real restic 0.19.1; CI installs it):
+  restored with restic and the system's tar, the vault is all there; a run without
+  changes fetches nothing and makes no files snapshot; `restic diff` names exactly the
+  notes that changed; a deleted note moves to the backup's trash; the trusted copy
+  follows and waits when half the vault vanishes; a sync server restored from an old
+  copy is noticed and its note backed up whole; a deleted backup key ends the backups.
+  Checked by taking three protections out at once - restic killed before a failing
+  stream ends, the trusted copy waiting, the frame compared at a partial fetch -: their
+  checks failed (plus one that follows from the third), nothing else. `test:load` now
+  compares the version of every package, not only the plugin's.
+
 - **0.7.0** (2026-10-15) - the sync server's side of backups; nothing for the user to
   see yet. A **backup key** reads one vault: made by a signed-in device with the
   current password (`POST /account/backup-keys`), listed in the account bundle,

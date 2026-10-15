@@ -10,6 +10,7 @@ COPY package.json package-lock.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/server/package.json packages/server/
 COPY packages/plugin/package.json packages/plugin/
+COPY packages/backup/package.json packages/backup/
 RUN npm ci --omit=dev --workspace @obsidian-connect/server
 
 FROM node:24-alpine

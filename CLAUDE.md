@@ -17,6 +17,7 @@ packages/
   shared/   protocol, types, text diff and three-way merge; `shared/crypto` for E2E
   server/   Fastify + accounts + an encrypted log per room + JWT + admin CLI
   plugin/   the Obsidian plugin
+  backup/   the backup server (0.7): reads a vault with a backup key, decrypts it in memory, hands it to restic
 ```
 
 The design of accounts, keys, sharing and the encrypted transport is specified in
@@ -469,6 +470,8 @@ npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart 
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
+npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
+                       # restic on the PATH or named by OBSIDIAN_CONNECT_RESTIC (where it lies here: docs/PROGRESS.md)
 # needs a server that lets tests create accounts:
 npm run test:socket    # the encrypted transport, two devices of one account
 npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing, attachments

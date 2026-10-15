@@ -1,0 +1,3 @@
+# npm rewrites the line endings of a package's bin files on every install;
+# kept as LF here, a checkout on Windows no longer shows them as changed.
+packages/*/bin/*.mjs text eol=lf
