@@ -317,6 +317,125 @@ export interface BackupRoomsResponse {
   rooms: BackupRoom[]
 }
 
+/** How many snapshots restic keeps by each rule; a rule left out keeps none by it. */
+export interface KeepPolicy {
+  last?: number
+  hourly?: number
+  daily?: number
+  weekly?: number
+  monthly?: number
+  yearly?: number
+}
+
+// The vault's backup settings live in its account-wide settings document, one
+// entry per key, so every device sees and changes them and the backup server
+// reads them with its backup key.
+
+/** `backupServer:<routeId>`: a backup server the vault is connected to. */
+export interface BackupServerSetting {
+  routeId: string
+  /** The backup server's code: every device of the account reaches it with it. */
+  code: string
+  label: string
+  addedAt: number
+}
+
+/** `backupTarget:<id>`: where one backup server puts the vault. */
+export interface BackupTargetSetting {
+  id: string
+  /** The backup server's route id. */
+  server: string
+  /** `restic`: a repository; `trusted`: the decrypted copy of the newest version. */
+  kind: 'restic' | 'trusted'
+  /** A path on the backup server below its backup folder, or a restic location such as `s3:…`. */
+  location: string
+  /** The repository's password; restic only. */
+  password?: string
+  /** Credentials the location needs, e.g. `AWS_ACCESS_KEY_ID`. */
+  env?: Record<string, string>
+  keep?: KeepPolicy
+  addedAt: number
+}
+
+/** `backupSchedule:<routeId>`: how often that backup server backs the vault up on its own. */
+export interface BackupScheduleSetting {
+  server: string
+  /** 0: only when started by hand. */
+  everyHours: number
+}
+
+export const BACKUP_SERVER_KEY = 'backupServer:'
+export const BACKUP_TARGET_KEY = 'backupTarget:'
+export const BACKUP_SCHEDULE_KEY = 'backupSchedule:'
+
+/**
+ * Frames on the sync server's `/relay`, JSON. The sync server numbers each
+ * session (`s`) and forwards its data (`d`) without reading it: inside is a
+ * session between a device and a backup server, encrypted end to end.
+ */
+export type RelayFrame =
+  /** backup server -> sync server: the route token derived from its code. */
+  | { t: 'register'; token: string }
+  | { t: 'registered'; route: string }
+  /** device -> sync server: a session to that backup server; `ref` matches the answer. */
+  | { t: 'open'; route: string; ref: number }
+  | { t: 'opened'; ref: number; s: number }
+  /** sync server -> backup server: someone opened a session. */
+  | { t: 'incoming'; s: number }
+  | { t: 'data'; s: number; d: string }
+  | { t: 'close'; s: number; reason?: string }
+  | { t: 'error'; error: string; ref?: number }
+
+/** What a backup server tells about itself. */
+export interface BackupServerInfo {
+  /** What the backup server is called, set where it runs. */
+  name: string
+  version: string
+  restic: string
+  /** The folder local paths are taken below. */
+  root: string
+  /** Free space there, in bytes, when the system says. */
+  free?: number
+}
+
+/** A destination's outcome in a run; see the backup server's report. */
+export interface BackupDestinationStatus {
+  id: string
+  ok: boolean
+  notesSnapshot?: string
+  filesSnapshot?: string
+  filesUnchanged?: boolean
+  checked?: 'quick' | 'deep'
+  error?: string
+}
+
+export interface BackupRunStatus {
+  startedAt: number
+  finishedAt: number
+  ok: boolean
+  error?: string
+  accessEnded?: boolean
+  notes: number
+  files: number
+  problems: string[]
+  destinations: BackupDestinationStatus[]
+  trusted?: { ok: boolean; held?: string; written?: number; deleted?: number; kept?: number; error?: string }
+}
+
+/** One vault on a backup server, as its owner's devices see it. */
+export interface BackupVaultStatus {
+  vaultId: string
+  running: boolean
+  /** When the schedule runs it next; null without one. */
+  nextRunAt: number | null
+  /** The destinations (`backupTarget` ids) the backup server takes from the settings. */
+  targets: string[]
+  /** Settings the backup server cannot use, and why. */
+  problems: string[]
+  /** Newest first. */
+  runs: BackupRunStatus[]
+}
+
 /**
  * Everything a backup server needs to read and decrypt one vault, handed over
  * by a device of the account - never through the sync server in the clear.

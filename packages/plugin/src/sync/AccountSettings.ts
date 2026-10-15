@@ -1,5 +1,13 @@
 import * as Y from 'yjs'
-import { SETTINGS_FIELD } from '@obsidian-connect/shared'
+import {
+  BACKUP_SCHEDULE_KEY,
+  BACKUP_SERVER_KEY,
+  BACKUP_TARGET_KEY,
+  SETTINGS_FIELD,
+  type BackupScheduleSetting,
+  type BackupServerSetting,
+  type BackupTargetSetting
+} from '@obsidian-connect/shared'
 
 // Settings that must be the same on every device of an account travel in a
 // document of their own, next to the vault index. History retention above
@@ -184,6 +192,33 @@ export class AccountSettings {
 
   setPending(codeId: string, pending: PendingContact | null): void {
     this.put(`${PENDING}${codeId}`, pending)
+  }
+
+  // The vault's backups: which backup servers, where each puts the vault,
+  // how often. The backup server reads these with its backup key.
+
+  backupServers(): BackupServerSetting[] {
+    return this.entries<BackupServerSetting>(BACKUP_SERVER_KEY)
+  }
+
+  setBackupServer(routeId: string, server: BackupServerSetting | null): void {
+    this.put(`${BACKUP_SERVER_KEY}${routeId}`, server)
+  }
+
+  backupTargets(routeId?: string): BackupTargetSetting[] {
+    return this.entries<BackupTargetSetting>(BACKUP_TARGET_KEY).filter((target) => routeId === undefined || target.server === routeId)
+  }
+
+  setBackupTarget(id: string, target: BackupTargetSetting | null): void {
+    this.put(`${BACKUP_TARGET_KEY}${id}`, target)
+  }
+
+  backupSchedule(routeId: string): BackupScheduleSetting | null {
+    return (this.map.get(`${BACKUP_SCHEDULE_KEY}${routeId}`) as BackupScheduleSetting | undefined) ?? null
+  }
+
+  setBackupSchedule(routeId: string, schedule: BackupScheduleSetting | null): void {
+    this.put(`${BACKUP_SCHEDULE_KEY}${routeId}`, schedule)
   }
 
   /** `remote`: the change came from another device - or from this device's copy as it loaded. */

@@ -8,6 +8,28 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.2** (2026-10-15) - the backup server reachable from a device, through the sync
+  server; no settings screen yet (0.7.3). The sync server has a relay (`/relay`): a
+  backup server registers under the hash of a token from its code, a signed-in device
+  opens a session to it, and the frames pass unread. The backup server makes its code
+  on its first start (`npm run start:backup`, or `obsidian-connect-backup code`). The
+  session's key depends on the code, which never travels: the backup server proves it
+  knows the code before the device says anything but an ephemeral key, and the device
+  proves it in turn (`shared/crypto.ts`). Over the session a device connects a vault
+  (the grant), checks a destination, starts a run and hears how it went, asks the
+  status, disconnects; everything about a connected vault needs that vault's key
+  shown for the session. The backup server reads where to back up from the vault's
+  settings (`backupTarget:`, `backupSchedule:`), keeps local folders below its backup
+  folder and out of other vaults' folders, and runs on its schedule. `test:merge` 163
+  (the code, the handshake against a relay posing as the backup server, messages
+  tampered with, replayed, reordered, reflected), `test:rooms` 278 (the relay),
+  `test:backup` 76 (a backup server in the process, reached with its code: a wrong
+  code reaches nothing, someone who knows only the route is turned away, another
+  account can neither see nor start nor claim the vault nor write into its folder,
+  the schedule, disconnecting). Checked by taking three protections out - the vault
+  shown per session, the vault's proof, other vaults' folders -: exactly their four
+  checks failed.
+
 - **0.7.1** (2026-10-15) - the backup run, in a new package `packages/backup`; not
   reachable from the plugin yet (that comes with the relay, 0.7.2, and the settings,
   0.7.3). A device grants a backup server one vault (`Session.makeBackupGrant`: a

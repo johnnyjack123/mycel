@@ -47,6 +47,7 @@ const { EditorSync } = await import('../src/editor/EditorSync.js')
 const { Sharing } = await import('../src/share/Sharing.js')
 const { SharedFiles } = await import('../src/share/SharedFiles.js')
 const { Contacts } = await import('../src/share/Contacts.js')
+const { openBackupSession } = await import('../src/backup/BackupLink.js')
 const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
 )
@@ -396,6 +397,17 @@ export class Device {
     this.unlocked = await this.session.deleteBackupKey(this.unlocked, keyId)
   }
 
+  /** A session with a backup server through the sync server's relay, as the settings open one. */
+  openBackupSession(code: string): ReturnType<typeof openBackupSession> {
+    return openBackupSession(serverUrl, this.token ?? '', code)
+  }
+
+  /** The vault's key, which a session shows a backup server it holds. */
+  async backupVaultKey(): Promise<Uint8Array> {
+    if (!this.unlocked) throw new Error('not signed in')
+    return (await this.session.openVault(this.unlocked, VAULT)).key
+  }
+
   /** Whether the server keeps a recovery code for the account, as this device last heard. */
   get hasRecoveryCode(): boolean | undefined {
     return this.unlocked?.bundle.recovery === undefined ? undefined : this.unlocked.bundle.recovery !== null
@@ -445,6 +457,11 @@ export class Device {
   /** Whether the device holds a token and keys - what the settings show as "signed in". */
   get signedIn(): boolean {
     return this.token !== null
+  }
+
+  /** For tests that speak to the sync server as this account, without the plugin's code. */
+  get accessToken(): string {
+    return this.token ?? ''
   }
 
   async shutdown(): Promise<void> {

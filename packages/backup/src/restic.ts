@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import type { Writable } from 'node:stream'
+import type { KeepPolicy } from '@obsidian-connect/shared'
 
 // restic as the backup server runs it: one repository per call, its password
 // and credentials in the environment of that call only. restic encrypts
@@ -12,16 +13,6 @@ export interface ResticRepo {
   password: string
   /** Credentials the location needs, e.g. `AWS_ACCESS_KEY_ID`. */
   env?: Record<string, string>
-}
-
-/** How many snapshots `forget` keeps; absent counts keep nothing by that rule. */
-export interface KeepPolicy {
-  last?: number
-  hourly?: number
-  daily?: number
-  weekly?: number
-  monthly?: number
-  yearly?: number
 }
 
 export class ResticError extends Error {

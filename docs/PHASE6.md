@@ -320,6 +320,33 @@ asking:
   accounts open sessions to it and how much flows. Never the code, a key, a path, a
   password or a byte of a note.
 
+*As built (0.7.2):* the relay (`server/src/relay.ts`) speaks JSON frames
+(`RelayFrame` in `shared/types.ts`); a session's data is a JSON string the relay
+passes on unread - `{hello}`, `{answer}`, then only `{c: sealed}`. The handshake and
+the session cipher are in `shared/crypto.ts` (`openSession`, `answerSession`,
+`finishSession`, `SessionCipher`); the device's side in `plugin/src/backup/BackupLink.ts`,
+the backup server's in `backup/src/sessions.ts`. Requests: `info`, `connect`
+(`{grant}`), `authorize` (`{vaultId, proof}`), `status`, `refresh` (read the settings
+again), `run` (`{acceptShrink?}`; answers at once, and a `finished` event follows on
+every session that showed the vault), `check` (a destination before it is saved:
+folder rules, writable, and for restic the repository opened - or made - with its
+password), `disconnect`. Taken without asking:
+
+- The backup server reads the vault from the sync server it is registered at
+  (`OBSIDIAN_CONNECT_SERVER`), not from the address in the grant: a device may reach
+  the sync server by another address than the backup server does.
+- Limits: 8 sessions per device connection, 64 per backup server, 16 backup servers
+  per address, a frame at most 1 MiB, ten seconds to register. Failed handshakes are
+  answered 250 ms later for each one within the last minute, up to five seconds.
+- A relative location is taken below the backup folder; `local:` and a drive letter
+  count as local. Environment variables naming the repository, its password or
+  restic's cache are dropped from a destination's credentials.
+- The schedule is "every n hours" (`backupSchedule:<routeId>`, 0 for by hand only),
+  counted from the start of the last run; the settings are read again before every
+  run and at most an hour after the last time. One run at a time over all vaults.
+- A device's relay connection is checked when it opens; a password change does not
+  close it (it reaches nothing but backup servers whose code it has).
+
 ## Security, in short
 
 - The sync server stays blind: everything the backup server gets travels inside the

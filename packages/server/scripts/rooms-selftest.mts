@@ -4,6 +4,7 @@
 //
 //   npm run test:rooms
 import { createHash, randomBytes } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,6 +20,7 @@ import { ForkStore } from '../src/forks.js'
 import { AddressGuard, paced } from '../src/throttle.js'
 import { totpCode } from '../src/totp.js'
 import type { Frame } from '../src/log.js'
+import { Relay } from '../src/relay.js'
 import { HubError, RoomHub, type RoomClient } from '../src/rooms.js'
 
 const failures: string[] = []
@@ -1298,6 +1300,102 @@ try {
 
     for (const client of [kimDevice, kimElsewhere, leoDevice]) hub.detach(client)
     await app.close()
+  }
+
+  // --- the relay between devices and backup servers ---------------------------------------
+  {
+    class FakeSocket extends EventEmitter {
+      readonly OPEN = 1
+      readyState = 1
+      sent: Array<Record<string, unknown>> = []
+      closedWith: { code?: number; reason?: string } | null = null
+      send(data: string): void {
+        this.sent.push(JSON.parse(data) as Record<string, unknown>)
+      }
+      close(code?: number, reason?: string): void {
+        if (this.readyState !== 1) return
+        this.readyState = 3
+        this.closedWith = { code, reason }
+        this.emit('close')
+      }
+      terminate(): void {
+        this.close()
+      }
+      say(frame: unknown): void {
+        this.emit('message', Buffer.from(JSON.stringify(frame)))
+      }
+      take(): Array<Record<string, unknown>> {
+        return this.sent.splice(0)
+      }
+    }
+    const relay = new Relay({ sessionsPerDevice: 2, backupsPerAddress: 2, registerMs: 50 })
+    const socket = (): FakeSocket => new FakeSocket()
+    const as = (fake: FakeSocket): never => fake as never
+    const token = randomBytes(32)
+    const route = createHash('sha256').update(token).digest('hex')
+
+    const backup = socket()
+    relay.attachBackup(as(backup), '192.0.2.10')
+    backup.say({ t: 'register', token: token.toString('base64') })
+    check(backup.take()[0]?.route === route, 'a backup server registers under the hash of its token')
+
+    const device = socket()
+    relay.attachDevice(as(device), alice, '192.0.2.20')
+    device.say({ t: 'open', route: createHash('sha256').update(randomBytes(32)).digest('hex'), ref: 1 })
+    check(device.take()[0]?.error === 'the backup server is not connected', 'a route nobody registered opens nothing')
+    device.say({ t: 'open', route, ref: 2 })
+    const opened = device.take()[0]
+    const session = opened?.s as number
+    check(opened?.t === 'opened' && opened.ref === 2 && backup.take()[0]?.s === session, 'a device opens a session, and the backup server hears of it')
+    device.say({ t: 'data', s: session, d: 'sealed for the backup server' })
+    backup.say({ t: 'data', s: session, d: 'sealed for the device' })
+    check(
+      backup.take()[0]?.d === 'sealed for the backup server' && device.take()[0]?.d === 'sealed for the device',
+      'frames go both ways as they are'
+    )
+
+    const stranger = socket()
+    relay.attachDevice(as(stranger), bob, '192.0.2.30')
+    stranger.say({ t: 'data', s: session, d: 'injected' })
+    const otherBackup = socket()
+    relay.attachBackup(as(otherBackup), '192.0.2.11')
+    otherBackup.say({ t: 'register', token: randomBytes(32).toString('base64') })
+    otherBackup.take()
+    otherBackup.say({ t: 'data', s: session, d: 'injected' })
+    check(backup.take().length === 0 && device.take().length === 0, "nobody writes into someone else's session")
+
+    device.say({ t: 'open', route, ref: 3 })
+    device.say({ t: 'open', route, ref: 4 })
+    check(device.take().at(-1)?.error === 'too many sessions', 'a device holds only so many sessions at once')
+    backup.take()
+
+    const again = socket()
+    relay.attachBackup(as(again), '192.0.2.10')
+    again.say({ t: 'register', token: token.toString('base64') })
+    check(
+      again.take()[0]?.route === route && backup.closedWith?.code === 4409 && device.take().some((frame) => frame.t === 'close' && frame.s === session),
+      'the backup server connecting again replaces its old connection, whose sessions end'
+    )
+
+    const silent = socket()
+    relay.attachBackup(as(silent), '192.0.2.12')
+    await delay(80)
+    check(silent.closedWith?.code === 4400, 'a backup server that does not register is let go')
+
+    for (let n = 0; n < 2; n += 1) {
+      const crowd = socket()
+      relay.attachBackup(as(crowd), '192.0.2.99')
+      crowd.say({ t: 'register', token: randomBytes(32).toString('base64') })
+    }
+    const third = socket()
+    relay.attachBackup(as(third), '192.0.2.99')
+    third.say({ t: 'register', token: randomBytes(32).toString('base64') })
+    check(third.closedWith?.code === 4429, 'an address registers only so many backup servers')
+
+    again.close()
+    device.say({ t: 'open', route, ref: 5 })
+    check(device.take().at(-1)?.error === 'the backup server is not connected', 'a backup server that went is no longer reachable')
+    relay.close()
   }
   await hub.shutdown()
   await delay(10)

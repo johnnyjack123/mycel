@@ -5,7 +5,7 @@
 //
 //   npm run test:backup            (restic on the PATH, or OBSIDIAN_CONNECT_RESTIC naming it)
 import { spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
@@ -21,6 +21,8 @@ const { safePath, vaultFolder, withSuffix } = await import('../../backup/src/lay
 const { TarWriter } = await import('../../backup/src/tar.js')
 const { TarHasher } = await import('../../backup/src/tarcheck.js')
 const { alignTrusted, TrustedRefused } = await import('../../backup/src/trusted.js')
+const { startBackupServer } = await import('../../backup/src/server.js')
+const { encodeBackupServerCode, newBackupServerSecret, openSession } = await import('@obsidian-connect/shared/crypto')
 
 type RunReport = Awaited<ReturnType<typeof runBackup>>
 
@@ -209,6 +211,9 @@ function sameFiles(actual: Map<string, Buffer>, expected: Map<string, Buffer>, p
   return { missing, differ }
 }
 
+const links: Array<{ close(): void }> = []
+const stops: Array<() => Promise<void>> = []
+
 const job = (grant: Awaited<ReturnType<Device['makeBackupGrant']>>) => ({
   id: 'job-a',
   grant,
@@ -394,9 +399,161 @@ try {
   const ended = await runBackup(job(grant), options)
   check(!ended.ok && ended.accessEnded === true && ended.destinations.length === 0, 'with its key deleted the backup server reads nothing, and says to connect it again', ended)
   check(readFileSync(join(trustedDir, folder, 'Welcome.md'), 'utf8') === 'restored, take 6\n', 'and the trusted copy stays as it was')
+
+  // --- a backup server of its own, reached through the relay -------------------------------------
+  let clock = Date.now()
+  const backupRoot = join(root, 'backup-root')
+  const backupServer = await startBackupServer({
+    server: `ws://127.0.0.1:${port}`,
+    dataDir: join(root, 'backup-server-2'),
+    root: backupRoot,
+    workDir: join(root, 'ram-2'),
+    resticBinary: RESTIC,
+    name: 'test backup server',
+    version: 'test',
+    tickMs: 100,
+    now: () => clock
+  })
+  stops.push(() => backupServer.close())
+  await backupServer.registered
+  check(backupServer.createdCode && /^([0-9A-HJKMNP-TV-Z]{5}-){5}[0-9A-HJKMNP-TV-Z]{5}$/.test(backupServer.code), 'a backup server makes its code on its first start')
+  const refusal = (task: Promise<unknown>): Promise<string> =>
+    task.then(
+      () => 'accepted',
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    )
+  check((await refusal(A3.openBackupSession('ABCDE-FGHJK'))).includes("not a backup server's code"), 'a typo in the code is caught on the device')
+  check(
+    (await refusal(A3.openBackupSession(await encodeBackupServerCode(newBackupServerSecret())))) === 'the backup server is not connected',
+    "another backup server's code reaches nothing"
+  )
+
+  const link = await A3.openBackupSession(backupServer.code)
+  links.push(link)
+  const info = await link.call<{ name: string; restic: string }>('info')
+  check(info.name === 'test backup server' && info.restic.startsWith('restic'), 'with the right code a device reaches the backup server through the relay', info)
+  const relayGrant = await A3.makeBackupGrant('over the relay')
+  const vaultId = relayGrant.vaultId
+  check((await link.call<{ vaultId: string }>('connect', { grant: relayGrant })).vaultId === vaultId, 'and connects its vault, handing the grant over the session')
+
+  const settings = A3.settings as NonNullable<typeof A3.settings>
+  const routeId = backupServer.routeId
+  settings.setBackupServer(routeId, { routeId, code: backupServer.code, label: 'test', addedAt: clock })
+  settings.setBackupTarget('repo', { id: 'repo', server: routeId, kind: 'restic', location: 'vault-a/repo', password: 'relay password', keep: { last: 10 }, addedAt: 1 })
+  settings.setBackupTarget('copy', { id: 'copy', server: routeId, kind: 'trusted', location: 'vault-a/copy', addedAt: 2 })
+  settings.setBackupTarget('escape', { id: 'escape', server: routeId, kind: 'restic', location: '../outside', password: 'x', addedAt: 3 })
+  settings.setBackupSchedule(routeId, { server: routeId, everyHours: 24 })
+  type Status = { targets: string[]; problems: string[]; running: boolean; nextRunAt: number | null; runs: Array<{ ok: boolean; error?: string }> }
+  check(
+    await eventually(async () => (await link.call<Status>('refresh', { vaultId })).targets.join() === 'repo,copy', 15_000),
+    'the settings made on the device reach the backup server'
+  )
+  const configured = await link.call<Status>('status', { vaultId })
+  check(configured.problems.some((problem) => problem.includes('../outside')), 'a folder outside its backup folder is refused, and said why', configured.problems)
+
+  const finished = new Promise<{ report: { ok: boolean } }>((resolve) => {
+    link.onEvent((event) => {
+      if (event.ev === 'finished') resolve(event.p as { report: { ok: boolean } })
+    })
+  })
+  await link.call('run', { vaultId })
+  const relayed = await Promise.race([finished, delay(120_000).then(() => null)])
+  check(relayed?.report.ok === true, 'a backup started from the device runs, and the device hears how it went', relayed)
+  {
+    const snapshots = restic(join(backupRoot, 'vault-a', 'repo'), 'relay password', ['snapshots', '--json'])
+    const list = JSON.parse(snapshots.stdout.toString('utf8') || '[]') as unknown[]
+    check(list.length === 2, 'its repository lies below the backup folder, with the notes and the files snapshot', snapshots.stderr)
+    check(
+      readFileSync(join(backupRoot, 'vault-a', 'copy', folder, 'Welcome.md'), 'utf8') === 'restored, take 6\n',
+      'and the trusted copy too'
+    )
+  }
+
+  // Whoever knows only the route - the sync server itself - gets an answer, and no further.
+  {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/relay?token=${encodeURIComponent(B.accessToken)}`)
+    const frames: Array<Record<string, unknown>> = []
+    socket.addEventListener('message', (event) => frames.push(JSON.parse(String(event.data)) as Record<string, unknown>))
+    await new Promise((resolve) => socket.addEventListener('open', resolve))
+    socket.send(JSON.stringify({ t: 'open', route: backupServer.routeId, ref: 7 }))
+    await eventually(() => frames.some((frame) => frame.t === 'opened'))
+    const session = frames.find((frame) => frame.t === 'opened')?.s as number
+    const { hello } = await openSession()
+    socket.send(JSON.stringify({ t: 'data', s: session, d: JSON.stringify({ hello }) }))
+    await eventually(() => frames.some((frame) => frame.t === 'data'))
+    socket.send(JSON.stringify({ t: 'data', s: session, d: JSON.stringify({ c: Buffer.from(randomBytes(64)).toString('base64') }) }))
+    check(
+      await eventually(() => frames.some((frame) => frame.t === 'close' && frame.s === session)),
+      'someone who knows the route but not the code is turned away at the first sealed message',
+      frames
+    )
+    socket.close()
+  }
+
+  // A second session of the same account must show it holds the vault's key.
+  {
+    const second = await A3.openBackupSession(backupServer.code)
+    links.push(second)
+    check((await refusal(second.call('status', { vaultId }))).includes('not a vault this device has shown it owns'), 'a new session asks for proof of the vault')
+    check((await refusal(second.call('authorize', { vaultId, proof: 'ab'.repeat(32) }))) === 'that is not your vault', 'a made-up proof is refused')
+    const authorized = await second.authorize<Status>(vaultId, await A3.backupVaultKey())
+    check(authorized.runs[0]?.ok === true, 'the right one shows the vault and its last run')
+  }
+
+  // Someone else with the code: their own vaults, never anyone else's.
+  {
+    const foreign = await B.openBackupSession(backupServer.code)
+    links.push(foreign)
+    check(
+      (await refusal(foreign.call('status', { vaultId }))).includes('not a vault this device has shown it owns') &&
+        (await refusal(foreign.call('run', { vaultId }))).includes('not a vault this device has shown it owns') &&
+        (await refusal(foreign.authorize(vaultId, new Uint8Array(randomBytes(32))))) === 'that is not your vault',
+      "another account with the code cannot see, start or claim someone else's vault"
+    )
+    const benGrant = await B.makeBackupGrant('ben')
+    await foreign.call('connect', { grant: benGrant })
+    const benSettings = B.settings as NonNullable<typeof B.settings>
+    benSettings.setBackupTarget('intrude', { id: 'intrude', server: routeId, kind: 'restic', location: 'vault-a/repo/inside', password: 'x', addedAt: 1 })
+    check(
+      await eventually(
+        async () => (await foreign.call<Status>('refresh', { vaultId: benGrant.vaultId })).problems.some((problem) => problem.includes('another vault')),
+        15_000
+      ),
+      "but can connect their own - and cannot put it into another vault's folder"
+    )
+    const checked = await foreign.call<{ ok: boolean; created?: boolean; error?: string }>('check', {
+      vaultId: benGrant.vaultId,
+      target: { kind: 'restic', location: 'vault-b/repo', password: 'ben password' }
+    })
+    check(checked.ok && checked.created === true, 'a destination is checked before it is saved - the repository made where there is none', checked)
+    const wrong = await foreign.call<{ ok: boolean; error?: string }>('check', {
+      vaultId: benGrant.vaultId,
+      target: { kind: 'restic', location: 'vault-b/repo', password: 'not it' }
+    })
+    check(!wrong.ok && wrong.error === 'the repository password is wrong', 'and a wrong password said as such', wrong)
+  }
+
+  // The schedule.
+  {
+    const before = (await link.call<Status>('status', { vaultId })).runs.length
+    clock += 25 * 60 * 60 * 1000
+    check(
+      await eventually(async () => {
+        const now = await link.call<Status>('status', { vaultId })
+        return now.runs.length > before && !now.running
+      }, 120_000),
+      'a day later the schedule starts a run on its own'
+    )
+  }
+
+  await link.call('disconnect', { vaultId })
+  check((await refusal(link.call('status', { vaultId }))).length > 0 && !existsSync(join(root, 'backup-server-2', 'vaults', vaultId)), 'disconnecting forgets the vault and its keys')
+  check(existsSync(join(backupRoot, 'vault-a', 'repo', 'config')) && existsSync(join(backupRoot, 'vault-a', 'copy', folder)), 'and leaves its repository and copy where they are')
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {
+  for (const link of links) link.close()
+  for (const stop of stops) await stop().catch(() => undefined)
   for (const device of devices) await device.shutdown().catch(() => undefined)
   await server.close().catch(() => undefined)
   await delay(100)

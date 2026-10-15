@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-15 · **Milestone 0.7 designed with the user: a backup server of its own (`docs/PHASE6.md`), built on `feat/backup-api` in five steps, 0.7.0 to 0.7.4. Built: 0.7.0 (the sync server's backup keys and read scope) and 0.7.1 (the run, `packages/backup`, `test:backup` with a real restic). Next 0.7.2: the relay, the backup server's code and the encrypted session. The operator's encrypted backup of the data directory moved to later. 0.6.8 is on `main` and confirmed on the user's devices.**_
+_Last updated: 2026-10-16 · **Milestone 0.7 designed with the user: a backup server of its own (`docs/PHASE6.md`), built on `feat/backup-api` in five steps, 0.7.0 to 0.7.4. Built: 0.7.0 (the sync server's backup keys and read scope), 0.7.1 (the run, `packages/backup`, `test:backup` with a real restic), 0.7.2 (the relay, the backup server's code, the encrypted session, the schedule). Next 0.7.3: the plugin's settings screen for backups. The operator's encrypted backup of the data directory moved to later. 0.6.8 is on `main` and confirmed on the user's devices.**_
 
 ## Where we are
 
@@ -225,6 +225,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15; nothing on the PATH). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
+
+At 0.7.2, run 2026-10-16 before its commit: `typecheck` and `build` pass; `test:merge`
+163, `test:load` 14, `test:rooms` 278, `test:sync` 26, `test:recovery` 56,
+`test:account` 50, `test:backup` 76 - all pass; against a scratch server on 1235,
+`test:socket` 19 and `test:vault` 230 pass (the user's server on 1234 was not running,
+before or after). Not merged, not on a device.
 
 At 0.7.1, run 2026-10-15 before its commit: `typecheck` and `build` pass; `test:merge`
 150, `test:load` 14, `test:rooms` 268, `test:sync` 26, `test:recovery` 56,

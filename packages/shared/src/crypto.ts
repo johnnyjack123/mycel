@@ -496,27 +496,41 @@ export function newRecoverySecret(): Bytes {
   return randomBytes(RECOVERY_SECRET_BYTES)
 }
 
-async function recoveryCheck(secret: Bytes): Promise<Bytes> {
-  const check = (await sha256(concat(utf8('obsidian-connect recovery-check'), secret))).slice(0, RECOVERY_CHECK_BYTES)
+/**
+ * The check carries what the code is for, so a code of one kind never passes
+ * for another: a recovery code typed where a backup server's code goes is a
+ * typo, not a request the server counts against the address.
+ */
+async function codeCheck(secret: Bytes, kind: 'recovery' | 'backup-server'): Promise<Bytes> {
+  const label = kind === 'recovery' ? 'obsidian-connect recovery-check' : 'obsidian-connect backup-server-check'
+  const check = (await sha256(concat(utf8(label), secret))).slice(0, RECOVERY_CHECK_BYTES)
   check[RECOVERY_CHECK_BYTES - 1] &= 0xfc
   return check
 }
 
-/** Six groups of five characters, for writing down. */
-export async function encodeRecoveryCode(secret: Bytes): Promise<string> {
-  const text = toBase32(concat(secret, await recoveryCheck(secret))).slice(0, RECOVERY_CODE_CHARS)
+async function encodeCode(secret: Bytes, kind: 'recovery' | 'backup-server'): Promise<string> {
+  const text = toBase32(concat(secret, await codeCheck(secret, kind))).slice(0, RECOVERY_CODE_CHARS)
   return (text.match(/.{1,5}/g) ?? []).join('-')
 }
 
-/** The secret behind a code, or null for anything that is not one - a typo included. */
-export async function decodeRecoveryCode(code: string): Promise<Bytes | null> {
+async function decodeCode(code: string, kind: 'recovery' | 'backup-server'): Promise<Bytes | null> {
   const compact = code.replace(/[\s-]/g, '')
   if (compact.length !== RECOVERY_CODE_CHARS) return null
   const data = fromBase32(`${compact}0`)
   if (!data || data.length !== RECOVERY_SECRET_BYTES + RECOVERY_CHECK_BYTES) return null
   const secret = data.slice(0, RECOVERY_SECRET_BYTES)
-  const check = await recoveryCheck(secret)
+  const check = await codeCheck(secret, kind)
   return check.every((byte, index) => byte === data[RECOVERY_SECRET_BYTES + index]) ? secret : null
+}
+
+/** Six groups of five characters, for writing down. */
+export function encodeRecoveryCode(secret: Bytes): Promise<string> {
+  return encodeCode(secret, 'recovery')
+}
+
+/** The secret behind a code, or null for anything that is not one - a typo included. */
+export function decodeRecoveryCode(code: string): Promise<Bytes | null> {
+  return decodeCode(code, 'recovery')
 }
 
 export interface RecoveryKeys {
@@ -602,5 +616,167 @@ export async function recoveryKeys(secret: Bytes): Promise<RecoveryKeys> {
   return {
     recoveryKey: await hkdf(secret, 'obsidian-connect recovery-login'),
     wrapKey: await hkdf(secret, 'obsidian-connect recovery-wrap')
+  }
+}
+
+// --- backup servers ------------------------------------------------------------------
+//
+// A backup server has a code: 128 random bits, written like a recovery code.
+// Whoever enters it in the plugin reaches that backup server through the sync
+// server, which knows it only by a hash of something derived from the code.
+// The code itself never travels, not even encrypted: encrypting it to the
+// backup server's key would need that key from the sync server, which could
+// hand out its own. Instead both ends prove they know the code, and the
+// session key depends on it - a pre-shared key, as WireGuard uses one.
+
+export function newBackupServerSecret(): Bytes {
+  return randomBytes(RECOVERY_SECRET_BYTES)
+}
+
+export function encodeBackupServerCode(secret: Bytes): Promise<string> {
+  return encodeCode(secret, 'backup-server')
+}
+
+/** The secret behind a backup server's code, or null for anything else - a recovery code included. */
+export function decodeBackupServerCode(code: string): Promise<Bytes | null> {
+  return decodeCode(code, 'backup-server')
+}
+
+export interface BackupServerKeys {
+  /** Sent to the sync server when the backup server registers there. */
+  routeToken: Bytes
+  /** What the sync server and the plugin address the backup server by: the route token's hash, hex. */
+  routeId: string
+  /** Never sent. */
+  psk: Bytes
+}
+
+export async function backupServerKeys(secret: Bytes): Promise<BackupServerKeys> {
+  const routeToken = await hkdf(secret, 'obsidian-connect backup-route')
+  return {
+    routeToken,
+    routeId: toHex(await sha256(routeToken)),
+    psk: await hkdf(secret, 'obsidian-connect backup-pair')
+  }
+}
+
+/** The plugin's opening: an ephemeral key and a nonce, in the clear. */
+export interface SessionHello {
+  e: string
+  n: string
+}
+
+/** The backup server's answer, with its proof that it knows the code. */
+export interface SessionAnswer {
+  e: string
+  n: string
+  mac: string
+}
+
+/** A session's keys, one per direction, and the transcript they were made from. */
+export interface SessionKeys {
+  send: CryptoKey
+  receive: CryptoKey
+  transcript: string
+}
+
+export type SessionRole = 'plugin' | 'backup'
+
+const NONCE_BYTES = 16
+
+function other(role: SessionRole): SessionRole {
+  return role === 'plugin' ? 'backup' : 'plugin'
+}
+
+async function sessionKeys(role: SessionRole, privateKey: CryptoKey, peer: Bytes, psk: Bytes, transcript: string): Promise<SessionKeys> {
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: await importPublicKey(peer) }, privateKey, 256))
+  const material = concat(shared, psk)
+  const key = async (from: SessionRole): Promise<CryptoKey> => aesKey(await hkdf(material, `obsidian-connect backup-session ${from} ${transcript}`))
+  return { send: await key(role), receive: await key(other(role)), transcript }
+}
+
+/** Proves knowledge of the code for this session only: the transcript holds both fresh keys. */
+export async function sessionProof(psk: Bytes, from: SessionRole, transcript: string): Promise<string> {
+  return toHex(await hmac(psk, `obsidian-connect backup-proof ${from} ${transcript}`))
+}
+
+/** The plugin opens a session. Its private half stays here until `finishSession`. */
+export async function openSession(): Promise<{ hello: SessionHello; pending: { privateKey: CryptoKey; publicRaw: Bytes; nonce: Bytes } }> {
+  const pair = await crypto.subtle.generateKey(ECDH, true, ['deriveBits'])
+  const publicRaw = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey))
+  const nonce = randomBytes(NONCE_BYTES)
+  return { hello: { e: toBase64(publicRaw), n: toBase64(nonce) }, pending: { privateKey: pair.privateKey, publicRaw, nonce } }
+}
+
+function transcriptOf(pluginKey: Bytes, pluginNonce: Bytes, backupKey: Bytes, backupNonce: Bytes): string {
+  return toHex(concat(pluginKey, pluginNonce, backupKey, backupNonce))
+}
+
+/** The backup server answers a hello: its own fresh key, and a proof only the code's holder can make. */
+export async function answerSession(psk: Bytes, hello: SessionHello): Promise<{ answer: SessionAnswer; keys: SessionKeys }> {
+  const peer = fromBase64(hello.e)
+  const peerNonce = fromBase64(hello.n)
+  if (peer.length !== P256_PUBLIC_BYTES || peerNonce.length !== NONCE_BYTES) throw new Error('not a session opening')
+  const pair = await crypto.subtle.generateKey(ECDH, true, ['deriveBits'])
+  const publicRaw = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey))
+  const nonce = randomBytes(NONCE_BYTES)
+  const transcript = transcriptOf(peer, peerNonce, publicRaw, nonce)
+  const keys = await sessionKeys('backup', pair.privateKey, peer, psk, transcript)
+  return { answer: { e: toBase64(publicRaw), n: toBase64(nonce), mac: await sessionProof(psk, 'backup', transcript) }, keys }
+}
+
+/**
+ * The plugin checks the answer and derives the session's keys. Throws when
+ * whoever answered does not know the code - the sync server itself, say.
+ */
+export async function finishSession(
+  psk: Bytes,
+  pending: { privateKey: CryptoKey; publicRaw: Bytes; nonce: Bytes },
+  answer: SessionAnswer
+): Promise<SessionKeys> {
+  const peer = fromBase64(answer.e)
+  const peerNonce = fromBase64(answer.n)
+  if (peer.length !== P256_PUBLIC_BYTES || peerNonce.length !== NONCE_BYTES) throw new Error('not a session answer')
+  const transcript = transcriptOf(pending.publicRaw, pending.nonce, peer, peerNonce)
+  if (!sameMac(answer.mac, await sessionProof(psk, 'backup', transcript))) {
+    throw new Error('the backup server could not prove it knows the code')
+  }
+  return sessionKeys('plugin', pending.privateKey, peer, psk, transcript)
+}
+
+/**
+ * Proves, inside a session, that the device holds a vault's key: whoever knows
+ * a backup server's code may connect vaults of their own to it, and only the
+ * vault's owner starts, asks about or disconnects that vault's backups.
+ */
+export async function vaultControlProof(vaultKey: Bytes, vaultId: string, transcript: string): Promise<string> {
+  return toHex(await hmac(await hkdf(vaultKey, 'obsidian-connect backup-control'), `${vaultId} ${transcript}`))
+}
+
+/**
+ * Messages of a session, in order. Each one's associated data names its
+ * direction and number, so a message replayed, dropped, reordered or sent
+ * back to its sender does not open.
+ */
+export class SessionCipher {
+  private sent = 0
+  private received = 0
+
+  constructor(
+    private readonly keys: SessionKeys,
+    private readonly role: SessionRole
+  ) {}
+
+  async seal(message: string): Promise<string> {
+    const aad = `backup-session ${this.role} #${this.sent}`
+    this.sent += 1
+    return toBase64(await encrypt(this.keys.send, utf8(message), aad))
+  }
+
+  /** Messages are opened in the order they arrive; one that fails ends the session. */
+  async open(data: string): Promise<string> {
+    const aad = `backup-session ${other(this.role)} #${this.received}`
+    this.received += 1
+    return fromUtf8(await decrypt(this.keys.receive, fromBase64(data), aad))
   }
 }
