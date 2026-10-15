@@ -24,8 +24,9 @@ The design of accounts, keys, sharing and the encrypted transport is specified i
 **`docs/PHASE4.md`**, recovery codes and 2FA (0.6) in **`docs/PHASE5.md`**; running
 the server in **`docs/SERVER.md`**. Where the work stands and what is next:
 **`docs/PROGRESS.md`**; what each version changed and how its fixes were verified:
-**`docs/CHANGELOG.md`**. A new milestone gets its design document (`docs/PHASE6.md`
-for 0.7) written with the user before it is built.
+**`docs/CHANGELOG.md`**. The backup server (0.7) is specified in **`docs/PHASE6.md`**.
+A new milestone gets its design document (`docs/PHASE7.md` for 0.8) written with the
+user before it is built.
 
 ## Non-negotiable invariants
 
@@ -564,15 +565,18 @@ In the order of the roadmap (Conventions); what goes into 0.8 and 0.9 besides
 is listed in `docs/PROGRESS.md`, "Roadmap". (Recovery codes and 2FA: built in
 0.6, `docs/PHASE5.md`.)
 
-**Backup API (0.7).** A secured endpoint a backup tool such as restic can
-pull snapshots from on a schedule, in two forms:
+**The backup server (0.7), specified in `docs/PHASE6.md`, being built on
+`feat/backup-api`.** A server of its own (`packages/backup`, Docker image
+`obsidian-connect-backup`) that pulls a vault with a read-only backup key, decrypts
+it in memory and hands it to restic - notes as a folder in a RAM disk, attachments
+as a tar stream - into any number of repositories, plus an optional trusted
+plaintext copy. Set up entirely from the plugin: the backup server has a code, and
+plugin and backup server talk through a relay on the sync server over a session
+whose key depends on that code, which never travels. For a few private people.
 
-- *Encrypted:* the data directory as it is — ciphertext only — authenticated with
-  a dedicated, revocable backup token rather than an account.
-- *Decrypted:* the notes as Markdown. Decryption must happen outside the server,
-  or the server would hold the keys: a small command-line client on the backup
-  machine signs in with the account's credentials, pulls the ciphertext through
-  the API, decrypts locally and writes the files restic then snapshots.
+**The operator's backup (later).** The data directory as it is - ciphertext only -
+pulled with a dedicated, revocable backup token rather than an account. Moved out of
+0.7 by the user on 2026-10-15.
 
 **Sharing a folder (0.8).** Share a whole folder with someone instead of note by
 note, including what is added to it later. Not designed yet.
@@ -635,7 +639,7 @@ between two snapshots, never a merge.
   | 0.4 | the first device run: comparing versions, the log, the note cloud, menus |
   | 0.5 | attachments, in an encrypted blob store |
   | 0.6 | recovery codes and 2FA |
-  | 0.7 | the backup API |
+  | 0.7 | the backup server (`docs/PHASE6.md`) |
   | 0.8 | sharing a folder, and the small fixes listed for it in `docs/PROGRESS.md` |
   | 0.9 | hardening and a security audit: signatures per author, every note live, a name without "Obsidian" |
   | 1.0.0 | all of the above done and verified on devices |

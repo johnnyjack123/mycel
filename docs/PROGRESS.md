@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-15 · **0.6.8 merged into `main` (`feat/accounts` deleted): milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built, and 0.6.8 confirmed working on the user's devices. The roadmap was reordered by the user: 0.7 the backup API, 0.8 sharing a folder and the small fixes, 0.9 hardening and a security audit, plugin sync after 1.0.0. Next: milestone 0.7 (the backup API), designed with the user first, on its own branch `feat/backup-api` from `main`.**_
+_Last updated: 2026-10-15 · **Milestone 0.7 designed with the user: a backup server of its own (`docs/PHASE6.md`), built on `feat/backup-api` in five steps, 0.7.0 to 0.7.4. The operator's encrypted backup of the data directory moved to later. 0.6.8 is on `main` and confirmed on the user's devices.**_
 
 ## Where we are
 
@@ -61,20 +61,19 @@ from other devices - the account-wide settings and the account's 2FA and recover
 code - without a restart (0.6.8, server and plugin). The user installed 0.6.8 and
 said it works as expected (2026-10-14).
 
-Next is **milestone 0.7: the backup API** - not designed yet. The direction is in
-CLAUDE.md ("Not built yet"): an encrypted form (the data directory, ciphertext
-only, behind a revocable backup token) and a decrypted one (a command-line client
-on the backup machine signs in, pulls the ciphertext and decrypts there - the
-server never holds a key), both pullable by restic on a schedule. Start the branch
-`feat/backup-api` from `main`, design it with the user (AskUserQuestion; the user
-writes German and decides product questions), write `docs/PHASE6.md`, then build in
-steps with tests, and merge when it is done.
+**Milestone 0.7: the backup server** - designed with the user on 2026-10-15
+(`docs/PHASE6.md`, the decisions at its top; the user shaped the architecture
+themselves: a server of its own, set up from the plugin through a relay, restic
+plus an optional trusted plaintext copy). Built on `feat/backup-api` in the steps
+listed at the end of `docs/PHASE6.md`: 0.7.0 the sync server's backup keys and read
+scope, 0.7.1 the run, 0.7.2 the relay and the session, 0.7.3 the plugin, 0.7.4 the
+image. Merged into `main` when all five are done.
 
 ## Roadmap
 
 Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
-- **0.7 - the backup API.** See "Next step".
+- **0.7 - the backup server.** See "Next step".
 - **0.8 - sharing a folder, and the small fixes.** Sharing a whole folder,
   including what is added to it later (not designed yet). Besides, every fix that
   has to be in before 0.9:
@@ -107,7 +106,8 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
   and an account. Whether to publish at all is the user's decision.
 - **1.0.0** - all of the above done and verified on devices.
 - **Later:** syncing plugins and their settings (moved back by the user; the
-  direction is in CLAUDE.md).
+  direction is in CLAUDE.md); the operator's backup of the data directory,
+  ciphertext only (moved out of 0.7 by the user on 2026-10-15).
 
 ## In flight / half-finished
 
@@ -241,6 +241,14 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 ---
 
 ## Log
+
+### 2026-10-15
+- Milestone 0.7 designed with the user. First proposed: an encrypted form for the
+  operator and a command-line client decrypting on the backup machine. The user
+  chose instead a backup server of its own, set up from the plugin through a relay
+  on the sync server, decrypting in memory into restic, with an optional trusted
+  plaintext copy; notes as a folder, attachments as a stream. Written down as
+  `docs/PHASE6.md`; the user agreed to it.
 
 ### 2026-10-14
 - The user tested 2FA in depth and found it working. Asked for, and built: 2FA off
