@@ -5,7 +5,10 @@ import { PasswordReveal } from '../account/reveal'
 import { busy, type BusyButton } from '../busy'
 import { DEFAULT_KEEP, type Backups } from './Backups'
 
-/** Connects a backup server: its code, and the password for the key it gets. */
+/**
+ * Connects a backup server: its code, and the password for the key it gets.
+ * `again`: one connected before, whose key ended or which lost the vault.
+ */
 export class BackupConnectModal extends Modal {
   private code = ''
   private label = ''
@@ -15,13 +18,26 @@ export class BackupConnectModal extends Modal {
   constructor(
     app: App,
     private readonly backups: Backups,
-    private readonly done: () => void
+    private readonly done: () => void,
+    private readonly again: { code: string; label: string } | null = null
   ) {
     super(app)
+    if (again) {
+      this.code = again.code
+      this.label = again.label
+    }
   }
 
   onOpen(): void {
-    this.titleEl.setText('Connect a backup server')
+    this.titleEl.setText(this.again ? `Connect ${this.again.label} again` : 'Connect a backup server')
+    if (this.again) {
+      this.contentEl.createEl('p', {
+        text: 'Its key ended - a password change or a recovery ends every backup key - or it lost what it knew of this vault. Your password gives it a new key; its destinations and backups stay as they are.'
+      })
+      this.passwordRow()
+      this.connectButton()
+      return
+    }
     this.contentEl.createEl('p', {
       text: 'A backup server of your own keeps this vault in restic repositories wherever you choose - a disk, a NAS, a cloud. It shows its code when it starts for the first time (or: obsidian-connect-backup code).'
     })
@@ -44,6 +60,11 @@ export class BackupConnectModal extends Modal {
           this.label = value
         })
       )
+    this.passwordRow()
+    this.connectButton()
+  }
+
+  private passwordRow(): void {
     const reveal = new PasswordReveal()
     const setting = new Setting(this.contentEl).setName('Current password').setDesc('Its key is made with your password, like a recovery code.')
     const password = new TextComponent(setting.controlEl)
@@ -51,6 +72,10 @@ export class BackupConnectModal extends Modal {
       this.password = value
     })
     reveal.attach(setting, password.inputEl)
+    if (this.again) window.setTimeout(() => password.inputEl.focus(), 0)
+  }
+
+  private connectButton(): void {
     new Setting(this.contentEl).addButton((button) =>
       button
         .setButtonText('Connect')
@@ -69,7 +94,12 @@ export class BackupConnectModal extends Modal {
     try {
       await busy(button, async () => {
         const connected = await this.backups.connect(this.code, this.password, this.label)
-        new Notice(`Obsidian Connect: ${connected.label} is connected. Add a destination next - until then it backs up nothing.`, 8_000)
+        new Notice(
+          this.again
+            ? `Obsidian Connect: ${connected.label} has a new key and backs up as before.`
+            : `Obsidian Connect: ${connected.label} is connected. Add a destination next - until then it backs up nothing.`,
+          8_000
+        )
       })
       this.close()
       this.done()

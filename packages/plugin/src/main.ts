@@ -665,12 +665,13 @@ export default class ObsidianConnectPlugin extends Plugin {
     return this.accountSettings && this.vault ? this.backupServers : null
   }
 
-  openBackupConnect(): void {
+  /** `again`: one connected before, whose key ended or which lost the vault. */
+  openBackupConnect(again: { code: string; label: string } | null = null): void {
     if (!this.backupsOf()) {
       new Notice('Obsidian Connect: backups are set up while this vault syncs.')
       return
     }
-    new BackupConnectModal(this.app, this.backupServers, () => this.settingTab?.refresh()).open()
+    new BackupConnectModal(this.app, this.backupServers, () => this.settingTab?.refresh(), again).open()
   }
 
   openBackupTarget(routeId: string, root: string | null, hasTrusted: boolean): void {

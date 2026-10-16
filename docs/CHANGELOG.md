@@ -8,6 +8,17 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.5** (2026-10-16) - a backup server whose key ended - a password change while it
+  could not be reached - or which lost what it knew of the vault shows "Connect
+  again…" in the settings: the code is filled in, the password gives it a new key,
+  its destinations stay. Before, it had to be disconnected and connected anew. Only
+  for a device to see; `test:backup` covers the connecting again underneath (0.7.3).
+  And a fix CI's first start of the image found: with the sync server not answering,
+  the backup server ended quietly a second after starting - between two attempts
+  nothing kept the process alive (every timer was unref'd, and waiting for a signal
+  does not count). The schedule's timer now does. Checked by CI's smoke test, which
+  failed on 0.7.4 with "the backup server stopped".
+
 - **0.7.4** (2026-10-16) - the backup server as an image, `obsidian-connect-backup`
   (`Dockerfile.backup`: restic 0.19.1 from its release, checked per architecture,
   amd64 and arm64), with `docker-compose.backup.yml` (the data volume, the backup

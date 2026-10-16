@@ -54,10 +54,11 @@ export async function startBackupServer(options: BackupServerOptions): Promise<R
   })
   const relay = new RelayLink(options.server, identity, (session) => serveSession(session, { identity, service, restic, root: options.root }))
   relay.start()
+  // Not unref'd: between two attempts to reach the sync server nothing else
+  // keeps the process alive, and it ended quietly a second after starting.
   const ticker = setInterval(() => {
     void service.tick().catch((error: unknown) => log.warn('looking for due backups failed', error))
   }, options.tickMs ?? 60_000)
-  ticker.unref?.()
   return {
     code: identity.code,
     routeId: identity.keys.routeId,

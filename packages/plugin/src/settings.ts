@@ -722,9 +722,18 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     const status = view.status
     const last = status?.runs[0]
     const confirming = this.disconnecting === routeId
-    new Setting(containerEl)
-      .setName(view.setting.label)
-      .setDesc(describeBackupServer(view.error, status))
+    // Its key ended, or it lost the vault: a new key, with the password.
+    const needsKey = last?.accessEnded === true || /not connected here|connect it again/.test(view.error ?? '')
+    const head = new Setting(containerEl).setName(view.setting.label).setDesc(describeBackupServer(view.error, status))
+    if (needsKey) {
+      head.addButton((button) =>
+        button
+          .setButtonText('Connect again…')
+          .setCta()
+          .onClick(() => this.plugin.openBackupConnect({ code: view.setting.code, label: view.setting.label }))
+      )
+    }
+    head
       .addButton((button) =>
         button
           .setButtonText('Back up now')
