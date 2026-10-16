@@ -10,6 +10,7 @@ import { ContactStore } from './contacts.js'
 import { ForkStore } from './forks.js'
 import type { ServerConfig } from './config.js'
 import { createHttpApp } from './http.js'
+import { Relay } from './relay.js'
 import { RoomHub } from './rooms.js'
 import { setupVaultConnection } from './wshub.js'
 
@@ -36,6 +37,8 @@ export interface StartOptions {
 }
 
 const VAULT_PREFIX = '/vault/'
+const RELAY_PATH = '/relay'
+const RELAY_MAX_BYTES = 1024 * 1024
 const SWEEP_MS = 5 * 60 * 1000
 
 function reject(socket: Duplex, status: string): void {
@@ -69,10 +72,38 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
   const sweeper = setInterval(sweep, options.sweepMs ?? SWEEP_MS)
   sweeper.unref()
   const wss = new WebSocketServer({ noServer: true })
+  // A session's frames are small - keys, settings, a status - so a large one is a mistake or worse.
+  const relayWss = new WebSocketServer({ noServer: true, maxPayload: RELAY_MAX_BYTES })
+  const relay = new Relay()
+
+  async function handleRelay(url: URL, request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+    const address = request.socket.remoteAddress ?? ''
+    if (url.searchParams.get('role') === 'backup') {
+      relayWss.handleUpgrade(request, socket, head, (ws) => relay.attachBackup(ws, address))
+      return
+    }
+    let session: TokenSession | null = null
+    try {
+      session = await tokens.verify(url.searchParams.get('token') ?? '')
+    } catch {
+      // answered below
+    }
+    const account = session ? await accounts.get(session.accountId) : undefined
+    if (!session || !account || sessionOf(account) !== session.gen) {
+      relayWss.handleUpgrade(request, socket, head, (ws) => ws.close(CLOSE_SIGNED_OUT, 'signed out'))
+      return
+    }
+    const accountId = session.accountId
+    relayWss.handleUpgrade(request, socket, head, (ws) => relay.attachDevice(ws, accountId, address))
+  }
 
   async function handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
     try {
       const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
+      if (url.pathname === RELAY_PATH) {
+        await handleRelay(url, request, socket, head)
+        return
+      }
       if (!url.pathname.startsWith(VAULT_PREFIX)) {
         reject(socket, '404 Not Found')
         return
@@ -124,7 +155,10 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
       clearInterval(sweeper)
       // Upgraded sockets are no longer the HTTP server's to wait for.
       for (const client of wss.clients) client.terminate()
+      for (const client of relayWss.clients) client.terminate()
       wss.close()
+      relay.close()
+      relayWss.close()
       await app.close()
       await hub.shutdown()
     }

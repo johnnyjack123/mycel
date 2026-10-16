@@ -821,5 +821,81 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(withSummary('2026-10-13T20:00:41.000Z INFO  connected\n', 'h').includes('Errors and warnings: none'), 'and says so when there are none')
 }
 
+// --- a backup server's code, and a session through a relay that may lie ----------------------
+{
+  const secret = e2e.newBackupServerSecret()
+  const code = await e2e.encodeBackupServerCode(secret)
+  check(/^([0-9A-HJKMNP-TV-Z]{5}-){5}[0-9A-HJKMNP-TV-Z]{5}$/.test(code), "a backup server's code is written like a recovery code", code)
+  check(e2e.toHex((await e2e.decodeBackupServerCode(code)) ?? new Uint8Array()) === e2e.toHex(secret), 'and reads back as its secret')
+  const recovery = await e2e.encodeRecoveryCode(secret)
+  check(
+    (await e2e.decodeBackupServerCode(recovery)) === null && (await e2e.decodeRecoveryCode(code)) === null,
+    'a recovery code is no backup server code, nor the other way round'
+  )
+  const keys = await e2e.backupServerKeys(secret)
+  check(
+    keys.routeId === e2e.toHex(await e2e.sha256(keys.routeToken)) && e2e.toHex(keys.routeToken) !== e2e.toHex(keys.psk),
+    'the sync server addresses it by a hash, and the key of its sessions is another one'
+  )
+
+  // A session as it should go.
+  const { hello, pending } = await e2e.openSession()
+  const { answer, keys: backupKeys } = await e2e.answerSession(keys.psk, hello)
+  const pluginKeys = await e2e.finishSession(keys.psk, pending, answer)
+  const plugin = new e2e.SessionCipher(pluginKeys, 'plugin')
+  const backup = new e2e.SessionCipher(backupKeys, 'backup')
+  check((await backup.open(await plugin.seal('first'))) === 'first' && (await plugin.open(await backup.seal('reply'))) === 'reply', 'both ends of a session read each other')
+  check(
+    pluginKeys.transcript === backupKeys.transcript &&
+      (await e2e.sessionProof(keys.psk, 'plugin', pluginKeys.transcript)) !== (await e2e.sessionProof(keys.psk, 'backup', pluginKeys.transcript)),
+    'and each side proves the code with a proof of its own'
+  )
+
+  const refuses = async (task: () => Promise<unknown>): Promise<boolean> => task().then(() => false, () => true)
+
+  // The relay answering in the backup server's place: it does not know the code.
+  {
+    const relay = await e2e.answerSession(await e2e.hkdf(e2e.randomBytes(16), 'not the code'), hello)
+    check(await refuses(() => e2e.finishSession(keys.psk, pending, relay.answer)), 'a relay posing as the backup server is caught by its proof')
+    const swapped = await e2e.openSession()
+    const forged = { ...relay.answer, mac: answer.mac }
+    check(await refuses(() => e2e.finishSession(keys.psk, swapped.pending, forged)), "nor can it reuse the backup server's proof with a key of its own")
+  }
+
+  // The relay tampering with, replaying, reordering or reflecting messages.
+  {
+    // Fresh ends for each case, so nothing but the case itself can make a message fail.
+    const sender = (): InstanceType<typeof e2e.SessionCipher> => new e2e.SessionCipher(pluginKeys, 'plugin')
+    const receiver = (): InstanceType<typeof e2e.SessionCipher> => new e2e.SessionCipher(backupKeys, 'backup')
+    const message = await sender().seal('m0')
+    const tampered = e2e.fromBase64(message)
+    tampered[tampered.length - 1] ^= 1
+    check(
+      (await receiver().open(message)) === 'm0' && (await refuses(() => receiver().open(e2e.toBase64(tampered)))),
+      'a message changed on the way does not open'
+    )
+    const once = receiver()
+    const again = await sender().seal('m0')
+    check((await once.open(message)) === 'm0' && (await refuses(() => once.open(again))), 'a message replayed opens only once')
+    const ahead = sender()
+    await ahead.seal('m0')
+    const second = await ahead.seal('m1')
+    check(await refuses(() => receiver().open(second)), 'a message out of order does not open')
+    check(await refuses(() => new e2e.SessionCipher(pluginKeys, 'plugin').open(message)), 'nor does one sent back to its sender')
+  }
+
+  // A vault's proof is bound to the vault and the session.
+  {
+    const vaultKey = e2e.randomBytes(32)
+    const proof = await e2e.vaultControlProof(vaultKey, 'a'.repeat(32), pluginKeys.transcript)
+    check(
+      proof !== (await e2e.vaultControlProof(vaultKey, 'b'.repeat(32), pluginKeys.transcript)) &&
+        proof !== (await e2e.vaultControlProof(vaultKey, 'a'.repeat(32), 'another session')) &&
+        proof !== (await e2e.vaultControlProof(e2e.randomBytes(32), 'a'.repeat(32), pluginKeys.transcript)),
+      "a vault's proof holds for that vault, that key and that session only"
+    )
+  }
+}
+
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)
 process.exit(failures.length === 0 ? 0 : 1)

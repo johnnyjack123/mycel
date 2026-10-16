@@ -1,17 +1,18 @@
 # Progress
 
-_Last updated: 2026-10-15 · **0.6.8 merged into `main` (`feat/accounts` deleted): milestone 0.6 (recovery codes and 2FA, `docs/PHASE5.md`) built, and 0.6.8 confirmed working on the user's devices. The roadmap was reordered by the user: 0.7 the backup API, 0.8 sharing a folder and the small fixes, 0.9 hardening and a security audit, plugin sync after 1.0.0. Next: milestone 0.7 (the backup API), designed with the user first, on its own branch `feat/backup-api` from `main`.**_
+_Last updated: 2026-10-16 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - is built, 0.7.0 to 0.7.5: the sync server's backup keys, read scope and relay; the backup server (`packages/backup`, image `obsidian-connect-backup`); Settings → Backup servers. Merged into `main` once CI was green (see "Verification state"). Next: the user tries it - plugin 0.7.5, the sync server restarted, a backup server on a Linux host with Docker. The operator's encrypted backup of the data directory moved to later. 0.6.8 is the last version confirmed on the user's devices.**_
 
 ## Where we are
 
-Monorepo (`npm` workspaces): `packages/shared`, `packages/server`, `packages/plugin`.
+Monorepo (`npm` workspaces): `packages/shared`, `packages/server`, `packages/plugin`,
+`packages/backup`.
 **Read `CLAUDE.md` first** - invariants (26 of them, each from a real bug), the
 architecture, the version roadmap to 1.0.0 and the conventions. Designs:
 `docs/PHASE2.md` (keys, sharing), `docs/PHASE3.md` (accounts without names,
 contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments),
-`docs/PHASE5.md` (recovery codes, 2FA);
-`docs/SERVER.md` for running the server; `docs/CHANGELOG.md` for every version and
-how its fixes were verified.
+`docs/PHASE5.md` (recovery codes, 2FA), `docs/PHASE6.md` (the backup server);
+`docs/SERVER.md` for running the server, `docs/BACKUP.md` for a backup server;
+`docs/CHANGELOG.md` for every version and how its fixes were verified.
 
 Everything up to 0.6.8 was built on one branch, `feat/accounts`, and merged into
 `main` on 2026-10-14, which also built the Docker image for the first time (see
@@ -61,20 +62,38 @@ from other devices - the account-wide settings and the account's 2FA and recover
 code - without a restart (0.6.8, server and plugin). The user installed 0.6.8 and
 said it works as expected (2026-10-14).
 
-Next is **milestone 0.7: the backup API** - not designed yet. The direction is in
-CLAUDE.md ("Not built yet"): an encrypted form (the data directory, ciphertext
-only, behind a revocable backup token) and a decrypted one (a command-line client
-on the backup machine signs in, pulls the ciphertext and decrypts there - the
-server never holds a key), both pullable by restic on a schedule. Start the branch
-`feat/backup-api` from `main`, design it with the user (AskUserQuestion; the user
-writes German and decides product questions), write `docs/PHASE6.md`, then build in
-steps with tests, and merge when it is done.
+**Milestone 0.7: the backup server** - designed with the user on 2026-10-15
+(`docs/PHASE6.md`, the decisions at its top; the user shaped the architecture
+themselves: a server of its own, set up from the plugin through a relay, restic
+plus an optional trusted plaintext copy). Built on `feat/backup-api` in the steps
+listed at the end of `docs/PHASE6.md`: 0.7.0 the sync server's backup keys and read
+scope, 0.7.1 the run, 0.7.2 the relay and the session, 0.7.3 the plugin, 0.7.4 the
+image, 0.7.5 "Connect again…" and a fix CI's first start of the image found. Every
+version's details and checks: `docs/CHANGELOG.md`.
+
+**What the user does next** (nothing of 0.7 has been on a device yet):
+
+1. Install plugin 0.7.5 on the devices, and restart the sync server with 0.7.5 - it
+   gains the backup keys and the relay; nobody is signed out by the update. A reverse
+   proxy in front of it must pass WebSocket upgrades on `/relay` too.
+2. On a Linux host with Docker: `docker-compose.backup.yml` and `docs/backup.env` as
+   `docs/BACKUP.md` says; `docker login ghcr.io` first (the image is private like the
+   repository). Not tried yet: the image on a real host, a bind-mounted backup folder
+   owned by uid 1000, the RAM disk size, an S3/B2 location.
+3. In Obsidian: *Settings → Backup servers → Connect…* with the code, add a
+   destination, *Back up now*; then restore once with restic as `docs/BACKUP.md` shows.
+
+What only a device shows: the settings section and both dialogs, the notice, the
+WebSocket to `/relay` from Obsidian on desktop and on a phone, "Connect again…".
 
 ## Roadmap
 
 Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
-- **0.7 - the backup API.** See "Next step".
+- **0.7 - the backup server.** Built; see "Next step". Left for later, noticed while
+  building: a device's relay connection is not closed when the account's devices
+  are signed out (it reaches only backup servers whose code it has); a new code for
+  a backup server (`obsidian-connect-backup` has no command to replace it).
 - **0.8 - sharing a folder, and the small fixes.** Sharing a whole folder,
   including what is added to it later (not designed yet). Besides, every fix that
   has to be in before 0.9:
@@ -107,7 +126,8 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
   and an account. Whether to publish at all is the user's decision.
 - **1.0.0** - all of the above done and verified on devices.
 - **Later:** syncing plugins and their settings (moved back by the user; the
-  direction is in CLAUDE.md).
+  direction is in CLAUDE.md); the operator's backup of the data directory,
+  ciphertext only (moved out of 0.7 by the user on 2026-10-15).
 
 ## In flight / half-finished
 
@@ -214,11 +234,56 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
   the file Obsidian's only while the same store binds the editor again
   (`EditorSync.rebinding`); a new store has to settle against the server first.
 - The plugin id contains "obsidian", which the community directory refuses (0.9).
+- `test:recovery`'s check "carries on in the same note, and what it wrote while away
+  reaches P1" failed once on 2026-10-16 and passed in the next two runs. Its log showed
+  "Shared/Shared.md: deleted on another device, moved to the trash here" on the device
+  coming back just before. If it fails again, find out whether that move to the trash
+  is a race in the fork on return (0.8).
 - The Docker image is private, like the repository: pulling it needs `docker login
   ghcr.io` with a token that may read packages. It has passed CI's smoke test but
   has not run on a real server yet.
 
 ## Verification state
+
+restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_windows_amd64.exe`
+(the official release, checksum checked, put there with the user's consent on
+2026-10-15; nothing on the PATH). `test:backup` needs
+`OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
+It takes about three minutes here.
+
+At 0.7.4 and 0.7.5, 2026-10-16: `typecheck`, `build`, `test:merge` 163, `test:load`
+14, `test:rooms` 278, `test:backup` 91 pass (0.7.5 changes only the backup server's
+timer and the plugin's settings over 0.7.3, whose full run is below). CI on the
+branch: 0.7.4's tests green, its new `docker-backup` job built the image and found
+it ending a second after starting (fixed in 0.7.5); 0.7.5's run: see the merge.
+
+At 0.7.3, run 2026-10-16 before its commit: `typecheck` and `build` pass; `test:merge`
+163, `test:load` 14, `test:rooms` 278, `test:sync` 26, `test:account` 50, `test:backup`
+91 - all pass; `test:recovery` 56 passed twice in a row after one run in which "carries
+on in the same note, and what it wrote while away reaches P1" failed (P2 had the right
+text; the condition was not met within its 15 s). That path - a shared note whose
+owner's account was removed, and a device coming back - is untouched by 0.7; noted
+under "Known issues" to watch. Against a scratch server on 1235, `test:socket` 19 and
+`test:vault` 230 pass (the user's server on 1234 was not running, before or after).
+Not merged, not on a device.
+
+At 0.7.2, run 2026-10-16 before its commit: `typecheck` and `build` pass; `test:merge`
+163, `test:load` 14, `test:rooms` 278, `test:sync` 26, `test:recovery` 56,
+`test:account` 50, `test:backup` 76 - all pass; against a scratch server on 1235,
+`test:socket` 19 and `test:vault` 230 pass (the user's server on 1234 was not running,
+before or after). Not merged, not on a device.
+
+At 0.7.1, run 2026-10-15 before its commit: `typecheck` and `build` pass; `test:merge`
+150, `test:load` 14, `test:rooms` 268, `test:sync` 26, `test:recovery` 56,
+`test:account` 50, `test:backup` 55 - all pass; against a scratch server on 1235,
+`test:socket` 19 and `test:vault` 230 pass (the user's server on 1234 was not running,
+before or after). Not merged, not on a device.
+
+At 0.7.0, run 2026-10-15 before its commit: `typecheck` and `build` pass; `test:merge`,
+`test:load`, `test:rooms` (268), `test:sync`, `test:recovery`, `test:account` pass;
+against a scratch server on 1235, `test:socket` and `test:vault` (230) pass (the
+user's server on 1234 was not running, before or after). 0.7.0 is not merged and has
+not been on a device.
 
 At 0.6.8, run 2026-10-14 before its commit: `typecheck` and `build` pass;
 `test:merge` 150, `test:load` 14, `test:rooms` 236, `test:sync` 26, `test:recovery`
@@ -241,6 +306,19 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 ---
 
 ## Log
+
+### 2026-10-16
+- Milestone 0.7 built: 0.7.2 the relay and the session, 0.7.3 the plugin's settings,
+  0.7.4 the image, 0.7.5 "Connect again…" and the fix for a backup server that ended
+  while the sync server did not answer (found by CI's first start of the image).
+
+### 2026-10-15
+- Milestone 0.7 designed with the user. First proposed: an encrypted form for the
+  operator and a command-line client decrypting on the backup machine. The user
+  chose instead a backup server of its own, set up from the plugin through a relay
+  on the sync server, decrypting in memory into restic, with an optional trusted
+  plaintext copy; notes as a folder, attachments as a stream. Written down as
+  `docs/PHASE6.md`; the user agreed to it.
 
 ### 2026-10-14
 - The user tested 2FA in depth and found it working. Asked for, and built: 2FA off

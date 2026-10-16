@@ -4,6 +4,7 @@
 //
 //   npm run test:rooms
 import { createHash, randomBytes } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,6 +20,7 @@ import { ForkStore } from '../src/forks.js'
 import { AddressGuard, paced } from '../src/throttle.js'
 import { totpCode } from '../src/totp.js'
 import type { Frame } from '../src/log.js'
+import { Relay } from '../src/relay.js'
 import { HubError, RoomHub, type RoomClient } from '../src/rooms.js'
 
 const failures: string[] = []
@@ -1083,6 +1085,317 @@ try {
     check(expired.log === null && expired.reason === 'owner-removed', 'then it goes, and the tombstone stays', expired)
     await hub.subscribe(afterRestart, room2, 0, true)
     check(afterRestart.take()[0]?.type === 'revoked', 'still answering the share as ended')
+  }
+
+  // --- backup keys: a backup server reads one vault -------------------------------------
+  {
+    const tokens = new TokenService('rooms-selftest', 3_600)
+    const store = new BlobStore(dataDir, { maxFileBytes: 3 * BLOB_CHUNK_BYTES, quotaBytes: null, purgeGraceMs: 0 })
+    const app = createHttpApp(loadConfig({}), tokens, accounts, hub, contacts, store, { logger: false, paceMs: 0, maxFailures: 1_000 })
+    const bearer = (token: string): Record<string, string> => ({ authorization: `Bearer ${token}` })
+    const auth = async (account: string): Promise<Record<string, string>> => {
+      const stored = (await accounts.get(account)) as StoredAccount
+      return bearer((await tokens.issue(account, sessionOf(stored))).token)
+    }
+    const kimKeys = keyMaterial()
+    const kim = (await accounts.register(kimKeys, 'open')).accountId
+    const leo = (await accounts.register(keyMaterial(), 'open')).accountId
+    await contacts.pair(kim, leo)
+    const kimVault = (await accounts.addVault(kim, hexId(), b64(32), b64(48))).vaultId
+    const kimOther = (await accounts.addVault(kim, hexId(), b64(32), b64(48))).vaultId
+    const leoVault = (await accounts.addVault(leo, hexId(), b64(32), b64(48))).vaultId
+
+    const kimDevice = new Client(kim, kimVault)
+    const kimElsewhere = new Client(kim, kimOther)
+    const leoDevice = new Client(leo, leoVault)
+    for (const client of [kimDevice, kimElsewhere, leoDevice]) hub.attach(client)
+    const note = hexId()
+    const otherNote = hexId()
+    const sharedIn = hexId()
+    const sharedElsewhere = hexId()
+    const leoOnly = hexId()
+    for (const room of [`idx:${kimVault}`, `set:${kimVault}`, `doc:${note}`]) {
+      await hub.subscribe(kimDevice, room, 0)
+      await hub.push(kimDevice, room, 1, 0, bytes(`${room} 1`))
+    }
+    await hub.subscribe(kimElsewhere, `idx:${kimOther}`, 0)
+    await hub.subscribe(kimElsewhere, `doc:${otherNote}`, 0)
+    await hub.push(kimElsewhere, `doc:${otherNote}`, 1, 0, bytes('other vault'))
+    for (const [docId, into] of [
+      [sharedIn, kimVault],
+      [sharedElsewhere, kimOther]
+    ] as const) {
+      await hub.subscribe(leoDevice, `doc:${docId}`, 0)
+      await hub.push(leoDevice, `doc:${docId}`, 1, 0, bytes('from leo'))
+      await hub.share(leo, { docId, account: kim, role: 'write', withHistory: true, keys: { '0': 'sealed-for-kim' }, title: 't' })
+      await hub.accept(kim, docId, into)
+    }
+    await hub.subscribe(leoDevice, `doc:${leoOnly}`, 0)
+    await hub.push(leoDevice, `doc:${leoOnly}`, 1, 0, bytes('not shared'))
+    const tail = new Uint8Array(BLOB_CHUNK_OVERHEAD + 10).fill(4)
+    const blob = hexId()
+    const otherBlob = hexId()
+    await store.putChunk(kim, kimVault, blob, 0, 1, tail)
+    await store.putChunk(kim, kimOther, otherBlob, 0, 1, tail)
+    for (const client of [kimDevice, kimElsewhere, leoDevice]) client.take()
+
+    const make = (loginKey: string, vaultId: string, backupKey = b64(32), label = 'NAS') =>
+      app.inject({ method: 'POST', url: '/account/backup-keys', headers: undefined, payload: { loginKey, vaultId, backupKey, label } })
+    const makeAs = async (account: string, loginKey: string, vaultId: string, backupKey = b64(32), label = 'NAS') =>
+      app.inject({ method: 'POST', url: '/account/backup-keys', headers: await auth(account), payload: { loginKey, vaultId, backupKey, label } })
+    const signIn = (backupKey: string) => app.inject({ method: 'POST', url: '/auth/backup', payload: { backupKey } })
+
+    check((await make(kimKeys.loginKey, kimVault)).statusCode === 401, 'a backup key is made by a signed-in device only')
+    check((await makeAs(kim, b64(32), kimVault)).statusCode === 403, 'and with the current password, not a token alone')
+    check((await makeAs(kim, kimKeys.loginKey, leoVault)).statusCode === 403, "never for someone else's vault")
+    const backupKey = b64(32)
+    const made = await makeAs(kim, kimKeys.loginKey, kimVault, backupKey, 'NAS in the cellar')
+    const created = made.json() as { id?: string; account?: { backupKeys?: Array<{ id: string; vaultId: string; label: string }> } }
+    check(
+      made.statusCode === 200 &&
+        created.account?.backupKeys?.length === 1 &&
+        created.account.backupKeys[0]?.id === created.id &&
+        created.account.backupKeys[0]?.vaultId === kimVault &&
+        created.account.backupKeys[0]?.label === 'NAS in the cellar',
+      'with the password it is made, and the bundle lists it with its vault and label',
+      made.body
+    )
+    check(kimDevice.take().some((message) => message.type === 'notify' && message.kind === 'account-changed'), "the account's devices are told")
+    const stored = JSON.stringify((await accounts.get(kim))?.backupKeys)
+    check(!stored.includes(backupKey), 'the server keeps only its hash')
+
+    const unknown = await signIn(b64(32))
+    check(unknown.statusCode === 401 && (unknown.json() as { error?: string }).error === 'this backup key is not known here', 'an unknown backup key signs nothing in', unknown.body)
+    const signedIn = await signIn(backupKey)
+    const session = signedIn.json() as { token?: string; vaultId?: string; accountId?: string; keyId?: string }
+    check(signedIn.statusCode === 200 && session.vaultId === kimVault && session.accountId === kim && session.keyId === created.id, 'the backup key signs a backup server in, for its vault', signedIn.body)
+    const backup = bearer(session.token ?? '')
+    check(
+      typeof ((await accounts.get(kim))?.backupKeys?.[created.id ?? '']?.lastUsedAt) === 'number',
+      'and the account sees when it was last used'
+    )
+
+    const listed = await app.inject({ method: 'GET', url: '/backup/rooms', headers: backup })
+    const rooms = (listed.json() as { rooms?: Array<{ room: string; tag: string; owner: string }> }).rooms ?? []
+    check(
+      rooms.map((entry) => entry.room).sort().join() === [`idx:${kimVault}`, `set:${kimVault}`, `doc:${note}`, `doc:${sharedIn}`].sort().join(),
+      "its token lists the vault's rooms: index, settings, its notes and the notes shared into it - nothing of another vault",
+      rooms.map((entry) => entry.room)
+    )
+    check(rooms.find((entry) => entry.room === `doc:${sharedIn}`)?.owner === leo, 'with whose note each one is')
+    check((await app.inject({ method: 'GET', url: '/backup/rooms', headers: await auth(kim) })).statusCode === 403, 'a device has no use for that list')
+
+    const read = async (url: string): Promise<number> => (await app.inject({ method: 'GET', url, headers: backup })).statusCode
+    check(
+      (await read(`/log/doc:${note}`)) === 200 && (await read(`/log/idx:${kimVault}`)) === 200 && (await read(`/log/set:${kimVault}`)) === 200,
+      "it reads the vault's own rooms"
+    )
+    const keys = await app.inject({ method: 'GET', url: `/keys/doc:${sharedIn}`, headers: backup })
+    check(
+      (await read(`/log/doc:${sharedIn}`)) === 200 && (keys.json() as { keys?: Record<string, string> }).keys?.['0'] === 'sealed-for-kim',
+      'and a note shared into it, with the keys sealed to the account'
+    )
+    check(
+      (await read(`/log/doc:${otherNote}`)) === 403 &&
+        (await read(`/log/idx:${kimOther}`)) === 403 &&
+        (await read(`/log/doc:${sharedElsewhere}`)) === 403 &&
+        (await read(`/keys/doc:${sharedElsewhere}`)) === 403,
+      "nothing of the account's other vault"
+    )
+    check((await read(`/log/doc:${leoOnly}`)) === 403, 'nor anything of anyone else')
+    check(
+      (await read(`/blobs/${kim}/${kimVault}/${blob}`)) === 200 && (await read(`/blobs/${kim}/${kimVault}/${blob}/0`)) === 200,
+      "it reads the vault's files"
+    )
+    check((await read(`/blobs/${kim}/${kimOther}/${otherBlob}/0`)) === 403, "not the other vault's")
+
+    const write = async (method: 'POST' | 'PUT', url: string, payload: unknown, extra: Record<string, string> = {}): Promise<number> =>
+      (await app.inject({ method, url, headers: { ...backup, ...extra }, payload: payload as Record<string, unknown> })).statusCode
+    check(
+      (await write('POST', `/log/doc:${note}/snapshot`, { uptoSeq: 1, epoch: 0, data: 'eA==' })) === 401 &&
+        (await write('POST', `/log/doc:${note}/purge`, {})) === 401 &&
+        (await write('PUT', `/blobs/${kim}/${kimVault}/${hexId()}/0?count=1`, Buffer.from(tail), { 'content-type': 'application/octet-stream' })) === 401 &&
+        (await write('POST', `/blobs/${kim}/${kimVault}/purge`, { ids: [blob] })) === 401 &&
+        (await write('POST', '/shares/leave', { docId: sharedIn })) === 401 &&
+        (await write('POST', '/account/backup-keys', { loginKey: kimKeys.loginKey, vaultId: kimVault, backupKey: b64(32), label: 'x' })) === 401 &&
+        (await read('/account')) === 401,
+      'every route that writes refuses it, and so does the account itself'
+    )
+
+    // Fetching only what changed.
+    const tagOf = async (room: string): Promise<string | undefined> => {
+      const answer = await app.inject({ method: 'GET', url: '/backup/rooms', headers: backup })
+      return (answer.json() as { rooms: Array<{ room: string; tag: string }> }).rooms.find((entry) => entry.room === room)?.tag
+    }
+    const before = await tagOf(`doc:${note}`)
+    const untouched = await tagOf(`doc:${sharedIn}`)
+    await hub.push(kimDevice, `doc:${note}`, 2, 0, bytes('note 2'))
+    await hub.push(kimDevice, `doc:${note}`, 3, 0, bytes('note 3'))
+    kimDevice.take()
+    check((await tagOf(`doc:${note}`)) !== before && (await tagOf(`doc:${sharedIn}`)) === untouched, 'a room that changed changes its tag, the others keep theirs')
+    const logFrom = async (from: number) =>
+      (await app.inject({ method: 'GET', url: `/log/doc:${note}?from=${from}`, headers: backup })).json() as {
+        from?: number
+        snapshot: { uptoSeq: number } | null
+        frames: Array<{ seq: number }>
+      }
+    const partial = await logFrom(2)
+    check(
+      partial.from === 2 && partial.snapshot === null && partial.frames.map((frame) => frame.seq).join() === '2,3',
+      'a log from a seq answers that frame and the ones after it',
+      partial
+    )
+    const ahead = await logFrom(9)
+    check(ahead.from === undefined && ahead.frames.map((frame) => frame.seq).join() === '1,2,3', 'a seq the log does not have gets the whole log', ahead)
+    await hub.snapshot(kim, `doc:${note}`, { uptoSeq: 2, epoch: 0, data: Buffer.from('folded').toString('base64') })
+    const folded = await logFrom(2)
+    check(
+      folded.from === undefined && folded.snapshot?.uptoSeq === 2 && folded.frames.map((frame) => frame.seq).join() === '3',
+      'and so does one the compaction folded in: snapshot and frames',
+      folded
+    )
+    check((await logFrom(3)).from === 3, 'a seq after the compaction is still answered on its own')
+
+    // Ending a backup key.
+    const deleted = await app.inject({ method: 'POST', url: '/account/backup-keys/delete', headers: await auth(kim), payload: { id: created.id } })
+    check(deleted.statusCode === 200 && (deleted.json() as { backupKeys?: unknown[] }).backupKeys?.length === 0, 'a device deletes a backup key', deleted.body)
+    check((await read('/backup/rooms')) === 401 && (await read(`/log/doc:${note}`)) === 401, 'its token stops at once')
+    check((await signIn(backupKey)).statusCode === 401, 'and the key signs nothing in any more')
+
+    const second = b64(32)
+    await makeAs(kim, kimKeys.loginKey, kimVault, second)
+    const secondToken = bearer((((await signIn(second)).json()) as { token: string }).token)
+    const newLoginKey = b64(32)
+    await accounts.changePassword(kim, { loginKey: kimKeys.loginKey, newLoginKey, kdfVersion: 1, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) })
+    check(
+      (await app.inject({ method: 'GET', url: '/backup/rooms', headers: secondToken })).statusCode === 401 &&
+        (await signIn(second)).statusCode === 401 &&
+        accounts.bundle((await accounts.get(kim)) as StoredAccount).backupKeys?.length === 0,
+      'a password change ends every backup key, tokens handed out included'
+    )
+
+    const third = b64(32)
+    await makeAs(kim, newLoginKey, kimVault, third)
+    check((await signIn(third)).statusCode === 200, 'a new one works after it')
+    const recoveryKey = b64(32)
+    await accounts.setRecovery(kim, newLoginKey, { recoveryKey, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) })
+    await accounts.recover({
+      recoveryKey,
+      newLoginKey: b64(32),
+      kdfVersion: 1,
+      wrappedPrivateKey: b64(64),
+      wrappedAccountSecret: b64(48),
+      recovery: { recoveryKey: b64(32), wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) }
+    })
+    check((await signIn(third)).statusCode === 401, 'a recovery ends them too')
+
+    const monaKeys = keyMaterial()
+    const mona = (await accounts.register(monaKeys, 'open')).accountId
+    const monaVault = (await accounts.addVault(mona, hexId(), b64(32), b64(48))).vaultId
+    const monaKey = b64(32)
+    await accounts.addBackupKey(mona, monaKeys.loginKey, monaVault, monaKey, 'x')
+    check((await accounts.findBackupKey(monaKey))?.account.accountId === mona, 'a key is found by itself alone')
+    await accounts.remove(mona)
+    check((await accounts.findBackupKey(monaKey)) === null, 'and removing the account ends its keys')
+
+    for (const client of [kimDevice, kimElsewhere, leoDevice]) hub.detach(client)
+    await app.close()
+  }
+
+  // --- the relay between devices and backup servers ---------------------------------------
+  {
+    class FakeSocket extends EventEmitter {
+      readonly OPEN = 1
+      readyState = 1
+      sent: Array<Record<string, unknown>> = []
+      closedWith: { code?: number; reason?: string } | null = null
+      send(data: string): void {
+        this.sent.push(JSON.parse(data) as Record<string, unknown>)
+      }
+      close(code?: number, reason?: string): void {
+        if (this.readyState !== 1) return
+        this.readyState = 3
+        this.closedWith = { code, reason }
+        this.emit('close')
+      }
+      terminate(): void {
+        this.close()
+      }
+      say(frame: unknown): void {
+        this.emit('message', Buffer.from(JSON.stringify(frame)))
+      }
+      take(): Array<Record<string, unknown>> {
+        return this.sent.splice(0)
+      }
+    }
+    const relay = new Relay({ sessionsPerDevice: 2, backupsPerAddress: 2, registerMs: 50 })
+    const socket = (): FakeSocket => new FakeSocket()
+    const as = (fake: FakeSocket): never => fake as never
+    const token = randomBytes(32)
+    const route = createHash('sha256').update(token).digest('hex')
+
+    const backup = socket()
+    relay.attachBackup(as(backup), '192.0.2.10')
+    backup.say({ t: 'register', token: token.toString('base64') })
+    check(backup.take()[0]?.route === route, 'a backup server registers under the hash of its token')
+
+    const device = socket()
+    relay.attachDevice(as(device), alice, '192.0.2.20')
+    device.say({ t: 'open', route: createHash('sha256').update(randomBytes(32)).digest('hex'), ref: 1 })
+    check(device.take()[0]?.error === 'the backup server is not connected', 'a route nobody registered opens nothing')
+    device.say({ t: 'open', route, ref: 2 })
+    const opened = device.take()[0]
+    const session = opened?.s as number
+    check(opened?.t === 'opened' && opened.ref === 2 && backup.take()[0]?.s === session, 'a device opens a session, and the backup server hears of it')
+    device.say({ t: 'data', s: session, d: 'sealed for the backup server' })
+    backup.say({ t: 'data', s: session, d: 'sealed for the device' })
+    check(
+      backup.take()[0]?.d === 'sealed for the backup server' && device.take()[0]?.d === 'sealed for the device',
+      'frames go both ways as they are'
+    )
+
+    const stranger = socket()
+    relay.attachDevice(as(stranger), bob, '192.0.2.30')
+    stranger.say({ t: 'data', s: session, d: 'injected' })
+    const otherBackup = socket()
+    relay.attachBackup(as(otherBackup), '192.0.2.11')
+    otherBackup.say({ t: 'register', token: randomBytes(32).toString('base64') })
+    otherBackup.take()
+    otherBackup.say({ t: 'data', s: session, d: 'injected' })
+    check(backup.take().length === 0 && device.take().length === 0, "nobody writes into someone else's session")
+
+    device.say({ t: 'open', route, ref: 3 })
+    device.say({ t: 'open', route, ref: 4 })
+    check(device.take().at(-1)?.error === 'too many sessions', 'a device holds only so many sessions at once')
+    backup.take()
+
+    const again = socket()
+    relay.attachBackup(as(again), '192.0.2.10')
+    again.say({ t: 'register', token: token.toString('base64') })
+    check(
+      again.take()[0]?.route === route && backup.closedWith?.code === 4409 && device.take().some((frame) => frame.t === 'close' && frame.s === session),
+      'the backup server connecting again replaces its old connection, whose sessions end'
+    )
+
+    const silent = socket()
+    relay.attachBackup(as(silent), '192.0.2.12')
+    await delay(80)
+    check(silent.closedWith?.code === 4400, 'a backup server that does not register is let go')
+
+    for (let n = 0; n < 2; n += 1) {
+      const crowd = socket()
+      relay.attachBackup(as(crowd), '192.0.2.99')
+      crowd.say({ t: 'register', token: randomBytes(32).toString('base64') })
+    }
+    const third = socket()
+    relay.attachBackup(as(third), '192.0.2.99')
+    third.say({ t: 'register', token: randomBytes(32).toString('base64') })
+    check(third.closedWith?.code === 4429, 'an address registers only so many backup servers')
+
+    again.close()
+    device.say({ t: 'open', route, ref: 5 })
+    check(device.take().at(-1)?.error === 'the backup server is not connected', 'a backup server that went is no longer reachable')
+    relay.close()
   }
   await hub.shutdown()
   await delay(10)

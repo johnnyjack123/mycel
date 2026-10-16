@@ -136,7 +136,7 @@ export interface AuthConfigResponse {
   features?: ServerFeature[]
 }
 
-export type ServerFeature = 'recovery' | 'totp'
+export type ServerFeature = 'recovery' | 'totp' | 'backup'
 
 /**
  * The answer to the right login key of an account with two-factor sign-in
@@ -251,6 +251,215 @@ export interface AccountBundle {
   recovery?: { createdAt: number } | null
   /** Whether signing in asks for a code from an authenticator app. */
   totp?: boolean
+  /** The account's backup keys. Absent from a server before 0.7. */
+  backupKeys?: BackupKeyInfo[]
+}
+
+// --- backup keys -------------------------------------------------------------------
+//
+// A backup server reads one vault with a key of its own: the server keeps only
+// its hash, and a token signed in with it reads that vault and writes nothing.
+
+export interface BackupKeyInfo {
+  id: string
+  vaultId: string
+  /** What the person called the backup server it is for. */
+  label: string
+  createdAt: number
+  /** When a backup server last signed in with it. */
+  lastUsedAt?: number
+}
+
+export interface BackupKeyRequest {
+  /** Proves the current password: a token alone must not hand out a vault. */
+  loginKey: string
+  vaultId: string
+  /** 32 random bytes, base64; the server keeps only the hash. */
+  backupKey: string
+  label: string
+}
+
+export interface BackupKeyCreated {
+  id: string
+  account: AccountBundle
+}
+
+export interface BackupKeyDeleteRequest {
+  id: string
+}
+
+export interface BackupLoginRequest {
+  backupKey: string
+}
+
+export interface BackupSessionResponse {
+  /** Reads the vault and nothing else; short-lived, signed in for again with the key. */
+  token: string
+  expiresIn: number
+  accountId: string
+  vaultId: string
+  keyId: string
+}
+
+/** One room of the vault, and what tells whether it changed. */
+export interface BackupRoom {
+  room: string
+  /** The room's owner: the account itself, or whoever shared the note into the vault. */
+  owner: string
+  epoch: number
+  compactedUpTo: number
+  /** Changes whenever the room's log does; nothing to read from it. */
+  tag: string
+}
+
+export interface BackupRoomsResponse {
+  vaultId: string
+  rooms: BackupRoom[]
+}
+
+/** How many snapshots restic keeps by each rule; a rule left out keeps none by it. */
+export interface KeepPolicy {
+  last?: number
+  hourly?: number
+  daily?: number
+  weekly?: number
+  monthly?: number
+  yearly?: number
+}
+
+// The vault's backup settings live in its account-wide settings document, one
+// entry per key, so every device sees and changes them and the backup server
+// reads them with its backup key.
+
+/** `backupServer:<routeId>`: a backup server the vault is connected to. */
+export interface BackupServerSetting {
+  routeId: string
+  /** The backup server's code: every device of the account reaches it with it. */
+  code: string
+  label: string
+  /** Its backup key on the sync server, which any device deletes when disconnecting it. */
+  keyId: string
+  addedAt: number
+}
+
+/** `backupTarget:<id>`: where one backup server puts the vault. */
+export interface BackupTargetSetting {
+  id: string
+  /** The backup server's route id. */
+  server: string
+  /** `restic`: a repository; `trusted`: the decrypted copy of the newest version. */
+  kind: 'restic' | 'trusted'
+  /** A path on the backup server below its backup folder, or a restic location such as `s3:…`. */
+  location: string
+  /** The repository's password; restic only. */
+  password?: string
+  /** Credentials the location needs, e.g. `AWS_ACCESS_KEY_ID`. */
+  env?: Record<string, string>
+  keep?: KeepPolicy
+  addedAt: number
+}
+
+/** `backupSchedule:<routeId>`: how often that backup server backs the vault up on its own. */
+export interface BackupScheduleSetting {
+  server: string
+  /** 0: only when started by hand. */
+  everyHours: number
+}
+
+export const BACKUP_SERVER_KEY = 'backupServer:'
+export const BACKUP_TARGET_KEY = 'backupTarget:'
+export const BACKUP_SCHEDULE_KEY = 'backupSchedule:'
+
+/**
+ * Frames on the sync server's `/relay`, JSON. The sync server numbers each
+ * session (`s`) and forwards its data (`d`) without reading it: inside is a
+ * session between a device and a backup server, encrypted end to end.
+ */
+export type RelayFrame =
+  /** backup server -> sync server: the route token derived from its code. */
+  | { t: 'register'; token: string }
+  | { t: 'registered'; route: string }
+  /** device -> sync server: a session to that backup server; `ref` matches the answer. */
+  | { t: 'open'; route: string; ref: number }
+  | { t: 'opened'; ref: number; s: number }
+  /** sync server -> backup server: someone opened a session. */
+  | { t: 'incoming'; s: number }
+  | { t: 'data'; s: number; d: string }
+  | { t: 'close'; s: number; reason?: string }
+  | { t: 'error'; error: string; ref?: number }
+
+/** What a backup server tells about itself. */
+export interface BackupServerInfo {
+  /** What the backup server is called, set where it runs. */
+  name: string
+  version: string
+  restic: string
+  /** The folder local paths are taken below. */
+  root: string
+  /** Free space there, in bytes, when the system says. */
+  free?: number
+}
+
+/** A destination's outcome in a run; see the backup server's report. */
+export interface BackupDestinationStatus {
+  id: string
+  ok: boolean
+  notesSnapshot?: string
+  filesSnapshot?: string
+  filesUnchanged?: boolean
+  checked?: 'quick' | 'deep'
+  error?: string
+}
+
+export interface BackupRunStatus {
+  startedAt: number
+  finishedAt: number
+  ok: boolean
+  error?: string
+  accessEnded?: boolean
+  notes: number
+  files: number
+  problems: string[]
+  destinations: BackupDestinationStatus[]
+  trusted?: { ok: boolean; held?: string; written?: number; deleted?: number; kept?: number; error?: string }
+}
+
+/** One vault on a backup server, as its owner's devices see it. */
+export interface BackupVaultStatus {
+  vaultId: string
+  running: boolean
+  /** When the schedule runs it next; null without one. */
+  nextRunAt: number | null
+  /** The destinations (`backupTarget` ids) the backup server takes from the settings. */
+  targets: string[]
+  /** Every destination for this backup server it found in the settings, taken or not. */
+  seen: string[]
+  /** The schedule as it read it; 0 for none. */
+  everyHours: number
+  /** Settings the backup server cannot use, and why. */
+  problems: string[]
+  /** Newest first. */
+  runs: BackupRunStatus[]
+}
+
+/**
+ * Everything a backup server needs to read and decrypt one vault, handed over
+ * by a device of the account - never through the sync server in the clear.
+ * Byte values are base64.
+ */
+export interface BackupGrant {
+  /** The sync server, as the device reaches it (`ws(s)://` or `http(s)://`). */
+  server: string
+  accountId: string
+  vaultId: string
+  vaultName: string
+  vaultKey: string
+  /** The account's key pair: notes others share are sealed to it. */
+  publicKey: string
+  /** PKCS#8. */
+  privateKey: string
+  backupKey: string
+  keyId: string
 }
 
 export interface SessionResponse {
@@ -493,6 +702,12 @@ export interface LogResponse {
   headSeq: number
   snapshot: LogSnapshot | null
   frames: LogFrame[]
+  /**
+   * Asked `?from=` a seq whose frame is still there: only the frames from it on,
+   * that one included, so the caller can tell its log is this one. Absent: the
+   * whole readable part, snapshot and all.
+   */
+  from?: number
 }
 
 export interface SnapshotRequest {

@@ -40,6 +40,10 @@ sees how many there are and how large, never a name or a byte of them.
 `contacts.json` holds the contact pairs, open friend codes (as a hash) and messages
 waiting for a device; without it, contacts would have to exchange codes again.
 
+Backups of the notes themselves - decrypted, in restic repositories - are what a
+backup server is for, which every account sets up for its own vaults: `docs/BACKUP.md`.
+The sync server only relays to it (`/relay`) and hands it a read-only key.
+
 **Back up the whole volume, and keep `server.json` with `accounts.json`.** It holds
 the server's id, which is part of every account's salt: a server with another id opens
 no account, even with the right name and password.
@@ -63,7 +67,7 @@ A template sits in `docs/server.env`:
 
 ```bash
 docker compose exec obsidian-connect obsidian-connect invite                    # a code for one new account
-docker compose exec obsidian-connect obsidian-connect user list                 # account ids, created, vaults, recovery code, 2fa
+docker compose exec obsidian-connect obsidian-connect user list                 # account ids, created, vaults, recovery code, 2fa, backup keys
 docker compose exec obsidian-connect obsidian-connect user remove <accountId>
 docker compose exec obsidian-connect obsidian-connect user 2fa-off <accountId>  # a lost phone, no recovery code
 ```
@@ -108,7 +112,9 @@ startup — fine on a laptop, never on a reachable server. `HOST` defaults to
 `0.0.0.0`.
 
 Put TLS in front of it (a reverse proxy) as soon as it leaves your own network:
-the notes are encrypted either way, but the access token is not. Let the proxy pass
+the notes are encrypted either way, but the access token is not. The proxy has to
+pass WebSocket upgrades on `/vault/…` (the devices) and `/relay` (backup servers,
+and devices talking to them). Let the proxy pass
 request bodies of at least 8 MB - attachments travel in chunks of 4 MB, and nginx
 refuses anything over 1 MB unless told otherwise (`client_max_body_size 64m;`, which
 also covers large note snapshots).

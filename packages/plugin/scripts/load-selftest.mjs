@@ -6,7 +6,7 @@
 //   npm run build:plugin && npm run test:load -w @obsidian-connect/plugin
 import Module from 'node:module'
 import { createRequire } from 'node:module'
-import { copyFileSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -331,12 +331,15 @@ if (exported) {
   const read = (path) => JSON.parse(readFileSync(join(here, '..', path), 'utf8'))
   const manifest = read('manifest.json')
   const versions = read('versions.json')
-  const pkg = read('package.json')
   const root = JSON.parse(readFileSync(join(here, '..', '..', '..', 'package.json'), 'utf8'))
+  const packages = join(here, '..', '..')
+  const others = readdirSync(packages)
+    .filter((name) => existsSync(join(packages, name, 'package.json')))
+    .map((name) => `${name} ${JSON.parse(readFileSync(join(packages, name, 'package.json'), 'utf8')).version}`)
   check(
-    manifest.version === pkg.version && manifest.version === root.version,
-    'manifest and packages carry the same version',
-    `${manifest.version} / ${pkg.version} / ${root.version}`
+    manifest.version === root.version && others.every((entry) => entry.endsWith(` ${manifest.version}`)),
+    'manifest and every package carry the same version',
+    `${manifest.version} / root ${root.version} / ${others.join(', ')}`
   )
   check(versions[manifest.version] === manifest.minAppVersion, 'and versions.json knows it', manifest.version)
 }

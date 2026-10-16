@@ -5,6 +5,9 @@ import {
   type AccountKeyResponse,
   type AttachBlobsRequest,
   type AuthConfigResponse,
+  type BackupKeyCreated,
+  type BackupKeyDeleteRequest,
+  type BackupKeyRequest,
   type BlobHaveResponse,
   type BlobIdsRequest,
   type BlobInfo,
@@ -172,6 +175,15 @@ export class ConnectApi {
 
   account(): Promise<AccountBundle> {
     return this.call('GET', API.account)
+  }
+
+  createBackupKey(request: BackupKeyRequest): Promise<BackupKeyCreated> {
+    return this.call('POST', API.backupKeys, request)
+  }
+
+  deleteBackupKey(id: string): Promise<AccountBundle> {
+    const request: BackupKeyDeleteRequest = { id }
+    return this.call('POST', `${API.backupKeys}/delete`, request)
   }
 
   createVault(request: CreateVaultRequest): Promise<VaultRecord> {

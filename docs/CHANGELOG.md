@@ -6,6 +6,103 @@ verified. `docs/PROGRESS.md` holds only the current state.
 "Checked by putting the bug back" means: the old behaviour was restored in the source,
 the suite run, the new checks seen failing (and nothing else), the fix restored.
 
+## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
+
+- **0.7.5** (2026-10-16) - a backup server whose key ended - a password change while it
+  could not be reached - or which lost what it knew of the vault shows "Connect
+  again…" in the settings: the code is filled in, the password gives it a new key,
+  its destinations stay. Before, it had to be disconnected and connected anew. Only
+  for a device to see; `test:backup` covers the connecting again underneath (0.7.3).
+  And a fix CI's first start of the image found: with the sync server not answering,
+  the backup server ended quietly a second after starting - between two attempts
+  nothing kept the process alive (every timer was unref'd, and waiting for a signal
+  does not count). The schedule's timer now does. Checked by CI's smoke test, which
+  failed on 0.7.4 with "the backup server stopped".
+
+- **0.7.4** (2026-10-16) - the backup server as an image, `obsidian-connect-backup`
+  (`Dockerfile.backup`: restic 0.19.1 from its release, checked per architecture,
+  amd64 and arm64), with `docker-compose.backup.yml` (the data volume, the backup
+  folder, the RAM disk) and `docs/backup.env`; `docs/BACKUP.md` for running it,
+  setting it up in Obsidian and restoring with restic. CI's new `docker-backup` job
+  builds and starts the image on every push - restic runs, the code is made and kept
+  in the data volume as the unprivileged user, the server keeps running when the sync
+  server does not answer - and publishes it from `main`. The backup server logs when
+  it cannot reach the sync server. Milestone 0.7 is built.
+
+- **0.7.3** (2026-10-16) - backups in the plugin's settings. *Settings → Backup
+  servers*: connect one with its code and the password, add destinations - a restic
+  repository (a folder below the backup server's backup folder or a cloud location,
+  its password made on request, credentials, how long backups are kept) or the
+  trusted copy -, each checked by the backup server before it is saved; choose how
+  often; start a backup; see how the last one went per destination; let a waiting
+  trusted copy follow; disconnect (from any device, which deletes its key). A
+  password change and a recovery give every backup server a new key at once. A notice
+  when a backup failed, the trusted copy waits, or there has been no good backup for
+  twice the schedule - also when the backup server cannot be reached. A command backs
+  up on every backup server. `test:backup` 91: the settings' side against a real
+  backup server - connected, a repository made, a folder outside refused before it
+  is saved, the schedule, a run, a password change ending the key and the device that
+  made it handing out a new one, another device of the account seeing and
+  disconnecting it. The dialogs, the settings section and the notice are for a device.
+
+- **0.7.2** (2026-10-15) - the backup server reachable from a device, through the sync
+  server; no settings screen yet (0.7.3). The sync server has a relay (`/relay`): a
+  backup server registers under the hash of a token from its code, a signed-in device
+  opens a session to it, and the frames pass unread. The backup server makes its code
+  on its first start (`npm run start:backup`, or `obsidian-connect-backup code`). The
+  session's key depends on the code, which never travels: the backup server proves it
+  knows the code before the device says anything but an ephemeral key, and the device
+  proves it in turn (`shared/crypto.ts`). Over the session a device connects a vault
+  (the grant), checks a destination, starts a run and hears how it went, asks the
+  status, disconnects; everything about a connected vault needs that vault's key
+  shown for the session. The backup server reads where to back up from the vault's
+  settings (`backupTarget:`, `backupSchedule:`), keeps local folders below its backup
+  folder and out of other vaults' folders, and runs on its schedule. `test:merge` 163
+  (the code, the handshake against a relay posing as the backup server, messages
+  tampered with, replayed, reordered, reflected), `test:rooms` 278 (the relay),
+  `test:backup` 76 (a backup server in the process, reached with its code: a wrong
+  code reaches nothing, someone who knows only the route is turned away, another
+  account can neither see nor start nor claim the vault nor write into its folder,
+  the schedule, disconnecting). Checked by taking three protections out - the vault
+  shown per session, the vault's proof, other vaults' folders -: exactly their four
+  checks failed.
+
+- **0.7.1** (2026-10-15) - the backup run, in a new package `packages/backup`; not
+  reachable from the plugin yet (that comes with the relay, 0.7.2, and the settings,
+  0.7.3). A device grants a backup server one vault (`Session.makeBackupGrant`: a
+  backup key and the vault's keys); a run fetches what changed into an encrypted cache,
+  decides from the index what the backup holds - the vault, the trash, the settings
+  without contacts -, lays the notes and canvases out in a RAM disk for restic and
+  streams the attachments to it as a tar, per destination, checks the snapshots back,
+  and brings the trusted copy level (details under "As built (0.7.1)" in
+  `docs/PHASE6.md`). New `test:backup` (55, with a real restic 0.19.1; CI installs it):
+  restored with restic and the system's tar, the vault is all there; a run without
+  changes fetches nothing and makes no files snapshot; `restic diff` names exactly the
+  notes that changed; a deleted note moves to the backup's trash; the trusted copy
+  follows and waits when half the vault vanishes; a sync server restored from an old
+  copy is noticed and its note backed up whole; a deleted backup key ends the backups.
+  Checked by taking three protections out at once - restic killed before a failing
+  stream ends, the trusted copy waiting, the frame compared at a partial fetch -: their
+  checks failed (plus one that follows from the third), nothing else. `test:load` now
+  compares the version of every package, not only the plugin's.
+
+- **0.7.0** (2026-10-15) - the sync server's side of backups; nothing for the user to
+  see yet. A **backup key** reads one vault: made by a signed-in device with the
+  current password (`POST /account/backup-keys`), listed in the account bundle,
+  deleted from a device (`/delete`), and ended with every other by a password change,
+  a recovery and the account's removal. `POST /auth/backup` signs a backup server in
+  with it (paced and guarded like a sign-in) and answers a token of scope `backup`,
+  valid an hour: it reads the vault's index, settings, notes - its own and those
+  shared into it - their sealed keys and the vault's blobs, and nothing else; every
+  route that writes refuses it, and the key is looked up on every request, so deleting
+  it ends its tokens at once. For fetching only what changed: `GET /backup/rooms` (the
+  vault's rooms with a tag that changes with the log, from the metadata and the log's
+  size - no log loaded) and `GET /log/:room?from=<seq>` (the frames from that seq on,
+  that frame included, while it is still there; the whole log otherwise). `/auth/config`
+  names the feature `backup`; `user list` counts backup keys. `test:rooms` 268 (32
+  new). Checked by taking the protections out: without the vault check on reading
+  routes, and without a password change ending the keys, exactly their checks failed.
+
 ## 0.6 - recovery codes and two-factor sign-in (from 2026-10-12, spec `docs/PHASE5.md`)
 
 - **0.6.8** (2026-10-14) - an open settings tab shows what changed on another device,

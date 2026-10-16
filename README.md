@@ -8,8 +8,9 @@ and lets you share single notes with other people for live editing with cursors,
 in Obsidian's own editor. The server you run only ever sees ciphertext. See
 `CLAUDE.md` for the architecture, `docs/PHASE2.md` for keys and sharing,
 `docs/PHASE3.md` for accounts without names, contacts, the end of a share and
-surviving the server, `docs/PHASE4.md` for attachments, `docs/SERVER.md` for
-running the server and `docs/CHANGELOG.md` for what each version changed.
+surviving the server, `docs/PHASE4.md` for attachments, `docs/PHASE6.md` for the
+backup server, `docs/SERVER.md` for running the server, `docs/BACKUP.md` for
+running a backup server and `docs/CHANGELOG.md` for what each version changed.
 
 ## Requirements
 
@@ -46,6 +47,16 @@ The running server accepts the code at once. Server and CLI keep their data in
 `packages/server/data` - set `OBSIDIAN_CONNECT_DATA_DIR` for both, or neither.
 The other account commands work the same way: `npm run cli -- user list`,
 `npm run cli -- user remove <accountId>`.
+
+## Back up a vault
+
+A backup server of your own (`ghcr.io/johnnyjack123/obsidian-connect-backup`, next
+to `docker-compose.backup.yml`) pulls a vault, decrypts it in its memory and keeps
+it in restic repositories - a disk, a NAS, a cloud -, every backup for as long as you
+choose, and optionally a decrypted copy of the newest version. It reads and never
+writes, needs no port of its own, and is set up entirely from the plugin's settings
+with the code it shows when it starts. `docs/BACKUP.md` has the details, restoring
+included.
 
 ## Build the plugin
 

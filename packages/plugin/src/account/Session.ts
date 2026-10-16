@@ -1,4 +1,11 @@
-import type { AccountBundle, AuthConfigResponse, RecoveryRecord, SecondFactorRequired, SessionResponse } from '@obsidian-connect/shared'
+import type {
+  AccountBundle,
+  AuthConfigResponse,
+  BackupGrant,
+  RecoveryRecord,
+  SecondFactorRequired,
+  SessionResponse
+} from '@obsidian-connect/shared'
 import {
   CURRENT_KDF_VERSION,
   KDF_VERSIONS,
@@ -250,6 +257,36 @@ export class Session {
   async deleteRecoveryCode(unlocked: Unlocked, password: string): Promise<Unlocked> {
     const bundle = await this.api.deleteRecovery({ loginKey: await this.currentLoginKey(unlocked, password) })
     return this.withBundle(unlocked, bundle)
+  }
+
+  /**
+   * A backup key for one vault, and everything a backup server needs to read
+   * and decrypt it. The grant holds the vault key and the account's private
+   * key: it goes to the backup server inside an encrypted session and nowhere
+   * else.
+   */
+  async makeBackupGrant(unlocked: Unlocked, password: string, vault: OpenVault, label: string): Promise<{ unlocked: Unlocked; grant: BackupGrant }> {
+    const loginKey = await this.currentLoginKey(unlocked, password)
+    const backupKey = toBase64(randomBytes(32))
+    const created = await this.api.createBackupKey({ loginKey, vaultId: vault.vaultId, backupKey, label })
+    const privateKey = await unwrapSecret(unlocked.masterKey, unlocked.bundle.wrappedPrivateKey, PRIVATE_KEY)
+    const grant: BackupGrant = {
+      server: this.serverUrl(),
+      accountId: unlocked.accountId,
+      vaultId: vault.vaultId,
+      vaultName: vault.name,
+      vaultKey: toBase64(vault.key),
+      publicKey: toBase64(unlocked.publicKey),
+      privateKey: toBase64(privateKey),
+      backupKey,
+      keyId: created.id
+    }
+    return { unlocked: this.withBundle(unlocked, created.account), grant }
+  }
+
+  /** Takes a backup server's access away; the signed-in device is enough for that. */
+  async deleteBackupKey(unlocked: Unlocked, keyId: string): Promise<Unlocked> {
+    return this.withBundle(unlocked, await this.api.deleteBackupKey(keyId))
   }
 
   /**

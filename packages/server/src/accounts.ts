@@ -47,6 +47,17 @@ export interface StoredAccount {
   recovery?: StoredRecovery
   /** Two-factor sign-in, when it is on. */
   totp?: StoredTotp
+  /** Backup keys, by id: each reads one vault for a backup server. */
+  backupKeys?: Record<string, StoredBackupKey>
+}
+
+export interface StoredBackupKey {
+  /** sha256 of the key. */
+  hash: string
+  vaultId: string
+  label: string
+  createdAt: number
+  lastUsedAt?: number
 }
 
 export interface StoredTotp {
@@ -80,6 +91,8 @@ interface AccountFile {
   logins: Record<string, string>
   /** Recovery hash -> account id: a code alone finds its account, no name needed. */
   recoveries: Record<string, string>
+  /** Backup key hash -> whose key it is. */
+  backupLogins: Record<string, { account: string; id: string }>
   /** sha256 of an invite code -> the invite. Consumed by registering. */
   invites: Record<string, StoredInvite>
   /**
@@ -126,7 +139,20 @@ function newInviteCode(): string {
 }
 
 function empty(): AccountFile {
-  return { accounts: {}, logins: {}, recoveries: {}, invites: {}, removed: {} }
+  return { accounts: {}, logins: {}, recoveries: {}, backupLogins: {}, invites: {}, removed: {} }
+}
+
+/** Plenty for a few backup servers per vault; a bound on what a token can pile up. */
+const MAX_BACKUP_KEYS = 32
+const MAX_LABEL = 100
+
+/**
+ * Ends every backup key of the account, as a password change or a recovery
+ * signs out every other device: a key made with a stolen password goes too.
+ */
+function dropBackupKeys(data: AccountFile, account: StoredAccount): void {
+  for (const key of Object.values(account.backupKeys ?? {})) delete data.backupLogins[key.hash]
+  delete account.backupKeys
 }
 
 /** A recovery code as the device sent it, checked, or why not. */
@@ -348,6 +374,7 @@ export class AccountStore {
       // Whoever signed in with the old password keeps the account secret, but
       // not the server: their token stops working here.
       account.sessions = sessionOf(account) + 1
+      dropBackupKeys(data, account)
       return account
     })
   }
@@ -431,7 +458,70 @@ export class AccountStore {
       account.wrappedPrivateKey = request.wrappedPrivateKey
       account.wrappedAccountSecret = request.wrappedAccountSecret
       account.sessions = sessionOf(account) + 1
+      dropBackupKeys(data, account)
       return account
+    })
+  }
+
+  // --- backup keys -------------------------------------------------------------
+
+  /**
+   * A key a backup server reads one vault with. Needs the current password, as
+   * a recovery code does: a token alone - it travels in the socket URL - must
+   * not hand out a vault for good.
+   */
+  addBackupKey(accountId: string, loginKey: unknown, vaultId: unknown, backupKey: unknown, label: unknown, now = Date.now()): Promise<string> {
+    const current = decoded(loginKey, 32)
+    const key = decoded(backupKey, 32)
+    if (!current) return Promise.reject(new AccountError(400, 'the login key is missing'))
+    if (!key) return Promise.reject(new AccountError(400, 'the backup key is missing'))
+    if (!isAccountId(vaultId)) return Promise.reject(new AccountError(400, 'not a vault id'))
+    if (typeof label !== 'string' || label.length > MAX_LABEL) return Promise.reject(new AccountError(400, 'the label is missing or too long'))
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account || account.loginHash !== loginHash(current)) throw new AccountError(403, 'the current password is wrong')
+      if (!account.vaults[vaultId]) throw new AccountError(403, 'not your vault')
+      const keys = (account.backupKeys ??= {})
+      if (Object.keys(keys).length >= MAX_BACKUP_KEYS) throw new AccountError(409, 'too many backup keys; delete one first')
+      const hash = loginHash(key)
+      // 256 random bits do not collide: this one was sent twice.
+      if (data.backupLogins[hash]) throw new AccountError(409, 'make another backup key')
+      const id = randomBytes(8).toString('hex')
+      keys[id] = { hash, vaultId, label: label.trim(), createdAt: now }
+      data.backupLogins[hash] = { account: accountId, id }
+      return id
+    })
+  }
+
+  /** Removing one only takes access away, so the signed-in device is enough. */
+  deleteBackupKey(accountId: string, id: unknown): Promise<StoredAccount> {
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account) throw new AccountError(401, 'unknown account')
+      const key = typeof id === 'string' ? account.backupKeys?.[id] : undefined
+      if (key && account.backupKeys) {
+        delete data.backupLogins[key.hash]
+        delete account.backupKeys[id as string]
+      }
+      return account
+    })
+  }
+
+  /** The account and key a backup key opens, or null - never why. */
+  async findBackupKey(backupKey: unknown): Promise<{ account: StoredAccount; id: string; key: StoredBackupKey } | null> {
+    const key = decoded(backupKey, 32)
+    if (!key) return null
+    const data = await this.load()
+    const found = data.backupLogins[loginHash(key)]
+    const account = found ? data.accounts[found.account] : undefined
+    const stored = found ? account?.backupKeys?.[found.id] : undefined
+    return account && stored && found ? { account, id: found.id, key: stored } : null
+  }
+
+  async touchBackupKey(accountId: string, id: string, now = Date.now()): Promise<void> {
+    await this.update((data) => {
+      const key = data.accounts[accountId]?.backupKeys?.[id]
+      if (key) key.lastUsedAt = now
     })
   }
 
@@ -511,6 +601,7 @@ export class AccountStore {
       if (!account) return false
       delete data.logins[account.loginHash]
       if (account.recovery) delete data.recoveries[account.recovery.hash]
+      dropBackupKeys(data, account)
       delete data.accounts[accountId]
       data.removed[accountId] = now
       return true
@@ -542,7 +633,10 @@ export class AccountStore {
         wrappedKey: vault.wrappedKey
       })),
       recovery: account.recovery ? { createdAt: account.recovery.createdAt } : null,
-      totp: Boolean(account.totp)
+      totp: Boolean(account.totp),
+      backupKeys: Object.entries(account.backupKeys ?? {})
+        .map(([id, key]) => ({ id, vaultId: key.vaultId, label: key.label, createdAt: key.createdAt, lastUsedAt: key.lastUsedAt }))
+        .sort((a, b) => a.createdAt - b.createdAt)
     }
   }
 }

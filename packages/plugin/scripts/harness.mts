@@ -47,6 +47,8 @@ const { EditorSync } = await import('../src/editor/EditorSync.js')
 const { Sharing } = await import('../src/share/Sharing.js')
 const { SharedFiles } = await import('../src/share/SharedFiles.js')
 const { Contacts } = await import('../src/share/Contacts.js')
+const { openBackupSession } = await import('../src/backup/BackupLink.js')
+const { Backups } = await import('../src/backup/Backups.js')
 const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
 )
@@ -201,6 +203,7 @@ export class Device {
     this.unlocked = unlocked
     this.accountId = unlocked.accountId
     const openVault = await this.session.openVault(unlocked, VAULT)
+    this.openedVault = openVault
     const keys = new KeyRing(openVault, unlocked, this.api, this.secrets)
     const vault = this.vault
     // Leaves showing files that are not notes - a canvas, a PDF - as far as
@@ -382,6 +385,53 @@ export class Device {
     this.unlocked = await this.session.deleteRecoveryCode(this.unlocked, password)
   }
 
+  /** What connecting a backup server does on the device: a backup key for this vault, and the grant it hands over. */
+  async makeBackupGrant(label = 'backup server', password = this.password): Promise<import('@obsidian-connect/shared').BackupGrant> {
+    if (!this.unlocked) throw new Error('not signed in')
+    const vault = await this.session.openVault(this.unlocked, VAULT)
+    const made = await this.session.makeBackupGrant(this.unlocked, password, vault, label)
+    this.unlocked = made.unlocked
+    return made.grant
+  }
+
+  async deleteBackupKey(keyId: string): Promise<void> {
+    if (!this.unlocked) throw new Error('not signed in')
+    this.unlocked = await this.session.deleteBackupKey(this.unlocked, keyId)
+  }
+
+  private openedVault: { vaultId: string; key: Uint8Array<ArrayBuffer> } | null = null
+  private backupsController: InstanceType<typeof Backups> | null = null
+  /** When this device last saw a good backup, per backup server - main.ts keeps it in data.json. */
+  backupLastGood: Record<string, number> = {}
+
+  /** The backup servers of the vault, wired the way main.ts wires them. */
+  get backups(): InstanceType<typeof Backups> {
+    this.backupsController ??= new Backups({
+      serverUrl: () => serverUrl,
+      token: () => this.token,
+      settings: () => this.settings,
+      vault: () => this.openedVault,
+      makeGrant: (password, label) => this.makeBackupGrant(label, password),
+      deleteKey: (keyId) => this.deleteBackupKey(keyId),
+      lastGood: () => this.backupLastGood,
+      saveLastGood: async (value) => {
+        this.backupLastGood = value
+      }
+    })
+    return this.backupsController
+  }
+
+  /** A session with a backup server through the sync server's relay, as the settings open one. */
+  openBackupSession(code: string): ReturnType<typeof openBackupSession> {
+    return openBackupSession(serverUrl, this.token ?? '', code)
+  }
+
+  /** The vault's key, which a session shows a backup server it holds. */
+  async backupVaultKey(): Promise<Uint8Array> {
+    if (!this.unlocked) throw new Error('not signed in')
+    return (await this.session.openVault(this.unlocked, VAULT)).key
+  }
+
   /** Whether the server keeps a recovery code for the account, as this device last heard. */
   get hasRecoveryCode(): boolean | undefined {
     return this.unlocked?.bundle.recovery === undefined ? undefined : this.unlocked.bundle.recovery !== null
@@ -433,7 +483,13 @@ export class Device {
     return this.token !== null
   }
 
+  /** For tests that speak to the sync server as this account, without the plugin's code. */
+  get accessToken(): string {
+    return this.token ?? ''
+  }
+
   async shutdown(): Promise<void> {
+    this.backupsController?.closeSessions()
     for (const view of this.views.splice(0)) view.close()
     this.editors.unbindAll()
     if (this.indexTimer) clearTimeout(this.indexTimer)

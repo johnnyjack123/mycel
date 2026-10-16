@@ -1,0 +1,152 @@
+# Backing up a vault
+
+A **backup server** is a small server of your own - on a NAS, a home server, a
+Raspberry Pi - that pulls a vault from the sync server, decrypts it in its memory
+and hands it to [restic](https://restic.net), which encrypts it again into
+repositories wherever you choose: a disk, a NAS share, a cloud. Every backup is
+kept for as long as you say, and restic shows which notes changed between two of
+them. Optionally a **trusted copy** - the newest version of everything, decrypted, in
+a folder - is kept up to date as well, for the day the repository password is lost.
+
+It is set up from the plugin. On the backup server itself you only start it.
+
+How it is built and why: `docs/PHASE6.md`.
+
+## What it can and cannot do
+
+- **It reads, it never writes.** A vault is connected with a backup key that reads
+  that one vault and nothing else. A stolen backup server cannot change or delete
+  a note.
+- **Whoever runs it can read every vault connected to it.** Its data volume holds the
+  keys of those vaults, restic passwords pass through it, and the trusted copy is
+  plaintext. It is for you, or a household - not a service for strangers.
+- **The sync server learns nothing new.** It only relays between your device and the
+  backup server, and what it relays is encrypted between the two with a key that
+  depends on the backup server's code, which never leaves either.
+- **Its code is a key to it.** Whoever has the code can connect vaults of their own
+  to it (and use its disk) - never touch yours. Keep the code like a password.
+
+## Running it
+
+You need Linux with Docker, and a sync server the backup server can reach. Two files
+from this repository: `docker-compose.backup.yml` and `docs/backup.env`.
+
+```bash
+cp backup.env .env                    # then edit it: the sync server, the backup folder
+sudo mkdir -p /srv/obsidian-backups
+sudo chown -R 1000:1000 /srv/obsidian-backups
+docker compose -f docker-compose.backup.yml up -d
+docker compose -f docker-compose.backup.yml exec obsidian-connect-backup obsidian-connect-backup code
+```
+
+The last line prints the backup server's code. Its log shows it too, the first time
+it starts. The image is private while the repository is; sign in once with
+`docker login ghcr.io -u johnnyjack123` and a token that may read packages.
+
+Updating: `docker compose -f docker-compose.backup.yml pull && docker compose -f docker-compose.backup.yml up -d`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OBSIDIAN_CONNECT_SERVER` | — (required) | The sync server, `wss://…` as devices are given it. |
+| `OBSIDIAN_CONNECT_BACKUP_NAME` | the host name | What devices are shown it as. |
+| `BACKUP_FOLDER` | `./backups` | The host folder mounted at `/backup`; every local destination lies below it. |
+| `RAM_DISK` | `1g` | The memory a vault's notes may take during a backup. |
+| `OBSIDIAN_CONNECT_BACKUP_DEBUG` | `false` | More in the log. |
+
+The container's own paths, if you run it some other way: `OBSIDIAN_CONNECT_BACKUP_DATA`
+(`/data`), `OBSIDIAN_CONNECT_BACKUP_ROOT` (`/backup`), `OBSIDIAN_CONNECT_BACKUP_WORK`
+(`/run/obsidian-connect-backup`, the RAM disk), `OBSIDIAN_CONNECT_RESTIC` (restic).
+
+**Memory.** Notes and canvases lie in the RAM disk during a run, decrypted; pictures,
+PDFs and other files never do - they stream into restic one at a time. A vault of
+5000 notes takes a few dozen megabytes. A vault bigger than the RAM disk fails its
+backup with "no space left"; give it more.
+
+**The data volume** holds the code, the keys of every vault connected and an
+encrypted cache of them (so a backup fetches only what changed). Back it up only if
+you want to keep the backup server's code; losing it means connecting the vaults to
+a new code, nothing more.
+
+## Setting it up in Obsidian
+
+*Settings → Obsidian Connect → Backup servers*:
+
+1. **Connect a backup server…** - its code and your password. It backs up once a day
+   until you choose otherwise.
+2. **Add a destination…** - one or more:
+   - **A restic repository.** A folder relative to the backup folder (`nas/obsidian`),
+     or a location restic knows: `s3:s3.amazonaws.com/bucket/obsidian`,
+     `b2:bucket:obsidian`, `sftp:user@host:/backups/obsidian`, `rest:https://…`,
+     `rclone:remote:obsidian`, with the credentials it needs (`AWS_ACCESS_KEY_ID`, …).
+     The repository password: "Make one" makes a strong one. It is kept in your
+     account's settings, encrypted, so every device can show it - **write it down as
+     well**: without it nobody can read the repository. A cloud folder mounted on the
+     host is just another folder.
+   - **The trusted copy.** A folder that holds the newest version of everything,
+     decrypted. It must be empty, or one the backup server wrote before; the backup
+     server deletes only what it wrote itself.
+3. **How often**, and **Back up now** whenever you like.
+
+Each destination is checked by the backup server before it is saved: whether it can
+write there, whether the repository opens with that password (it is made where there
+is none). It shows how each backup went; Obsidian tells you when a backup failed, when
+the trusted copy waits, or when there was no good backup for a while - also when the
+backup server cannot be reached.
+
+**After a password change** the device that made it hands every backup server a new
+key at once; a password change ends the old ones, as it signs out every other device.
+One that was not reachable then says so in the settings; connect it again there.
+
+**The trusted copy waits** when the vault suddenly lost more than half of its notes:
+the sync server may have lost data, and the copy must not follow that. The restic
+backups go on as always. If you deleted the notes on purpose, *Follow anyway*.
+
+## What a backup holds
+
+```
+<Vault>/                     the vault: notes, canvases, pictures, PDFs, the notes others share with you
+<Vault> (trash)/             what the trash can still restore, under its last path
+<Vault> settings.json        the account-wide settings (without contacts, without backup settings)
+```
+
+restic keeps it as two snapshots per backup: one of the notes (`<Vault>/` with its
+notes and canvases, the trash's notes, the settings), and one stream of all other
+files, `<Vault> files.tar`, made only when a file changed. The trusted copy holds all
+of it as one folder.
+
+Every backup is checked: restic's own check, every note's path and size in the new
+snapshot, the newest notes read back byte for byte; once a week a part of the stored
+data is read in full, and every file of the files snapshot is read back and compared
+by its hash.
+
+## Restoring
+
+With restic on any computer (or in a container: `docker run --rm -it -v …:/repo restic/restic …`):
+
+```bash
+export RESTIC_REPOSITORY=/srv/obsidian-backups/nas/obsidian
+export RESTIC_PASSWORD='the repository password'
+restic snapshots                                   # every backup; tags "notes" and "files"
+restic diff <older notes snapshot> <newer one>     # which notes changed in between
+restic restore <notes snapshot> --target ~/restore
+restic dump <files snapshot> "/<Vault> files.tar" | tar -x -f - -C ~/restore
+```
+
+A single note: `restic restore <snapshot> --target ~/restore --include "/<Vault>/Folder/Note.md"`.
+A single picture: `restic dump <files snapshot> "/<Vault> files.tar" | tar -x -f - -C ~/restore "<Vault>/Pictures/x.png"`.
+
+`~/restore/<Vault>` can be opened in Obsidian as a vault of its own. To bring notes
+back into the vault that syncs, copy them in one by one: copying an old version over
+a note makes that old version the newest everywhere.
+
+## Without Docker
+
+For trying it on a laptop: restic on the PATH (or `OBSIDIAN_CONNECT_RESTIC`), then
+
+```bash
+OBSIDIAN_CONNECT_SERVER=ws://localhost:1234 OBSIDIAN_CONNECT_BACKUP_DATA=./backup-data \
+OBSIDIAN_CONNECT_BACKUP_ROOT=./backups npm run start:backup
+```
+
+Outside Linux there is no RAM disk; the notes then lie in the system's temporary
+folder during a backup.

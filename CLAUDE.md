@@ -17,6 +17,7 @@ packages/
   shared/   protocol, types, text diff and three-way merge; `shared/crypto` for E2E
   server/   Fastify + accounts + an encrypted log per room + JWT + admin CLI
   plugin/   the Obsidian plugin
+  backup/   the backup server (0.7): reads a vault with a backup key, decrypts it in memory, hands it to restic
 ```
 
 The design of accounts, keys, sharing and the encrypted transport is specified in
@@ -24,8 +25,10 @@ The design of accounts, keys, sharing and the encrypted transport is specified i
 **`docs/PHASE4.md`**, recovery codes and 2FA (0.6) in **`docs/PHASE5.md`**; running
 the server in **`docs/SERVER.md`**. Where the work stands and what is next:
 **`docs/PROGRESS.md`**; what each version changed and how its fixes were verified:
-**`docs/CHANGELOG.md`**. A new milestone gets its design document (`docs/PHASE6.md`
-for 0.7) written with the user before it is built.
+**`docs/CHANGELOG.md`**. The backup server (0.7) is specified in **`docs/PHASE6.md`**,
+running it in **`docs/BACKUP.md`**.
+A new milestone gets its design document (`docs/PHASE7.md` for 0.8) written with the
+user before it is built.
 
 ## Non-negotiable invariants
 
@@ -327,6 +330,37 @@ and the server holds immutable blobs of its versions:
 - Built: own devices (step 1), the trash and versions (step 2), shared notes'
   files and the notes they link to (step 3).
 
+### Backups
+
+A **backup server** of the user's own (`packages/backup`, image
+`obsidian-connect-backup`; spec `docs/PHASE6.md`, running it `docs/BACKUP.md`)
+pulls a vault, decrypts it in memory and hands it to restic. For a few private
+people: whoever runs it can read the vaults on it.
+
+- **It reads, never writes.** A **backup key** per vault (made on a device with the
+  password, `POST /account/backup-keys`) signs it in for a token of scope `backup`
+  that the reading routes accept for that one vault (`reader`/`roomReader` in
+  `http.ts`). A password change, a recovery and removing the account end every key;
+  the device that changed the password hands out new ones at once.
+- **Reached only through the sync server.** The backup server has a **code**; it
+  registers at `/relay` under the hash of a token derived from it, and a device opens
+  a session there. The session's key depends on the code, which never travels: each
+  end proves it knows it (`openSession`/`answerSession`/`finishSession`, `SessionCipher`
+  in `shared/crypto`), so the relay can neither read nor pose as either end. A
+  connected vault answers only to a session that showed the vault's key
+  (`vaultControlProof`). The device hands over a **grant** - backup key, vault key,
+  the account's key pair (shared notes are sealed to it) - inside the session.
+- **Set up from the plugin.** Destinations and schedule live in the vault's settings
+  document (`backupServer:`, `backupTarget:`, `backupSchedule:`), which the backup
+  server reads with its key; local folders only below its backup folder, never in or
+  around another vault's.
+- **A run** (`run.ts`): what changed into an encrypted cache (rooms by their tag, a log
+  from its last frame, compared - invariant 19), the layout from the index (vault,
+  trash, settings without contacts), notes and canvases into a RAM disk for restic,
+  every other file as a tar stream (killed before it ends when producing it fails),
+  every snapshot checked back, the trusted copy brought level - never emptied, only
+  its own files touched, held when half the notes vanished.
+
 ### Around the notes
 
 - **The log** (`src/log.ts`): every `log.*` call also goes to a file per day in
@@ -468,6 +502,8 @@ npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart 
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
+npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
+                       # restic on the PATH or named by OBSIDIAN_CONNECT_RESTIC (where it lies here: docs/PROGRESS.md)
 # needs a server that lets tests create accounts:
 npm run test:socket    # the encrypted transport, two devices of one account
 npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing, attachments
@@ -509,11 +545,18 @@ scanned by an authenticator app and the `otpauth://` link opening one.
   `registerEditorExtension`. The binding still compares the note on every update
   and lets go when it changes — otherwise a file switch pushes the next note's
   text into the shared room.
-- **There is no Docker on the development machine.** The image is only ever
+- **There is no Docker on the development machine.** The images are only ever
   built in CI: the `docker` job in `build.yml` runs after the tests, on `main`
   only, starts the image once (health check, `invite` through the CLI) and
   publishes it to `ghcr.io/johnnyjack123/obsidian-connect-server`. A broken
-  `Dockerfile` shows up there and nowhere earlier.
+  `Dockerfile` shows up there and nowhere earlier. The `docker-backup` job builds
+  and starts `Dockerfile.backup` on every push (restic runs, the code is made and
+  kept, the server survives an unreachable sync server) and publishes
+  `obsidian-connect-backup` from `main` only. Every Dockerfile copies every
+  workspace's `package.json` before `npm ci`.
+- **restic for `test:backup`** is pinned (0.19.1, CI checks its checksum, and so
+  does `Dockerfile.backup` per architecture). On the development machine it lies
+  outside the repository; `docs/PROGRESS.md` says where.
 - **`main.js` is CommonJS inside a `"type": "module"` package.** Obsidian
   evaluates it itself; Node needs a `.cjs` copy (see `load-selftest.mjs`).
 - **Never put raw control characters in source.** A NUL sentinel in the glob
@@ -564,15 +607,9 @@ In the order of the roadmap (Conventions); what goes into 0.8 and 0.9 besides
 is listed in `docs/PROGRESS.md`, "Roadmap". (Recovery codes and 2FA: built in
 0.6, `docs/PHASE5.md`.)
 
-**Backup API (0.7).** A secured endpoint a backup tool such as restic can
-pull snapshots from on a schedule, in two forms:
-
-- *Encrypted:* the data directory as it is — ciphertext only — authenticated with
-  a dedicated, revocable backup token rather than an account.
-- *Decrypted:* the notes as Markdown. Decryption must happen outside the server,
-  or the server would hold the keys: a small command-line client on the backup
-  machine signs in with the account's credentials, pulls the ciphertext through
-  the API, decrypts locally and writes the files restic then snapshots.
+**The operator's backup (later).** The data directory as it is - ciphertext only -
+pulled with a dedicated, revocable backup token rather than an account. Moved out of
+0.7 by the user on 2026-10-15.
 
 **Sharing a folder (0.8).** Share a whole folder with someone instead of note by
 note, including what is added to it later. Not designed yet.
@@ -635,7 +672,7 @@ between two snapshots, never a merge.
   | 0.4 | the first device run: comparing versions, the log, the note cloud, menus |
   | 0.5 | attachments, in an encrypted blob store |
   | 0.6 | recovery codes and 2FA |
-  | 0.7 | the backup API |
+  | 0.7 | the backup server (`docs/PHASE6.md`) |
   | 0.8 | sharing a folder, and the small fixes listed for it in `docs/PROGRESS.md` |
   | 0.9 | hardening and a security audit: signatures per author, every note live, a name without "Obsidian" |
   | 1.0.0 | all of the above done and verified on devices |
