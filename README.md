@@ -54,9 +54,9 @@ A backup server of your own (`ghcr.io/johnnyjack123/obsidian-connect-backup`, ne
 to `docker-compose.backup.yml`) pulls a vault, decrypts it in its memory and keeps
 it in restic repositories - a disk, a NAS, a cloud -, every backup for as long as you
 choose, and optionally a decrypted copy of the newest version. It reads and never
-writes, needs no port of its own, and is set up entirely from the plugin's settings
-with the code it shows when it starts. `docs/BACKUP.md` has the details, restoring
-included.
+writes, needs no port of its own, and is set up entirely from the plugin's settings,
+with a one-time invitation from whoever runs it. `docs/BACKUP.md` has the details,
+restoring included.
 
 ## Build the plugin
 

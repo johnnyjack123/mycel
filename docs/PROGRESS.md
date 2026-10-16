@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-16 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - is built, 0.7.0 to 0.7.5: the sync server's backup keys, read scope and relay; the backup server (`packages/backup`, image `obsidian-connect-backup`); Settings → Backup servers. Merged into `main` once CI was green (see "Verification state"). Next: the user tries it - plugin 0.7.5, the sync server restarted, a backup server on a Linux host with Docker. The operator's encrypted backup of the data directory moved to later. 0.6.8 is the last version confirmed on the user's devices.**_
+_Last updated: 2026-10-17 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - was built as 0.7.0 to 0.7.5 and merged into `main`. After it the user asked for more, decided on 2026-10-16 (`docs/PHASE6.md`, "After the first build"), built on `feat/backup-rollback`: 0.7.6 invitations and a pairing per vault (done), then 0.7.7 settings in tabs, editable destinations, the guard over notes and files; 0.7.8 rolling back from the history; 0.7.9 rolling back from restic. Merged when 0.7.9 is done; then the user tries it. 0.6.8 is the last version confirmed on the user's devices.**_
 
 ## Where we are
 
@@ -71,17 +71,27 @@ scope, 0.7.1 the run, 0.7.2 the relay and the session, 0.7.3 the plugin, 0.7.4 t
 image, 0.7.5 "Connect again…" and a fix CI's first start of the image found. Every
 version's details and checks: `docs/CHANGELOG.md`.
 
-**What the user does next** (nothing of 0.7 has been on a device yet):
+**After 0.7.5** (2026-10-16) the user asked how the trusted copy's guard decides, for
+the settings in tabs, whether the schedule runs with every device offline (yes - the
+backup server pulls on its own), pointed out that one code per backup server for
+everyone is a weakness, and asked for rolling a vault back, with a backup of
+everything first. Decided with the user and written down in `docs/PHASE6.md`, "After
+the first build", in four steps on `feat/backup-rollback`. **0.7.6 is built:**
+invitations and a pairing per vault. Next: 0.7.7.
 
-1. Install plugin 0.7.5 on the devices, and restart the sync server with 0.7.5 - it
-   gains the backup keys and the relay; nobody is signed out by the update. A reverse
-   proxy in front of it must pass WebSocket upgrades on `/relay` too.
+**What the user does then**, once 0.7.9 is merged (nothing of 0.7 has been on a device
+yet):
+
+1. Install the plugin on the devices, and restart the sync server with the same
+   version - it gains the backup keys and the relay; nobody is signed out by the
+   update. A reverse proxy in front of it must pass WebSocket upgrades on `/relay` too.
 2. On a Linux host with Docker: `docker-compose.backup.yml` and `docs/backup.env` as
    `docs/BACKUP.md` says; `docker login ghcr.io` first (the image is private like the
-   repository). Not tried yet: the image on a real host, a bind-mounted backup folder
-   owned by uid 1000, the RAM disk size, an S3/B2 location.
-3. In Obsidian: *Settings → Backup servers → Connect…* with the code, add a
-   destination, *Back up now*; then restore once with restic as `docs/BACKUP.md` shows.
+   repository); `obsidian-connect-backup invite <name>` in the container. Not tried
+   yet: the image on a real host, a bind-mounted backup folder owned by uid 1000, the
+   RAM disk size, an S3/B2 location.
+3. In Obsidian: *Connect a backup server…* with the invitation, add a destination,
+   *Back up now*; then restore once with restic as `docs/BACKUP.md` shows.
 
 What only a device shows: the settings section and both dialogs, the notice, the
 WebSocket to `/relay` from Obsidian on desktop and on a phone, "Connect again…".
@@ -90,10 +100,10 @@ WebSocket to `/relay` from Obsidian on desktop and on a phone, "Connect again…
 
 Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
-- **0.7 - the backup server.** Built; see "Next step". Left for later, noticed while
-  building: a device's relay connection is not closed when the account's devices
-  are signed out (it reaches only backup servers whose code it has); a new code for
-  a backup server (`obsidian-connect-backup` has no command to replace it).
+- **0.7 - the backup server.** Built up to 0.7.6, 0.7.7 to 0.7.9 to come; see "Next
+  step". Left for later, noticed while building: a device's relay connection is not
+  closed when the account's devices are signed out (it reaches only backup servers
+  whose pairing it has).
 - **0.8 - sharing a folder, and the small fixes.** Sharing a whole folder,
   including what is added to it later (not designed yet). Besides, every fix that
   has to be in before 0.9:
@@ -131,7 +141,8 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing. Everything is committed and pushed.
+`feat/backup-rollback`, from `main` after 0.7.5: 0.7.6 committed and pushed; 0.7.7 to
+0.7.9 as planned at the end of `docs/PHASE6.md`. Not merged.
 
 ## Decisions made (not visible in the code)
 
@@ -251,6 +262,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
+At 0.7.6, run 2026-10-17 before its commit: `typecheck` and `build` pass; `test:merge`
+164, `test:load` 14, `test:rooms` 284, `test:sync` 26, `test:recovery` 56,
+`test:account` 50, `test:backup` 103 - all pass; against a scratch server on 1235,
+`test:socket` 19 and `test:vault` 230 pass (the user's server on 1234 was not
+touched). Not merged, not on a device.
+
 At 0.7.4 and 0.7.5, 2026-10-16: `typecheck`, `build`, `test:merge` 163, `test:load`
 14, `test:rooms` 278, `test:backup` 91 pass (0.7.5 changes only the backup server's
 timer and the plugin's settings over 0.7.3, whose full run is below). CI on the
@@ -311,7 +328,13 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 
 ## Log
 
+### 2026-10-17
+- 0.7.6: invitations and a pairing per vault, as decided the day before.
+
 ### 2026-10-16
+- After 0.7.5 the user asked for invitations instead of one code, the settings in
+  tabs, a guard over notes and files, and rolling back; decided together
+  (`docs/PHASE6.md`, "After the first build"), started on `feat/backup-rollback`.
 - Milestone 0.7 built: 0.7.2 the relay and the session, 0.7.3 the plugin's settings,
   0.7.4 the image, 0.7.5 "Connect again…" and the fix for a backup server that ended
   while the sync server did not answer (found by CI's first start of the image).

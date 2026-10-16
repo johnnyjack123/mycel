@@ -821,22 +821,24 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(withSummary('2026-10-13T20:00:41.000Z INFO  connected\n', 'h').includes('Errors and warnings: none'), 'and says so when there are none')
 }
 
-// --- a backup server's code, and a session through a relay that may lie ----------------------
+// --- a backup server's invitation, and a session through a relay that may lie ----------------
 {
-  const secret = e2e.newBackupServerSecret()
-  const code = await e2e.encodeBackupServerCode(secret)
-  check(/^([0-9A-HJKMNP-TV-Z]{5}-){5}[0-9A-HJKMNP-TV-Z]{5}$/.test(code), "a backup server's code is written like a recovery code", code)
-  check(e2e.toHex((await e2e.decodeBackupServerCode(code)) ?? new Uint8Array()) === e2e.toHex(secret), 'and reads back as its secret')
+  const secret = e2e.newBackupSecret()
+  const code = await e2e.encodeBackupInvite(secret)
+  check(/^([0-9A-HJKMNP-TV-Z]{5}-){5}[0-9A-HJKMNP-TV-Z]{5}$/.test(code), "a backup server's invitation is written like a recovery code", code)
+  check(e2e.toHex((await e2e.decodeBackupInvite(code)) ?? new Uint8Array()) === e2e.toHex(secret), 'and reads back as its secret')
   const recovery = await e2e.encodeRecoveryCode(secret)
   check(
-    (await e2e.decodeBackupServerCode(recovery)) === null && (await e2e.decodeRecoveryCode(code)) === null,
-    'a recovery code is no backup server code, nor the other way round'
+    (await e2e.decodeBackupInvite(recovery)) === null && (await e2e.decodeRecoveryCode(code)) === null,
+    'a recovery code is no invitation, nor the other way round'
   )
-  const keys = await e2e.backupServerKeys(secret)
+  const keys = await e2e.backupRouteKeys(secret)
   check(
     keys.routeId === e2e.toHex(await e2e.sha256(keys.routeToken)) && e2e.toHex(keys.routeToken) !== e2e.toHex(keys.psk),
     'the sync server addresses it by a hash, and the key of its sessions is another one'
   )
+  const other = await e2e.backupRouteKeys(e2e.newBackupSecret())
+  check(other.routeId !== keys.routeId && e2e.toHex(other.psk) !== e2e.toHex(keys.psk), 'every secret is a route and a key of its own')
 
   // A session as it should go.
   const { hello, pending } = await e2e.openSession()
@@ -884,16 +886,11 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     check(await refuses(() => new e2e.SessionCipher(pluginKeys, 'plugin').open(message)), 'nor does one sent back to its sender')
   }
 
-  // A vault's proof is bound to the vault and the session.
+  // Someone who knows another route - an invitation spent long ago, another vault's pairing - cannot open this one.
   {
-    const vaultKey = e2e.randomBytes(32)
-    const proof = await e2e.vaultControlProof(vaultKey, 'a'.repeat(32), pluginKeys.transcript)
-    check(
-      proof !== (await e2e.vaultControlProof(vaultKey, 'b'.repeat(32), pluginKeys.transcript)) &&
-        proof !== (await e2e.vaultControlProof(vaultKey, 'a'.repeat(32), 'another session')) &&
-        proof !== (await e2e.vaultControlProof(e2e.randomBytes(32), 'a'.repeat(32), pluginKeys.transcript)),
-      "a vault's proof holds for that vault, that key and that session only"
-    )
+    const { hello: otherHello, pending: otherPending } = await e2e.openSession()
+    const answered = await e2e.answerSession(keys.psk, otherHello)
+    check(await refuses(() => e2e.finishSession(other.psk, otherPending, answered.answer)), "another route's secret does not open a session on this one")
   }
 }
 

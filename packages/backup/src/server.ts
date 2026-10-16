@@ -1,10 +1,11 @@
 import { join } from 'node:path'
-import { loadIdentity } from './identity.js'
+import { backupRouteKeys, fromBase64, toBase64 } from '@obsidian-connect/shared/crypto'
+import { Invites } from './invites.js'
 import { log } from './log.js'
 import { RelayLink } from './relay.js'
 import { Restic } from './restic.js'
 import { BackupService } from './service.js'
-import { serveSession } from './sessions.js'
+import { serveSession, type Route } from './sessions.js'
 
 // The whole backup server behind one function, so a self-test can run one in
 // its own process next to a sync server and devices.
@@ -23,24 +24,25 @@ export interface BackupServerOptions {
   version: string
   /** How often due runs are looked for. */
   tickMs?: number
+  /** How often the data folder is looked at for invitations made, or vaults disconnected, on the command line. */
+  watchMs?: number
   now?: () => number
 }
 
 export interface RunningBackupServer {
-  /** The code a device connects with. */
-  code: string
-  routeId: string
-  /** Whether the code was made on this start. */
-  createdCode: boolean
   service: BackupService
-  /** Resolves once the sync server's relay took the registration. */
-  registered: Promise<void>
+  /** An invitation, as the command line makes one; resolves once the relay answers its route. */
+  invite(label: string): Promise<string>
+  /** Resolves once the relay answers this route. */
+  whenRegistered(routeId: string): Promise<void>
   close(): Promise<void>
 }
 
+const REGISTER_WAIT_MS = 10_000
+
 export async function startBackupServer(options: BackupServerOptions): Promise<RunningBackupServer> {
-  const { identity, created } = await loadIdentity(options.dataDir)
   const restic = new Restic(options.resticBinary, join(options.dataDir, 'restic-cache'), 'obsidian-connect-backup')
+  const invites = new Invites(options.dataDir)
   const service = await BackupService.open({
     server: options.server,
     dataDir: options.dataDir,
@@ -49,24 +51,88 @@ export async function startBackupServer(options: BackupServerOptions): Promise<R
     restic,
     name: options.name,
     version: options.version,
-    routeId: identity.keys.routeId,
     now: options.now
   })
-  const relay = new RelayLink(options.server, identity, (session) => serveSession(session, { identity, service, restic, root: options.root }))
+
+  // Route id -> what it answers, with the handshake's key; and the tokens the relay registers them by.
+  let routes = new Map<string, Route>()
+  const updateRoutes = async (): Promise<void> => {
+    const next = new Map<string, Route>()
+    const tokens = new Map<string, string>()
+    for (const invite of await invites.open(options.now?.())) {
+      const keys = await backupRouteKeys(Invites.secretOf(invite))
+      next.set(keys.routeId, { kind: 'invite', inviteId: invite.id, label: invite.label, expiresAt: invite.expiresAt, psk: keys.psk })
+      tokens.set(keys.routeId, toBase64(keys.routeToken))
+    }
+    for (const { vaultId, pairing } of service.pairings()) {
+      const keys = await backupRouteKeys(fromBase64(pairing.secret))
+      next.set(keys.routeId, { kind: 'vault', vaultId, psk: keys.psk })
+      tokens.set(keys.routeId, toBase64(keys.routeToken))
+    }
+    routes = next
+    relay.setRoutes(tokens)
+  }
+  let updating: Promise<void> = Promise.resolve()
+  const refreshRoutes = (): Promise<void> => {
+    updating = updating.then(updateRoutes).catch((error: unknown) => log.warn('updating the routes failed', error))
+    return updating
+  }
+
+  const relay = new RelayLink(options.server, (session) =>
+    serveSession(session, {
+      route: (routeId) => routes.get(routeId) ?? null,
+      service,
+      restic,
+      root: options.root,
+      now: options.now ?? Date.now,
+      paired: async (routeId) => {
+        await refreshRoutes()
+        // Not forever: a sync server that went away meanwhile is the device's to find out.
+        await Promise.race([relay.whenRegistered(routeId), new Promise((resolve) => setTimeout(resolve, REGISTER_WAIT_MS).unref?.())])
+      },
+      spend: async (inviteId) => {
+        await invites.remove(inviteId)
+        await refreshRoutes()
+      }
+    })
+  )
+  service.onRoutesChanged(() => void refreshRoutes())
   relay.start()
+  await refreshRoutes()
+
   // Not unref'd: between two attempts to reach the sync server nothing else
   // keeps the process alive, and it ended quietly a second after starting.
   const ticker = setInterval(() => {
     void service.tick().catch((error: unknown) => log.warn('looking for due backups failed', error))
+    // An invitation that ran out stops being answered.
+    void refreshRoutes()
   }, options.tickMs ?? 60_000)
+  // The command line writes invitations and disconnects vaults in the data folder.
+  let invitesAt = await invites.changedAt()
+  const watcher = setInterval(() => {
+    void (async () => {
+      const changed = await invites.changedAt()
+      if (changed !== invitesAt) {
+        invitesAt = changed
+        await refreshRoutes()
+      }
+      await service.reload()
+    })().catch((error: unknown) => log.warn('looking at the data folder failed', error))
+  }, options.watchMs ?? 3_000)
+  watcher.unref?.()
+
   return {
-    code: identity.code,
-    routeId: identity.keys.routeId,
-    createdCode: created,
     service,
-    registered: relay.registered,
+    async invite(label) {
+      const { code, invite } = await invites.create(label, options.now?.())
+      await refreshRoutes()
+      await relay.whenRegistered((await backupRouteKeys(Invites.secretOf(invite))).routeId)
+      return code
+    },
+    whenRegistered: (routeId) => relay.whenRegistered(routeId),
     async close() {
       clearInterval(ticker)
+      clearInterval(watcher)
       relay.stop()
       await service.idle()
     }

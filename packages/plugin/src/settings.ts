@@ -4,7 +4,7 @@ import type { ServerProbe } from './account/probe'
 import { PasswordReveal } from './account/reveal'
 import { busy, type BusyButton } from './busy'
 import type { BackupDestinationStatus, BackupRunStatus, BackupTargetSetting, BackupVaultStatus } from '@obsidian-connect/shared'
-import { SCHEDULES, type Backups } from './backup/Backups'
+import { NO_LONGER_HAS_VAULT, SCHEDULES, type Backups } from './backup/Backups'
 import type ObsidianConnectPlugin from './main'
 import type { OpenCode } from './share/Contacts'
 import type { SharedSettings } from './sync/AccountSettings'
@@ -708,7 +708,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     for (const server of backups.servers()) this.backupServerRows(containerEl, backups, server.routeId)
     new Setting(containerEl)
       .setName('Connect a backup server')
-      .setDesc('With the code it showed when it started. It runs on a computer of yours, with Docker - see the Obsidian Connect documentation.')
+      .setDesc("With an invitation from its operator. It runs on a computer of yours or someone's you trust, with Docker - see the Obsidian Connect documentation.")
       .addButton((button) => button.setButtonText('Connect…').onClick(() => this.plugin.openBackupConnect()))
   }
 
@@ -722,15 +722,25 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     const status = view.status
     const last = status?.runs[0]
     const confirming = this.disconnecting === routeId
-    // Its key ended, or it lost the vault: a new key, with the password.
-    const needsKey = last?.accessEnded === true || /not connected here|connect it again/.test(view.error ?? '')
+    // Its key ended: a new one over the pairing, with the password.
+    const needsKey = last?.accessEnded === true || /connect it again/.test(view.error ?? '')
+    // It lost the vault: only a new invitation pairs it again.
+    const lost = NO_LONGER_HAS_VAULT.test(view.error ?? '')
     const head = new Setting(containerEl).setName(view.setting.label).setDesc(describeBackupServer(view.error, status))
-    if (needsKey) {
+    if (needsKey && !lost) {
       head.addButton((button) =>
         button
           .setButtonText('Connect again…')
           .setCta()
-          .onClick(() => this.plugin.openBackupConnect({ code: view.setting.code, label: view.setting.label }))
+          .onClick(() => this.plugin.openBackupConnect({ routeId, label: view.setting.label }))
+      )
+    }
+    if (lost) {
+      head.addButton((button) =>
+        button
+          .setButtonText('Remove')
+          .setWarning()
+          .onClick(() => void this.run(() => backups.forget(routeId), button))
       )
     }
     head
@@ -802,7 +812,12 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           button
             .setButtonText('Follow anyway')
             .setWarning()
-            .onClick(() => void this.run(() => backups.runNow(routeId, true), button))
+            .onClick(
+              () =>
+                void this.run(async () => {
+                  await backups.runNow(routeId, true)
+                }, button)
+            )
         )
     }
     for (const problem of status?.problems ?? []) {

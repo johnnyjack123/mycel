@@ -496,24 +496,26 @@ export function newRecoverySecret(): Bytes {
   return randomBytes(RECOVERY_SECRET_BYTES)
 }
 
+type CodeKind = 'recovery' | 'backup-invite'
+
 /**
  * The check carries what the code is for, so a code of one kind never passes
- * for another: a recovery code typed where a backup server's code goes is a
+ * for another: a recovery code typed where a backup invitation goes is a
  * typo, not a request the server counts against the address.
  */
-async function codeCheck(secret: Bytes, kind: 'recovery' | 'backup-server'): Promise<Bytes> {
-  const label = kind === 'recovery' ? 'obsidian-connect recovery-check' : 'obsidian-connect backup-server-check'
+async function codeCheck(secret: Bytes, kind: CodeKind): Promise<Bytes> {
+  const label = kind === 'recovery' ? 'obsidian-connect recovery-check' : 'obsidian-connect backup-invite-check'
   const check = (await sha256(concat(utf8(label), secret))).slice(0, RECOVERY_CHECK_BYTES)
   check[RECOVERY_CHECK_BYTES - 1] &= 0xfc
   return check
 }
 
-async function encodeCode(secret: Bytes, kind: 'recovery' | 'backup-server'): Promise<string> {
+async function encodeCode(secret: Bytes, kind: CodeKind): Promise<string> {
   const text = toBase32(concat(secret, await codeCheck(secret, kind))).slice(0, RECOVERY_CODE_CHARS)
   return (text.match(/.{1,5}/g) ?? []).join('-')
 }
 
-async function decodeCode(code: string, kind: 'recovery' | 'backup-server'): Promise<Bytes | null> {
+async function decodeCode(code: string, kind: CodeKind): Promise<Bytes | null> {
   const compact = code.replace(/[\s-]/g, '')
   if (compact.length !== RECOVERY_CODE_CHARS) return null
   const data = fromBase32(`${compact}0`)
@@ -621,37 +623,41 @@ export async function recoveryKeys(secret: Bytes): Promise<RecoveryKeys> {
 
 // --- backup servers ------------------------------------------------------------------
 //
-// A backup server has a code: 128 random bits, written like a recovery code.
-// Whoever enters it in the plugin reaches that backup server through the sync
-// server, which knows it only by a hash of something derived from the code.
-// The code itself never travels, not even encrypted: encrypting it to the
-// backup server's key would need that key from the sync server, which could
-// hand out its own. Instead both ends prove they know the code, and the
-// session key depends on it - a pre-shared key, as WireGuard uses one.
+// A device reaches a backup server through the sync server with a secret the
+// two share: a one-time invitation from the backup server's operator, then a
+// pairing secret of the vault's own. From each secret come a route - the
+// sync server knows the backup server by it, as a hash of something derived
+// from the secret - and the key of the handshake. The secret itself never
+// travels, not even encrypted: encrypting it to the backup server's key would
+// need that key from the sync server, which could hand out its own. Instead
+// both ends prove they know it, and the session key depends on it - a
+// pre-shared key, as WireGuard uses one.
 
-export function newBackupServerSecret(): Bytes {
+/** 128 random bits: an invitation's, or a pairing's. */
+export function newBackupSecret(): Bytes {
   return randomBytes(RECOVERY_SECRET_BYTES)
 }
 
-export function encodeBackupServerCode(secret: Bytes): Promise<string> {
-  return encodeCode(secret, 'backup-server')
+/** An invitation, written like a recovery code, for passing on. */
+export function encodeBackupInvite(secret: Bytes): Promise<string> {
+  return encodeCode(secret, 'backup-invite')
 }
 
-/** The secret behind a backup server's code, or null for anything else - a recovery code included. */
-export function decodeBackupServerCode(code: string): Promise<Bytes | null> {
-  return decodeCode(code, 'backup-server')
+/** The secret behind an invitation, or null for anything else - a recovery code included. */
+export function decodeBackupInvite(code: string): Promise<Bytes | null> {
+  return decodeCode(code, 'backup-invite')
 }
 
-export interface BackupServerKeys {
-  /** Sent to the sync server when the backup server registers there. */
+export interface BackupRouteKeys {
+  /** Sent to the sync server when the backup server registers the route there. */
   routeToken: Bytes
-  /** What the sync server and the plugin address the backup server by: the route token's hash, hex. */
+  /** What the sync server and the plugin address the route by: the route token's hash, hex. */
   routeId: string
   /** Never sent. */
   psk: Bytes
 }
 
-export async function backupServerKeys(secret: Bytes): Promise<BackupServerKeys> {
+export async function backupRouteKeys(secret: Bytes): Promise<BackupRouteKeys> {
   const routeToken = await hkdf(secret, 'obsidian-connect backup-route')
   return {
     routeToken,
@@ -742,15 +748,6 @@ export async function finishSession(
     throw new Error('the backup server could not prove it knows the code')
   }
   return sessionKeys('plugin', pending.privateKey, peer, psk, transcript)
-}
-
-/**
- * Proves, inside a session, that the device holds a vault's key: whoever knows
- * a backup server's code may connect vaults of their own to it, and only the
- * vault's owner starts, asks about or disconnects that vault's backups.
- */
-export async function vaultControlProof(vaultKey: Bytes, vaultId: string, transcript: string): Promise<string> {
-  return toHex(await hmac(await hkdf(vaultKey, 'obsidian-connect backup-control'), `${vaultId} ${transcript}`))
 }
 
 /**

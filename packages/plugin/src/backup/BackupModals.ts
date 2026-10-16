@@ -6,8 +6,9 @@ import { busy, type BusyButton } from '../busy'
 import { DEFAULT_KEEP, type Backups } from './Backups'
 
 /**
- * Connects a backup server: its code, and the password for the key it gets.
- * `again`: one connected before, whose key ended or which lost the vault.
+ * Connects a backup server with an invitation from its operator, and the
+ * password for the key it gets. `again`: one paired before whose key ended -
+ * a new key over the pairing, the password alone.
  */
 export class BackupConnectModal extends Modal {
   private code = ''
@@ -19,33 +20,30 @@ export class BackupConnectModal extends Modal {
     app: App,
     private readonly backups: Backups,
     private readonly done: () => void,
-    private readonly again: { code: string; label: string } | null = null
+    private readonly again: { routeId: string; label: string } | null = null
   ) {
     super(app)
-    if (again) {
-      this.code = again.code
-      this.label = again.label
-    }
+    if (again) this.label = again.label
   }
 
   onOpen(): void {
-    this.titleEl.setText(this.again ? `Connect ${this.again.label} again` : 'Connect a backup server')
+    this.titleEl.setText(this.again ? `A new key for ${this.again.label}` : 'Connect a backup server')
     if (this.again) {
       this.contentEl.createEl('p', {
-        text: 'Its key ended - a password change or a recovery ends every backup key - or it lost what it knew of this vault. Your password gives it a new key; its destinations and backups stay as they are.'
+        text: 'Its key ended: a password change or a recovery ends every backup key of the account. Your password makes it a new one; its destinations and backups stay as they are.'
       })
       this.passwordRow()
       this.connectButton()
       return
     }
     this.contentEl.createEl('p', {
-      text: 'A backup server of your own keeps this vault in restic repositories wherever you choose - a disk, a NAS, a cloud. It shows its code when it starts for the first time (or: obsidian-connect-backup code).'
+      text: "A backup server keeps this vault in restic repositories wherever you choose - a disk, a NAS, a cloud. Its operator gives you an invitation for it (obsidian-connect-backup invite); it works once, for one vault, within a week."
     })
     this.contentEl.createEl('p', {
       cls: 'setting-item-description',
-      text: 'It gets a key that reads this vault and nothing else: it can never change your notes. Whoever runs it can read this vault - connect only one you trust. The code never leaves this device; this server only passes on what is encrypted between the two.'
+      text: 'It gets a key that reads this vault and nothing else: it can never change your notes. Whoever runs it can read this vault - connect only one you trust. The invitation never leaves this device; the sync server only passes on what is encrypted between the two.'
     })
-    new Setting(this.contentEl).setName("The backup server's code").addText((text) => {
+    new Setting(this.contentEl).setName('Invitation').addText((text) => {
       text.setPlaceholder('XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX').onChange((value) => {
         this.code = value.trim()
       })
@@ -86,20 +84,20 @@ export class BackupConnectModal extends Modal {
 
   private async submit(button: BusyButton): Promise<void> {
     if (this.working) return
-    if (!this.code || !this.password) {
-      new Notice('Enter the code and your password.')
+    if ((!this.again && !this.code) || !this.password) {
+      new Notice(this.again ? 'Enter your password.' : 'Enter the invitation and your password.')
       return
     }
     this.working = true
     try {
       await busy(button, async () => {
+        if (this.again) {
+          await this.backups.rekey(this.again.routeId, this.password)
+          new Notice(`Obsidian Connect: ${this.again.label} has a new key and backs up as before.`, 8_000)
+          return
+        }
         const connected = await this.backups.connect(this.code, this.password, this.label)
-        new Notice(
-          this.again
-            ? `Obsidian Connect: ${connected.label} has a new key and backs up as before.`
-            : `Obsidian Connect: ${connected.label} is connected. Add a destination next - until then it backs up nothing.`,
-          8_000
-        )
+        new Notice(`Obsidian Connect: ${connected.label} is connected. Add a destination next - until then it backs up nothing.`, 8_000)
       })
       this.close()
       this.done()

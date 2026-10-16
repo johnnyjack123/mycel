@@ -462,6 +462,22 @@ secret of their own.
   `vaults` lists the paired vaults: id, account, label, last run.
 - The backup server's own code (`code`, `identity.json`) goes.
 
+**As built (0.7.6).** One point turned out differently, two had to be ordered:
+
+- *A vault the operator disconnected is not said to be gone.* Its route goes with it,
+  and an unanswered route looks the same to the device as a backup server that is
+  down - which is all the sync server could tell it either. The device shows "cannot
+  be reached" and, once the last good backup is overdue, a notice; *Disconnect* still
+  works then (it forgets the backup server here). "No longer has this vault" is said
+  only in the moment between the vault going and its route.
+- *The invitation is spent after the answer.* Spending drops its route, and the relay
+  ends a session whose route goes - spent first, the device never heard its pairing.
+- *The answer waits for the pairing's route.* The device opens a session on the new
+  route right after connecting; `connect` answers once the relay has registered it
+  (at most 10 s).
+- A vault paired again keeps nothing of the settings read under the old route; the
+  device moves destinations and schedule to the new one and has them read at once.
+
 ### The settings in tabs, destinations editable, the guard *(0.7.7)*
 
 - Tabs: **Account · Contacts · Backups · This device · All devices**; signed out,

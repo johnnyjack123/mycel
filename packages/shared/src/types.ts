@@ -331,11 +331,11 @@ export interface KeepPolicy {
 // entry per key, so every device sees and changes them and the backup server
 // reads them with its backup key.
 
-/** `backupServer:<routeId>`: a backup server the vault is connected to. */
+/** `backupServer:<routeId>`: a backup server the vault is paired with; the route is the pairing's. */
 export interface BackupServerSetting {
   routeId: string
-  /** The backup server's code: every device of the account reaches it with it. */
-  code: string
+  /** The pairing secret, base64: every device of the account reaches the backup server for this vault with it. */
+  pairing: string
   label: string
   /** Its backup key on the sync server, which any device deletes when disconnecting it. */
   keyId: string
@@ -356,6 +356,12 @@ export interface BackupTargetSetting {
   /** Credentials the location needs, e.g. `AWS_ACCESS_KEY_ID`. */
   env?: Record<string, string>
   keep?: KeepPolicy
+  /**
+   * The trusted copy only: the share of notes and files, in percent, that may
+   * vanish between two backups before the copy waits for a confirmation.
+   * Absent: 50; 0: it never waits.
+   */
+  guard?: number
   addedAt: number
 }
 
@@ -376,17 +382,28 @@ export const BACKUP_SCHEDULE_KEY = 'backupSchedule:'
  * session between a device and a backup server, encrypted end to end.
  */
 export type RelayFrame =
-  /** backup server -> sync server: the route token derived from its code. */
+  /** backup server -> sync server: one more route, by the token derived from its secret. */
   | { t: 'register'; token: string }
   | { t: 'registered'; route: string }
-  /** device -> sync server: a session to that backup server; `ref` matches the answer. */
+  /** backup server -> sync server: a route it no longer answers - an invitation spent, a vault disconnected. */
+  | { t: 'unregister'; route: string }
+  /** device -> sync server: a session on that route; `ref` matches the answer. */
   | { t: 'open'; route: string; ref: number }
   | { t: 'opened'; ref: number; s: number }
-  /** sync server -> backup server: someone opened a session. */
-  | { t: 'incoming'; s: number }
+  /** sync server -> backup server: someone opened a session on one of its routes. */
+  | { t: 'incoming'; s: number; route: string }
   | { t: 'data'; s: number; d: string }
   | { t: 'close'; s: number; reason?: string }
   | { t: 'error'; error: string; ref?: number }
+
+/** What connecting with an invitation answers, inside the session. */
+export interface BackupConnected {
+  vaultId: string
+  /** The pairing secret, base64, from now on the vault's way to this backup server. */
+  pairing: string
+  /** The route of the pairing this one replaced - the same vault connected again; null for a first. */
+  replaced: string | null
+}
 
 /** What a backup server tells about itself. */
 export interface BackupServerInfo {

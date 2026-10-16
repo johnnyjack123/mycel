@@ -187,7 +187,6 @@ export default class ObsidianConnectPlugin extends Plugin {
     serverUrl: () => this.settings.serverUrl,
     token: () => this.settings.token || null,
     settings: () => this.accountSettings,
-    vault: () => this.vault,
     makeGrant: async (password, label) => {
       if (!this.unlocked || !this.vault) throw new Error('Sync is not running.')
       const made = await this.session.makeBackupGrant(this.unlocked, password, this.vault, label)
@@ -665,8 +664,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     return this.accountSettings && this.vault ? this.backupServers : null
   }
 
-  /** `again`: one connected before, whose key ended or which lost the vault. */
-  openBackupConnect(again: { code: string; label: string } | null = null): void {
+  /** `again`: one paired before whose key ended; it gets a new one with the password. */
+  openBackupConnect(again: { routeId: string; label: string } | null = null): void {
     if (!this.backupsOf()) {
       new Notice('Obsidian Connect: backups are set up while this vault syncs.')
       return

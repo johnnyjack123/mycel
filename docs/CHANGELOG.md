@@ -8,6 +8,32 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.6** (2026-10-17) - invitations, and a pairing per vault, instead of one code
+  per backup server (asked for by the user: one code for everyone could not be taken
+  from one person without taking it from all, and let anyone with it use the disk).
+  The operator invites per person (`obsidian-connect-backup invite [name]`, `invites`,
+  `revoke`, `vaults`, `disconnect`); an invitation connects one vault, once, within a
+  week. Connecting gives the vault a secret of its own with the backup server, kept in
+  the account's encrypted settings; a session on it reaches that vault and nothing
+  else, and the backup server keeps whose vault it is, so another account cannot take
+  it over. A password change hands out a new key over the pairing - no new invitation;
+  connecting the same vault again replaces its pairing and keeps its destinations. The
+  relay keeps many routes per connection (an invitation, every vault) and ends a
+  route's sessions when it goes; the backup server's code and `code` command are gone.
+  Two orderings the first run of the test found: the invitation was spent before the
+  answer, so the relay ended the session before the device heard its pairing; and a
+  vault connected again named its new route as the one replaced, so its destinations
+  stayed behind. `test:rooms` 284 (routes, unregistering, limits), `test:merge` 164,
+  `test:backup` 103: invitations made, mistyped, expired, made and withdrawn on the
+  command line, spent; a vault's pairing, someone with only its route turned away,
+  another account neither connecting nor rekeying someone else's vault, the operator
+  disconnecting one vault while the others carry on, the password change, connecting
+  again. Checked by putting the protections back out: without spending an invitation,
+  and without the check that a grant belongs to the paired vault, the checks for them
+  failed, and one more that follows from the takeover (Ben's destination check then
+  ran against Anna's vault), nothing else. CI's smoke test makes and lists an invitation in the data volume.
+  The dialogs are for a device.
+
 - **0.7.5** (2026-10-16) - a backup server whose key ended - a password change while it
   could not be reached - or which lost what it knew of the vault shows "Connect
   again…" in the settings: the code is filled in, the password gives it a new key,

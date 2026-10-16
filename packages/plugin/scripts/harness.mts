@@ -47,7 +47,7 @@ const { EditorSync } = await import('../src/editor/EditorSync.js')
 const { Sharing } = await import('../src/share/Sharing.js')
 const { SharedFiles } = await import('../src/share/SharedFiles.js')
 const { Contacts } = await import('../src/share/Contacts.js')
-const { openBackupSession } = await import('../src/backup/BackupLink.js')
+const { openInviteSession, openPairingSession } = await import('../src/backup/BackupLink.js')
 const { Backups } = await import('../src/backup/Backups.js')
 const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
@@ -203,7 +203,6 @@ export class Device {
     this.unlocked = unlocked
     this.accountId = unlocked.accountId
     const openVault = await this.session.openVault(unlocked, VAULT)
-    this.openedVault = openVault
     const keys = new KeyRing(openVault, unlocked, this.api, this.secrets)
     const vault = this.vault
     // Leaves showing files that are not notes - a canvas, a PDF - as far as
@@ -399,7 +398,6 @@ export class Device {
     this.unlocked = await this.session.deleteBackupKey(this.unlocked, keyId)
   }
 
-  private openedVault: { vaultId: string; key: Uint8Array<ArrayBuffer> } | null = null
   private backupsController: InstanceType<typeof Backups> | null = null
   /** When this device last saw a good backup, per backup server - main.ts keeps it in data.json. */
   backupLastGood: Record<string, number> = {}
@@ -410,7 +408,6 @@ export class Device {
       serverUrl: () => serverUrl,
       token: () => this.token,
       settings: () => this.settings,
-      vault: () => this.openedVault,
       makeGrant: (password, label) => this.makeBackupGrant(label, password),
       deleteKey: (keyId) => this.deleteBackupKey(keyId),
       lastGood: () => this.backupLastGood,
@@ -421,15 +418,14 @@ export class Device {
     return this.backupsController
   }
 
-  /** A session with a backup server through the sync server's relay, as the settings open one. */
-  openBackupSession(code: string): ReturnType<typeof openBackupSession> {
-    return openBackupSession(serverUrl, this.token ?? '', code)
+  /** A session on an invitation's route, through the sync server's relay, as connecting opens one. */
+  openInviteSession(code: string, timeoutMs?: number): ReturnType<typeof openInviteSession> {
+    return openInviteSession(serverUrl, this.token ?? '', code, timeoutMs)
   }
 
-  /** The vault's key, which a session shows a backup server it holds. */
-  async backupVaultKey(): Promise<Uint8Array> {
-    if (!this.unlocked) throw new Error('not signed in')
-    return (await this.session.openVault(this.unlocked, VAULT)).key
+  /** A session on a vault's pairing route, as the settings open one. */
+  openPairingSession(pairing: string, timeoutMs?: number): ReturnType<typeof openPairingSession> {
+    return openPairingSession(serverUrl, this.token ?? '', pairing, timeoutMs)
   }
 
   /** Whether the server keeps a recovery code for the account, as this device last heard. */

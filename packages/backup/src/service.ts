@@ -1,6 +1,7 @@
-import { mkdir, readFile, readdir, rename, rm, statfs, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, readdir, rename, rm, statfs, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isHexId, type BackupGrant, type BackupRunStatus, type BackupServerInfo, type BackupVaultStatus } from '@obsidian-connect/shared'
+import { backupRouteKeys, newBackupSecret, toBase64 } from '@obsidian-connect/shared/crypto'
 import { fetchSettings, readConfig, type VaultConfig } from './config.js'
 import { VaultKeys } from './keys.js'
 import { log } from './log.js'
@@ -8,9 +9,13 @@ import type { Restic } from './restic.js'
 import { runBackup, type RunControl, type RunReport } from './run.js'
 import { AccessEnded, SyncClient } from './sync.js'
 
-// The vaults connected to this backup server, their settings, their runs and
+// The vaults paired with this backup server, their settings, their runs and
 // their schedule. One run at a time over all vaults: each lays its notes out
 // in memory, and two at once would double what that takes.
+//
+//   vaults/<vaultId>/pairing.json   the vault's secret with this backup server, and whose vault it is
+//   vaults/<vaultId>/grant.json     the backup key and the vault's keys, from a device
+//   vaults/<vaultId>/runs.json      the last runs, for the devices' status
 
 export interface ServiceOptions {
   /** The sync server this backup server registers at and reads from. */
@@ -23,21 +28,30 @@ export interface ServiceOptions {
   restic: Restic
   name: string
   version: string
-  /** The backup server's route id: its settings are the entries naming it. */
-  routeId: string
   now?: () => number
   /** Runs kept per vault for its status. */
   keepRuns?: number
 }
 
+/** A vault's own way to this backup server: its secret, its route, the account it belongs to. */
+export interface Pairing {
+  /** Base64. */
+  secret: string
+  routeId: string
+  accountId: string
+  /** What the operator called the invitation it came with. */
+  label: string
+  pairedAt: number
+}
+
 interface Vault {
   grant: BackupGrant
+  pairing: Pairing
   config: VaultConfig | null
   /** When the settings were last read. */
   configAt: number
   running: boolean
   runs: RunReport[]
-  connectedAt: number
 }
 
 const HOUR_MS = 60 * 60 * 1000
@@ -51,9 +65,60 @@ async function writeJson(path: string, value: unknown, mode?: number): Promise<v
   await rename(`${path}.tmp`, path)
 }
 
+async function exists(path: string): Promise<boolean> {
+  return access(path).then(
+    () => true,
+    () => false
+  )
+}
+
 function statusOf(report: RunReport): BackupRunStatus {
   const { startedAt, finishedAt, ok, error, accessEnded, notes, files, problems, destinations, trusted } = report
   return { startedAt, finishedAt, ok, error, accessEnded, notes, files, problems, destinations, trusted }
+}
+
+/** One paired vault, as the operator's `vaults` command lists it. */
+export interface PairedVault {
+  vaultId: string
+  vaultName: string
+  accountId: string
+  label: string
+  pairedAt: number
+  lastRun: { at: number; ok: boolean } | null
+}
+
+/** What the operator sees of every paired vault, read straight from the data folder. */
+export async function listVaults(dataDir: string): Promise<PairedVault[]> {
+  const found: PairedVault[] = []
+  let names: string[] = []
+  try {
+    names = await readdir(join(dataDir, 'vaults'))
+  } catch {
+    return found
+  }
+  for (const vaultId of names.filter(isHexId)) {
+    try {
+      const dir = vaultDir(dataDir, vaultId)
+      const pairing = JSON.parse(await readFile(join(dir, 'pairing.json'), 'utf8')) as Pairing
+      const grant = JSON.parse(await readFile(join(dir, 'grant.json'), 'utf8')) as BackupGrant
+      const runs = await readFile(join(dir, 'runs.json'), 'utf8').then(
+        (raw) => JSON.parse(raw) as RunReport[],
+        () => []
+      )
+      const last = runs.at(-1)
+      found.push({
+        vaultId,
+        vaultName: grant.vaultName,
+        accountId: pairing.accountId,
+        label: pairing.label,
+        pairedAt: pairing.pairedAt,
+        lastRun: last ? { at: last.startedAt, ok: last.ok } : null
+      })
+    } catch {
+      // half written, or from before pairings: not a vault to list
+    }
+  }
+  return found
 }
 
 export class BackupService {
@@ -61,6 +126,7 @@ export class BackupService {
   private queue: Promise<unknown> = Promise.resolve()
   private readonly waiting = new Map<string, Promise<RunReport>>()
   private readonly listeners = new Set<(vaultId: string, report: RunReport) => void>()
+  private readonly routeListeners = new Set<() => void>()
 
   private constructor(private readonly options: ServiceOptions) {}
 
@@ -76,12 +142,12 @@ export class BackupService {
     for (const vaultId of names.filter(isHexId)) {
       try {
         const grant = JSON.parse(await readFile(join(dir, vaultId, 'grant.json'), 'utf8')) as BackupGrant
+        const pairing = JSON.parse(await readFile(join(dir, vaultId, 'pairing.json'), 'utf8')) as Pairing
         const runs = await readFile(join(dir, vaultId, 'runs.json'), 'utf8').then(
           (raw) => JSON.parse(raw) as RunReport[],
           () => []
         )
-        const connectedAt = runs.at(-1)?.startedAt ?? Date.now()
-        service.vaults.set(vaultId, { grant, config: null, configAt: 0, running: false, runs, connectedAt })
+        service.vaults.set(vaultId, { grant, pairing, config: null, configAt: 0, running: false, runs })
       } catch (error) {
         log.warn(`vault ${vaultId} could not be loaded`, error)
       }
@@ -99,12 +165,23 @@ export class BackupService {
     return () => this.listeners.delete(listener)
   }
 
+  /** A vault was paired or let go: the routes to answer changed. */
+  onRoutesChanged(listener: () => void): () => void {
+    this.routeListeners.add(listener)
+    return () => this.routeListeners.delete(listener)
+  }
+
+  private routesChanged(): void {
+    for (const listener of this.routeListeners) listener()
+  }
+
   has(vaultId: string): boolean {
     return this.vaults.has(vaultId)
   }
 
-  grant(vaultId: string): BackupGrant | null {
-    return this.vaults.get(vaultId)?.grant ?? null
+  /** Every paired vault's route and secret. */
+  pairings(): Array<{ vaultId: string; pairing: Pairing }> {
+    return Array.from(this.vaults, ([vaultId, vault]) => ({ vaultId, pairing: vault.pairing }))
   }
 
   async info(): Promise<BackupServerInfo> {
@@ -124,32 +201,66 @@ export class BackupService {
     return { name: this.options.name, version: this.options.version, restic, root: this.options.root, free }
   }
 
-  /**
-   * A vault handed over by one of its devices. It is checked first: the
-   * backup key has to open the vault on the sync server this backup server
-   * talks to. Connecting a vault that is connected already replaces its key -
-   * what a device does after a password change ended the old one.
-   */
-  async connect(grant: BackupGrant): Promise<void> {
+  /** The backup key has to open the vault on the sync server this backup server talks to. */
+  private async check(grant: BackupGrant): Promise<void> {
     if (!isHexId(grant.vaultId) || !isHexId(grant.accountId) || typeof grant.backupKey !== 'string') throw new Error('not a grant')
     await VaultKeys.open(grant)
-    const client = new SyncClient(this.options.server, grant.backupKey)
     let session
     try {
-      session = await client.signIn()
+      session = await new SyncClient(this.options.server, grant.backupKey).signIn()
     } catch (error) {
       if (error instanceof AccessEnded) throw new Error('the backup key does not open a vault on the sync server this backup server uses')
       throw error
     }
     if (session.vaultId !== grant.vaultId || session.accountId !== grant.accountId) throw new Error('the backup key belongs to another vault')
+  }
+
+  /**
+   * Pairs a vault handed over with an invitation: a secret of its own from now
+   * on, and the account it belongs to. A vault paired already is never taken
+   * over by another account; its own account pairing it again replaces the
+   * pairing, whose route is answered here: `replaced`.
+   */
+  async connect(grant: BackupGrant, label: string): Promise<{ pairing: Pairing; replaced: string | null }> {
+    await this.check(grant)
+    const existing = this.vaults.get(grant.vaultId)
+    if (existing && existing.pairing.accountId !== grant.accountId) throw new Error('this vault is paired here with another account')
+    const replaced = existing?.pairing.routeId ?? null
+    const secret = newBackupSecret()
+    const pairing: Pairing = {
+      secret: toBase64(secret),
+      routeId: (await backupRouteKeys(secret)).routeId,
+      accountId: grant.accountId,
+      label,
+      pairedAt: this.now
+    }
     const dir = vaultDir(this.options.dataDir, grant.vaultId)
     await mkdir(dir, { recursive: true })
     await writeJson(join(dir, 'grant.json'), grant, 0o600)
-    const existing = this.vaults.get(grant.vaultId)
-    if (existing) existing.grant = grant
-    else this.vaults.set(grant.vaultId, { grant, config: null, configAt: 0, running: false, runs: [], connectedAt: this.now })
-    log.info(`vault ${grant.vaultId} connected`)
-    await this.refresh(grant.vaultId)
+    await writeJson(join(dir, 'pairing.json'), pairing, 0o600)
+    if (existing) {
+      existing.grant = grant
+      existing.pairing = pairing
+      // Its settings were read under the old pairing's route; the device moves them to the new one.
+      existing.config = null
+      existing.configAt = 0
+    } else {
+      this.vaults.set(grant.vaultId, { grant, pairing, config: null, configAt: 0, running: false, runs: [] })
+    }
+    log.info(`vault ${grant.vaultId} paired${label ? ` (${label})` : ''}`)
+    this.routesChanged()
+    return { pairing, replaced }
+  }
+
+  /** A new backup key for a paired vault: a password change ended the one before. */
+  async rekey(vaultId: string, grant: BackupGrant): Promise<void> {
+    const vault = this.vaults.get(vaultId)
+    if (!vault) throw new Error('this backup server no longer has this vault')
+    if (grant.vaultId !== vaultId || grant.accountId !== vault.pairing.accountId) throw new Error('that grant is not for this vault')
+    await this.check(grant)
+    await writeJson(join(vaultDir(this.options.dataDir, vaultId), 'grant.json'), grant, 0o600)
+    vault.grant = grant
+    log.info(`vault ${vaultId} got a new backup key`)
   }
 
   /** Forgets a vault: its keys, its cache, its runs. Its repositories and trusted copy stay where they are. */
@@ -157,6 +268,26 @@ export class BackupService {
     this.vaults.delete(vaultId)
     await rm(vaultDir(this.options.dataDir, vaultId), { recursive: true, force: true })
     log.info(`vault ${vaultId} disconnected`)
+    this.routesChanged()
+  }
+
+  /**
+   * Lets go of vaults the operator disconnected on the command line, which
+   * takes their folder: they are not answered any more.
+   */
+  async reload(): Promise<void> {
+    let changed = false
+    for (const vaultId of Array.from(this.vaults.keys())) {
+      const dir = vaultDir(this.options.dataDir, vaultId)
+      if ((await exists(join(dir, 'pairing.json'))) && (await exists(join(dir, 'grant.json')))) continue
+      if (this.vaults.get(vaultId)?.running) continue
+      this.vaults.delete(vaultId)
+      // A run that was under way may have written its cache again meanwhile; it goes too.
+      await rm(dir, { recursive: true, force: true })
+      log.info(`vault ${vaultId} was disconnected on the command line`)
+      changed = true
+    }
+    if (changed) this.routesChanged()
   }
 
   /** The local folders every other vault's destinations use here. */
@@ -166,20 +297,20 @@ export class BackupService {
       .flatMap(([, other]) => other.config?.localPaths ?? [])
   }
 
-  /** Reads the vault's settings again. */
+  /** Reads the vault's settings again: the entries naming its pairing's route. */
   async refresh(vaultId: string): Promise<VaultConfig> {
     const vault = this.vaults.get(vaultId)
-    if (!vault) throw new Error('that vault is not connected here')
+    if (!vault) throw new Error('this backup server no longer has this vault')
     const keys = await VaultKeys.open(vault.grant)
     const settings = await fetchSettings(new SyncClient(this.options.server, vault.grant.backupKey), keys)
-    vault.config = readConfig(settings, this.options.routeId, this.options.root, this.localPathsBesides(vaultId))
+    vault.config = readConfig(settings, vault.pairing.routeId, this.options.root, this.localPathsBesides(vaultId))
     vault.configAt = this.now
     return vault.config
   }
 
   status(vaultId: string): BackupVaultStatus {
     const vault = this.vaults.get(vaultId)
-    if (!vault) throw new Error('that vault is not connected here')
+    if (!vault) throw new Error('this backup server no longer has this vault')
     return {
       vaultId,
       running: vault.running || this.waiting.has(vaultId),
@@ -195,7 +326,7 @@ export class BackupService {
   private nextRunAt(vault: Vault): number | null {
     const hours = vault.config?.everyHours ?? 0
     if (hours <= 0) return null
-    return (vault.runs.at(-1)?.startedAt ?? vault.connectedAt) + hours * HOUR_MS
+    return (vault.runs.at(-1)?.startedAt ?? vault.pairing.pairedAt) + hours * HOUR_MS
   }
 
   /** Queues a run; a vault already waiting is not queued twice. */
@@ -211,7 +342,7 @@ export class BackupService {
 
   private async runNow(vaultId: string, control: RunControl): Promise<RunReport> {
     const vault = this.vaults.get(vaultId)
-    if (!vault) throw new Error('that vault is not connected here')
+    if (!vault) throw new Error('this backup server no longer has this vault')
     vault.running = true
     let report: RunReport
     try {
@@ -260,6 +391,7 @@ export class BackupService {
    * once an hour per vault, so a schedule changed on a device takes hold.
    */
   async tick(): Promise<void> {
+    await this.reload()
     for (const [vaultId, vault] of this.vaults) {
       if (vault.running || this.waiting.has(vaultId)) continue
       if (!vault.config || this.now - vault.configAt >= HOUR_MS) {

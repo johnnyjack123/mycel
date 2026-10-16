@@ -22,7 +22,10 @@ const { TarWriter } = await import('../../backup/src/tar.js')
 const { TarHasher } = await import('../../backup/src/tarcheck.js')
 const { alignTrusted, TrustedRefused } = await import('../../backup/src/trusted.js')
 const { startBackupServer } = await import('../../backup/src/server.js')
-const { encodeBackupServerCode, newBackupServerSecret, openSession } = await import('@obsidian-connect/shared/crypto')
+const { Invites } = await import('../../backup/src/invites.js')
+const { listVaults } = await import('../../backup/src/service.js')
+const { backupRouteKeys, encodeBackupInvite, fromBase64, newBackupSecret, openSession } = await import('@obsidian-connect/shared/crypto')
+type BackupConnected = import('@obsidian-connect/shared').BackupConnected
 
 type RunReport = Awaited<ReturnType<typeof runBackup>>
 
@@ -402,61 +405,98 @@ try {
 
   // --- a backup server of its own, reached through the relay -------------------------------------
   let clock = Date.now()
+  const DAY_MS = 24 * 60 * 60 * 1000
   const backupRoot = join(root, 'backup-root')
+  const backupData = join(root, 'backup-server-2')
   const backupServer = await startBackupServer({
     server: `ws://127.0.0.1:${port}`,
-    dataDir: join(root, 'backup-server-2'),
+    dataDir: backupData,
     root: backupRoot,
     workDir: join(root, 'ram-2'),
     resticBinary: RESTIC,
     name: 'test backup server',
     version: 'test',
     tickMs: 100,
+    watchMs: 100,
     now: () => clock
   })
   stops.push(() => backupServer.close())
-  await backupServer.registered
-  check(backupServer.createdCode && /^([0-9A-HJKMNP-TV-Z]{5}-){5}[0-9A-HJKMNP-TV-Z]{5}$/.test(backupServer.code), 'a backup server makes its code on its first start')
   const refusal = (task: Promise<unknown>): Promise<string> =>
     task.then(
       () => 'accepted',
       (error: unknown) => (error instanceof Error ? error.message : String(error))
     )
-  check((await refusal(A3.openBackupSession('ABCDE-FGHJK'))).includes("not a backup server's code"), 'a typo in the code is caught on the device')
-  check(
-    (await refusal(A3.openBackupSession(await encodeBackupServerCode(newBackupServerSecret())))) === 'the backup server is not connected',
-    "another backup server's code reaches nothing"
-  )
+  const NOT_CONNECTED = 'the backup server is not connected'
+  type Status = { targets: string[]; problems: string[]; running: boolean; nextRunAt: number | null; runs: Array<{ ok: boolean; error?: string; accessEnded?: boolean }> }
 
-  const link = await A3.openBackupSession(backupServer.code)
+  // The operator's invitations.
+  {
+    const late = await backupServer.invite('late')
+    check(/^([0-9A-HJKMNP-TV-Z]{5}-){5}[0-9A-HJKMNP-TV-Z]{5}$/.test(late), 'the operator makes an invitation, written like a recovery code', late)
+    check((await refusal(A3.openInviteSession('ABCDE-FGHJK'))).includes('not an invitation'), 'a typo in it is caught on the device')
+    check((await refusal(A3.openInviteSession(await encodeBackupInvite(newBackupSecret())))) === NOT_CONNECTED, 'an invitation nobody made reaches nothing')
+    clock += 8 * DAY_MS
+    check(await eventually(async () => (await refusal(A3.openInviteSession(late, 2_000))) === NOT_CONNECTED, 10_000), 'one older than a week reaches nothing either')
+
+    // What the command line does: it writes the data folder, and the running backup server takes it up.
+    const made = await new Invites(backupData).create('from the command line', clock)
+    const reached = await eventually(async () => {
+      const session = await A3.openInviteSession(made.code, 2_000).catch(() => null)
+      session?.close()
+      return session !== null
+    }, 10_000)
+    check(reached, 'an invitation made on the command line is answered within moments')
+    await new Invites(backupData).remove(made.invite.id)
+    check(await eventually(async () => (await refusal(A3.openInviteSession(made.code, 2_000))) === NOT_CONNECTED, 10_000), 'and one withdrawn there reaches nothing')
+  }
+
+  const invitation = await backupServer.invite('for anna')
+  const link = await A3.openInviteSession(invitation)
   links.push(link)
   const info = await link.call<{ name: string; restic: string }>('info')
-  check(info.name === 'test backup server' && info.restic.startsWith('restic'), 'with the right code a device reaches the backup server through the relay', info)
+  check(info.name === 'test backup server' && info.restic.startsWith('restic'), 'with an invitation a device reaches the backup server through the relay', info)
+  check((await refusal(link.call('status'))).includes('connects a vault, and does nothing else'), 'and can do nothing on it but connect a vault')
   const relayGrant = await A3.makeBackupGrant('over the relay')
   const vaultId = relayGrant.vaultId
-  check((await link.call<{ vaultId: string }>('connect', { grant: relayGrant })).vaultId === vaultId, 'and connects its vault, handing the grant over the session')
+  const connected = await link.call<BackupConnected>('connect', { grant: relayGrant })
+  check(
+    connected.vaultId === vaultId && typeof connected.pairing === 'string' && connected.replaced === null,
+    'it connects its vault, handing the grant over the session, and gets a pairing of its own back'
+  )
+  check(await eventually(() => !link.open, 10_000), 'that spends the invitation, and its session ends')
+  check((await refusal(A3.openInviteSession(invitation, 5_000))) === NOT_CONNECTED, 'it opens nothing a second time')
+  {
+    const listed = await listVaults(backupData)
+    check(
+      listed.length === 1 && listed[0]?.vaultId === vaultId && listed[0].accountId === A3.accountId && listed[0].label === 'for anna',
+      'the operator sees the vault, whose account it is and the invitation it came with',
+      listed
+    )
+  }
 
+  const pairing = connected.pairing
+  const routeId = (await backupRouteKeys(fromBase64(pairing))).routeId
+  const paired = await A3.openPairingSession(pairing)
+  links.push(paired)
   const settings = A3.settings as NonNullable<typeof A3.settings>
-  const routeId = backupServer.routeId
-  settings.setBackupServer(routeId, { routeId, code: backupServer.code, label: 'test', addedAt: clock })
+  settings.setBackupServer(routeId, { routeId, pairing, label: 'test', keyId: relayGrant.keyId, addedAt: clock })
   settings.setBackupTarget('repo', { id: 'repo', server: routeId, kind: 'restic', location: 'vault-a/repo', password: 'relay password', keep: { last: 10 }, addedAt: 1 })
   settings.setBackupTarget('copy', { id: 'copy', server: routeId, kind: 'trusted', location: 'vault-a/copy', addedAt: 2 })
   settings.setBackupTarget('escape', { id: 'escape', server: routeId, kind: 'restic', location: '../outside', password: 'x', addedAt: 3 })
   settings.setBackupSchedule(routeId, { server: routeId, everyHours: 24 })
-  type Status = { targets: string[]; problems: string[]; running: boolean; nextRunAt: number | null; runs: Array<{ ok: boolean; error?: string }> }
   check(
-    await eventually(async () => (await link.call<Status>('refresh', { vaultId })).targets.join() === 'repo,copy', 15_000),
-    'the settings made on the device reach the backup server'
+    await eventually(async () => (await paired.call<Status>('refresh')).targets.join() === 'repo,copy', 15_000),
+    "over the vault's pairing, the settings made on the device reach the backup server"
   )
-  const configured = await link.call<Status>('status', { vaultId })
+  const configured = await paired.call<Status>('status')
   check(configured.problems.some((problem) => problem.includes('../outside')), 'a folder outside its backup folder is refused, and said why', configured.problems)
 
   const finished = new Promise<{ report: { ok: boolean } }>((resolve) => {
-    link.onEvent((event) => {
+    paired.onEvent((event) => {
       if (event.ev === 'finished') resolve(event.p as { report: { ok: boolean } })
     })
   })
-  await link.call('run', { vaultId })
+  await paired.call('run')
   const relayed = await Promise.race([finished, delay(120_000).then(() => null)])
   check(relayed?.report.ok === true, 'a backup started from the device runs, and the device hears how it went', relayed)
   {
@@ -475,7 +515,7 @@ try {
     const frames: Array<Record<string, unknown>> = []
     socket.addEventListener('message', (event) => frames.push(JSON.parse(String(event.data)) as Record<string, unknown>))
     await new Promise((resolve) => socket.addEventListener('open', resolve))
-    socket.send(JSON.stringify({ t: 'open', route: backupServer.routeId, ref: 7 }))
+    socket.send(JSON.stringify({ t: 'open', route: routeId, ref: 7 }))
     await eventually(() => frames.some((frame) => frame.t === 'opened'))
     const session = frames.find((frame) => frame.t === 'opened')?.s as number
     const { hello } = await openSession()
@@ -484,70 +524,77 @@ try {
     socket.send(JSON.stringify({ t: 'data', s: session, d: JSON.stringify({ c: Buffer.from(randomBytes(64)).toString('base64') }) }))
     check(
       await eventually(() => frames.some((frame) => frame.t === 'close' && frame.s === session)),
-      'someone who knows the route but not the code is turned away at the first sealed message',
+      "someone who knows the vault's route but not its pairing is turned away at the first sealed message",
       frames
     )
     socket.close()
   }
 
-  // A second session of the same account must show it holds the vault's key.
+  // Another account with an invitation of its own: its own vault, never anyone else's.
+  let benVault = ''
   {
-    const second = await A3.openBackupSession(backupServer.code)
-    links.push(second)
-    check((await refusal(second.call('status', { vaultId }))).includes('not a vault this device has shown it owns'), 'a new session asks for proof of the vault')
-    check((await refusal(second.call('authorize', { vaultId, proof: 'ab'.repeat(32) }))) === 'that is not your vault', 'a made-up proof is refused')
-    const authorized = await second.authorize<Status>(vaultId, await A3.backupVaultKey())
-    check(authorized.runs[0]?.ok === true, 'the right one shows the vault and its last run')
-  }
-
-  // Someone else with the code: their own vaults, never anyone else's.
-  {
-    const foreign = await B.openBackupSession(backupServer.code)
+    const benInvite = await backupServer.invite('for ben')
+    const foreign = await B.openInviteSession(benInvite)
     links.push(foreign)
-    check(
-      (await refusal(foreign.call('status', { vaultId }))).includes('not a vault this device has shown it owns') &&
-        (await refusal(foreign.call('run', { vaultId }))).includes('not a vault this device has shown it owns') &&
-        (await refusal(foreign.authorize(vaultId, new Uint8Array(randomBytes(32))))) === 'that is not your vault',
-      "another account with the code cannot see, start or claim someone else's vault"
-    )
     const benGrant = await B.makeBackupGrant('ben')
-    await foreign.call('connect', { grant: benGrant })
-    const benSettings = B.settings as NonNullable<typeof B.settings>
-    benSettings.setBackupTarget('intrude', { id: 'intrude', server: routeId, kind: 'restic', location: 'vault-a/repo/inside', password: 'x', addedAt: 1 })
+    benVault = benGrant.vaultId
     check(
-      await eventually(
-        async () => (await foreign.call<Status>('refresh', { vaultId: benGrant.vaultId })).problems.some((problem) => problem.includes('another vault')),
-        15_000
-      ),
-      "but can connect their own - and cannot put it into another vault's folder"
+      (await refusal(foreign.call('connect', { grant: { ...benGrant, vaultId, accountId: A3.accountId } }))) !== 'accepted',
+      "a grant made out for someone else's vault does not connect it"
     )
-    const checked = await foreign.call<{ ok: boolean; created?: boolean; error?: string }>('check', {
-      vaultId: benGrant.vaultId,
+    const benConnected = await foreign.call<BackupConnected>('connect', { grant: benGrant })
+    check(benConnected.vaultId === benVault && benConnected.replaced === null, 'the invitation is still good for their own')
+    const benPaired = await B.openPairingSession(benConnected.pairing)
+    links.push(benPaired)
+    check(
+      (await refusal(benPaired.call('rekey', { grant: relayGrant }))) === 'that grant is not for this vault',
+      "a pairing reaches its vault only: not even another vault's own grant takes it over"
+    )
+    check((await paired.call<Status>('status')).runs[0]?.ok === true, "and A's vault carries on as it was")
+    const benRoute = (await backupRouteKeys(fromBase64(benConnected.pairing))).routeId
+    const benSettings = B.settings as NonNullable<typeof B.settings>
+    benSettings.setBackupServer(benRoute, { routeId: benRoute, pairing: benConnected.pairing, label: 'ben', keyId: benGrant.keyId, addedAt: clock })
+    benSettings.setBackupTarget('intrude', { id: 'intrude', server: benRoute, kind: 'restic', location: 'vault-a/repo/inside', password: 'x', addedAt: 1 })
+    check(
+      await eventually(async () => (await benPaired.call<Status>('refresh')).problems.some((problem) => problem.includes('another vault')), 15_000),
+      "nor can it put its vault into another vault's folder"
+    )
+    const checked = await benPaired.call<{ ok: boolean; created?: boolean; error?: string }>('check', {
       target: { kind: 'restic', location: 'vault-b/repo', password: 'ben password' }
     })
     check(checked.ok && checked.created === true, 'a destination is checked before it is saved - the repository made where there is none', checked)
-    const wrong = await foreign.call<{ ok: boolean; error?: string }>('check', {
-      vaultId: benGrant.vaultId,
+    const wrong = await benPaired.call<{ ok: boolean; error?: string }>('check', {
       target: { kind: 'restic', location: 'vault-b/repo', password: 'not it' }
     })
     check(!wrong.ok && wrong.error === 'the repository password is wrong', 'and a wrong password said as such', wrong)
+
+    // The operator disconnects it on the command line: its folder goes, and the running backup server lets go.
+    rmSync(join(backupData, 'vaults', benVault), { recursive: true, force: true })
+    check(
+      await eventually(async () => !backupServer.service.has(benVault) && (await refusal(B.openPairingSession(benConnected.pairing, 2_000))) === NOT_CONNECTED, 10_000),
+      'a vault the operator disconnects is let go, and its pairing reaches nothing'
+    )
+    check(backupServer.service.has(vaultId), 'the other vaults carry on')
   }
 
   // The schedule.
   {
-    const before = (await link.call<Status>('status', { vaultId })).runs.length
+    const before = (await paired.call<Status>('status')).runs.length
     clock += 25 * 60 * 60 * 1000
     check(
       await eventually(async () => {
-        const now = await link.call<Status>('status', { vaultId })
+        const now = await paired.call<Status>('status')
         return now.runs.length > before && !now.running
       }, 120_000),
       'a day later the schedule starts a run on its own'
     )
   }
 
-  await link.call('disconnect', { vaultId })
-  check((await refusal(link.call('status', { vaultId }))).length > 0 && !existsSync(join(root, 'backup-server-2', 'vaults', vaultId)), 'disconnecting forgets the vault and its keys')
+  await paired.call('disconnect')
+  check(
+    !backupServer.service.has(vaultId) && !existsSync(join(backupData, 'vaults', vaultId)) && (await refusal(A3.openPairingSession(pairing, 5_000))) === NOT_CONNECTED,
+    'disconnecting forgets the vault and its keys, and its pairing reaches nothing any more'
+  )
   check(existsSync(join(backupRoot, 'vault-a', 'repo', 'config')) && existsSync(join(backupRoot, 'vault-a', 'copy', folder)), 'and leaves its repository and copy where they are')
 
   // --- what the settings screen does: connecting, destinations, the schedule, a password change -----
@@ -557,39 +604,53 @@ try {
     settings.setBackupSchedule(routeId, null)
     settings.setBackupServer(routeId, null)
     const backups = A3.backups
-    const connected = await backups.connect(backupServer.code, A3.password, '')
+    const connectedHere = await backups.connect(await backupServer.invite('settings'), A3.password, '')
+    const uiRoute = connectedHere.routeId
     check(
-      connected.label === 'test backup server' && backups.servers().length === 1 && settings.backupSchedule(routeId)?.everyHours === 24,
+      connectedHere.label === 'test backup server' && backups.servers().length === 1 && settings.backupSchedule(uiRoute)?.everyHours === 24,
       'connected from the settings, it is called what it calls itself and backs up daily unless told otherwise'
     )
-    const made = await backups.addTarget(routeId, { kind: 'restic', location: 'ui/repo', password: 'ui password' })
+    const made = await backups.addTarget(uiRoute, { kind: 'restic', location: 'ui/repo', password: 'ui password' })
     check(made.created, 'a repository added in the settings is checked and made')
-    await backups.addTarget(routeId, { kind: 'trusted', location: 'ui/copy' })
-    const outside = await refusal(backups.addTarget(routeId, { kind: 'restic', location: '../escape', password: 'x' }))
-    check(outside.includes('not a folder below') && settings.backupTargets(routeId).length === 2, 'one outside the backup folder is refused before it is saved', outside)
-    await backups.setSchedule(routeId, 6)
-    const view = backups.view(routeId)
+    await backups.addTarget(uiRoute, { kind: 'trusted', location: 'ui/copy' })
+    const outside = await refusal(backups.addTarget(uiRoute, { kind: 'restic', location: '../escape', password: 'x' }))
+    check(outside.includes('not a folder below') && settings.backupTargets(uiRoute).length === 2, 'one outside the backup folder is refused before it is saved', outside)
+    await backups.setSchedule(uiRoute, 6)
+    const view = backups.view(uiRoute)
     check(
       view?.status?.everyHours === 6 && view.status.targets.length === 2,
       'the backup server has the destinations and the schedule by the time the settings say so',
       view?.status
     )
-    await backups.runNow(routeId)
-    check(await eventually(async () => (await backups.ask(routeId))?.status?.runs[0]?.ok === true, 120_000), 'a backup started from the settings runs')
+    await backups.runNow(uiRoute)
+    check(await eventually(async () => (await backups.ask(uiRoute))?.status?.runs[0]?.ok === true, 120_000), 'a backup started from the settings runs')
     check((await backups.problems()).length === 0, 'and nothing calls for a notice')
 
-    // A password change ends the key; the device that made it hands out a new one.
+    // A password change ends the key; the pairing stands, and the device that made it hands out a new key over it.
     const newPassword = 'a much newer password 4711'
     await A3.changePassword(newPassword)
-    await backups.runNow(routeId)
+    await backups.runNow(uiRoute)
     check(
-      await eventually(async () => (await backups.ask(routeId))?.status?.runs[0]?.accessEnded === true, 120_000),
+      await eventually(async () => (await backups.ask(uiRoute))?.status?.runs[0]?.accessEnded === true, 120_000),
       'after a password change the backup server reads nothing with its old key'
     )
     check((await backups.problems()).some((problem) => problem.includes('failed')), 'and the device is told')
-    check((await backups.reconnectAll(newPassword)) === 1, 'the device that changed the password gives it a new key')
-    await backups.runNow(routeId)
-    check(await eventually(async () => (await backups.ask(routeId))?.status?.runs[0]?.ok === true, 120_000), 'and it backs up again')
+    check((await backups.reconnectAll(newPassword)) === 1, 'the device that changed the password gives it a new key, without a new invitation')
+    await backups.runNow(uiRoute)
+    check(await eventually(async () => (await backups.ask(uiRoute))?.status?.runs[0]?.ok === true, 120_000), 'and it backs up again')
+
+    // Connected again with a new invitation: a new pairing, the destinations carry on.
+    const again = await backups.connect(await backupServer.invite('again'), newPassword, '')
+    check(
+      again.routeId !== uiRoute && backups.servers().length === 1 && settings.backupTargets(again.routeId).length === 2 && settings.backupTargets(uiRoute).length === 0,
+      'the same vault connected again gets a new pairing, and its destinations and schedule move along',
+      backups.servers()
+    )
+    check((await refusal(A3.openPairingSession(connectedHere.pairing, 5_000))) === NOT_CONNECTED, 'the old pairing reaches nothing')
+    {
+      const status = (await backups.ask(again.routeId))?.status
+      check(status?.everyHours === 6 && status.targets.length === 2, 'and the backup server reads the settings under the new one', status)
+    }
 
     // Every device of the account sees it, and may start or disconnect it.
     const A4 = new Device(`anna${run}`, false)
@@ -597,9 +658,9 @@ try {
     devices.push(A4)
     check(await A4.boot(), 'another device of the account signs in')
     check(await eventually(() => A4.backups.servers().length === 1, 15_000), 'and finds the backup server in the settings')
-    check((await A4.backups.ask(routeId))?.status?.runs[0]?.ok === true, "and its state, showing the vault's key in a session of its own")
-    await A4.backups.disconnect(routeId)
-    check(A4.backups.servers().length === 0 && A4.settings?.backupTargets(routeId).length === 0, 'disconnecting on any device takes it out of the settings')
+    check((await A4.backups.ask(again.routeId))?.status?.runs[0]?.ok === true, "and its state, through the vault's pairing")
+    await A4.backups.disconnect(again.routeId)
+    check(A4.backups.servers().length === 0 && A4.settings?.backupTargets(again.routeId).length === 0, 'disconnecting on any device takes it out of the settings')
     check(!backupServer.service.has(vaultId), 'and the backup server forgets the vault')
   }
 } catch (error) {

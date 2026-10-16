@@ -342,14 +342,21 @@ people: whoever runs it can read the vaults on it.
   that the reading routes accept for that one vault (`reader`/`roomReader` in
   `http.ts`). A password change, a recovery and removing the account end every key;
   the device that changed the password hands out new ones at once.
-- **Reached only through the sync server.** The backup server has a **code**; it
-  registers at `/relay` under the hash of a token derived from it, and a device opens
-  a session there. The session's key depends on the code, which never travels: each
-  end proves it knows it (`openSession`/`answerSession`/`finishSession`, `SessionCipher`
-  in `shared/crypto`), so the relay can neither read nor pose as either end. A
-  connected vault answers only to a session that showed the vault's key
-  (`vaultControlProof`). The device hands over a **grant** - backup key, vault key,
-  the account's key pair (shared notes are sealed to it) - inside the session.
+- **Reached only through the sync server, on a secret per route.** The backup
+  server registers at `/relay` one **route** per secret it holds - the hash of a
+  token derived from it (`backupRouteKeys`) -, all on one connection. A secret is
+  an operator's one-time **invitation** (`invites.ts`, 7 days) or a vault's
+  **pairing**. A session's key depends on the route's secret, which never travels:
+  each end proves it knows it (`openSession`/`answerSession`/`finishSession`,
+  `SessionCipher` in `shared/crypto`), so the relay can neither read nor pose as
+  either end. On an invitation's route a session can only `connect`: the device
+  hands over a **grant** - backup key, vault key, the account's key pair (shared
+  notes are sealed to it) - and gets the vault's pairing secret back, kept in the
+  vault's settings (`backupServer:<routeId>`); the invitation is spent, *after* the
+  answer (spending drops its route, and the relay ends the session with it). On a
+  pairing's route a session reaches that vault and nothing else, and a vault
+  paired with one account is never taken over by another. A password change
+  `rekey`s over the pairing; only a lost vault needs a new invitation.
 - **Set up from the plugin.** Destinations and schedule live in the vault's settings
   document (`backupServer:`, `backupTarget:`, `backupSchedule:`), which the backup
   server reads with its key; local folders only below its backup folder, never in or
@@ -550,8 +557,8 @@ scanned by an authenticator app and the `otpauth://` link opening one.
   only, starts the image once (health check, `invite` through the CLI) and
   publishes it to `ghcr.io/johnnyjack123/obsidian-connect-server`. A broken
   `Dockerfile` shows up there and nowhere earlier. The `docker-backup` job builds
-  and starts `Dockerfile.backup` on every push (restic runs, the code is made and
-  kept, the server survives an unreachable sync server) and publishes
+  and starts `Dockerfile.backup` on every push (restic runs, an invitation is made
+  and kept, the server survives an unreachable sync server) and publishes
   `obsidian-connect-backup` from `main` only. Every Dockerfile copies every
   workspace's `package.json` before `npm ci`.
 - **restic for `test:backup`** is pinned (0.19.1, CI checks its checksum, and so
