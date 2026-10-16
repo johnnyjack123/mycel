@@ -255,7 +255,11 @@ At 0.7.4 and 0.7.5, 2026-10-16: `typecheck`, `build`, `test:merge` 163, `test:lo
 14, `test:rooms` 278, `test:backup` 91 pass (0.7.5 changes only the backup server's
 timer and the plugin's settings over 0.7.3, whose full run is below). CI on the
 branch: 0.7.4's tests green, its new `docker-backup` job built the image and found
-it ending a second after starting (fixed in 0.7.5); 0.7.5's run: see the merge.
+it ending a second after starting (fixed in 0.7.5); 0.7.5 green. The merge into `main`
+(`6c3de93`, 2026-10-16): CI green - the tests, the `docker` job (server image), and
+`docker-backup`, which published `ghcr.io/johnnyjack123/obsidian-connect-backup`
+(`latest`, `sha-6c3de93`) for the first time; the `latest-build` pre-release holds
+0.7.5. `feat/backup-api` is merged and still exists.
 
 At 0.7.3, run 2026-10-16 before its commit: `typecheck` and `build` pass; `test:merge`
 163, `test:load` 14, `test:rooms` 278, `test:sync` 26, `test:account` 50, `test:backup`
