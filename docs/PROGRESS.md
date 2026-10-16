@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-16 · **Milestone 0.7 designed with the user: a backup server of its own (`docs/PHASE6.md`), built on `feat/backup-api` in five steps, 0.7.0 to 0.7.4. Built: 0.7.0 (the sync server's backup keys and read scope), 0.7.1 (the run, `packages/backup`, `test:backup` with a real restic), 0.7.2 (the relay, the backup server's code, the encrypted session, the schedule). Next 0.7.3: the plugin's settings screen for backups. The operator's encrypted backup of the data directory moved to later. 0.6.8 is on `main` and confirmed on the user's devices.**_
+_Last updated: 2026-10-16 · **Milestone 0.7 designed with the user: a backup server of its own (`docs/PHASE6.md`), built on `feat/backup-api` in five steps, 0.7.0 to 0.7.4. Built: 0.7.0 (the sync server's backup keys and read scope), 0.7.1 (the run, `packages/backup`, `test:backup` with a real restic), 0.7.2 (the relay, the backup server's code, the encrypted session, the schedule), 0.7.3 (Settings → Backup servers). Next 0.7.4: the Docker image of the backup server, CI, `docs/BACKUP.md`; then the merge into `main`. The operator's encrypted backup of the data directory moved to later. 0.6.8 is on `main` and confirmed on the user's devices.**_
 
 ## Where we are
 
@@ -214,6 +214,11 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
   the file Obsidian's only while the same store binds the editor again
   (`EditorSync.rebinding`); a new store has to settle against the server first.
 - The plugin id contains "obsidian", which the community directory refuses (0.9).
+- `test:recovery`'s check "carries on in the same note, and what it wrote while away
+  reaches P1" failed once on 2026-10-16 and passed in the next two runs. Its log showed
+  "Shared/Shared.md: deleted on another device, moved to the trash here" on the device
+  coming back just before. If it fails again, find out whether that move to the trash
+  is a race in the fork on return (0.8).
 - The Docker image is private, like the repository: pulling it needs `docker login
   ghcr.io` with a token that may read packages. It has passed CI's smoke test but
   has not run on a real server yet.
@@ -225,6 +230,16 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15; nothing on the PATH). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
+
+At 0.7.3, run 2026-10-16 before its commit: `typecheck` and `build` pass; `test:merge`
+163, `test:load` 14, `test:rooms` 278, `test:sync` 26, `test:account` 50, `test:backup`
+91 - all pass; `test:recovery` 56 passed twice in a row after one run in which "carries
+on in the same note, and what it wrote while away reaches P1" failed (P2 had the right
+text; the condition was not met within its 15 s). That path - a shared note whose
+owner's account was removed, and a device coming back - is untouched by 0.7; noted
+under "Known issues" to watch. Against a scratch server on 1235, `test:socket` 19 and
+`test:vault` 230 pass (the user's server on 1234 was not running, before or after).
+Not merged, not on a device.
 
 At 0.7.2, run 2026-10-16 before its commit: `typecheck` and `build` pass; `test:merge`
 163, `test:load` 14, `test:rooms` 278, `test:sync` 26, `test:recovery` 56,

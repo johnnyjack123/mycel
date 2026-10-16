@@ -337,6 +337,8 @@ export interface BackupServerSetting {
   /** The backup server's code: every device of the account reaches it with it. */
   code: string
   label: string
+  /** Its backup key on the sync server, which any device deletes when disconnecting it. */
+  keyId: string
   addedAt: number
 }
 
@@ -430,6 +432,10 @@ export interface BackupVaultStatus {
   nextRunAt: number | null
   /** The destinations (`backupTarget` ids) the backup server takes from the settings. */
   targets: string[]
+  /** Every destination for this backup server it found in the settings, taken or not. */
+  seen: string[]
+  /** The schedule as it read it; 0 for none. */
+  everyHours: number
   /** Settings the backup server cannot use, and why. */
   problems: string[]
   /** Newest first. */

@@ -30,6 +30,8 @@ import { PasswordModal } from './account/PasswordModal'
 import { PasswordPromptModal, RecoveryCodeModal } from './account/RecoveryModals'
 import { TotpSetupModal, askKeepTotp, askTotpCode } from './account/TotpModals'
 import { Session, type OpenVault, type SecretStore, type Unlocked } from './account/Session'
+import { Backups } from './backup/Backups'
+import { BackupConnectModal, BackupTargetModal } from './backup/BackupModals'
 import { EditorSync } from './editor/EditorSync'
 import { BackupModal } from './history/BackupModal'
 import { HistoryModal } from './history/HistoryModal'
@@ -81,6 +83,9 @@ const ATTACHMENT_MIN_VERSION_AGE_MS = 10 * 60 * 1000
 const SHARED_FILES_EVERY_MS = 60_000
 // A link no list names yet waits this long before this device lists its own file for it.
 const SHARED_FILES_CLAIM_MS = 10_000
+// How often the backup servers are asked whether the vault's backups are well; the first time a minute after starting.
+const BACKUP_CHECK_EVERY_MS = 6 * 60 * 60 * 1000
+const BACKUP_CHECK_DELAY_MS = 60 * 1000
 
 type SyncState = Exclude<NoteSyncState | AttachmentSyncState, 'untracked'>
 
@@ -177,6 +182,29 @@ export default class ObsidianConnectPlugin extends Plugin {
     () => this.store,
     (state) => state.field(editorInfoField, false)?.file ?? null
   )
+  /** The vault's backup servers; the merge backups in the plugin folder are `backups`. */
+  private readonly backupServers = new Backups({
+    serverUrl: () => this.settings.serverUrl,
+    token: () => this.settings.token || null,
+    settings: () => this.accountSettings,
+    vault: () => this.vault,
+    makeGrant: async (password, label) => {
+      if (!this.unlocked || !this.vault) throw new Error('Sync is not running.')
+      const made = await this.session.makeBackupGrant(this.unlocked, password, this.vault, label)
+      this.unlocked = made.unlocked
+      return made.grant
+    },
+    deleteKey: async (keyId) => {
+      if (!this.unlocked) throw new Error('Sign in first.')
+      this.unlocked = await this.session.deleteBackupKey(this.unlocked, keyId)
+    },
+    lastGood: () => this.settings.backupLastGood,
+    saveLastGood: async (value) => {
+      this.settings.backupLastGood = value
+      await this.saveSettings()
+    }
+  })
+  private backupCheck: number | null = null
 
   private unlocked: Unlocked | null = null
   private vault: OpenVault | null = null
@@ -263,6 +291,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     )
     this.settingTab = new ObsidianConnectSettingTab(this.app, this)
     this.addSettingTab(this.settingTab)
+    this.register(this.backupServers.onChange(() => this.settingTab?.refresh()))
     // Obsidian adds this to every Markdown editor and keeps it there across
     // file switches and mode changes.
     this.registerEditorExtension(this.editors.extension)
@@ -289,6 +318,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       name: 'Reconnect and rescan the vault',
       callback: () => void this.restartSync()
     })
+    this.addCommand({ id: 'backup-now', name: 'Back up this vault now, on every backup server', callback: () => void this.backUpNow() })
     this.addCommand({ id: 'share-note', name: 'Share this note…', callback: () => this.openShare() })
     this.addCommand({ id: 'note-access', name: 'Who has access to this note', callback: () => this.openAccess() })
     this.addCommand({ id: 'shared-with-me', name: 'Notes shared with me', callback: () => this.openIncoming() })
@@ -471,6 +501,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       : null
     new RecoveryCodeModal(this.app, recoveryCode, 'The code you used no longer works. This is your new one.', offerTotp).open()
     await this.startSync()
+    void this.reconnectBackups(password)
   }
 
   /** What the settings show about two-factor sign-in; null while not signed in. */
@@ -623,7 +654,69 @@ export default class ObsidianConnectPlugin extends Plugin {
     new PasswordModal(this.app, async (current, next) => {
       if (!this.unlocked) throw new Error('Sign in first.')
       this.unlocked = await this.session.changePassword(this.unlocked, current, next)
+      void this.reconnectBackups(next)
     }).open()
+  }
+
+  // --- backup servers --------------------------------------------------------
+
+  /** The vault's backup servers, while the vault syncs. */
+  backupsOf(): Backups | null {
+    return this.accountSettings && this.vault ? this.backupServers : null
+  }
+
+  openBackupConnect(): void {
+    if (!this.backupsOf()) {
+      new Notice('Obsidian Connect: backups are set up while this vault syncs.')
+      return
+    }
+    new BackupConnectModal(this.app, this.backupServers, () => this.settingTab?.refresh()).open()
+  }
+
+  openBackupTarget(routeId: string, root: string | null, hasTrusted: boolean): void {
+    new BackupTargetModal(this.app, this.backupServers, routeId, root, hasTrusted, () => this.settingTab?.refresh()).open()
+  }
+
+  private async backUpNow(): Promise<void> {
+    const servers = this.backupsOf()?.servers() ?? []
+    if (servers.length === 0) {
+      new Notice('Obsidian Connect: this vault has no backup server. Connect one in the settings.')
+      return
+    }
+    for (const server of servers) {
+      try {
+        await this.backupServers.runNow(server.routeId)
+        new Notice(`Obsidian Connect: ${server.label} is backing up the vault.`)
+      } catch (error) {
+        new Notice(`Obsidian Connect: ${server.label} - ${error instanceof Error ? error.message : String(error)}`, 10_000)
+      }
+    }
+  }
+
+  /**
+   * A password change or a recovery ended every backup key. The password is
+   * at hand right now, so every backup server gets a new one at once.
+   */
+  private async reconnectBackups(password: string): Promise<void> {
+    const servers = this.backupServers.servers()
+    if (servers.length === 0) return
+    const done = await this.backupServers.reconnectAll(password)
+    if (done === servers.length) new Notice(`Obsidian Connect: your backup server(s) got new keys and back up as before.`)
+    else new Notice(`Obsidian Connect: ${servers.length - done} backup server(s) could not be reached and need connecting again - see the settings.`, 0)
+  }
+
+  /** A notice when backups are not well: failed, waiting, or overdue. Asked now and then while the vault syncs. */
+  private scheduleBackupCheck(): void {
+    if (this.backupCheck !== null) return
+    const check = async (): Promise<void> => {
+      const backups = this.backupsOf()
+      if (!backups || backups.servers().length === 0) return
+      const problems = await backups.problems()
+      if (problems.length > 0) new Notice(`Obsidian Connect - backups:\n${problems.join('\n')}`, 0)
+    }
+    window.setTimeout(() => void check(), BACKUP_CHECK_DELAY_MS)
+    this.backupCheck = window.setInterval(() => void check(), BACKUP_CHECK_EVERY_MS)
+    this.registerInterval(this.backupCheck)
   }
 
   // --- lifecycle -----------------------------------------------------------
@@ -839,6 +932,7 @@ export default class ObsidianConnectPlugin extends Plugin {
           (error: unknown) => log.warn('checking for shared notes failed', error)
         )
         window.setTimeout(() => void this.compact(), COMPACT_DELAY_MS)
+        this.scheduleBackupCheck()
       }
     } catch (error) {
       log.error('starting sync failed', error)
@@ -944,6 +1038,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     // A start under way stops at its next step; what it built so far goes below.
     this.syncRun += 1
     this.opening = false
+    this.backupServers.closeSessions()
     // Editors first: releasing them hands their files back to the store,
     // which must still be there to take them.
     this.editors.unbindAll()

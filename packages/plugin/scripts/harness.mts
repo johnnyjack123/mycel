@@ -48,6 +48,7 @@ const { Sharing } = await import('../src/share/Sharing.js')
 const { SharedFiles } = await import('../src/share/SharedFiles.js')
 const { Contacts } = await import('../src/share/Contacts.js')
 const { openBackupSession } = await import('../src/backup/BackupLink.js')
+const { Backups } = await import('../src/backup/Backups.js')
 const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
 )
@@ -202,6 +203,7 @@ export class Device {
     this.unlocked = unlocked
     this.accountId = unlocked.accountId
     const openVault = await this.session.openVault(unlocked, VAULT)
+    this.openedVault = openVault
     const keys = new KeyRing(openVault, unlocked, this.api, this.secrets)
     const vault = this.vault
     // Leaves showing files that are not notes - a canvas, a PDF - as far as
@@ -397,6 +399,28 @@ export class Device {
     this.unlocked = await this.session.deleteBackupKey(this.unlocked, keyId)
   }
 
+  private openedVault: { vaultId: string; key: Uint8Array<ArrayBuffer> } | null = null
+  private backupsController: InstanceType<typeof Backups> | null = null
+  /** When this device last saw a good backup, per backup server - main.ts keeps it in data.json. */
+  backupLastGood: Record<string, number> = {}
+
+  /** The backup servers of the vault, wired the way main.ts wires them. */
+  get backups(): InstanceType<typeof Backups> {
+    this.backupsController ??= new Backups({
+      serverUrl: () => serverUrl,
+      token: () => this.token,
+      settings: () => this.settings,
+      vault: () => this.openedVault,
+      makeGrant: (password, label) => this.makeBackupGrant(label, password),
+      deleteKey: (keyId) => this.deleteBackupKey(keyId),
+      lastGood: () => this.backupLastGood,
+      saveLastGood: async (value) => {
+        this.backupLastGood = value
+      }
+    })
+    return this.backupsController
+  }
+
   /** A session with a backup server through the sync server's relay, as the settings open one. */
   openBackupSession(code: string): ReturnType<typeof openBackupSession> {
     return openBackupSession(serverUrl, this.token ?? '', code)
@@ -465,6 +489,7 @@ export class Device {
   }
 
   async shutdown(): Promise<void> {
+    this.backupsController?.closeSessions()
     for (const view of this.views.splice(0)) view.close()
     this.editors.unbindAll()
     if (this.indexTimer) clearTimeout(this.indexTimer)

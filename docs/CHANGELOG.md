@@ -8,6 +8,22 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.3** (2026-10-16) - backups in the plugin's settings. *Settings → Backup
+  servers*: connect one with its code and the password, add destinations - a restic
+  repository (a folder below the backup server's backup folder or a cloud location,
+  its password made on request, credentials, how long backups are kept) or the
+  trusted copy -, each checked by the backup server before it is saved; choose how
+  often; start a backup; see how the last one went per destination; let a waiting
+  trusted copy follow; disconnect (from any device, which deletes its key). A
+  password change and a recovery give every backup server a new key at once. A notice
+  when a backup failed, the trusted copy waits, or there has been no good backup for
+  twice the schedule - also when the backup server cannot be reached. A command backs
+  up on every backup server. `test:backup` 91: the settings' side against a real
+  backup server - connected, a repository made, a folder outside refused before it
+  is saved, the schedule, a run, a password change ending the key and the device that
+  made it handing out a new one, another device of the account seeing and
+  disconnecting it. The dialogs, the settings section and the notice are for a device.
+
 - **0.7.2** (2026-10-15) - the backup server reachable from a device, through the sync
   server; no settings screen yet (0.7.3). The sync server has a relay (`/relay`): a
   backup server registers under the hash of a token from its code, a signed-in device

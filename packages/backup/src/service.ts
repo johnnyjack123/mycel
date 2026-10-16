@@ -185,6 +185,8 @@ export class BackupService {
       running: vault.running || this.waiting.has(vaultId),
       nextRunAt: this.nextRunAt(vault),
       targets: vault.config?.accepted ?? [],
+      seen: vault.config?.seen ?? [],
+      everyHours: vault.config?.everyHours ?? 0,
       problems: vault.config?.problems ?? [],
       runs: vault.runs.map(statusOf).reverse()
     }

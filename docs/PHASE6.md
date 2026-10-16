@@ -305,6 +305,27 @@ asking:
   last run failed - asked on start and every few hours, since nobody looks at a backup
   until it is needed.
 
+*As built (0.7.3):* *Settings → Backup servers*, between Contacts and This device
+(`plugin/src/backup/Backups.ts` keeps the sessions and the backup servers' state,
+`BackupModals.ts` the two dialogs). Per backup server: a line on its last backup and
+the next, "Back up now", "Disconnect" (asks once more), how often ("Only when started
+here", every hour, 6 hours, day, week), each destination with its last outcome, a key
+button copying a repository's password and a trash button removing it, "Follow
+anyway" while the trusted copy waits, and what it refused and why. Taken without
+asking:
+
+- A backup server connected from the settings backs up every day until told
+  otherwise; a restic destination keeps the last 3, one a day for a week, a week for 5
+  weeks, a month for a year and a year for 3 years, unless "a day for a month" or
+  "everything" is chosen.
+- The notice comes a minute after sync starts and every six hours after: a last run
+  that failed, a trusted copy that waits, or no good backup for twice the schedule
+  (three days without one) - also when the backup server cannot be reached, the case
+  that matters most. It stays until clicked away. Each device remembers when it last
+  saw a good backup (`backupLastGood` in `data.json`).
+- The server entry holds its backup key's id, so any device disconnecting it deletes
+  the key. A command, "Back up this vault now, on every backup server", for phones.
+
 ## The relay
 
 `/relay` on the sync server, a WebSocket.

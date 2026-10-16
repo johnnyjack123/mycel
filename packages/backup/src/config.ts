@@ -29,6 +29,8 @@ export interface VaultConfig {
   localPaths: string[]
   /** The ids of the targets taken. */
   accepted: string[]
+  /** The ids of every target for this backup server, taken or not. */
+  seen: string[]
 }
 
 const KEEP_RULES = ['last', 'hourly', 'daily', 'weekly', 'monthly', 'yearly'] as const
@@ -79,7 +81,7 @@ export function envOf(value: unknown): Record<string, string> | undefined {
  * `elsewhere`: local folders other vaults' destinations use here.
  */
 export function readConfig(settings: ReadonlyMap<string, unknown>, routeId: string, root: string, elsewhere: readonly string[]): VaultConfig {
-  const result: VaultConfig = { config: { destinations: [], trusted: null }, everyHours: 0, problems: [], localPaths: [], accepted: [] }
+  const result: VaultConfig = { config: { destinations: [], trusted: null }, everyHours: 0, problems: [], localPaths: [], accepted: [], seen: [] }
   const schedule = settings.get(`${BACKUP_SCHEDULE_KEY}${routeId}`) as Partial<BackupScheduleSetting> | undefined
   if (schedule && typeof schedule.everyHours === 'number' && Number.isFinite(schedule.everyHours) && schedule.everyHours > 0) {
     result.everyHours = Math.max(1, Math.round(schedule.everyHours))
@@ -93,6 +95,7 @@ export function readConfig(settings: ReadonlyMap<string, unknown>, routeId: stri
     targets.push(target as BackupTargetSetting)
   }
   targets.sort((a, b) => (a.addedAt ?? 0) - (b.addedAt ?? 0) || (a.id < b.id ? -1 : 1))
+  result.seen = targets.map((target) => target.id)
 
   const claim = (target: BackupTargetSetting, path: string): boolean => {
     if (elsewhere.some((other) => overlapping(other, path))) {

@@ -549,6 +549,59 @@ try {
   await link.call('disconnect', { vaultId })
   check((await refusal(link.call('status', { vaultId }))).length > 0 && !existsSync(join(root, 'backup-server-2', 'vaults', vaultId)), 'disconnecting forgets the vault and its keys')
   check(existsSync(join(backupRoot, 'vault-a', 'repo', 'config')) && existsSync(join(backupRoot, 'vault-a', 'copy', folder)), 'and leaves its repository and copy where they are')
+
+  // --- what the settings screen does: connecting, destinations, the schedule, a password change -----
+  {
+    // What the session test above put into the settings goes first.
+    for (const target of settings.backupTargets(routeId)) settings.setBackupTarget(target.id, null)
+    settings.setBackupSchedule(routeId, null)
+    settings.setBackupServer(routeId, null)
+    const backups = A3.backups
+    const connected = await backups.connect(backupServer.code, A3.password, '')
+    check(
+      connected.label === 'test backup server' && backups.servers().length === 1 && settings.backupSchedule(routeId)?.everyHours === 24,
+      'connected from the settings, it is called what it calls itself and backs up daily unless told otherwise'
+    )
+    const made = await backups.addTarget(routeId, { kind: 'restic', location: 'ui/repo', password: 'ui password' })
+    check(made.created, 'a repository added in the settings is checked and made')
+    await backups.addTarget(routeId, { kind: 'trusted', location: 'ui/copy' })
+    const outside = await refusal(backups.addTarget(routeId, { kind: 'restic', location: '../escape', password: 'x' }))
+    check(outside.includes('not a folder below') && settings.backupTargets(routeId).length === 2, 'one outside the backup folder is refused before it is saved', outside)
+    await backups.setSchedule(routeId, 6)
+    const view = backups.view(routeId)
+    check(
+      view?.status?.everyHours === 6 && view.status.targets.length === 2,
+      'the backup server has the destinations and the schedule by the time the settings say so',
+      view?.status
+    )
+    await backups.runNow(routeId)
+    check(await eventually(async () => (await backups.ask(routeId))?.status?.runs[0]?.ok === true, 120_000), 'a backup started from the settings runs')
+    check((await backups.problems()).length === 0, 'and nothing calls for a notice')
+
+    // A password change ends the key; the device that made it hands out a new one.
+    const newPassword = 'a much newer password 4711'
+    await A3.changePassword(newPassword)
+    await backups.runNow(routeId)
+    check(
+      await eventually(async () => (await backups.ask(routeId))?.status?.runs[0]?.accessEnded === true, 120_000),
+      'after a password change the backup server reads nothing with its old key'
+    )
+    check((await backups.problems()).some((problem) => problem.includes('failed')), 'and the device is told')
+    check((await backups.reconnectAll(newPassword)) === 1, 'the device that changed the password gives it a new key')
+    await backups.runNow(routeId)
+    check(await eventually(async () => (await backups.ask(routeId))?.status?.runs[0]?.ok === true, 120_000), 'and it backs up again')
+
+    // Every device of the account sees it, and may start or disconnect it.
+    const A4 = new Device(`anna${run}`, false)
+    A4.password = newPassword
+    devices.push(A4)
+    check(await A4.boot(), 'another device of the account signs in')
+    check(await eventually(() => A4.backups.servers().length === 1, 15_000), 'and finds the backup server in the settings')
+    check((await A4.backups.ask(routeId))?.status?.runs[0]?.ok === true, "and its state, showing the vault's key in a session of its own")
+    await A4.backups.disconnect(routeId)
+    check(A4.backups.servers().length === 0 && A4.settings?.backupTargets(routeId).length === 0, 'disconnecting on any device takes it out of the settings')
+    check(!backupServer.service.has(vaultId), 'and the backup server forgets the vault')
+  }
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {
