@@ -1,17 +1,18 @@
 # Progress
 
-_Last updated: 2026-10-16 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - is built, 0.7.0 to 0.7.4, on `feat/backup-api`: the sync server's backup keys, read scope and relay; the backup server (`packages/backup`, image `obsidian-connect-backup`); Settings → Backup servers. Next: merge into `main` once CI is green, then the user tries it on a device and a Linux host with Docker. The operator's encrypted backup of the data directory moved to later. 0.6.8 is the last version confirmed on the user's devices.**_
+_Last updated: 2026-10-16 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - is built, 0.7.0 to 0.7.5: the sync server's backup keys, read scope and relay; the backup server (`packages/backup`, image `obsidian-connect-backup`); Settings → Backup servers. Merged into `main` once CI was green (see "Verification state"). Next: the user tries it - plugin 0.7.5, the sync server restarted, a backup server on a Linux host with Docker. The operator's encrypted backup of the data directory moved to later. 0.6.8 is the last version confirmed on the user's devices.**_
 
 ## Where we are
 
-Monorepo (`npm` workspaces): `packages/shared`, `packages/server`, `packages/plugin`.
+Monorepo (`npm` workspaces): `packages/shared`, `packages/server`, `packages/plugin`,
+`packages/backup`.
 **Read `CLAUDE.md` first** - invariants (26 of them, each from a real bug), the
 architecture, the version roadmap to 1.0.0 and the conventions. Designs:
 `docs/PHASE2.md` (keys, sharing), `docs/PHASE3.md` (accounts without names,
 contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments),
-`docs/PHASE5.md` (recovery codes, 2FA);
-`docs/SERVER.md` for running the server; `docs/CHANGELOG.md` for every version and
-how its fixes were verified.
+`docs/PHASE5.md` (recovery codes, 2FA), `docs/PHASE6.md` (the backup server);
+`docs/SERVER.md` for running the server, `docs/BACKUP.md` for a backup server;
+`docs/CHANGELOG.md` for every version and how its fixes were verified.
 
 Everything up to 0.6.8 was built on one branch, `feat/accounts`, and merged into
 `main` on 2026-10-14, which also built the Docker image for the first time (see
@@ -67,13 +68,32 @@ themselves: a server of its own, set up from the plugin through a relay, restic
 plus an optional trusted plaintext copy). Built on `feat/backup-api` in the steps
 listed at the end of `docs/PHASE6.md`: 0.7.0 the sync server's backup keys and read
 scope, 0.7.1 the run, 0.7.2 the relay and the session, 0.7.3 the plugin, 0.7.4 the
-image. Merged into `main` when all five are done.
+image, 0.7.5 "Connect again…" and a fix CI's first start of the image found. Every
+version's details and checks: `docs/CHANGELOG.md`.
+
+**What the user does next** (nothing of 0.7 has been on a device yet):
+
+1. Install plugin 0.7.5 on the devices, and restart the sync server with 0.7.5 - it
+   gains the backup keys and the relay; nobody is signed out by the update. A reverse
+   proxy in front of it must pass WebSocket upgrades on `/relay` too.
+2. On a Linux host with Docker: `docker-compose.backup.yml` and `docs/backup.env` as
+   `docs/BACKUP.md` says; `docker login ghcr.io` first (the image is private like the
+   repository). Not tried yet: the image on a real host, a bind-mounted backup folder
+   owned by uid 1000, the RAM disk size, an S3/B2 location.
+3. In Obsidian: *Settings → Backup servers → Connect…* with the code, add a
+   destination, *Back up now*; then restore once with restic as `docs/BACKUP.md` shows.
+
+What only a device shows: the settings section and both dialogs, the notice, the
+WebSocket to `/relay` from Obsidian on desktop and on a phone, "Connect again…".
 
 ## Roadmap
 
 Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
-- **0.7 - the backup server.** See "Next step".
+- **0.7 - the backup server.** Built; see "Next step". Left for later, noticed while
+  building: a device's relay connection is not closed when the account's devices
+  are signed out (it reaches only backup servers whose code it has); a new code for
+  a backup server (`obsidian-connect-backup` has no command to replace it).
 - **0.8 - sharing a folder, and the small fixes.** Sharing a whole folder,
   including what is added to it later (not designed yet). Besides, every fix that
   has to be in before 0.9:
@@ -231,6 +251,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
+At 0.7.4 and 0.7.5, 2026-10-16: `typecheck`, `build`, `test:merge` 163, `test:load`
+14, `test:rooms` 278, `test:backup` 91 pass (0.7.5 changes only the backup server's
+timer and the plugin's settings over 0.7.3, whose full run is below). CI on the
+branch: 0.7.4's tests green, its new `docker-backup` job built the image and found
+it ending a second after starting (fixed in 0.7.5); 0.7.5's run: see the merge.
+
 At 0.7.3, run 2026-10-16 before its commit: `typecheck` and `build` pass; `test:merge`
 163, `test:load` 14, `test:rooms` 278, `test:sync` 26, `test:account` 50, `test:backup`
 91 - all pass; `test:recovery` 56 passed twice in a row after one run in which "carries
@@ -280,6 +306,11 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 ---
 
 ## Log
+
+### 2026-10-16
+- Milestone 0.7 built: 0.7.2 the relay and the session, 0.7.3 the plugin's settings,
+  0.7.4 the image, 0.7.5 "Connect again…" and the fix for a backup server that ended
+  while the sync server did not answer (found by CI's first start of the image).
 
 ### 2026-10-15
 - Milestone 0.7 designed with the user. First proposed: an encrypted form for the
