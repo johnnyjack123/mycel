@@ -1,8 +1,11 @@
 {
   "name": "@obsidian-connect/backup",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "private": true,
   "type": "module",
+  "bin": {
+    "obsidian-connect-backup": "bin/obsidian-connect-backup.mjs"
+  },
   "scripts": {
     "start": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json"

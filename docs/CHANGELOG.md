@@ -8,6 +8,16 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.4** (2026-10-16) - the backup server as an image, `obsidian-connect-backup`
+  (`Dockerfile.backup`: restic 0.19.1 from its release, checked per architecture,
+  amd64 and arm64), with `docker-compose.backup.yml` (the data volume, the backup
+  folder, the RAM disk) and `docs/backup.env`; `docs/BACKUP.md` for running it,
+  setting it up in Obsidian and restoring with restic. CI's new `docker-backup` job
+  builds and starts the image on every push - restic runs, the code is made and kept
+  in the data volume as the unprivileged user, the server keeps running when the sync
+  server does not answer - and publishes it from `main`. The backup server logs when
+  it cannot reach the sync server. Milestone 0.7 is built.
+
 - **0.7.3** (2026-10-16) - backups in the plugin's settings. *Settings → Backup
   servers*: connect one with its code and the password, add destinations - a restic
   repository (a folder below the backup server's backup folder or a cloud location,

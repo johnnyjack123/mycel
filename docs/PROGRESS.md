@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-16 · **Milestone 0.7 designed with the user: a backup server of its own (`docs/PHASE6.md`), built on `feat/backup-api` in five steps, 0.7.0 to 0.7.4. Built: 0.7.0 (the sync server's backup keys and read scope), 0.7.1 (the run, `packages/backup`, `test:backup` with a real restic), 0.7.2 (the relay, the backup server's code, the encrypted session, the schedule), 0.7.3 (Settings → Backup servers). Next 0.7.4: the Docker image of the backup server, CI, `docs/BACKUP.md`; then the merge into `main`. The operator's encrypted backup of the data directory moved to later. 0.6.8 is on `main` and confirmed on the user's devices.**_
+_Last updated: 2026-10-16 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - is built, 0.7.0 to 0.7.4, on `feat/backup-api`: the sync server's backup keys, read scope and relay; the backup server (`packages/backup`, image `obsidian-connect-backup`); Settings → Backup servers. Next: merge into `main` once CI is green, then the user tries it on a device and a Linux host with Docker. The operator's encrypted backup of the data directory moved to later. 0.6.8 is the last version confirmed on the user's devices.**_
 
 ## Where we are
 

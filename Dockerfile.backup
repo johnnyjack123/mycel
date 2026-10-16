@@ -1,0 +1,54 @@
+# The Obsidian Connect backup server: pulls a vault from the sync server,
+# decrypts it in memory and hands it to restic. CI builds and publishes it
+# from main (the docker-backup job in .github/workflows/build.yml); by hand,
+# from the repository root:
+#
+#   docker build -f Dockerfile.backup -t obsidian-connect-backup .
+#   docker exec <container> obsidian-connect-backup code
+FROM node:24-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+# Every workspace's manifest, or npm ci refuses the lockfile.
+COPY packages/shared/package.json packages/shared/
+COPY packages/server/package.json packages/server/
+COPY packages/plugin/package.json packages/plugin/
+COPY packages/backup/package.json packages/backup/
+RUN npm ci --omit=dev --workspace @obsidian-connect/backup
+
+# restic's own release, checked against its checksum: the version the tests run.
+FROM alpine:3.22 AS restic
+ARG RESTIC_VERSION=0.19.1
+ARG TARGETARCH
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) sum=f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c ;; \
+      arm64) sum=a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465 ;; \
+      *) echo "no restic release checked for ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    wget -q -O /restic.bz2 "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_${TARGETARCH:-amd64}.bz2"; \
+    echo "${sum}  /restic.bz2" | sha256sum -c -; \
+    bunzip2 /restic.bz2; \
+    chmod +x /restic
+
+FROM node:24-alpine
+WORKDIR /app
+ENV NODE_ENV=production \
+    OBSIDIAN_CONNECT_BACKUP_DATA=/data \
+    OBSIDIAN_CONNECT_BACKUP_ROOT=/backup \
+    OBSIDIAN_CONNECT_BACKUP_WORK=/run/obsidian-connect-backup \
+    OBSIDIAN_CONNECT_RESTIC=/usr/local/bin/restic
+COPY --from=restic /restic /usr/local/bin/restic
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json ./
+COPY packages/shared/package.json packages/shared/
+COPY packages/shared/src packages/shared/src
+COPY packages/backup/package.json packages/backup/
+COPY packages/backup/src packages/backup/src
+COPY packages/backup/bin packages/backup/bin
+RUN chmod +x packages/backup/bin/obsidian-connect-backup.mjs \
+ && ln -s /app/packages/backup/bin/obsidian-connect-backup.mjs /usr/local/bin/obsidian-connect-backup \
+ && mkdir -p /data /backup /run/obsidian-connect-backup \
+ && chown node:node /data /backup /run/obsidian-connect-backup
+USER node
+VOLUME /data
+CMD ["node", "--import", "tsx", "packages/backup/src/index.ts"]

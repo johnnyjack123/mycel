@@ -248,7 +248,7 @@ holds the attachments under the same relative paths. Restoring a whole vault:
 
 ```
 restic restore <notes snapshot> --target /tmp/restore
-restic dump <files snapshot> "/<Vault> files.tar" | tar -x -C /tmp/restore
+restic dump <files snapshot> "/<Vault> files.tar" | tar -x -f - -C /tmp/restore
 ```
 
 The trusted copy holds all of it as one folder.

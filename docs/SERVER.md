@@ -40,6 +40,10 @@ sees how many there are and how large, never a name or a byte of them.
 `contacts.json` holds the contact pairs, open friend codes (as a hash) and messages
 waiting for a device; without it, contacts would have to exchange codes again.
 
+Backups of the notes themselves - decrypted, in restic repositories - are what a
+backup server is for, which every account sets up for its own vaults: `docs/BACKUP.md`.
+The sync server only relays to it (`/relay`) and hands it a read-only key.
+
 **Back up the whole volume, and keep `server.json` with `accounts.json`.** It holds
 the server's id, which is part of every account's salt: a server with another id opens
 no account, even with the right name and password.

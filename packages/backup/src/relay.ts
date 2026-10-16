@@ -65,12 +65,15 @@ export class RelayLink {
       socket.send(JSON.stringify({ t: 'register', token: toBase64(this.identity.keys.routeToken) } satisfies RelayFrame))
     })
     socket.addEventListener('message', (event) => this.receive(String(event.data)))
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', (event) => {
       if (this.socket !== socket) return
       this.socket = null
       this.closeAll()
       if (this.stopped) return
       const pause = BACKOFF_MS[Math.min(this.attempt, BACKOFF_MS.length - 1)] as number
+      // With the pauses growing to a minute, this says so at most once a minute.
+      const why = event.code === 4429 ? ': too many backup servers from this address' : ''
+      log.warn(`the sync server at ${this.server} cannot be reached${why}; trying again in ${pause / 1000} s`)
       this.attempt += 1
       this.timer = setTimeout(() => this.connect(), pause)
       this.timer.unref?.()

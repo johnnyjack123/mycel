@@ -1,0 +1,22 @@
+# The backup server; see docs/BACKUP.md. Values come from a `.env` next to this
+# file. The image is built and published by CI on every push to main.
+services:
+  obsidian-connect-backup:
+    image: ghcr.io/johnnyjack123/obsidian-connect-backup:latest
+    restart: unless-stopped
+    environment:
+      # The sync server, as devices are given it: wss://sync.example.com
+      OBSIDIAN_CONNECT_SERVER: ${OBSIDIAN_CONNECT_SERVER:?set OBSIDIAN_CONNECT_SERVER in .env}
+      # What devices are shown this backup server as.
+      OBSIDIAN_CONNECT_BACKUP_NAME: ${OBSIDIAN_CONNECT_BACKUP_NAME:-backup server}
+    volumes:
+      # Its code, the keys of the vaults connected to it, and their encrypted cache.
+      - obsidian-connect-backup-data:/data
+      # Every local destination lies below this folder; mount what should be reachable.
+      - ${BACKUP_FOLDER:-./backups}:/backup
+    # The notes of a vault lie here, decrypted, during a backup - in memory, never on a disk.
+    tmpfs:
+      - /run/obsidian-connect-backup:size=${RAM_DISK:-1g},mode=1777
+
+volumes:
+  obsidian-connect-backup-data:
