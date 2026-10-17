@@ -458,7 +458,13 @@ export default class ObsidianConnectPlugin extends Plugin {
 
   /** Whether the configured server can be signed in to, and how it takes new accounts. */
   probeServer(): Promise<ServerProbe> {
-    return probeServer(this.api)
+    return probeServer(this.api, this.session.pinnedServerId())
+  }
+
+  /** Signed out: the server at this address was set up anew, or is another one; it is the one to use from now on. */
+  useNewServer(): void {
+    this.session.forgetServer()
+    log.info(`the server at ${this.settings.serverUrl} is taken as a new one`)
   }
 
   async createAccount(username: string, password: string, repeat: string, invite: string): Promise<void> {

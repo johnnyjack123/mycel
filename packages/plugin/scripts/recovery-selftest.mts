@@ -331,6 +331,42 @@ try {
     await P1.shutdown()
     await P2.shutdown()
   }
+
+  // --- a server set up anew at the same address --------------------------------------------
+  // What happened on a Pi: signed in, the server set up again from scratch, the
+  // device signed out by it - and then stuck, its old server's id still pinned.
+  {
+    await A1.shutdown()
+    await server.close()
+    server = await serve(join(root, 'anew'))
+    const start = await A1.boot().then(
+      () => 'started',
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    )
+    check(start.includes('not the server this device knew') && start.includes('Use this server'), 'a device the new server signs out sees why, and what to do', start)
+    const probe = await A1.probe()
+    check(probe.state === 'ok' && probe.changed, 'the settings learn that the server at this address is another one', probe)
+    A1.useNewServer()
+    const after = await A1.probe()
+    check(after.state === 'ok' && !after.changed, 'once the person says so, it is the server to use')
+    const oldAccount = A1.accountId
+    A1.accountId = ''
+    check(await A1.boot(), 'and a new account is made there')
+    check(A1.accountId !== '' && A1.accountId !== oldAccount, 'a new one, on the new server')
+    const notes = A1.vault.paths()
+    check(
+      await eventually(() => A1.store?.ready === true && notes.length > 0 && notes.every((path) => A1.docText(path) === A1.vault.text(path)), 15_000),
+      "and the vault's notes go to it, as they are",
+      notes.map((path) => [path, A1.vault.text(path)?.length, A1.docText(path)?.length])
+    )
+    const fresh = new Device(`anna${run}`, false)
+    try {
+      check(await fresh.boot(), 'another device signs in to the new account')
+      check(await eventually(() => notes.every((path) => fresh.vault.text(path) === A1.vault.text(path)), 15_000), 'and finds them there')
+    } finally {
+      await fresh.shutdown()
+    }
+  }
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {

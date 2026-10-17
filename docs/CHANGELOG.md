@@ -8,6 +8,19 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.10** (2026-10-17) - a fix the user ran into deploying the server on a Pi:
+  signed in, the server set up again from scratch, the device signed out by the new
+  one - and then stuck. The device still pinned the old server's id, so signing in
+  and creating an account both said "sign out first", and there was nothing to sign
+  out of. The settings now see that the server at the address has another id, say
+  so - with a warning that someone may be posing as the server otherwise - and offer
+  "Use this server", signed out only; signing in and creating an account wait for
+  that choice instead of failing. The error, when it still comes, names the way out.
+  `test:recovery` 64: exactly that sequence, ending in a new account on the new
+  server that the vault's notes go to and a second device finds. Checked by putting
+  the bug back: with "Use this server" letting go of nothing, the device stayed stuck
+  where the user was.
+
 - **0.7.9** (2026-10-17) - rolling back further than the history reaches, from restic
   (decided with the user: "history first, restic where it no longer reaches - a
   manual restore would be a nuisance"). The backup server reads a vault's own backups

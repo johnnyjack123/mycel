@@ -3,6 +3,7 @@
 services:
   obsidian-connect-backup:
     image: ghcr.io/johnnyjack123/obsidian-connect-backup:latest
+    container_name: obsidian-connect-backup
     restart: unless-stopped
     environment:
       # The sync server, as devices are given it: wss://sync.example.com

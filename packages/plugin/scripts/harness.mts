@@ -31,6 +31,7 @@ const { LocalCursor } = await import('../src/sync/DocHandle.js')
 const { Recovery } = await import('../src/sync/Recovery.js')
 const { ConnectApi, fetchHttp } = await import('../src/account/api.js')
 const { Session } = await import('../src/account/Session.js')
+const { probeServer } = await import('../src/account/probe.js')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { hashWasmArgon2id } = await import('../src/account/argon2.js')
 const { DocStore } = await import('../src/sync/DocStore.js')
@@ -417,6 +418,16 @@ export class Device {
       }
     })
     return this.backupsController
+  }
+
+  /** What the settings ask the server before anyone signs in, with the id this device pinned. */
+  probe(): ReturnType<typeof probeServer> {
+    return probeServer(this.api, this.session.pinnedServerId())
+  }
+
+  /** "Use this server", signed out: the server at the address was set up anew. */
+  useNewServer(): void {
+    this.session.forgetServer()
   }
 
   /** Rolling the vault back, wired the way main.ts wires it. */

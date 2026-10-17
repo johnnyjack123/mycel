@@ -270,6 +270,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
+At 0.7.10, run 2026-10-17 before its commit (straight to `main`, a small fix):
+`typecheck` and `build` pass; `test:merge` 164, `test:load` 14, `test:sync` 26,
+`test:account` 50, `test:recovery` 64, `test:rollback` 52 - all pass; against a
+scratch server on 1235, `test:socket` 19 passes. Only the sign-in path changed;
+`test:rooms`, `test:backup` and `test:vault` are untouched by it and ran green at 0.7.9.
+
 At 0.7.9, run 2026-10-17 before its commit: `typecheck` and `build` pass; `test:merge`
 164, `test:load` 14, `test:rooms` 284, `test:sync` 26, `test:recovery` 56,
 `test:account` 50, `test:rollback` 52, `test:backup` 144 - all pass; against a scratch
@@ -366,6 +372,8 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
   every device.
 - 0.7.9: rolling back from restic where the history does not reach; the backup
   server's session messages go out in order.
+- The user deployed the server on a Pi, set it up anew and was stuck signed out with
+  the old server's id pinned; 0.7.10 offers "Use this server" in that state.
 
 ### 2026-10-16
 - After 0.7.5 the user asked for invitations instead of one code, the settings in

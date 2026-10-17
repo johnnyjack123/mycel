@@ -172,10 +172,30 @@ export class Session {
     const pinned = parse<{ address: string; serverId: string }>(this.secrets.load(SERVER))
     if (pinned && pinned.address === address && pinned.serverId !== config.serverId) {
       throw new Error(
-        'This is not the server this device knew: its id changed. If you set it up again on purpose, sign out first, then sign in.'
+        this.secrets.load(MASTER)
+          ? 'This is not the server this device knew: its id changed. If you set it up again on purpose, sign out first, then sign in.'
+          : 'This is not the server this device knew: its id changed. If you set it up again on purpose, choose "Use this server" in the settings first.'
       )
     }
     return config
+  }
+
+  /** The server id this device pinned for the address it talks to now; null for none. */
+  pinnedServerId(): string | null {
+    const pinned = parse<{ address: string; serverId: string }>(this.secrets.load(SERVER))
+    return pinned && pinned.address === this.serverUrl() ? pinned.serverId : null
+  }
+
+  /**
+   * Lets go of the pinned id, signed out only: the person says the server at
+   * this address was set up anew, or is another one. A device the server
+   * signed out - its token refused by the new one - kept the old id and had
+   * no way left to sign in or create an account; signing out by hand lets go
+   * of it the same way. The next sign-in pins the new id.
+   */
+  forgetServer(): void {
+    if (this.secrets.load(MASTER)) throw new Error('Sign out first.')
+    this.secrets.save(SERVER, null)
   }
 
   /**

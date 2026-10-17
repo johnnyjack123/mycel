@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting } from 'obsidian'
+import { App, ButtonComponent, Notice, PluginSettingTab, Setting } from 'obsidian'
 import { generatePassword } from './account/password'
 import type { ServerProbe } from './account/probe'
 import { PasswordReveal } from './account/reveal'
@@ -125,6 +125,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private probing = 0
   private probeTimer: number | null = null
   private serverStatus: Setting | null = null
+  private useServerButton: ButtonComponent | null = null
   /** Signing in and creating an account: usable only once the server answered properly. */
   private gated: Array<{ setDisabled(disabled: boolean): unknown }> = []
 
@@ -144,6 +145,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     containerEl.empty()
     this.gated = []
     this.serverStatus = null
+    this.useServerButton = null
     // The fields are built anew; whether passwords show carries over.
     this.reveal = new PasswordReveal(this.reveal.revealed)
     const signedIn = Boolean(this.plugin.settings.username)
@@ -257,10 +259,16 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
   private showProbe(): void {
     const probe = this.probe
-    for (const control of this.gated) control.setDisabled(this.busy || probe?.state !== 'ok')
+    const changed = probe?.state === 'ok' && probe.changed
+    for (const control of this.gated) control.setDisabled(this.busy || probe?.state !== 'ok' || changed)
+    if (this.useServerButton) this.useServerButton.buttonEl.style.display = changed ? '' : 'none'
     if (!this.serverStatus) return
     if (!probe) {
       this.serverStatus.setDesc('Checking the server…')
+    } else if (probe.state === 'ok' && probe.changed) {
+      this.serverStatus.setDesc(
+        'Reachable, but not the server this device knew: its id changed. If you set it up again yourself, or chose another server at this address, use it. If not, someone may be posing as your server - do not sign in.'
+      )
     } else if (probe.state === 'ok') {
       this.serverStatus.setDesc(
         `Reachable. ${probe.registration === 'open' ? 'Anyone can create an account here.' : 'New accounts need an invite code.'}`
@@ -295,6 +303,21 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private serverStatusRow(containerEl: HTMLElement, name: string): void {
     this.serverStatus = new Setting(containerEl)
       .setName(name)
+      .addButton((button) => {
+        // Shown only for a server whose id changed; the person decides, nothing is assumed.
+        this.useServerButton = button
+        button.buttonEl.style.display = 'none'
+        button
+          .setButtonText('Use this server')
+          .setWarning()
+          .onClick(
+            () =>
+              void busy(button, async () => {
+                this.plugin.useNewServer()
+                await this.checkServer()
+              })
+          )
+      })
       .addButton((button) => button.setButtonText('Check again').onClick(() => void busy(button, () => this.checkServer())))
   }
 

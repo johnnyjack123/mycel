@@ -5,13 +5,15 @@ import { ApiError, type ConnectApi } from './api.js'
 // work instead of failing on the first click with whatever the request threw.
 
 export type ServerProbe =
-  | { state: 'ok'; registration: RegistrationMode }
+  /** `changed`: the server at this address has another id than the one this device pinned - set up anew, or another one. */
+  | { state: 'ok'; registration: RegistrationMode; changed: boolean }
   | { state: 'unreachable'; reason: string }
   | { state: 'incompatible'; reason: string }
 
 const SERVICE = 'obsidian-connect-server'
 
-export async function probeServer(api: ConnectApi): Promise<ServerProbe> {
+/** `pinned`: the server id this device knows for the address; null for none. */
+export async function probeServer(api: ConnectApi, pinned: string | null = null): Promise<ServerProbe> {
   let health: unknown
   try {
     health = await api.health()
@@ -34,7 +36,7 @@ export async function probeServer(api: ConnectApi): Promise<ServerProbe> {
   }
   try {
     const config = await api.config()
-    return { state: 'ok', registration: config.registration === 'open' ? 'open' : 'invite' }
+    return { state: 'ok', registration: config.registration === 'open' ? 'open' : 'invite', changed: pinned !== null && pinned !== config.serverId }
   } catch (error) {
     if (error instanceof ApiError && error.status !== 0) {
       return { state: 'incompatible', reason: `The server answers, but not as expected (HTTP ${error.status}).` }
