@@ -1,9 +1,12 @@
+import { createHash } from 'node:crypto'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join, relative, resolve, sep, isAbsolute } from 'node:path'
 import {
   BACKUP_SCHEDULE_KEY,
   BACKUP_TARGET_KEY,
   SETTINGS_FIELD,
+  backupGuard,
+  backupSettingsText,
   settingsRoom,
   type BackupScheduleSetting,
   type BackupTargetSetting,
@@ -31,6 +34,8 @@ export interface VaultConfig {
   accepted: string[]
   /** The ids of every target for this backup server, taken or not. */
   seen: string[]
+  /** Of what was read for this route, for the devices to tell it read their newest settings. */
+  digest: string
 }
 
 const KEEP_RULES = ['last', 'hourly', 'daily', 'weekly', 'monthly', 'yearly'] as const
@@ -81,7 +86,15 @@ export function envOf(value: unknown): Record<string, string> | undefined {
  * `elsewhere`: local folders other vaults' destinations use here.
  */
 export function readConfig(settings: ReadonlyMap<string, unknown>, routeId: string, root: string, elsewhere: readonly string[]): VaultConfig {
-  const result: VaultConfig = { config: { destinations: [], trusted: null }, everyHours: 0, problems: [], localPaths: [], accepted: [], seen: [] }
+  const result: VaultConfig = {
+    config: { destinations: [], trusted: null },
+    everyHours: 0,
+    problems: [],
+    localPaths: [],
+    accepted: [],
+    seen: [],
+    digest: createHash('sha256').update(backupSettingsText(settings, routeId)).digest('hex')
+  }
   const schedule = settings.get(`${BACKUP_SCHEDULE_KEY}${routeId}`) as Partial<BackupScheduleSetting> | undefined
   if (schedule && typeof schedule.everyHours === 'number' && Number.isFinite(schedule.everyHours) && schedule.everyHours > 0) {
     result.everyHours = Math.max(1, Math.round(schedule.everyHours))
@@ -123,6 +136,7 @@ export function readConfig(settings: ReadonlyMap<string, unknown>, routeId: stri
       }
       if (claim(target, folder.path)) {
         result.config.trusted = folder.path
+        result.config.trustedGuard = backupGuard(target.guard)
         result.accepted.push(target.id)
       }
       continue

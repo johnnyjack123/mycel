@@ -8,6 +8,27 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.7** (2026-10-17) - the settings in tabs (Account, Contacts, Backups, This
+  device, All devices; signed out, Account and This device), asked for by the user as
+  the one long page grew. A destination can be changed afterwards (the pencil next to
+  it): a repository's retention - a preset or numbers of one's own per rule - and
+  credentials, checked by the backup server before they are saved; the trusted copy's
+  guard. Each row says what it keeps or when it waits. **The guard counts notes and
+  files, apart:** the trusted copy waits when more than its share (50 % unless set, 10
+  to 90 %, or never) of the notes, or of the files, vanished since it last followed -
+  counted together, a vault of many pictures could lose all its notes unnoticed. And a
+  fix the new check found on its first run: after a change of retention a backup
+  started right away went by the settings before it - the device waited only until the
+  backup server listed the same destinations, and the ids had not changed (the
+  repository kept 4 snapshots where `last 1` should have left 2). The status now
+  carries a hash of the settings the backup server read for its route, and the device
+  waits for the hash of its own. `test:backup` 125: the guard's arithmetic (notes and
+  files apart, the limits, off, too few to count), its value as read from the
+  settings, the settings hash the same on both ends, pictures vanishing holding the
+  copy and naming the files, a guard turned off following at once, a retention changed
+  from the settings taking effect with the next backup. The tabs and the dialog are
+  for a device.
+
 - **0.7.6** (2026-10-17) - invitations, and a pairing per vault, instead of one code
   per backup server (asked for by the user: one code for everyone could not be taken
   from one person without taking it from all, and let anyone with it use the disk).

@@ -8,7 +8,7 @@ import type {
   BackupVaultStatus,
   KeepPolicy
 } from '@obsidian-connect/shared'
-import { backupRouteKeys, fromBase64, randomBytes, toHex } from '@obsidian-connect/shared/crypto'
+import { backupRouteKeys, fromBase64, randomBytes, sha256, toHex, utf8 } from '@obsidian-connect/shared/crypto'
 import { log } from '../log'
 import type { AccountSettings } from '../sync/AccountSettings'
 import { openInviteSession, openPairingSession, type BackupSession } from './BackupLink'
@@ -296,7 +296,11 @@ export class Backups {
     return { created: checked.created === true }
   }
 
-  /** Changes what can change of a destination: its retention, credentials, guard. */
+  /**
+   * Changes what can change of a destination: its retention, credentials,
+   * guard. New credentials are checked by the backup server first, as a new
+   * destination is.
+   */
   async updateTarget(routeId: string, id: string, patch: Pick<BackupTargetSetting, 'keep' | 'env' | 'guard'>): Promise<void> {
     const current = this.settings.backupTargets(routeId).find((target) => target.id === id)
     if (!current) throw new Error('That destination is gone.')
@@ -304,6 +308,11 @@ export class Backups {
     for (const key of ['keep', 'env', 'guard'] as const) {
       if (patch[key] === undefined) delete next[key]
       else (next as unknown as Record<string, unknown>)[key] = patch[key]
+    }
+    if (next.kind === 'restic' && JSON.stringify(next.env ?? {}) !== JSON.stringify(current.env ?? {})) {
+      const session = await this.session(routeId)
+      const checked = await session.call<{ ok: boolean; error?: string }>('check', { target: next })
+      if (!checked.ok) throw new Error(checked.error ?? 'The backup server cannot use these credentials.')
     }
     this.settings.setBackupTarget(id, next)
     await this.refreshServer(routeId)
@@ -322,18 +331,19 @@ export class Backups {
   /**
    * Tells the backup server the settings changed. It reads them from the sync
    * server, so they have to be there first: asked again for a few seconds
-   * until it has them.
+   * until what it read is what this device holds - a run started right after
+   * a change would otherwise go by the settings before it.
    */
   private async refreshServer(routeId: string): Promise<void> {
     const settings = this.deps.settings()
-    const expected = (settings?.backupTargets(routeId) ?? []).map((target) => target.id).sort().join()
-    const everyHours = settings?.backupSchedule(routeId)?.everyHours ?? 0
+    if (!settings) return
+    const expected = toHex(await sha256(utf8(settings.backupSettingsText(routeId))))
     try {
       const session = await this.session(routeId)
       for (let attempt = 0; attempt < 20; attempt += 1) {
         const status = await session.call<BackupVaultStatus>('refresh')
         this.remember(routeId, { status, error: null })
-        if ([...status.seen].sort().join() === expected && status.everyHours === everyHours) break
+        if (status.settingsDigest === expected) break
         await new Promise((resolve) => setTimeout(resolve, 500))
       }
     } catch (error) {

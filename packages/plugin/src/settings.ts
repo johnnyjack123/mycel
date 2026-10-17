@@ -4,6 +4,7 @@ import type { ServerProbe } from './account/probe'
 import { PasswordReveal } from './account/reveal'
 import { busy, type BusyButton } from './busy'
 import type { BackupDestinationStatus, BackupRunStatus, BackupTargetSetting, BackupVaultStatus } from '@obsidian-connect/shared'
+import { describeGuard, describeKeep } from './backup/BackupModals'
 import { NO_LONGER_HAS_VAULT, SCHEDULES, type Backups } from './backup/Backups'
 import type ObsidianConnectPlugin from './main'
 import type { OpenCode } from './share/Contacts'
@@ -30,13 +31,15 @@ function describeBackupServer(error: string | null, status: BackupVaultStatus | 
 function describeTarget(target: BackupTargetSetting, outcome: BackupDestinationStatus | undefined, taken: boolean, trusted: BackupRunStatus['trusted']): string {
   if (!taken) return 'The backup server does not use this one - see why below.'
   if (target.kind === 'trusted') {
-    if (!trusted) return 'Decrypted, the newest version. Filled by the next backup.'
+    const guard = describeGuard(target.guard)
+    if (!trusted) return `Decrypted, the newest version. Filled by the next backup. ${guard}`
     if (trusted.error) return `Failed: ${trusted.error}`
-    return 'Decrypted, the newest version. Up to date with the last backup.'
+    return `Decrypted, the newest version. Up to date with the last backup. ${guard}`
   }
-  if (!outcome) return 'Encrypted with its own password. Filled by the next backup.'
+  const keep = describeKeep(target.keep)
+  if (!outcome) return `Encrypted with its own password. Filled by the next backup. ${keep}`
   if (!outcome.ok) return `Failed: ${outcome.error ?? 'unknown'}`
-  return `Encrypted with its own password. Last backup ${outcome.checked === 'deep' ? 'read back in full' : 'checked'}.`
+  return `Encrypted with its own password. Last backup ${outcome.checked === 'deep' ? 'read back in full' : 'checked'}. ${keep}`
 }
 
 /**
@@ -85,8 +88,21 @@ export const MOBILE_DOWNLOAD_LIMIT_MB = 10
 /** Signed out, the account box leads to one of these forms, each a screen of its own. */
 type Screen = 'overview' | 'sign-in' | 'create' | 'recover'
 
+type Tab = 'account' | 'contacts' | 'backups' | 'device' | 'all'
+
+/** `signedIn`: only there once signed in - the others mean nothing without an account. */
+const TABS: ReadonlyArray<{ id: Tab; label: string; signedIn: boolean }> = [
+  { id: 'account', label: 'Account', signedIn: false },
+  { id: 'contacts', label: 'Contacts', signedIn: true },
+  { id: 'backups', label: 'Backups', signedIn: true },
+  { id: 'device', label: 'This device', signedIn: false },
+  { id: 'all', label: 'All devices', signedIn: true }
+]
+
 export class ObsidianConnectSettingTab extends PluginSettingTab {
   private screen: Screen = 'overview'
+  /** Kept while the plugin runs: the tab opens where it was left. */
+  private tab: Tab = 'account'
   private username = ''
   private password = ''
   private repeat = ''
@@ -134,19 +150,36 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     if (signedIn) this.screen = 'overview'
     containerEl.createEl('p', { cls: 'setting-item-description', text: `Obsidian Connect ${this.plugin.manifest.version}` })
 
-    if (this.screen === 'overview') {
-      this.account(containerEl)
-      this.contactsSection(containerEl)
-      this.backupSection(containerEl)
-      this.device(containerEl)
-      this.shared(containerEl)
-    } else {
-      this.accountForm(containerEl)
+    const tabs = TABS.filter((tab) => signedIn || !tab.signedIn)
+    // Signing in, creating an account and recovering are the account's.
+    if (this.screen !== 'overview' || !tabs.some((tab) => tab.id === this.tab)) this.tab = 'account'
+    const bar = containerEl.createDiv({ cls: 'connect-tabs', attr: { role: 'tablist' } })
+    for (const tab of tabs) {
+      const active = tab.id === this.tab
+      const button = bar.createEl('button', { cls: 'connect-tab', text: tab.label, attr: { role: 'tab', 'aria-selected': String(active) } })
+      if (active) button.addClass('is-active')
+      button.addEventListener('click', () => this.show(tab.id))
     }
+
+    if (this.screen !== 'overview') this.accountForm(containerEl)
+    else if (this.tab === 'account') this.account(containerEl)
+    else if (this.tab === 'contacts') this.contactsSection(containerEl)
+    else if (this.tab === 'backups') this.backupSection(containerEl)
+    else if (this.tab === 'device') this.device(containerEl)
+    else this.shared(containerEl)
     if (!signedIn) {
       if (this.probe === undefined && this.probing === 0) void this.checkServer()
       else this.showProbe()
     }
+  }
+
+  /** Switches to a tab. A form half filled in on the account tab is left, as leaving the settings would. */
+  private show(tab: Tab): void {
+    if (tab === this.tab && this.screen === 'overview') return
+    this.tab = tab
+    // Leaving a form forgets the passwords typed into it.
+    if (this.screen !== 'overview') this.go('overview')
+    else this.display()
   }
 
   /**
@@ -267,8 +300,6 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
   private account(containerEl: HTMLElement): void {
     const settings = this.plugin.settings
-    new Setting(containerEl).setName('Account').setHeading()
-
     new Setting(containerEl)
       .setName('Server URL')
       .setDesc('WebSocket endpoint of your Obsidian Connect server, e.g. wss://notes.example.com')
@@ -588,7 +619,6 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
   private contactsSection(containerEl: HTMLElement): void {
     if (!this.plugin.settings.username) return
-    new Setting(containerEl).setName('Contacts').setHeading()
     containerEl.createEl('p', {
       cls: 'setting-item-description',
       text: 'You share notes with contacts only. The server never learns their names: those travel encrypted between your devices and theirs.'
@@ -695,7 +725,6 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
   private backupSection(containerEl: HTMLElement): void {
     if (!this.plugin.settings.username) return
-    new Setting(containerEl).setName('Backup servers').setHeading()
     const backups = this.plugin.backupsOf()
     if (!backups) {
       containerEl.createEl('p', { cls: 'setting-item-description', text: 'Backups are set up while this vault syncs.' })
@@ -798,6 +827,12 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       }
       row.addExtraButton((button) =>
         button
+          .setIcon('pencil')
+          .setTooltip(target.kind === 'trusted' ? 'Change when it waits' : 'Change how long backups are kept, or the credentials')
+          .onClick(() => this.plugin.openBackupTarget(routeId, view.info?.root ?? null, true, target))
+      )
+      row.addExtraButton((button) =>
+        button
           .setIcon('trash')
           .setTooltip('Remove: no more backups go there. What is there stays.')
           .onClick(() => void this.run(() => backups.removeTarget(routeId, target.id), button))
@@ -807,7 +842,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     if (last?.trusted?.held) {
       new Setting(containerEl)
         .setName('The trusted copy waits')
-        .setDesc(`${last.trusted.held}. If notes were deleted on purpose, let it follow; if not, find out first - the server may have lost data.`)
+        .setDesc(`${last.trusted.held}. If they were deleted on purpose, let it follow; if not, find out first - the server may have lost data.`)
         .addButton((button) =>
           button
             .setButtonText('Follow anyway')
@@ -832,7 +867,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
   private device(containerEl: HTMLElement): void {
     const settings = this.plugin.settings
-    new Setting(containerEl).setName('This device').setHeading()
+    containerEl.createEl('p', { cls: 'setting-item-description', text: 'These apply on this device only.' })
 
     new Setting(containerEl)
       .setName('Sync this vault')
@@ -905,15 +940,14 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   }
 
   private shared(containerEl: HTMLElement): void {
-    new Setting(containerEl).setName('All your devices').setHeading()
     const current = this.plugin.sharedSettings()
-    if (!current) {
-      containerEl.createEl('p', {
-        cls: 'setting-item-description',
-        text: 'These settings belong to your account and apply on every device. Sign in to change them.'
-      })
-      return
-    }
+    containerEl.createEl('p', {
+      cls: 'setting-item-description',
+      text: current
+        ? 'These belong to your account and apply on all your devices.'
+        : 'These belong to your account and apply on all your devices. They show once this vault syncs.'
+    })
+    if (!current) return
     const update = (patch: Partial<SharedSettings>): void => this.plugin.updateSharedSettings(patch)
 
     new Setting(containerEl)

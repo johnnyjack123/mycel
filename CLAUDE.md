@@ -360,13 +360,16 @@ people: whoever runs it can read the vaults on it.
 - **Set up from the plugin.** Destinations and schedule live in the vault's settings
   document (`backupServer:`, `backupTarget:`, `backupSchedule:`), which the backup
   server reads with its key; local folders only below its backup folder, never in or
-  around another vault's.
+  around another vault's. After a change the device waits until the backup server's
+  status carries the hash of the same settings (`backupSettingsText`) - comparing
+  ids let a run go by the settings before an edit of retention.
 - **A run** (`run.ts`): what changed into an encrypted cache (rooms by their tag, a log
   from its last frame, compared - invariant 19), the layout from the index (vault,
   trash, settings without contacts), notes and canvases into a RAM disk for restic,
   every other file as a tar stream (killed before it ends when producing it fails),
   every snapshot checked back, the trusted copy brought level - never emptied, only
-  its own files touched, held when half the notes vanished.
+  its own files touched, held when more than its guard's share (50 % unless set) of
+  the notes, or of the files, vanished - counted apart.
 
 ### Around the notes
 
@@ -385,6 +388,8 @@ people: whoever runs it can read the vaults on it.
   plugin's menu for that file. Beside it a mark says whether the note is shared
   and whether only to read; a note shared to read only also gets a lock in the
   header of every view showing it - a phone has no status bar.
+- **The settings are in tabs** - Account, Contacts, Backups, This device, All
+  devices; signed out only Account and This device.
 - **The settings tab is live** (`settings.ts` `refresh`): a change of the
   account-wide settings from another device draws it again, and so does the
   account's state - 2FA, the recovery code - which the server announces with

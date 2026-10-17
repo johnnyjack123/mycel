@@ -318,6 +318,7 @@ export class BackupService {
       targets: vault.config?.accepted ?? [],
       seen: vault.config?.seen ?? [],
       everyHours: vault.config?.everyHours ?? 0,
+      settingsDigest: vault.config?.digest ?? '',
       problems: vault.config?.problems ?? [],
       runs: vault.runs.map(statusOf).reverse()
     }

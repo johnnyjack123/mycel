@@ -86,7 +86,7 @@ vaults again with new invitations, nothing more - the repositories are not in it
 
 ## Setting it up in Obsidian
 
-*Settings → Obsidian Connect → Backup servers*:
+*Settings → Obsidian Connect → Backups*:
 
 1. **Connect a backup server…** - the invitation and your password. It backs up once
    a day until you choose otherwise. Your other devices find it in the settings by
@@ -99,11 +99,18 @@ vaults again with new invitations, nothing more - the repositories are not in it
      The repository password: "Make one" makes a strong one. It is kept in your
      account's settings, encrypted, so every device can show it - **write it down as
      well**: without it nobody can read the repository. A cloud folder mounted on the
-     host is just another folder.
+     host is just another folder. How long backups are kept: a preset, or numbers of
+     your own - the last so many, and the newest of each of so many hours, days,
+     weeks, months, years.
    - **The trusted copy.** A folder that holds the newest version of everything,
      decrypted. It must be empty, or one the backup server wrote before; the backup
      server deletes only what it wrote itself.
 3. **How often**, and **Back up now** whenever you like.
+
+The pencil next to a destination changes it afterwards: how long a repository keeps
+backups and its credentials, or when the trusted copy waits. Its location and
+password stay - another location or password is another repository, added as a
+destination of its own.
 
 Each destination is checked by the backup server before it is saved: whether it can
 write there, whether the repository opens with that password (it is made where there
@@ -121,9 +128,12 @@ is gone) needs a new invitation; until then it looks like one that cannot be rea
 **Connecting the same vault again** with a new invitation replaces its connection;
 its destinations and schedule carry on.
 
-**The trusted copy waits** when the vault suddenly lost more than half of its notes:
-the sync server may have lost data, and the copy must not follow that. The restic
-backups go on as always. If you deleted the notes on purpose, *Follow anyway*.
+**The trusted copy waits** when more than half of the vault's notes, or more than
+half of its files, are gone since the copy last followed: the sync server may have
+lost data, and the copy must not follow that. Notes and files are counted apart, so a
+vault of many pictures that lost its notes is caught too; fewer than ten of either
+are not counted. The share is the copy's own setting - 10 to 90 %, or never. The
+restic backups go on as always. If you deleted them on purpose, *Follow anyway*.
 
 ## What a backup holds
 

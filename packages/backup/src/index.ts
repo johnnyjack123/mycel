@@ -40,7 +40,7 @@ async function main(argv: string[]): Promise<number> {
       const { code, invite } = await invites.create(label)
       console.log(`Invitation${label ? ` for ${label}` : ''}, valid until ${day(invite.expiresAt)}, once:`)
       console.log(`  ${code}`)
-      console.log('In Obsidian: Settings -> Obsidian Connect -> Backup servers -> Connect a backup server, with this invitation.')
+      console.log('In Obsidian: Settings -> Obsidian Connect -> Backups -> Connect a backup server, with this invitation.')
       console.log('Whoever enters it connects a vault of theirs to this backup server; pass it on as you would a password.')
       return 0
     }

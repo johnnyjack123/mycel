@@ -14,7 +14,8 @@ import { check, delay, Device, eventually, failures, finish, useServer, VAULT } 
 
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
-const { runBackup } = await import('../../backup/src/run.js')
+const { runBackup, vanished } = await import('../../backup/src/run.js')
+const { readConfig } = await import('../../backup/src/config.js')
 const { Restic } = await import('../../backup/src/restic.js')
 const { silence } = await import('../../backup/src/log.js')
 const { safePath, vaultFolder, withSuffix } = await import('../../backup/src/layout.js')
@@ -25,6 +26,7 @@ const { startBackupServer } = await import('../../backup/src/server.js')
 const { Invites } = await import('../../backup/src/invites.js')
 const { listVaults } = await import('../../backup/src/service.js')
 const { backupRouteKeys, encodeBackupInvite, fromBase64, newBackupSecret, openSession } = await import('@obsidian-connect/shared/crypto')
+const { backupSettingsText } = await import('@obsidian-connect/shared')
 type BackupConnected = import('@obsidian-connect/shared').BackupConnected
 
 type RunReport = Awaited<ReturnType<typeof runBackup>>
@@ -146,6 +148,46 @@ function untar(archive: string, into: string): boolean {
     (error: unknown) => error
   )
   check(refused instanceof TrustedRefused && readFileSync(join(foreign, 'mine.txt'), 'utf8') === 'not yours', 'the trusted copy never takes over a folder someone else filled')
+
+  // The trusted copy's guard: notes and files counted apart, against a limit of the vault's own.
+  {
+    const before = { notes: 50, files: 1000 }
+    check(vanished(before, { notes: 24, files: 1000 }, 50, 10)?.includes('24 notes (50 when') === true, 'more than half the notes gone holds the copy')
+    check(vanished(before, { notes: 0, files: 1000 }, 50, 10) !== null, 'also when the files, a thousand of them, are all still there')
+    check(vanished(before, { notes: 50, files: 400 }, 50, 10)?.includes('400 files') === true, 'and so do more than half the files')
+    check(vanished(before, { notes: 25, files: 500 }, 50, 10) === null, 'exactly half is not more than half')
+    check(vanished(before, { notes: 44, files: 1000 }, 10, 10) !== null && vanished(before, { notes: 46, files: 1000 }, 10, 10) === null, 'a limit of 10 % holds it from more than 10 % on')
+    check(vanished(before, { notes: 4, files: 1000 }, 90, 10) !== null && vanished(before, { notes: 6, files: 1000 }, 90, 10) === null, 'a limit of 90 % from more than 90 %')
+    check(vanished(before, { notes: 0, files: 0 }, 0, 10) === null, 'a guard turned off never holds it')
+    check(vanished({ notes: 9 }, { notes: 0, files: 0 }, 50, 10) === null, 'too few to tell anything are not counted')
+    check(vanished({ notes: 50 }, { notes: 50, files: 0 }, 50, 10) === null, 'nor files counted before there was a count of them')
+
+    const config = (guard: unknown): number | undefined =>
+      readConfig(new Map([['backupTarget:t', { id: 't', server: 'r', kind: 'trusted', location: 'copy', guard, addedAt: 1 }]]), 'r', root, []).config.trustedGuard
+    check(
+      config(undefined) === 50 && config(0) === 0 && config(5) === 10 && config(95) === 90 && config(33.4) === 33 && config('x') === 50,
+      'the guard as set in the settings: 50 unless set, 0 for off, else within 10 and 90'
+    )
+  }
+
+  // Whether a backup server read a device's newest settings: the same text on both ends.
+  {
+    const target = { id: 'x', server: 'r', kind: 'restic', location: 'l', password: 'p', keep: { last: 1, daily: 2 }, addedAt: 1 }
+    const read = new Map<string, unknown>([
+      ['backupTarget:x', target],
+      ['backupSchedule:r', { server: 'r', everyHours: 24 }],
+      ['backupTarget:y', { ...target, id: 'y', server: 'another backup server' }],
+      ['historyRetentionDays', 30]
+    ])
+    const reordered = new Map<string, unknown>([
+      ['backupSchedule:r', { everyHours: 24, server: 'r' }],
+      ['backupTarget:x', { addedAt: 1, keep: { daily: 2, last: 1 }, password: 'p', location: 'l', kind: 'restic', server: 'r', id: 'x' }]
+    ])
+    check(backupSettingsText(read, 'r') === backupSettingsText(reordered, 'r'), "the same settings read the same, in any order, without other routes' or other settings")
+    const longer = new Map(read).set('backupTarget:x', { ...target, keep: { last: 2, daily: 2 } })
+    check(backupSettingsText(read, 'r') !== backupSettingsText(longer, 'r'), 'a retention changed, with every id as it was, reads differently')
+    check(readConfig(read, 'r', root, []).digest === sha(backupSettingsText(read, 'r')), 'and the backup server reports the hash of what it read')
+  }
 }
 
 const PHOTO = 'Bilder/Foto.png'
@@ -361,6 +403,22 @@ try {
   )
   const confirmed = await runBackup(job(grant), options, { acceptShrink: true })
   check(confirmed.ok && !existsSync(join(trustedDir, folder, 'Bulk', '15.md')) && confirmed.trusted?.held === undefined, 'once confirmed, it follows', confirmed.trusted)
+
+  // --- most of the files vanishing, and a guard turned off ------------------------------------------
+  for (let n = 0; n < 12; n += 1) await A1.vault.userCreateBinary(`Bulk/${n}.png`, bytes(`bulk picture ${n} `.repeat(50)))
+  check(await eventually(() => A2.vault.bytes('Bulk/11.png') !== undefined, 20_000), 'A adds twelve pictures')
+  const pictures = await runBackup(job(grant), options)
+  check(pictures.ok && existsSync(join(trustedDir, folder, 'Bulk', '11.png')), 'they are in the trusted copy')
+  for (let n = 0; n < 12; n += 1) await A1.vault.trash(A1.vault.file(`Bulk/${n}.png`))
+  check(await eventually(() => A2.vault.bytes('Bulk/11.png') === undefined, 20_000), 'and deletes them again')
+  const fewerFiles = await runBackup(job(grant), options)
+  check(
+    fewerFiles.ok && fewerFiles.trusted?.held?.includes('files') === true && !fewerFiles.trusted.held.includes('notes') && existsSync(join(trustedDir, folder, 'Bulk', '11.png')),
+    'with most of the files gone and every note there, the trusted copy waits too - and says it is the files',
+    fewerFiles.trusted
+  )
+  const unguarded = await runBackup({ ...job(grant), config: { ...job(grant).config, trustedGuard: 0 } }, options)
+  check(unguarded.ok && unguarded.trusted?.held === undefined && !existsSync(join(trustedDir, folder, 'Bulk', '11.png')), 'with its guard turned off, it follows at once', unguarded.trusted)
 
   // --- a sync server restored from an old copy ---------------------------------------------------
   await server.close()
@@ -650,6 +708,34 @@ try {
     {
       const status = (await backups.ask(again.routeId))?.status
       check(status?.everyHours === 6 && status.targets.length === 2, 'and the backup server reads the settings under the new one', status)
+    }
+
+    // A destination changed afterwards: how long its backups are kept, the copy's guard.
+    {
+      const repo = settings.backupTargets(again.routeId).find((target) => target.kind === 'restic') as NonNullable<ReturnType<typeof settings.backupTargets>[number]>
+      const copy = settings.backupTargets(again.routeId).find((target) => target.kind === 'trusted') as NonNullable<ReturnType<typeof settings.backupTargets>[number]>
+      const repository = join(backupRoot, 'ui', 'repo')
+      const count = (): number => (JSON.parse(restic(repository, 'ui password', ['snapshots', '--json']).stdout.toString('utf8') || '[]') as unknown[]).length
+      check(count() > 2, 'the repository holds several backups by now', count())
+      await backups.updateTarget(again.routeId, repo.id, { keep: { last: 1 } })
+      await backups.updateTarget(again.routeId, copy.id, { guard: 0 })
+      const changed = settings.backupTargets(again.routeId)
+      check(
+        changed.find((target) => target.id === repo.id)?.keep?.last === 1 &&
+          changed.find((target) => target.id === repo.id)?.password === 'ui password' &&
+          changed.find((target) => target.id === copy.id)?.guard === 0,
+        'a destination keeps its location and password when its retention or guard changes'
+      )
+      const runsBefore = (await backups.ask(again.routeId))?.status?.runs.length ?? 0
+      await backups.runNow(again.routeId)
+      check(
+        await eventually(async () => {
+          const status = (await backups.ask(again.routeId))?.status
+          return (status?.runs.length ?? 0) > runsBefore && status?.running === false && status.runs[0]?.ok === true
+        }, 120_000),
+        'and backs up as before'
+      )
+      check(count() === 2, "the next backup keeps only what the new retention says - the newest notes and files snapshot", count())
     }
 
     // Every device of the account sees it, and may start or disconnect it.

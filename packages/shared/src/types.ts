@@ -357,12 +357,23 @@ export interface BackupTargetSetting {
   env?: Record<string, string>
   keep?: KeepPolicy
   /**
-   * The trusted copy only: the share of notes and files, in percent, that may
-   * vanish between two backups before the copy waits for a confirmation.
-   * Absent: 50; 0: it never waits.
+   * The trusted copy only: the share of the notes, or of the files, in percent,
+   * that may vanish since the copy last followed before it waits for a
+   * confirmation. 10 to 90; absent: `BACKUP_GUARD_DEFAULT`; 0: it never waits.
    */
   guard?: number
   addedAt: number
+}
+
+export const BACKUP_GUARD_DEFAULT = 50
+export const BACKUP_GUARD_MIN = 10
+export const BACKUP_GUARD_MAX = 90
+
+/** A guard as set, made one the backup server uses: 0, or 10 to 90. */
+export function backupGuard(value: unknown): number {
+  if (value === 0) return 0
+  if (typeof value !== 'number' || !Number.isFinite(value)) return BACKUP_GUARD_DEFAULT
+  return Math.min(BACKUP_GUARD_MAX, Math.max(BACKUP_GUARD_MIN, Math.round(value)))
 }
 
 /** `backupSchedule:<routeId>`: how often that backup server backs the vault up on its own. */
@@ -375,6 +386,36 @@ export interface BackupScheduleSetting {
 export const BACKUP_SERVER_KEY = 'backupServer:'
 export const BACKUP_TARGET_KEY = 'backupTarget:'
 export const BACKUP_SCHEDULE_KEY = 'backupSchedule:'
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (value && typeof value === 'object') {
+    const object = value as Record<string, unknown>
+    const keys = Object.keys(object)
+      .filter((key) => object[key] !== undefined)
+      .sort()
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
+/**
+ * What a backup server reads for its route - the destinations and the
+ * schedule -, written the same way on both ends. A device hashes it to tell
+ * whether the backup server has read the newest settings: an edit that keeps
+ * every destination's id is a change too.
+ */
+export function backupSettingsText(settings: Iterable<[string, unknown]>, routeId: string): string {
+  const taken: Array<[string, unknown]> = []
+  for (const [key, value] of settings) {
+    const own =
+      key === `${BACKUP_SCHEDULE_KEY}${routeId}` ||
+      (key.startsWith(BACKUP_TARGET_KEY) && Boolean(value) && typeof value === 'object' && (value as { server?: unknown }).server === routeId)
+    if (own) taken.push([key, value])
+  }
+  taken.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  return canonical(taken)
+}
 
 /**
  * Frames on the sync server's `/relay`, JSON. The sync server numbers each
@@ -453,6 +494,8 @@ export interface BackupVaultStatus {
   seen: string[]
   /** The schedule as it read it; 0 for none. */
   everyHours: number
+  /** SHA-256, hex, of `backupSettingsText` as it last read the settings; empty before it did. */
+  settingsDigest: string
   /** Settings the backup server cannot use, and why. */
   problems: string[]
   /** Newest first. */

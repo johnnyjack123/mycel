@@ -490,6 +490,24 @@ secret of their own.
   share of them vanished since the copy last followed - 50 % unless set otherwise
   for that copy (10 to 90 %, or off).
 
+**As built (0.7.7).**
+
+- *Notes and files are counted apart*, each against the limit: counted together, a
+  vault of a thousand pictures could lose all of its fifty notes and stay below it.
+  Fewer than ten of a kind when the copy last followed are not counted, as before;
+  files are counted from the first time the copy follows under 0.7.7.
+- *A changed destination is read before it is used.* The device used to wait until
+  the backup server listed the same destinations and schedule; a change of retention
+  keeps every id, so a run started right after saving went by the settings before it.
+  The status now carries a hash of what the backup server read for its route
+  (`backupSettingsText`, the same text on both ends), and the device waits for its own.
+- New credentials are checked by the backup server before they are saved, as a new
+  destination is. Retention: three presets or one's own numbers per rule; all empty
+  keeps every backup.
+- The tabs keep their place while the plugin runs. Signing in, creating an account and
+  recovering are forms on the Account tab; switching tabs leaves the form, forgetting
+  the passwords typed.
+
 ### Rolling back *(0.7.8 from the history, 0.7.9 from restic)*
 
 Decided:

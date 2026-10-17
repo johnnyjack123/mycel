@@ -15,6 +15,7 @@ import {
   docRoom,
   settingsRoom,
   userColor,
+  type BackupTargetSetting,
   type CollabUser,
   type ContactNotice,
   type Notice as ServerNotice,
@@ -673,8 +674,9 @@ export default class ObsidianConnectPlugin extends Plugin {
     new BackupConnectModal(this.app, this.backupServers, () => this.settingTab?.refresh(), again).open()
   }
 
-  openBackupTarget(routeId: string, root: string | null, hasTrusted: boolean): void {
-    new BackupTargetModal(this.app, this.backupServers, routeId, root, hasTrusted, () => this.settingTab?.refresh()).open()
+  /** `existing`: a destination to change; none adds one. */
+  openBackupTarget(routeId: string, root: string | null, hasTrusted: boolean, existing: BackupTargetSetting | null = null): void {
+    new BackupTargetModal(this.app, this.backupServers, routeId, root, hasTrusted, () => this.settingTab?.refresh(), existing).open()
   }
 
   private async backUpNow(): Promise<void> {

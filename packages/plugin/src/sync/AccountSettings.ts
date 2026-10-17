@@ -4,6 +4,7 @@ import {
   BACKUP_SERVER_KEY,
   BACKUP_TARGET_KEY,
   SETTINGS_FIELD,
+  backupSettingsText,
   type BackupScheduleSetting,
   type BackupServerSetting,
   type BackupTargetSetting
@@ -141,6 +142,11 @@ export class AccountSettings {
 
   decideRecovery(decision: RecoveryDecision): void {
     this.doc.transact(() => this.map.set(RECOVERY_KEY, decision), 'local')
+  }
+
+  /** What a backup server reads for its route, as it writes it down too. */
+  backupSettingsText(routeId: string): string {
+    return backupSettingsText(this.map.entries(), routeId)
   }
 
   private entries<T>(prefix: string): T[] {

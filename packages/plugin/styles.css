@@ -165,6 +165,46 @@
   user-select: all;
 }
 
+/* The settings' tabs; they wrap on a phone rather than scroll. */
+.connect-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25em;
+  margin-bottom: 1em;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.connect-tabs button.connect-tab {
+  background: none;
+  box-shadow: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  margin-bottom: -1px;
+  padding: 0.4em 0.8em;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.connect-tabs button.connect-tab:hover {
+  color: var(--text-normal);
+}
+
+.connect-tabs button.connect-tab.is-active {
+  color: var(--text-normal);
+  border-bottom-color: var(--interactive-accent);
+  font-weight: 600;
+}
+
+/* A backup server's own rows below its name. */
+.connect-backup-server {
+  margin-top: 1em;
+}
+
+.connect-backup-server .setting-item-name {
+  font-weight: 600;
+}
+
 /* Dark on light whatever the theme, with a quiet zone: scanners need both. */
 .connect-qr {
   width: min(240px, 70vw);
