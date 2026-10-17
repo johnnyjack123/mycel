@@ -1410,6 +1410,18 @@ export class DocStore {
   }
 
   /**
+   * A note a backup holds that the vault knows under no name any more: a new
+   * file, which becomes a note like any other the moment it is created.
+   * Returns where it went - next to its old place when that is taken.
+   */
+  async createNote(path: string, text: string): Promise<string> {
+    const target = this.freeRestorePath(path)
+    await this.ensureFolder(parentOf(target))
+    await this.app.vault.create(target, text)
+    return target
+  }
+
+  /**
    * A note's text as it was, as an edit - like restoring a version, so it
    * travels and can be undone. Worked out only against the document the
    * server sent: edits computed against a stale copy would let in again what

@@ -106,6 +106,12 @@ export interface RunnerOptions {
 export interface RunControl {
   /** The person confirmed that the vault lost that much on purpose; the trusted copy follows. */
   acceptShrink?: boolean
+  /**
+   * Forget no snapshot this time: the run a rollback asks for first, which
+   * may read from an older backup right after - one this run's retention
+   * would otherwise let go of. The next run forgets as usual.
+   */
+  keepAll?: boolean
 }
 
 interface DestinationState {
@@ -268,7 +274,7 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
   try {
     await writeNotes(workRoot, folder, notes, cache, keys)
     for (const destination of job.config.destinations) {
-      report.destinations.push(await backUpTo(destination, workRoot, folder, notes, streamed, digest, state, cache, keys, options, now))
+      report.destinations.push(await backUpTo(destination, workRoot, folder, notes, streamed, digest, state, cache, keys, options, now, control))
     }
   } catch (error) {
     report.error = message(error)
@@ -322,7 +328,8 @@ async function backUpTo(
   cache: Cache,
   keys: VaultKeys,
   options: RunnerOptions,
-  now: () => number
+  now: () => number,
+  control: RunControl
 ): Promise<DestinationReport> {
   const restic = options.restic
   const repo: ResticRepo = { repository: destination.repository, password: destination.password, env: destination.env }
@@ -351,7 +358,7 @@ async function backUpTo(
       known.filesDigest = digest
     }
 
-    if (destination.keep) {
+    if (destination.keep && !control.keepAll) {
       await restic.forget(repo, destination.keep)
       if (now() - (known.pruneAt ?? 0) >= (options.pruneMs ?? WEEK_MS)) {
         await restic.prune(repo)

@@ -1026,6 +1026,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       store,
       attachments: this.attachments?.isReady ? this.attachments : null,
       settings: accountSettings,
+      backups: this.backupsOf(),
       adapter: this.app.vault.adapter,
       root: this.pluginDir(),
       isExcluded: (path) => store.isExcluded(path)

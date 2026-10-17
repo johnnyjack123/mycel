@@ -508,7 +508,11 @@ and each note's history give the plan; a fresh backup on every backup server
 settings, then trashing, moving, restoring and editing as a person would, so every
 device follows and it can be undone. Others' shared notes stay; own shared notes
 go back for everyone. A moment before a snapshot's time is out of reach; a
-compaction stamps the newest change it folds in.
+compaction stamps the newest change it folds in. Out of reach is filled from the
+newest backup at or before the moment (0.7.9, `backup/src/restore.ts`, read only
+over the pairing); with the index itself out of reach the whole plan comes from it,
+by path. The backup made first forgets nothing (`keepAll`), so the snapshot read
+next is still there.
 
 The retention is also the **trash** (`sync/Trash.ts`, "Deleted notes…"): a
 deleted note of one's own stays restorable for that long, on any device —

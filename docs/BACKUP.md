@@ -153,6 +153,15 @@ snapshot, the newest notes read back byte for byte; once a week a part of the st
 data is read in full, and every file of the files snapshot is read back and compared
 by its hash.
 
+## Rolling back from Obsidian
+
+*Roll the vault back…* in the plugin (or *Roll this folder back…* in a folder's menu)
+takes the vault back to a moment from the history on the sync server - and where
+that no longer reaches, from the newest backup at or before that moment on a backup
+server, read back over the same encrypted connection; nothing to restore by hand.
+Before anything changes, every backup server makes a fresh backup (forgetting no
+older one this time, so the backup rolled back from stays). See the README.
+
 ## Restoring
 
 With restic on any computer (or in a container: `docker run --rm -it -v …:/repo restic/restic …`):

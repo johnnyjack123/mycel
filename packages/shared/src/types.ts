@@ -502,6 +502,36 @@ export interface BackupVaultStatus {
   runs: BackupRunStatus[]
 }
 
+/** One backup of a vault a backup server can read a rollback's content from: a notes snapshot and the files snapshot of then. */
+export interface BackupSnapshotRef {
+  /** The destination (`backupTarget` id) whose repository holds it. */
+  destination: string
+  /** The vault's folder in the backup. */
+  folder: string
+  notes: { id: string; time: number }
+  files: { id: string; time: number } | null
+}
+
+/** A note or file in a backup, by its path in the vault. */
+export interface BackupListedEntry {
+  path: string
+  size: number
+  /** SHA-256 of the content, hex - as attachments name their content. */
+  hash: string
+  /** Which snapshot holds it: notes and canvases, or the stream of every other file. */
+  part: 'notes' | 'files'
+}
+
+/** A piece of a backup's content on its way to a device, as a session event `backup-data`. */
+export interface BackupDataEvent {
+  /** The request it answers. */
+  rid: string
+  path: string
+  /** Base64; empty on the last piece of a file that ended. */
+  data: string
+  last: boolean
+}
+
 /**
  * Everything a backup server needs to read and decrypt one vault, handed over
  * by a device of the account - never through the sync server in the clear.

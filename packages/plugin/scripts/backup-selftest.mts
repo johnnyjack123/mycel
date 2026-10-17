@@ -26,7 +26,7 @@ const { startBackupServer } = await import('../../backup/src/server.js')
 const { Invites } = await import('../../backup/src/invites.js')
 const { listVaults } = await import('../../backup/src/service.js')
 const { backupRouteKeys, encodeBackupInvite, fromBase64, newBackupSecret, openSession } = await import('@obsidian-connect/shared/crypto')
-const { backupSettingsText } = await import('@obsidian-connect/shared')
+const { backupSettingsText, docRoom } = await import('@obsidian-connect/shared')
 type BackupConnected = import('@obsidian-connect/shared').BackupConnected
 
 type RunReport = Awaited<ReturnType<typeof runBackup>>
@@ -51,7 +51,9 @@ async function serve(dataDir: string) {
       PORT: String(port),
       OBSIDIAN_CONNECT_DATA_DIR: dataDir,
       OBSIDIAN_CONNECT_REGISTRATION: 'open',
-      OBSIDIAN_CONNECT_JWT_SECRET: 'backup-selftest'
+      OBSIDIAN_CONNECT_JWT_SECRET: 'backup-selftest',
+      // A clean-up purges at once: a rollback has to find content only a backup still has.
+      OBSIDIAN_CONNECT_PURGE_GRACE_S: '0'
     }),
     { logger: false, paceMs: 0 }
   )
@@ -121,8 +123,8 @@ function untar(archive: string, into: string): boolean {
   stream.end()
   const archive = Buffer.concat(parts)
   const hasher = new TarHasher()
-  hasher.write(archive.subarray(0, 700))
-  hasher.write(archive.subarray(700))
+  await hasher.write(archive.subarray(0, 700))
+  await hasher.write(archive.subarray(700))
   check(
     hasher.complete && hasher.hashes.get('short.txt') === sha('hello') && hasher.hashes.get(long) === sha(content),
     'the tar stream reads back, a long name with umlauts included',
@@ -349,7 +351,7 @@ try {
   {
     const dumped = restic(destinations[1].repository, destinations[1].password, ['dump', fourth.destinations[1]?.filesSnapshot ?? '', `/${folder} files.tar`])
     const hasher = new TarHasher()
-    hasher.write(dumped.stdout)
+    await hasher.write(dumped.stdout)
     check(hasher.hashes.get(`${folder}/Bilder/Neu.png`) === sha(added) && hasher.hashes.get(`${folder}/${PHOTO}`) === sha(photo), 'with the new picture and the old ones in it')
   }
 
@@ -744,6 +746,94 @@ try {
       const fresh = await backups.backUpFresh(again.routeId, { pollMs: 200 })
       const runsAfter = (await backups.ask(again.routeId))?.status?.runs.length ?? 0
       check(fresh.ok && runsAfter > runsBefore, 'a fresh backup for a rollback is started and waited for until it is checked', { fresh, runsBefore, runsAfter })
+    }
+
+    // --- rolling back further than the history reaches: from that backup --------------------------
+    {
+      const vaultNow = (): Map<string, string> => {
+        const found = new Map<string, string>()
+        for (const path of A3.vault.paths()) found.set(path, A3.vault.text(path) ?? '')
+        for (const path of A3.vault.attachmentPaths()) found.set(path, Buffer.from(A3.vault.bytes(path) ?? new Uint8Array()).toString('base64'))
+        return found
+      }
+      await delay(500)
+      const atBackup = vaultNow()
+      const TB = Date.now()
+      await delay(1_100)
+      const photoAfter = bytes('painted over after the backup '.repeat(150))
+      await A3.vault.userWrite('Welcome.md', 'after the backup\n')
+      await A3.vault.userCreate('After backup.md', 'came after the backup\n')
+      await A3.vault.trash(A3.vault.file('New.md'))
+      await A3.vault.userWriteBinary(PHOTO, photoAfter)
+      check(
+        await eventually(async () => A3.docText('Welcome.md') === 'after the backup\n' && A3.attachments?.fileState(A3.vault.file(PHOTO)) === 'synced', 15_000),
+        'A edits, adds, deletes and paints over a picture after the backup'
+      )
+      await delay(500)
+      // The history compacted past the backup, and the picture's earlier content gone from the sync server.
+      A3.retentionDays = 1e-9
+      check(((await (A3.compactor as NonNullable<typeof A3.compactor>).run()) ?? 0) > 0, "the vault's whole history is compacted past the backup")
+      await delay(50)
+      await A3.attachments?.cleanUp(1e-9)
+      const plan = await A3.rollback.plan(TB)
+      const note = (path: string): (typeof plan.notes)[number] | undefined => plan.notes.find((entry) => entry.pathThen === path || entry.pathNow === path)
+      check(plan.byPath && plan.backup?.routeId === again.routeId, 'with the history out of reach, the plan comes from the backup, by name', { byPath: plan.byPath, backup: plan.backup })
+      check(note('Welcome.md')?.text === true && note('Welcome.md')?.textThen === atBackup.get('Welcome.md'), "a note gets its text from the backup")
+      check(note('After backup.md')?.trash === true && note('New.md')?.revive === true, 'one that came later goes to the trash, one deleted since comes back from the trash')
+      check(plan.files.find((file) => file.pathThen === PHOTO)?.fromBackup === true, "and a picture whose content the sync server no longer has is read from the backup")
+      check(plan.foreignKept >= 1 && !plan.notes.some((entry) => (entry.pathThen ?? entry.pathNow ?? '').startsWith('Shared/')), 'a note someone else shares in stays as it is')
+      const backed = await A3.rollback.backUpFirst(A3.backups)
+      check(backed.every((result) => result.ok), 'every backup server backs up first')
+      const outcome = await A3.rollback.apply(plan, { backups: backed })
+      check(outcome.problems.length === 0 && outcome.record.state === 'done', 'the rollback from the backup goes through', outcome.problems)
+      const differ = (): string[] => {
+        const now = vaultNow()
+        const found: string[] = []
+        for (const [path, content] of atBackup) if (now.get(path) !== content) found.push(path)
+        for (const path of now.keys()) if (!atBackup.has(path)) found.push(`extra ${path}`)
+        return found
+      }
+      check(await eventually(() => differ().length === 0, 20_000), 'the vault is as the backup has it - notes and files', differ())
+      const repository = join(backupRoot, 'ui', 'repo')
+      const notesSnapshots = (JSON.parse(restic(repository, 'ui password', ['snapshots', '--json', '--tag', 'notes']).stdout.toString('utf8') || '[]') as unknown[]).length
+      check(notesSnapshots >= 2, "the backup made first forgot nothing, so the one rolled back from was still there", notesSnapshots)
+    }
+
+    // --- one note the history no longer reaches, the rest from the history ---------------------------
+    {
+      check((await backups.backUpFresh(again.routeId, { pollMs: 200, keepAll: true })).ok, 'another backup')
+      await delay(500)
+      const welcomeThen = A3.vault.text('Welcome.md')
+      const newThen = A3.vault.text('New.md')
+      const T2 = Date.now()
+      await delay(1_100)
+      await A3.vault.userWrite('Welcome.md', 'once more after the backup\n')
+      await A3.vault.userWrite('New.md', 'changed after the backup too\n')
+      check(
+        await eventually(() => A3.docText('Welcome.md') === 'once more after the backup\n' && A3.docText('New.md') === 'changed after the backup too\n', 15_000),
+        'A edits two notes after it'
+      )
+      await delay(500)
+      const welcome = A3.index?.docIdForPath('Welcome.md') as string
+      const compactor = A3.compactor as unknown as { compact(room: string, cutoff: number): Promise<boolean> }
+      check(await compactor.compact(docRoom(welcome), Date.now() + 1_000), "and one of them has its history compacted past the backup")
+      const plan = await A3.rollback.plan(T2)
+      const note = (path: string): (typeof plan.notes)[number] | undefined => plan.notes.find((entry) => entry.pathThen === path)
+      check(
+        !plan.byPath && plan.backup !== null && plan.outOfReach.length === 0 && note('Welcome.md')?.fromBackup === true && note('Welcome.md')?.textThen === welcomeThen,
+        'the plan takes that note from the backup',
+        { byPath: plan.byPath, outOfReach: plan.outOfReach, welcome: note('Welcome.md') }
+      )
+      check(note('New.md')?.text === true && note('New.md')?.fromBackup === undefined && note('New.md')?.textThen === newThen, 'and the other from the history')
+      const outcome = await A3.rollback.apply(plan, { backups: [{ label: 'test', ok: true }] })
+      check(
+        outcome.problems.length === 0 && (await eventually(() => A3.vault.text('Welcome.md') === welcomeThen && A3.vault.text('New.md') === newThen)),
+        'both go back',
+        outcome.problems
+      )
+      const ref = plan.backup?.ref as NonNullable<typeof plan.backup>['ref']
+      const elsewhere = await refusal(backups.backupListing(again.routeId, { ...ref, destination: 'not-one-of-them' }))
+      check(elsewhere.includes('not a backup of this vault'), 'a backup server reads back only from the repositories of the vault the session belongs to', elsewhere)
     }
 
     // Every device of the account sees it, and may start or disconnect it.

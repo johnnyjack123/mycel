@@ -431,6 +431,8 @@ export class Device {
       store: this.store,
       attachments: this.attachments,
       settings: this.settings,
+      // The backup servers once the test has reached for them, as main.ts hands them over.
+      backups: this.backupsController,
       adapter: this.vault.adapter as never,
       root: 'plugin',
       isExcluded: () => false

@@ -599,6 +599,35 @@ How:
   index and the scan never claim (invariant 27). A rollback undoing renames closes such
   cycles often.
 
+**As built (0.7.9).** Rolling back from restic, without anything to do by hand:
+
+- *Three calls on the vault's pairing,* read only: `backupAt` (the newest notes
+  snapshot at or before the moment over the vault's repositories, and the files
+  snapshot that was newest then - a remote repository may hold several vaults, so a
+  notes snapshot must name the vault's folder on the RAM disk, a files snapshot its
+  stream), `backupList` (every note and file by path with its SHA-256, read by
+  dumping both snapshots as tar; kept a while) and `backupRead` (the paths asked for,
+  in pieces of 192 KiB as session events, the notes snapshot first, the files stream
+  only for what it did not hold). The backup server checks that the repository named
+  is one of the vault's and takes the folder from its own knowledge.
+- *Where the index still reaches,* only what the history does not - a note's text, a
+  file's content the sync server let go of - comes from the backup, matched by the
+  note's or file's path then. *Where the index does not reach,* the whole plan comes
+  from the backup by path: what lies at a path now gets the backup's text or content,
+  what is in the trash at that path comes back, what the vault knows under no name
+  any more comes back as a new note or file, and what is not in the backup goes to the
+  trash. Notes in the share folder the vault has no trace of stay away: most likely
+  someone else's.
+- *Content the sync server still has* is taken from there; only what it lost is read
+  from the backup and uploaded before an entry names it (invariant 23). A new file is
+  written from the backup's bytes.
+- *The backup made first forgets nothing* (`keepAll`): its retention could otherwise let
+  go of the very snapshot the rollback reads next - which a mutation test showed.
+- *A bug on the way:* the backup server sealed its session messages concurrently, and
+  one overtaking another on its way out would end the session at the device - a run's
+  `finished` event during any request could do it, a stream of pieces made it likely.
+  Its sends are in order now, as the plugin's always were.
+
 ### Order of work
 
 6. **0.7.6** - invitations and pairings: relay with many routes per connection, the

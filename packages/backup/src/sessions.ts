@@ -1,4 +1,4 @@
-import type { BackupConnected, BackupGrant, BackupTargetSetting } from '@obsidian-connect/shared'
+import type { BackupConnected, BackupDataEvent, BackupGrant, BackupSnapshotRef, BackupTargetSetting } from '@obsidian-connect/shared'
 import { SessionCipher, answerSession, sameMac, sessionProof, type Bytes, type SessionHello, type SessionKeys } from '@obsidian-connect/shared/crypto'
 import { envOf, isRemote, localFolder, overlapping, writable } from './config.js'
 import { log } from './log.js'
@@ -65,9 +65,17 @@ export function serveSession(session: IncomingSession, deps: SessionDeps): void 
     session.close(reason)
   }
 
-  const reply = async (message: unknown): Promise<void> => {
-    if (!cipher) return
-    session.send(JSON.stringify({ c: await cipher.seal(JSON.stringify(message)) }))
+  // Sealed and sent one after the other: the cipher numbers each message as
+  // sealing starts, and an event - a run that finished, a piece of a backup -
+  // overtaking a reply on its way out would end the session at the device.
+  let sending: Promise<unknown> = Promise.resolve()
+  const reply = (message: unknown): Promise<void> => {
+    const sent = sending.then(async () => {
+      if (!cipher) return
+      session.send(JSON.stringify({ c: await cipher.seal(JSON.stringify(message)) }))
+    })
+    sending = sent.catch(() => undefined)
+    return sent
   }
 
   const handle = async (raw: string): Promise<void> => {
@@ -160,8 +168,23 @@ export function serveSession(session: IncomingSession, deps: SessionDeps): void 
         await service.refresh(vaultId)
         return service.status(vaultId)
       case 'run':
-        void service.run(vaultId, { acceptShrink: params.acceptShrink === true }).catch(() => undefined)
+        void service.run(vaultId, { acceptShrink: params.acceptShrink === true, keepAll: params.keepAll === true }).catch(() => undefined)
         return service.status(vaultId)
+      // A rollback reaching further back than the history: read only, from this vault's own repositories.
+      case 'backupAt':
+        if (typeof params.at !== 'number') throw new Error('no moment given')
+        return service.backupAt(vaultId, params.at)
+      case 'backupList':
+        return service.listBackup(vaultId, params.ref as BackupSnapshotRef)
+      case 'backupRead': {
+        const rid = typeof params.rid === 'string' ? params.rid : ''
+        const paths = Array.isArray(params.paths) ? params.paths.filter((path): path is string => typeof path === 'string') : []
+        const found = await service.readBackup(vaultId, params.ref as BackupSnapshotRef, paths, async (path, piece) => {
+          const event: BackupDataEvent = { rid, path, data: piece ? piece.toString('base64') : '', last: piece === null }
+          await reply({ ev: 'backup-data', p: event })
+        })
+        return { found }
+      }
       case 'check':
         return checkTarget(deps, vaultId, params.target as BackupTargetSetting)
       case 'rekey':

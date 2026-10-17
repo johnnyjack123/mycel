@@ -8,6 +8,28 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.9** (2026-10-17) - rolling back further than the history reaches, from restic
+  (decided with the user: "history first, restic where it no longer reaches - a
+  manual restore would be a nuisance"). The backup server reads a vault's own backups
+  back over its pairing, read only: the newest backup at or before a moment, what it
+  holds by path with SHA-256, and the paths asked for, in pieces. A rollback takes
+  what the history no longer reaches from there - a note's text, a file's content
+  the sync server let go of -, and when the vault index itself is out of reach, the
+  whole vault by path. Content the sync server still has comes from there; only what
+  it lost is read back and uploaded before an index entry names it. The backup a
+  rollback makes first forgets no snapshot, so the one it reads from next is still
+  there. The dialog says where content comes from. And a fix: the backup server
+  sealed session messages concurrently, so a message could overtake another and end
+  the session at the device (a run finishing during a request could do it; a stream
+  of pieces made it likely) - its sends are in order now. `test:backup` 144: a vault
+  rolled back by name from a real backup with its history compacted away - texts,
+  a note that came later, one deleted since, a picture whose content only the backup
+  still had, a note someone else shares in kept -; one note filled from the backup
+  while the other comes from the history; a repository not the vault's refused.
+  Checked by putting the bugs back: with the fresh backup forgetting as usual, the
+  rollback from the backup failed - its snapshot was gone - and with any repository
+  accepted, the refusal check failed; nothing else.
+
 - **0.7.8** (2026-10-17) - rolling back, from the history (asked for by the user, with
   a backup of everything first). *Roll the vault back…* (command, *All devices*, the
   root folder's menu) or *Roll this folder back…*: choose a moment, see per kind what

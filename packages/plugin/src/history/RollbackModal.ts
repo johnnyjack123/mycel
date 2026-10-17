@@ -114,7 +114,9 @@ export class RollbackModal extends Modal {
           ? 'Asking how far the history reaches…'
           : this.reach === 0
             ? 'The history on the server reaches back to the beginning.'
-            : `The history on the server reaches back to ${when(this.reach)}.`
+            : `The history on the server reaches back to ${when(this.reach)}.${
+                (this.backups?.servers().length ?? 0) > 0 ? ' Further back, the backups on your backup servers fill in.' : ''
+              }`
     })
     const input = new Setting(contentEl).setName('Back to').addText((text) => {
       text.inputEl.type = 'datetime-local'
@@ -179,7 +181,9 @@ export class RollbackModal extends Modal {
       this.go({ kind: 'choose' })
       if (error instanceof IndexOutOfReach) {
         new Notice(
-          `The history on the server reaches back to ${when(error.reach)} only. For an earlier moment, restore from a backup with restic - see "Restoring" in the backup documentation.`,
+          (this.backups?.servers().length ?? 0) > 0
+            ? `The history on the server reaches back to ${when(error.reach)} only, and no backup server has a backup from before the moment you chose.`
+            : `The history on the server reaches back to ${when(error.reach)} only. A backup server would reach further - see the Backups tab.`,
           12_000
         )
       } else {
@@ -208,15 +212,26 @@ export class RollbackModal extends Modal {
       return
     }
     contentEl.createEl('p', { text: `Back to ${when(plan.to)}, ${this.where}:` })
+    if (plan.backup) {
+      const source = `the backup of ${when(plan.backup.ref.notes.time)} on ${plan.backup.label}`
+      contentEl.createEl('p', {
+        cls: plan.byPath ? 'mod-warning' : 'setting-item-description',
+        text: plan.byPath
+          ? `The history on the server does not reach back that far, so everything comes from ${source} - matched by name: a note renamed since goes to the trash under its new name and comes back under its old one.`
+          : `What the history on the server no longer reaches comes from ${source}.`
+      })
+    }
     const path = (entry: { pathNow: string | null; pathThen: string | null }): string => entry.pathThen ?? entry.pathNow ?? ''
     const moved = (entry: { pathNow: string | null; pathThen: string | null }): string => `${entry.pathNow} → ${entry.pathThen}`
-    this.list('Notes that get their text back', notes.filter((note) => note.text && !note.revive).map(path))
+    this.list('Notes that get their text back', notes.filter((note) => note.text && !note.revive && !note.create).map(path))
     this.list('Notes that came later, to the trash', notes.filter((note) => note.trash).map(path))
     this.list('Notes that come back from the trash', notes.filter((note) => note.revive).map(path))
+    this.list('Notes that come back from the backup', notes.filter((note) => note.create).map(path))
     this.list('Notes that move back', notes.filter((note) => note.move).map(moved))
     this.list('Files that get their content back', files.filter((file) => file.content).map(path))
     this.list('Files that came later, to the trash', files.filter((file) => file.trash).map(path))
     this.list('Files that come back from the trash', files.filter((file) => file.revive).map(path))
+    this.list('Files that come back from the backup', files.filter((file) => file.create).map(path))
     this.list('Files that move back', files.filter((file) => file.move).map(moved))
 
     const shared = notes.filter((note) => note.shared)

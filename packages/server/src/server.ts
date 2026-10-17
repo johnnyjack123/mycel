@@ -72,7 +72,8 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
   const sweeper = setInterval(sweep, options.sweepMs ?? SWEEP_MS)
   sweeper.unref()
   const wss = new WebSocketServer({ noServer: true })
-  // A session's frames are small - keys, settings, a status - so a large one is a mistake or worse.
+  // A session's frames are small - keys, settings, a status, a backup read back in
+  // pieces of 192 KiB - so a large one is a mistake or worse.
   const relayWss = new WebSocketServer({ noServer: true, maxPayload: RELAY_MAX_BYTES })
   const relay = new Relay()
 

@@ -1,12 +1,22 @@
 import { access, mkdir, readFile, readdir, rename, rm, statfs, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { isHexId, type BackupGrant, type BackupRunStatus, type BackupServerInfo, type BackupVaultStatus } from '@obsidian-connect/shared'
+import {
+  isHexId,
+  type BackupGrant,
+  type BackupListedEntry,
+  type BackupRunStatus,
+  type BackupServerInfo,
+  type BackupSnapshotRef,
+  type BackupVaultStatus
+} from '@obsidian-connect/shared'
 import { backupRouteKeys, newBackupSecret, toBase64 } from '@obsidian-connect/shared/crypto'
 import { fetchSettings, readConfig, type VaultConfig } from './config.js'
 import { VaultKeys } from './keys.js'
 import { log } from './log.js'
 import type { Restic } from './restic.js'
-import { runBackup, type RunControl, type RunReport } from './run.js'
+import { vaultFolder } from './layout.js'
+import { listBackup, readBackup, snapshotAt } from './restore.js'
+import { runBackup, type Destination, type RunControl, type RunReport } from './run.js'
 import { AccessEnded, SyncClient } from './sync.js'
 
 // The vaults paired with this backup server, their settings, their runs and
@@ -127,6 +137,7 @@ export class BackupService {
   private readonly waiting = new Map<string, Promise<RunReport>>()
   private readonly listeners = new Set<(vaultId: string, report: RunReport) => void>()
   private readonly routeListeners = new Set<() => void>()
+  private readonly listings = new Map<string, BackupListedEntry[]>()
 
   private constructor(private readonly options: ServiceOptions) {}
 
@@ -288,6 +299,50 @@ export class BackupService {
       changed = true
     }
     if (changed) this.routesChanged()
+  }
+
+  // --- a rollback reading from the backups ------------------------------------------
+
+  /** The repositories a vault backs up into, and its folder in them; the settings are read when not known yet. */
+  private async repositories(vaultId: string): Promise<{ destinations: Destination[]; folder: string }> {
+    const vault = this.vaults.get(vaultId)
+    if (!vault) throw new Error('this backup server no longer has this vault')
+    const config = vault.config ?? (await this.refresh(vaultId))
+    return { destinations: config.config.destinations, folder: vaultFolder(vault.grant.vaultName) }
+  }
+
+  /** The repository a device names for a backup - one of this vault's, never anyone else's. */
+  private async repository(vaultId: string, ref: BackupSnapshotRef): Promise<{ destination: Destination; ref: BackupSnapshotRef }> {
+    const { destinations, folder } = await this.repositories(vaultId)
+    const destination = destinations.find((candidate) => candidate.id === ref?.destination)
+    if (!destination || typeof ref.notes?.id !== 'string') throw new Error('that is not a backup of this vault')
+    // The folder is this backup server's to know, whatever the device sent.
+    return { destination, ref: { ...ref, folder } }
+  }
+
+  /** The newest backup of the vault at or before `at`, over its repositories. */
+  async backupAt(vaultId: string, at: number): Promise<BackupSnapshotRef | null> {
+    const { destinations, folder } = await this.repositories(vaultId)
+    return snapshotAt(this.options.restic, destinations, vaultId, folder, at)
+  }
+
+  /** What a backup holds; kept a while, since a rollback asks again right after. */
+  async listBackup(vaultId: string, ref: BackupSnapshotRef): Promise<BackupListedEntry[]> {
+    const found = await this.repository(vaultId, ref)
+    const key = `${vaultId}:${found.destination.id}:${found.ref.notes.id}:${found.ref.files?.id ?? ''}`
+    const known = this.listings.get(key)
+    if (known) return known
+    const listed = await listBackup(this.options.restic, found.destination, found.ref)
+    this.listings.set(key, listed)
+    for (const old of Array.from(this.listings.keys()).slice(0, Math.max(0, this.listings.size - 4))) this.listings.delete(old)
+    return listed
+  }
+
+  /** Hands the content of these paths of a backup over, piece by piece. */
+  async readBackup(vaultId: string, ref: BackupSnapshotRef, paths: string[], send: (path: string, piece: Buffer | null) => Promise<void>): Promise<number> {
+    const found = await this.repository(vaultId, ref)
+    log.info(`vault ${vaultId}: ${paths.length} note(s) or file(s) read back from a backup for a rollback`)
+    return readBackup(this.options.restic, found.destination, found.ref, paths, send)
   }
 
   /** The local folders every other vault's destinations use here. */

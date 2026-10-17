@@ -1323,6 +1323,29 @@ export class AttachmentStore {
   }
 
   /**
+   * Content only a backup still had, put back into the vault's store - checked
+   * against the hash it is named by - so an entry can name it again.
+   */
+  async uploadContent(data: Bytes, hash: string): Promise<void> {
+    if ((await contentHash(data)) !== hash) throw new Error(`the content does not match its hash ${hash.slice(0, 12)}`)
+    await this.memory.run(data.length, () => this.upload(data, hash))
+  }
+
+  /**
+   * A file a backup holds that the vault knows under no name any more: written
+   * into the vault, where it is taken in like any new file. Returns where it
+   * went - next to its old place when that is taken.
+   */
+  async createFile(path: string, data: Bytes, hash: string): Promise<string> {
+    if ((await contentHash(data)) !== hash) throw new Error(`the content does not match its hash ${hash.slice(0, 12)}`)
+    let target = path
+    for (let n = 1; this.app.vault.getAbstractFileByPath(target) || this.index.idForPath(target); n += 1) target = besides(path, 'restored', n)
+    await this.ensureFolder(parentOf(target))
+    await this.app.vault.createBinary(target, buffer(data))
+    return target
+  }
+
+  /**
    * A file's content as it was - like restoring a version: what it holds now
    * stays a version of its own. A file this device left on the server only
    * changes in the index; it comes with the new content when it is needed.

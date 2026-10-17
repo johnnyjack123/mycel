@@ -6,10 +6,12 @@ import {
   docRoom,
   indexRoom,
   type AttachmentEntry,
+  type BackupListedEntry,
+  type BackupSnapshotRef,
   type IndexEntry,
   type LogResponse
 } from '@obsidian-connect/shared'
-import { randomBytes, toHex } from '@obsidian-connect/shared/crypto'
+import { bytes, contentHash, fromUtf8, randomBytes, toHex, utf8 } from '@obsidian-connect/shared/crypto'
 import { ApiError } from '../account/api.js'
 import { RoomHistory } from '../history/RoomHistory.js'
 import type { AccountSettings, RollbackRecord } from './AccountSettings.js'
@@ -18,13 +20,16 @@ import type { DocStore } from './DocStore.js'
 import type { RoomCrypto } from './VaultSocket.js'
 import { log } from '../log.js'
 
-// Rolling the vault, or one folder of it, back to a moment - from the history
-// the server keeps (`docs/PHASE6.md`, "Rolling back"). Three steps:
+// Rolling the vault, or one folder of it, back to a moment (`docs/PHASE6.md`,
+// "Rolling back"). Three steps:
 //
 // 1. The plan: the vault index replayed to that moment says which notes and
 //    files there were and where; each note's history says its text then, the
 //    index the content each file had. Compared with now, that is a list of
-//    notes and files to trash, move back, bring back and change.
+//    notes and files to trash, move back, bring back and change. Where the
+//    history no longer reaches, the newest backup at or before that moment on
+//    a backup server fills in - by path alone when the index itself is out of
+//    reach -, without the person restoring anything by hand.
 // 2. Before anything changes: a fresh, checked backup on every backup server
 //    of the vault, and a copy of everything about to change or go in the
 //    plugin's folder, `rollbacks/<time>/`. A record in the account's settings.
@@ -38,6 +43,7 @@ import { log } from '../log.js'
 
 /** One note the rollback changes. */
 export interface NoteChange {
+  /** '' for a note that comes back from a backup as a new one. */
   docId: string
   /** Where it is now; null when it is in the trash. */
   pathNow: string | null
@@ -50,14 +56,19 @@ export interface NoteChange {
   trash?: true
   /** In the trash now, there then: comes back. */
   revive?: true
+  /** Not known to the vault now under any name: comes back from a backup as a new note. */
+  create?: true
   move?: true
   text?: true
+  /** Its text then comes from the backup, not the history. */
+  fromBackup?: true
   /** Shared with other people, now or then. */
   shared: boolean
 }
 
 /** One file the rollback changes. */
 export interface FileChange {
+  /** '' for a file that comes back from a backup as a new one. */
   fileId: string
   pathNow: string | null
   pathThen: string | null
@@ -65,16 +76,27 @@ export interface FileChange {
   sizeThen?: number
   trash?: true
   revive?: true
+  create?: true
   move?: true
   content?: true
+  /** Its content then is read from the backup: the sync server no longer has it. */
+  fromBackup?: true
 }
 
-/** A note or file whose state then the history no longer knows. */
+/** A note or file whose state then neither the history nor a backup knows. */
 export interface OutOfReach {
   kind: 'note' | 'file'
   id: string
   path: string
   reason: string
+}
+
+/** The backup a plan takes from, where the history did not reach. */
+export interface PlannedBackup {
+  routeId: string
+  /** The backup server's name. */
+  label: string
+  ref: BackupSnapshotRef
 }
 
 export interface RollbackPlan {
@@ -86,19 +108,33 @@ export interface RollbackPlan {
   outOfReach: OutOfReach[]
   /** Notes and files others share into the vault, left as they are. */
   foreignKept: number
+  backup: PlannedBackup | null
+  /**
+   * The history did not reach back to the moment at all: everything comes
+   * from the backup, matched by path - a note renamed since goes to the trash
+   * under its new name and comes back under its old one.
+   */
+  byPath: boolean
 }
 
-/** The history does not reach back that far for the vault index; `reach` is as far as it goes. */
+/** Neither the vault index's history nor a backup reaches back that far; `reach` is as far as the history goes. */
 export class IndexOutOfReach extends Error {
   constructor(readonly reach: number) {
     super(`the history reaches back to ${new Date(reach).toLocaleString()}, not further`)
   }
 }
 
-/** The vault's backup servers, as far as a rollback needs them. */
+/** The vault's backup servers, as far as a rollback needs them to back up first. */
 export interface BackupServers {
   servers(): Array<{ routeId: string; label: string }>
-  backUpFresh(routeId: string): Promise<{ ok: boolean; error?: string }>
+  backUpFresh(routeId: string, options?: { keepAll?: boolean }): Promise<{ ok: boolean; error?: string }>
+}
+
+/** And as far as it reads from their backups. */
+export interface BackupSource extends BackupServers {
+  backupAt(routeId: string, at: number): Promise<BackupSnapshotRef | null>
+  backupListing(routeId: string, ref: BackupSnapshotRef): Promise<BackupListedEntry[]>
+  backupRead(routeId: string, ref: BackupSnapshotRef, paths: string[], take: (path: string, data: Uint8Array) => Promise<void>): Promise<number>
 }
 
 export interface BackupResult {
@@ -112,7 +148,7 @@ export interface RollbackConsent {
   /** How the fresh backups went - every one must have, unless `withoutBackup`. */
   backups: BackupResult[]
   withoutBackup?: boolean
-  /** Roll back without what the history no longer reaches; it stays as it is. */
+  /** Roll back without what neither the history nor a backup reaches; it stays as it is. */
   withoutOutOfReach?: boolean
 }
 
@@ -135,11 +171,24 @@ export interface RollbackDeps {
   store: DocStore
   attachments: AttachmentStore | null
   settings: AccountSettings
+  /** Where content comes from that the history no longer has; null without a backup server. */
+  backups?: BackupSource | null
   /** Where the copy goes: the plugin's folder. */
   adapter: DataAdapter
   root: string
   isExcluded: (path: string) => boolean
   now?: () => number
+}
+
+/** What the history planning knew of a note or file it could not reach, for a backup to fill in. */
+interface Unreached {
+  kind: 'note' | 'file'
+  id: string
+  pathNow: string | null
+  pathThen: string | null
+  shared: boolean
+  /** A note's text on the server now, when its log could be read. */
+  textNow?: string
 }
 
 // Notes read at once while planning; each is one request.
@@ -168,6 +217,10 @@ function buffer(data: Uint8Array): ArrayBuffer {
   return data.slice().buffer
 }
 
+function isNote(path: string): boolean {
+  return path.endsWith('.md')
+}
+
 async function pool<T>(items: T[], task: (item: T) => Promise<void>): Promise<void> {
   let next = 0
   const worker = async (): Promise<void> => {
@@ -180,11 +233,18 @@ async function pool<T>(items: T[], task: (item: T) => Promise<void>): Promise<vo
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker))
 }
 
+const byPath = (a: { pathNow: string | null; pathThen: string | null }, b: { pathNow: string | null; pathThen: string | null }): number =>
+  (a.pathThen ?? a.pathNow ?? '').localeCompare(b.pathThen ?? b.pathNow ?? '')
+
 export class Rollback {
   constructor(private readonly deps: RollbackDeps) {}
 
   private get now(): number {
     return (this.deps.now ?? Date.now)()
+  }
+
+  private excluded(path: string | null): boolean {
+    return path !== null && this.deps.isExcluded(path)
   }
 
   /** How far back the vault index's history reaches: 0 for all of it. */
@@ -194,20 +254,43 @@ export class Rollback {
 
   /**
    * What rolling back to `to` changes - the whole vault, or `folder` and
-   * whatever was in it then or is now. Reads every note's history it needs;
-   * `progress` hears how far that got.
+   * whatever was in it then or is now. Reads every note's history it needs,
+   * and a backup where that does not reach; `progress` hears how far reading
+   * the history got.
    */
   async plan(to: number, folder = '', progress: (done: number, of: number) => void = () => undefined): Promise<RollbackPlan> {
-    const { store, attachments } = this.deps
     const index = await RoomHistory.load(this.deps.api, indexRoom(this.deps.vaultId), this.deps.indexCrypto)
-    if (!index.reaches(to)) throw new IndexOutOfReach(index.reach)
+    if (!index.reaches(to)) {
+      const fromBackup = await this.planFromBackup(to, folder)
+      if (fromBackup) return fromBackup
+      throw new IndexOutOfReach(index.reach)
+    }
+    const { plan, unreached } = await this.planFromHistory(to, folder, index, progress)
+    if (unreached.size > 0) await this.fillFromBackup(plan, unreached)
+    plan.notes.sort(byPath)
+    plan.files.sort(byPath)
+    plan.outOfReach.sort((a, b) => a.path.localeCompare(b.path))
+    return plan
+  }
+
+  private async planFromHistory(
+    to: number,
+    folder: string,
+    index: RoomHistory,
+    progress: (done: number, of: number) => void
+  ): Promise<{ plan: RollbackPlan; unreached: Map<string, Unreached> }> {
+    const { store, attachments } = this.deps
     const then = index.stateAt(to)
     const notesThen = new Map(then.getMap<IndexEntry>(INDEX_FIELD).entries())
     const filesThen = new Map(then.getMap<AttachmentEntry>(ATTACHMENTS_FIELD).entries())
     then.destroy()
 
-    const plan: RollbackPlan = { to, folder, notes: [], files: [], outOfReach: [], foreignKept: 0 }
-    const excluded = (path: string | null): boolean => path !== null && this.deps.isExcluded(path)
+    const plan: RollbackPlan = { to, folder, notes: [], files: [], outOfReach: [], foreignKept: 0, backup: null, byPath: false }
+    const unreached = new Map<string, Unreached>()
+    const outOfReach = (item: Unreached, reason: string): void => {
+      plan.outOfReach.push({ kind: item.kind, id: item.id, path: (item.pathThen ?? item.pathNow) as string, reason })
+      unreached.set(item.id, item)
+    }
 
     // Notes: trashed if they did not exist then; the others need their text then.
     const notesNow = new Map(store.allEntries().map(({ docId, entry }) => [docId, entry]))
@@ -223,22 +306,18 @@ export class Rollback {
         plan.foreignKept += 1
         continue
       }
-      if (excluded(pathNow) || excluded(pathThen)) continue
+      if (this.excluded(pathNow) || this.excluded(pathThen)) continue
       const change: NoteChange = { docId, pathNow, pathThen, shared: Boolean(now?.shared || old?.shared) }
       if (pathThen === null) plan.notes.push({ ...change, trash: true })
-      else if (now?.purgedAt) plan.outOfReach.push({ kind: 'note', id: docId, path: pathThen, reason: 'it was deleted longer ago than the history keeps' })
+      else if (now?.purgedAt) outOfReach({ kind: 'note', id: docId, pathNow, pathThen, shared: change.shared }, 'it was deleted longer ago than the history keeps')
       else toRead.push(change)
     }
     let read = 0
     progress(read, toRead.length)
     await pool(toRead, async (change) => {
-      const path = (change.pathThen ?? change.pathNow) as string
+      const item: Unreached = { kind: 'note', id: change.docId, pathNow: change.pathNow, pathThen: change.pathThen, shared: change.shared }
       try {
         const history = await RoomHistory.load(this.deps.api, docRoom(change.docId), this.deps.docCrypto(change.docId))
-        if (!history.reaches(to)) {
-          plan.outOfReach.push({ kind: 'note', id: change.docId, path, reason: 'its history does not reach back that far' })
-          return
-        }
         const textAt = (ts: number): string => {
           const doc = history.stateAt(ts)
           try {
@@ -247,18 +326,19 @@ export class Rollback {
             doc.destroy()
           }
         }
-        const textThen = textAt(to)
         const textNow = textAt(Number.POSITIVE_INFINITY)
-        if (change.pathNow === null) change.revive = true
-        else {
-          if (change.pathNow !== change.pathThen) change.move = true
-          if (textNow !== textThen) change.text = true
+        if (!history.reaches(to)) {
+          outOfReach({ ...item, textNow }, 'its history does not reach back that far')
+          return
         }
-        if (change.revive && textNow !== textThen) change.text = true
+        const textThen = textAt(to)
+        if (change.pathNow === null) change.revive = true
+        else if (change.pathNow !== change.pathThen) change.move = true
+        if (textNow !== textThen) change.text = true
         if (change.revive || change.move || change.text) plan.notes.push({ ...change, textThen, textNow })
       } catch (error) {
         const reason = error instanceof ApiError && error.status === 404 ? 'the server has no history of it' : `its history could not be read: ${error instanceof Error ? error.message : String(error)}`
-        plan.outOfReach.push({ kind: 'note', id: change.docId, path, reason })
+        outOfReach(item, reason)
       } finally {
         read += 1
         progress(read, toRead.length)
@@ -281,7 +361,7 @@ export class Rollback {
           plan.foreignKept += 1
           continue
         }
-        if (excluded(pathNow) || excluded(pathThen)) continue
+        if (this.excluded(pathNow) || this.excluded(pathThen)) continue
         const change: FileChange = { fileId, pathNow, pathThen }
         if (!old || pathThen === null) {
           plan.files.push({ ...change, trash: true })
@@ -301,27 +381,217 @@ export class Rollback {
       const missing = new Set(await attachments.missingContents(needContent.map((change) => change.hashThen as string)))
       for (const change of needContent) {
         if (missing.has(change.hashThen as string)) {
-          plan.outOfReach.push({ kind: 'file', id: change.fileId, path: (change.pathThen ?? change.pathNow) as string, reason: 'the server no longer has its content then' })
+          outOfReach({ kind: 'file', id: change.fileId, pathNow: change.pathNow, pathThen: change.pathThen, shared: false }, 'the server no longer has its content then')
         } else {
           plan.files.push(change)
         }
       }
     }
+    return { plan, unreached }
+  }
 
-    const byPath = (a: { pathNow: string | null; pathThen: string | null }, b: { pathNow: string | null; pathThen: string | null }): number =>
-      (a.pathThen ?? a.pathNow ?? '').localeCompare(b.pathThen ?? b.pathNow ?? '')
+  /** The newest backup at or before `to` over the vault's backup servers; null without one. */
+  private async findBackup(to: number): Promise<PlannedBackup | null> {
+    const source = this.deps.backups
+    let best: PlannedBackup | null = null
+    for (const server of source?.servers() ?? []) {
+      try {
+        const ref = await (source as BackupSource).backupAt(server.routeId, to)
+        if (ref && (!best || ref.notes.time > best.ref.notes.time)) best = { routeId: server.routeId, label: server.label, ref }
+      } catch (error) {
+        log.warn(`asking ${server.label} for a backup to roll back from failed`, error)
+      }
+    }
+    return best
+  }
+
+  /** Reads these paths of the backup, text by path. */
+  private async readTexts(backup: PlannedBackup, paths: string[]): Promise<Map<string, string>> {
+    const texts = new Map<string, string>()
+    if (paths.length === 0) return texts
+    await (this.deps.backups as BackupSource).backupRead(backup.routeId, backup.ref, paths, async (path, data) => {
+      texts.set(path, fromUtf8(data))
+    })
+    return texts
+  }
+
+  /**
+   * What the history did not reach, from the newest backup at or before the
+   * moment - the state of then as near as a backup knows it. What the backup
+   * does not hold either stays out of reach.
+   */
+  private async fillFromBackup(plan: RollbackPlan, unreached: Map<string, Unreached>): Promise<void> {
+    const { store, attachments } = this.deps
+    const backup = await this.findBackup(plan.to)
+    if (!backup) return
+    const listed = new Map((await (this.deps.backups as BackupSource).backupListing(backup.routeId, backup.ref)).map((entry) => [entry.path, entry]))
+    const notes = Array.from(unreached.values()).filter((item) => item.kind === 'note' && item.pathThen && listed.has(item.pathThen))
+    const texts = await this.readTexts(backup, notes.map((item) => item.pathThen as string))
+    const filled = new Set<string>()
+    for (const item of notes) {
+      const textThen = texts.get(item.pathThen as string)
+      if (textThen === undefined) continue
+      const textNow = item.textNow ?? (await store.currentText(item.id)) ?? undefined
+      const change: NoteChange = { docId: item.id, pathNow: item.pathNow, pathThen: item.pathThen, shared: item.shared, textThen, fromBackup: true }
+      if (textNow !== undefined) change.textNow = textNow
+      if (item.pathNow === null) change.revive = true
+      else if (item.pathNow !== item.pathThen) change.move = true
+      if (textNow !== textThen) change.text = true
+      filled.add(item.id)
+      if (change.revive || change.move || change.text) plan.notes.push(change)
+    }
+    if (attachments) {
+      const files = Array.from(unreached.values()).filter((item) => item.kind === 'file' && item.pathThen && listed.has(item.pathThen))
+      const missing = new Set(await attachments.missingContents(files.map((item) => (listed.get(item.pathThen as string) as BackupListedEntry).hash)))
+      for (const item of files) {
+        const entry = listed.get(item.pathThen as string) as BackupListedEntry
+        const now = attachments.entryOf(item.id)
+        const change: FileChange = { fileId: item.id, pathNow: item.pathNow, pathThen: item.pathThen, hashThen: entry.hash, sizeThen: entry.size }
+        if (missing.has(entry.hash)) change.fromBackup = true
+        if (item.pathNow === null) change.revive = true
+        else {
+          if (item.pathNow !== item.pathThen) change.move = true
+          if (now?.hash !== entry.hash) change.content = true
+        }
+        filled.add(item.id)
+        if (change.revive || change.move || change.content) plan.files.push(change)
+      }
+    }
+    if (filled.size === 0) return
+    plan.backup = backup
+    plan.outOfReach = plan.outOfReach.filter((item) => !filled.has(item.id))
+  }
+
+  /**
+   * The vault at `to` from a backup alone, by path: the history no longer
+   * knows which note was which then. Null without a backup at or before it.
+   */
+  private async planFromBackup(to: number, folder: string): Promise<RollbackPlan | null> {
+    const { store, attachments, settings } = this.deps
+    const backup = await this.findBackup(to)
+    if (!backup) return null
+    const source = this.deps.backups as BackupSource
+    const listed = (await source.backupListing(backup.routeId, backup.ref)).filter((entry) => inFolder(entry.path, folder) && !this.excluded(entry.path))
+    const plan: RollbackPlan = { to, folder, notes: [], files: [], outOfReach: [], foreignKept: 0, backup, byPath: true }
+    const inBackup = new Set(listed.map((entry) => entry.path))
+    // A note in the share folder the vault has no own trace of was most likely someone else's: it stays away.
+    const shareFolder = settings.get().sharedFolder
+    const fromOthers = (path: string): boolean => shareFolder !== '' && inFolder(path, shareFolder)
+
+    // Notes, matched by path.
+    const own = new Map<string, { docId: string; entry: IndexEntry }>()
+    const foreign = new Set<string>()
+    const trashed = new Map<string, { docId: string; entry: IndexEntry }>()
+    for (const { docId, entry } of store.allEntries()) {
+      if (entry.deletedAt) {
+        if (entry.owner || entry.forkedTo) continue
+        const newest = trashed.get(entry.path)
+        if (!entry.purgedAt && (!newest || (newest.entry.deletedAt ?? 0) < entry.deletedAt)) trashed.set(entry.path, { docId, entry })
+      } else if (entry.owner) {
+        foreign.add(entry.path)
+      } else {
+        own.set(entry.path, { docId, entry })
+      }
+    }
+    const toRead: BackupListedEntry[] = []
+    for (const entry of listed) {
+      if (!isNote(entry.path)) continue
+      if (foreign.has(entry.path)) {
+        plan.foreignKept += 1
+        continue
+      }
+      const live = own.get(entry.path)
+      if (live) {
+        const text = await store.currentText(live.docId)
+        if (text === null || (await contentHash(utf8(text))) !== entry.hash) toRead.push(entry)
+      } else if (trashed.has(entry.path) || !fromOthers(entry.path)) {
+        toRead.push(entry)
+      } else {
+        plan.foreignKept += 1
+      }
+    }
+    const texts = await this.readTexts(backup, toRead.map((entry) => entry.path))
+    for (const entry of toRead) {
+      const textThen = texts.get(entry.path)
+      if (textThen === undefined) {
+        plan.outOfReach.push({ kind: 'note', id: entry.path, path: entry.path, reason: 'the backup did not hand it over' })
+        continue
+      }
+      const live = own.get(entry.path)
+      const gone = trashed.get(entry.path)
+      if (live) {
+        const textNow = (await store.currentText(live.docId)) ?? undefined
+        const change: NoteChange = { docId: live.docId, pathNow: entry.path, pathThen: entry.path, textThen, text: true, fromBackup: true, shared: Boolean(live.entry.shared) }
+        if (textNow !== undefined) change.textNow = textNow
+        plan.notes.push(change)
+      } else if (gone) {
+        plan.notes.push({ docId: gone.docId, pathNow: null, pathThen: entry.path, textThen, revive: true, text: true, fromBackup: true, shared: Boolean(gone.entry.shared) })
+      } else {
+        plan.notes.push({ docId: '', pathNow: null, pathThen: entry.path, textThen, create: true, fromBackup: true, shared: false })
+      }
+    }
+    for (const [path, { docId, entry }] of own) {
+      if (inFolder(path, folder) && !this.excluded(path) && !inBackup.has(path)) {
+        plan.notes.push({ docId, pathNow: path, pathThen: null, trash: true, shared: Boolean(entry.shared) })
+      }
+    }
+
+    // Files, matched by path; content the sync server still has is not read from the backup.
+    if (attachments) {
+      const ownFiles = new Map<string, { fileId: string; entry: AttachmentEntry }>()
+      const theirs = new Set<string>()
+      const trashedFiles = new Map<string, { fileId: string; entry: AttachmentEntry }>()
+      for (const { fileId, entry } of attachments.allEntries()) {
+        if (entry.deletedAt) {
+          const newest = trashedFiles.get(entry.path)
+          if (!entry.purgedAt && !entry.via && (!newest || (newest.entry.deletedAt ?? 0) < entry.deletedAt)) trashedFiles.set(entry.path, { fileId, entry })
+        } else if (entry.via) {
+          theirs.add(entry.path)
+        } else {
+          ownFiles.set(entry.path, { fileId, entry })
+        }
+      }
+      const files = listed.filter((entry) => !isNote(entry.path))
+      const missing = new Set(await attachments.missingContents(files.map((entry) => entry.hash)))
+      for (const entry of files) {
+        if (theirs.has(entry.path)) {
+          plan.foreignKept += 1
+          continue
+        }
+        const live = ownFiles.get(entry.path)
+        const gone = trashedFiles.get(entry.path)
+        const change: FileChange = { fileId: '', pathNow: null, pathThen: entry.path, hashThen: entry.hash, sizeThen: entry.size }
+        if (live) {
+          if (live.entry.hash === entry.hash) continue
+          Object.assign(change, { fileId: live.fileId, pathNow: entry.path, content: true })
+        } else if (gone) {
+          Object.assign(change, { fileId: gone.fileId, revive: true })
+        } else if (!fromOthers(entry.path)) {
+          change.create = true
+        } else {
+          plan.foreignKept += 1
+          continue
+        }
+        // A new file is written from the bytes, so they come from the backup whatever the server has.
+        if (missing.has(entry.hash) || change.create) change.fromBackup = true
+        plan.files.push(change)
+      }
+      for (const [path, { fileId }] of ownFiles) {
+        if (inFolder(path, folder) && !this.excluded(path) && !inBackup.has(path)) plan.files.push({ fileId, pathNow: path, pathThen: null, trash: true })
+      }
+    }
     plan.notes.sort(byPath)
     plan.files.sort(byPath)
-    plan.outOfReach.sort((a, b) => a.path.localeCompare(b.path))
     return plan
   }
 
-  /** A fresh, checked backup on every backup server of the vault, one after the other. */
+  /** A fresh, checked backup on every backup server of the vault, one after the other - forgetting no snapshot this time. */
   async backUpFirst(backups: BackupServers | null, progress: (message: string) => void = () => undefined): Promise<BackupResult[]> {
     const results: BackupResult[] = []
     for (const server of backups?.servers() ?? []) {
       progress(`Backing up on ${server.label}…`)
-      const outcome = await (backups as BackupServers).backUpFresh(server.routeId)
+      // A rollback may read from an older backup next; this run's retention must not let it go.
+      const outcome = await (backups as BackupServers).backUpFresh(server.routeId, { keepAll: true })
       results.push({ label: server.label, ...outcome })
     }
     return results
@@ -333,7 +603,7 @@ export class Rollback {
     if (failed.length > 0 && !consent.withoutBackup) {
       return `the backup on ${failed.map((backup) => `${backup.label} (${backup.error ?? 'failed'})`).join(', ')} did not go through`
     }
-    if (plan.outOfReach.length > 0 && !consent.withoutOutOfReach) return `${plan.outOfReach.length} note(s) or file(s) are out of the history's reach`
+    if (plan.outOfReach.length > 0 && !consent.withoutOutOfReach) return `${plan.outOfReach.length} note(s) or file(s) are out of reach`
     return null
   }
 
@@ -353,14 +623,14 @@ export class Rollback {
     }
     const into = (path: string): string => `${dir}/${path}`
     for (const note of plan.notes) {
-      if (!(note.trash || note.text) || note.pathNow === null) continue
+      if (!(note.trash || note.text) || note.pathNow === null || !note.docId) continue
       const text = (await store.currentText(note.docId)) ?? note.textNow
       if (text === undefined) continue
       await ensure(parentOf(into(note.pathNow)))
       await adapter.write(into(note.pathNow), text)
     }
     for (const file of plan.files) {
-      if (!(file.trash || file.content) || file.pathNow === null || !attachments) continue
+      if (!(file.trash || file.content) || file.pathNow === null || !file.fileId || !attachments) continue
       const data = await attachments.currentBytes(file.fileId)
       if (!data) continue
       await ensure(parentOf(into(file.pathNow)))
@@ -370,8 +640,19 @@ export class Rollback {
     const summary = {
       to: new Date(plan.to).toISOString(),
       folder: plan.folder,
-      notes: plan.notes.map(({ docId, pathNow, pathThen, trash, revive, move, text }) => ({ docId, pathNow, pathThen, trash, revive, move, text })),
-      files: plan.files.map(({ fileId, pathNow, pathThen, trash, revive, move, content }) => ({ fileId, pathNow, pathThen, trash, revive, move, content })),
+      backup: plan.backup ? { label: plan.backup.label, time: new Date(plan.backup.ref.notes.time).toISOString(), byPath: plan.byPath } : null,
+      notes: plan.notes.map(({ docId, pathNow, pathThen, trash, revive, create, move, text, fromBackup }) => ({ docId, pathNow, pathThen, trash, revive, create, move, text, fromBackup })),
+      files: plan.files.map(({ fileId, pathNow, pathThen, trash, revive, create, move, content, fromBackup }) => ({
+        fileId,
+        pathNow,
+        pathThen,
+        trash,
+        revive,
+        create,
+        move,
+        content,
+        fromBackup
+      })),
       outOfReach: plan.outOfReach
     }
     await adapter.write(`${dir}/rollback.json`, `${JSON.stringify(summary, null, 2)}\n`)
@@ -401,7 +682,11 @@ export class Rollback {
       files: plan.files.length
     }
     settings.setRollback(record)
-    log.info(`rolling ${plan.folder || 'the vault'} back to ${new Date(plan.to).toISOString()}: ${plan.notes.length} notes, ${plan.files.length} files`)
+    log.info(
+      `rolling ${plan.folder || 'the vault'} back to ${new Date(plan.to).toISOString()}: ${plan.notes.length} notes, ${plan.files.length} files${
+        plan.backup ? `, ${plan.byPath ? 'all' : 'some'} from the backup of ${new Date(plan.backup.ref.notes.time).toISOString()}` : ''
+      }`
+    )
     const problems: string[] = []
     const attempt = async (what: string, task: () => Promise<unknown>): Promise<void> => {
       try {
@@ -425,17 +710,48 @@ export class Rollback {
     ]
     problems.push(...(await this.moveAll(moves)))
 
+    // Content only a backup still has: on the sync server first (invariant 23), a new file straight into the vault.
+    const unready = new Set<string>()
+    if (attachments && plan.backup && plan.files.some((file) => file.fromBackup)) {
+      progress(`Reading files from the backup on ${plan.backup.label}…`)
+      const wanted = new Map(plan.files.filter((file) => file.fromBackup).map((file) => [file.pathThen as string, file]))
+      const arrived = new Set<string>()
+      await attempt(`reading from the backup on ${plan.backup.label}`, () =>
+        (this.deps.backups as BackupSource).backupRead(plan.backup!.routeId, plan.backup!.ref, Array.from(wanted.keys()), async (path, data) => {
+          const file = wanted.get(path)
+          if (!file) return
+          arrived.add(path)
+          await attempt(path, async () => {
+            if (file.create) {
+              const at = await attachments.createFile(path, bytes(data), file.hashThen as string)
+              if (at !== path) problems.push(`${path}: came back as ${at}, the place was taken`)
+            } else {
+              await attachments.uploadContent(bytes(data), file.hashThen as string)
+            }
+          })
+        })
+      )
+      for (const path of wanted.keys()) if (!arrived.has(path)) unready.add(path)
+      for (const path of unready) problems.push(`${path}: the backup did not hand it over`)
+    }
+
     progress('Bringing back what was deleted since…')
     for (const note of plan.notes) {
-      if (!note.revive) continue
-      await attempt(note.pathThen as string, async () => {
-        const at = await store.reviveNote(note.docId, note.pathThen as string)
-        if (at && at !== note.pathThen) problems.push(`${note.pathThen}: came back as ${at}, the place was taken`)
-      })
+      if (note.revive) {
+        await attempt(note.pathThen as string, async () => {
+          const at = await store.reviveNote(note.docId, note.pathThen as string)
+          if (at && at !== note.pathThen) problems.push(`${note.pathThen}: came back as ${at}, the place was taken`)
+        })
+      } else if (note.create) {
+        await attempt(note.pathThen as string, async () => {
+          const at = await store.createNote(note.pathThen as string, note.textThen as string)
+          if (at !== note.pathThen) problems.push(`${note.pathThen}: came back as ${at}, the place was taken`)
+        })
+      }
     }
     if (attachments) {
       for (const file of plan.files) {
-        if (!file.revive) continue
+        if (!file.revive || unready.has(file.pathThen as string)) continue
         await attempt(file.pathThen as string, async () => {
           const at = await attachments.reviveFile(file.fileId, file.pathThen as string, file.hashThen as string, file.sizeThen as number)
           if (at && at !== file.pathThen) problems.push(`${file.pathThen}: came back as ${at}, the place was taken`)
@@ -445,16 +761,16 @@ export class Rollback {
 
     progress('Changing notes and files back…')
     let done = 0
-    const changes = plan.notes.filter((note) => note.text).length + plan.files.filter((file) => file.content).length
+    const changes = plan.notes.filter((note) => note.text && note.docId).length + plan.files.filter((file) => file.content).length
     for (const note of plan.notes) {
-      if (!note.text) continue
+      if (!note.text || !note.docId) continue
       await attempt(note.pathThen ?? note.docId, () => store.rollBackText(note.docId, note.textThen as string))
       done += 1
       progress(`Changing notes and files back… ${done} of ${changes}`)
     }
     if (attachments) {
       for (const file of plan.files) {
-        if (!file.content) continue
+        if (!file.content || unready.has(file.pathThen as string)) continue
         await attempt(file.pathThen ?? file.fileId, () => attachments.setFileContent(file.fileId, file.hashThen as string, file.sizeThen as number))
         done += 1
         progress(`Changing notes and files back… ${done} of ${changes}`)
@@ -514,7 +830,6 @@ export class Rollback {
     for (const item of pending) problems.push(`${item.at}: stays where it is, ${item.to} is taken`)
     return problems
   }
-
 }
 
 /** Copies of rollbacks older than `retentionDays` go, as merge backups do. */

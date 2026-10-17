@@ -186,6 +186,8 @@ changes, every backup server makes a fresh backup and a copy of everything that
 changes goes into the plugin folder (`rollbacks/`). It happens as ordinary changes,
 so every device follows and the rollback can be undone from the same window. Notes
 others share with you stay as they are; your own shared notes go back for everyone.
+Further back than the history reaches, a backup server's backups fill in on their
+own.
 
 If the server ever lost data or was restored from an older backup, the plugin
 notices, syncs nothing for the affected notes and asks once whether this device

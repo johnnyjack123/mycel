@@ -1,6 +1,9 @@
 import type {
   BackupConnected,
+  BackupDataEvent,
   BackupGrant,
+  BackupListedEntry,
+  BackupSnapshotRef,
   BackupScheduleSetting,
   BackupServerInfo,
   BackupServerSetting,
@@ -52,6 +55,8 @@ export const SCHEDULES: ReadonlyArray<{ hours: number; label: string }> = [
 ]
 
 const DEFAULT_EVERY_HOURS = 24
+// Reading a backup back means restic going through a whole snapshot.
+const READ_TIMEOUT_MS = 30 * 60 * 1000
 export const DEFAULT_KEEP: KeepPolicy = { last: 3, daily: 7, weekly: 5, monthly: 12, yearly: 3 }
 const HOUR_MS = 60 * 60 * 1000
 
@@ -367,7 +372,7 @@ export class Backups {
    * change. A run under way is let finish first: it may have read the vault
    * before the last changes. Never throws; says how it went.
    */
-  async backUpFresh(routeId: string, options: { pollMs?: number; timeoutMs?: number } = {}): Promise<{ ok: boolean; error?: string }> {
+  async backUpFresh(routeId: string, options: { pollMs?: number; timeoutMs?: number; keepAll?: boolean } = {}): Promise<{ ok: boolean; error?: string }> {
     const pollMs = options.pollMs ?? 2_000
     const deadline = Date.now() + (options.timeoutMs ?? 60 * 60 * 1000)
     const wait = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, pollMs))
@@ -381,7 +386,7 @@ export class Backups {
       }
       const before = status.runs[0]?.startedAt
       const count = status.runs.length
-      await session.call<BackupVaultStatus>('run')
+      await session.call<BackupVaultStatus>('run', { keepAll: options.keepAll === true })
       for (;;) {
         if (Date.now() > deadline) return { ok: false, error: 'the backup did not finish in time' }
         await wait()
@@ -397,6 +402,56 @@ export class Backups {
       }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  // --- reading a backup back, for a rollback further than the history reaches ---------
+
+  /** The newest backup of this vault on that backup server at or before `at`; null for none. */
+  async backupAt(routeId: string, at: number): Promise<BackupSnapshotRef | null> {
+    const session = await this.session(routeId)
+    return session.call<BackupSnapshotRef | null>('backupAt', { at }, READ_TIMEOUT_MS)
+  }
+
+  /** Every note and file that backup holds, by path, with its SHA-256. */
+  async backupListing(routeId: string, ref: BackupSnapshotRef): Promise<BackupListedEntry[]> {
+    const session = await this.session(routeId)
+    return session.call<BackupListedEntry[]>('backupList', { ref }, READ_TIMEOUT_MS)
+  }
+
+  /**
+   * The content of these paths of that backup, each handed to `take` once it
+   * is whole. Resolves once all of them came, or the backup server said it
+   * found no more.
+   */
+  async backupRead(routeId: string, ref: BackupSnapshotRef, paths: string[], take: (path: string, data: Uint8Array) => Promise<void>): Promise<number> {
+    const session = await this.session(routeId)
+    const rid = toHex(randomBytes(8))
+    const pieces = new Map<string, Uint8Array[]>()
+    let taking: Promise<void> = Promise.resolve()
+    const stop = session.onEvent((event) => {
+      if (event.ev !== 'backup-data') return
+      const data = event.p as BackupDataEvent
+      if (data.rid !== rid) return
+      const parts = pieces.get(data.path) ?? []
+      if (data.data) parts.push(fromBase64(data.data))
+      pieces.set(data.path, parts)
+      if (!data.last) return
+      pieces.delete(data.path)
+      const whole = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0))
+      let offset = 0
+      for (const part of parts) {
+        whole.set(part, offset)
+        offset += part.length
+      }
+      taking = taking.then(() => take(data.path, whole))
+    })
+    try {
+      const answer = await session.call<{ found: number }>('backupRead', { ref, paths, rid }, READ_TIMEOUT_MS)
+      await taking
+      return answer.found
+    } finally {
+      stop()
     }
   }
 
