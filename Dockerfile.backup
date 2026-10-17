@@ -4,7 +4,7 @@
 # from the repository root:
 #
 #   docker build -f Dockerfile.backup -t obsidian-connect-backup .
-#   docker exec <container> obsidian-connect-backup code
+#   docker exec <container> obsidian-connect-backup invite <name>
 FROM node:24-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./

@@ -270,6 +270,13 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
+At 0.7.11, run 2026-10-17 before its commit (straight to `main`): `typecheck` and
+`build` pass; `test:merge` 164, `test:load` 14, `test:rooms` 284, `test:backup` 149 -
+all pass. Two earlier `test:backup` runs died at the start, before anything 0.7.11
+touches - restic in Go's runtime, then Node "out of memory" - with 1.6 GB of 15.6 GB
+free on the development machine (other programs); the third, unchanged, passed. If it
+recurs, look at free memory before the code.
+
 At 0.7.10, run 2026-10-17 before its commit (straight to `main`, a small fix):
 `typecheck` and `build` pass; `test:merge` 164, `test:load` 14, `test:sync` 26,
 `test:account` 50, `test:recovery` 64, `test:rollback` 52 - all pass; against a
@@ -374,6 +381,12 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
   server's session messages go out in order.
 - The user deployed the server on a Pi, set it up anew and was stuck signed out with
   the old server's id pinned; 0.7.10 offers "Use this server" in that state.
+- The user decided against binding invitations to an account id (little gain), kept
+  the compose files with bind mounts, and hit "the backup server is not connected"
+  connecting the backup container on the Pi - cause not known yet (asked for
+  `status` and the log; the likely one: the public address does not loop back to the
+  same host). 0.7.11 makes the backup server say whether it reaches the sync server
+  and why not (`status`, `invite` waiting for it).
 
 ### 2026-10-16
 - After 0.7.5 the user asked for invitations instead of one code, the settings in

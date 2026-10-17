@@ -11,13 +11,11 @@ services:
       # What devices are shown this backup server as.
       OBSIDIAN_CONNECT_BACKUP_NAME: ${OBSIDIAN_CONNECT_BACKUP_NAME:-backup server}
     volumes:
-      # Its code, the keys of the vaults connected to it, and their encrypted cache.
-      - obsidian-connect-backup-data:/data
+      # Its invitations, the keys of the vaults connected to it, and their encrypted cache.
+      # The folder must belong to user 1000 (`chown -R 1000:1000 data`).
+      - ./data:/data
       # Every local destination lies below this folder; mount what should be reachable.
       - ${BACKUP_FOLDER:-./backups}:/backup
     # The notes of a vault lie here, decrypted, during a backup - in memory, never on a disk.
     tmpfs:
       - /run/obsidian-connect-backup:size=${RAM_DISK:-1g},mode=1777
-
-volumes:
-  obsidian-connect-backup-data:

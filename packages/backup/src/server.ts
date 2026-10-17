@@ -6,6 +6,7 @@ import { RelayLink } from './relay.js'
 import { Restic } from './restic.js'
 import { BackupService } from './service.js'
 import { serveSession, type Route } from './sessions.js'
+import { STATUS_EVERY_MS, writeStatus } from './status.js'
 
 // The whole backup server behind one function, so a self-test can run one in
 // its own process next to a sync server and devices.
@@ -56,13 +57,16 @@ export async function startBackupServer(options: BackupServerOptions): Promise<R
 
   // Route id -> what it answers, with the handshake's key; and the tokens the relay registers them by.
   let routes = new Map<string, Route>()
+  let inviteRoutes: Record<string, string> = {}
   const updateRoutes = async (): Promise<void> => {
     const next = new Map<string, Route>()
     const tokens = new Map<string, string>()
+    const opened: Record<string, string> = {}
     for (const invite of await invites.open(options.now?.())) {
       const keys = await backupRouteKeys(Invites.secretOf(invite))
       next.set(keys.routeId, { kind: 'invite', inviteId: invite.id, label: invite.label, expiresAt: invite.expiresAt, psk: keys.psk })
       tokens.set(keys.routeId, toBase64(keys.routeToken))
+      opened[invite.id] = keys.routeId
     }
     for (const { vaultId, pairing } of service.pairings()) {
       const keys = await backupRouteKeys(fromBase64(pairing.secret))
@@ -70,7 +74,28 @@ export async function startBackupServer(options: BackupServerOptions): Promise<R
       tokens.set(keys.routeId, toBase64(keys.routeToken))
     }
     routes = next
+    inviteRoutes = opened
     relay.setRoutes(tokens)
+    saveStatus()
+  }
+  // For the command line: whether the sync server is reached, and what the relay answers.
+  let writing: Promise<void> = Promise.resolve()
+  const saveStatus = (): void => {
+    writing = writing
+      .then(async () => {
+        const state = relay.state()
+        await writeStatus(options.dataDir, {
+          server: options.server,
+          updatedAt: Date.now(),
+          connected: state.connected,
+          error: state.error,
+          since: state.since,
+          registered: state.registered,
+          invites: inviteRoutes,
+          vaults: service.pairings().length
+        })
+      })
+      .catch((error: unknown) => log.warn('writing the status for the command line failed', error))
   }
   let updating: Promise<void> = Promise.resolve()
   const refreshRoutes = (): Promise<void> => {
@@ -97,6 +122,7 @@ export async function startBackupServer(options: BackupServerOptions): Promise<R
     })
   )
   service.onRoutesChanged(() => void refreshRoutes())
+  relay.onState(saveStatus)
   relay.start()
   await refreshRoutes()
 
@@ -104,9 +130,9 @@ export async function startBackupServer(options: BackupServerOptions): Promise<R
   // keeps the process alive, and it ended quietly a second after starting.
   const ticker = setInterval(() => {
     void service.tick().catch((error: unknown) => log.warn('looking for due backups failed', error))
-    // An invitation that ran out stops being answered.
+    // An invitation that ran out stops being answered; the status says it runs.
     void refreshRoutes()
-  }, options.tickMs ?? 60_000)
+  }, Math.min(options.tickMs ?? STATUS_EVERY_MS, STATUS_EVERY_MS))
   // The command line writes invitations and disconnects vaults in the data folder.
   let invitesAt = await invites.changedAt()
   const watcher = setInterval(() => {
@@ -135,6 +161,7 @@ export async function startBackupServer(options: BackupServerOptions): Promise<R
       clearInterval(watcher)
       relay.stop()
       await service.idle()
+      await writing
     }
   }
 }

@@ -124,8 +124,20 @@ export class BackupSession {
 export async function openInviteSession(serverUrl: string, token: string, code: string, timeoutMs = OPEN_TIMEOUT_MS): Promise<BackupSession> {
   const secret = await decodeBackupInvite(code)
   if (!secret) throw new BackupLinkError('That is not an invitation to a backup server. Check it for a typo.')
-  return openBackupSession(serverUrl, token, secret, timeoutMs)
+  try {
+    return await openBackupSession(serverUrl, token, secret, timeoutMs)
+  } catch (error) {
+    // What the relay says when nothing registered the invitation's route.
+    if (error instanceof BackupLinkError && error.message === NOT_CONNECTED) {
+      throw new BackupLinkError(
+        'No backup server answers this invitation at the sync server: it does not reach the sync server, the invitation was made on another one, or it was used or withdrawn. On the backup server, "obsidian-connect-backup status" says which.'
+      )
+    }
+    throw error
+  }
 }
+
+const NOT_CONNECTED = 'the backup server is not connected'
 
 /** A session on a vault's pairing route: everything about that vault's backups. */
 export function openPairingSession(serverUrl: string, token: string, pairing: string, timeoutMs = OPEN_TIMEOUT_MS): Promise<BackupSession> {

@@ -38,21 +38,30 @@ from this repository: `docker-compose.backup.yml` and `docs/backup.env`.
 
 ```bash
 cp backup.env .env                    # then edit it: the sync server, the backup folder
+mkdir -p data                         # the data folder next to the compose file
 sudo mkdir -p /srv/obsidian-backups
-sudo chown -R 1000:1000 /srv/obsidian-backups
+sudo chown -R 1000:1000 data /srv/obsidian-backups
 docker compose -f docker-compose.backup.yml up -d
 docker compose -f docker-compose.backup.yml exec obsidian-connect-backup obsidian-connect-backup invite Anna
 ```
 
-The last line prints an invitation for Anna; pass it on as you would a password. The
-image is private while the repository is; sign in once with
-`docker login ghcr.io -u johnnyjack123` and a token that may read packages.
+The last line prints an invitation for Anna; pass it on as you would a password. It
+waits until the running backup server answers the invitation at the sync server and
+says so - or says why not. The image is private while the repository is; sign in once
+with `docker login ghcr.io -u johnnyjack123` and a token that may read packages.
+
+Both folders must belong to user 1000, as which the backup server runs: a folder
+Docker makes for a bind mount belongs to root, and the backup server then stops at
+start, saying so. Keep the backup server in a folder of its own, away from the sync
+server's `docker-compose.yml`: both mount `./data`, and next to each other they
+would share one data folder.
 
 The operator's commands, all through `docker compose -f docker-compose.backup.yml exec obsidian-connect-backup obsidian-connect-backup …`:
 
 | Command | What it does |
 |---|---|
 | `invite [name]` | An invitation for one person to connect one vault, once, within 7 days. |
+| `status` | Whether it reaches the sync server - and why not -, and which invitations it answers. |
 | `invites` | The invitations not used yet. |
 | `revoke <id>` | Withdraws an invitation. |
 | `vaults` | The vaults connected: id, account, the invitation's name, the last backup. |
@@ -64,7 +73,7 @@ Updating: `docker compose -f docker-compose.backup.yml pull && docker compose -f
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OBSIDIAN_CONNECT_SERVER` | — (required) | The sync server, `wss://…` as devices are given it. |
+| `OBSIDIAN_CONNECT_SERVER` | — (required) | The sync server, `wss://…` as devices are given it - or any address this container reaches it by (see "When connecting fails"). |
 | `OBSIDIAN_CONNECT_BACKUP_NAME` | the host name | What devices are shown it as. |
 | `BACKUP_FOLDER` | `./backups` | The host folder mounted at `/backup`; every local destination lies below it. |
 | `RAM_DISK` | `1g` | The memory a vault's notes may take during a backup. |
@@ -79,10 +88,28 @@ PDFs and other files never do - they stream into restic one at a time. A vault o
 5000 notes takes a few dozen megabytes. A vault bigger than the RAM disk fails its
 backup with "no space left"; give it more.
 
-**The data volume** holds the invitations, the keys and secret of every vault
+**The data folder** holds the invitations, the keys and secret of every vault
 connected and an encrypted cache of them (so a backup fetches only what changed).
 Back it up only if you want to keep the connections; losing it means connecting the
 vaults again with new invitations, nothing more - the repositories are not in it.
+
+### When connecting fails
+
+"No backup server answers this invitation" in Obsidian means the sync server knows no
+backup server for it. `obsidian-connect-backup status` on the backup server says why:
+
+- **NOT connected**, with a reason: the container does not reach the sync server at
+  `OBSIDIAN_CONNECT_SERVER`. On the same host as the sync server, the public address
+  (`wss://sync.example.com`) often does not work from inside a container - the router
+  does not loop it back. Use an address the container reaches directly, such as
+  `ws://192.168.1.10:1234` (the host's address in the LAN, the sync server's port).
+  It does not have to be the address your devices use; it only has to be the same
+  server. Behind a reverse proxy, `/relay` must be passed on as a WebSocket, like
+  `/vault/`.
+- **connected**, but the invitation **NOT answered**: the running backup server has
+  not taken it up - made with another data folder than the one it runs with, or
+  already used or withdrawn (`invites` lists the open ones).
+- No status at all: the backup server has not run with this data folder.
 
 ## Setting it up in Obsidian
 

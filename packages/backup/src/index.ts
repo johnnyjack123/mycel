@@ -2,6 +2,7 @@
 //
 //   obsidian-connect-backup                     run: register at the sync server, back up on schedule and on request
 //   obsidian-connect-backup invite [label]      a one-time invitation for one person to connect one vault
+//   obsidian-connect-backup status              whether it reaches the sync server, and which invitations it answers
 //   obsidian-connect-backup invites             the invitations not used yet
 //   obsidian-connect-backup revoke <id>         withdraw an invitation
 //   obsidian-connect-backup vaults              the vaults connected
@@ -13,10 +14,13 @@ import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isHexId } from '@obsidian-connect/shared'
 import pkg from '../package.json' with { type: 'json' }
+import { backupRouteKeys } from '@obsidian-connect/shared/crypto'
+import { writable } from './config.js'
 import { Invites } from './invites.js'
 import { log } from './log.js'
 import { startBackupServer } from './server.js'
 import { listVaults } from './service.js'
+import { STATUS_EVERY_MS, readStatus, type ServerStatus } from './status.js'
 
 const env = process.env
 const dataDir = env.OBSIDIAN_CONNECT_BACKUP_DATA ?? '/data'
@@ -24,12 +28,40 @@ const dataDir = env.OBSIDIAN_CONNECT_BACKUP_DATA ?? '/data'
 const USAGE = `usage:
   obsidian-connect-backup                     run the backup server
   obsidian-connect-backup invite [label]      a one-time invitation for one person to connect one vault (valid 7 days)
+  obsidian-connect-backup status              whether it reaches the sync server, and which invitations it answers
   obsidian-connect-backup invites             the invitations not used yet
   obsidian-connect-backup revoke <id>         withdraw an invitation
   obsidian-connect-backup vaults              the vaults connected: id, account, label, last backup
   obsidian-connect-backup disconnect <vault>  forget a vault - its repositories and trusted copy stay`
 
 const day = (ms: number): string => new Date(ms).toISOString().slice(0, 16).replace('T', ' ')
+
+/** How long `invite` waits for the running backup server to take it up and register it. */
+const INVITE_WAIT_MS = 20_000
+
+/** Whether the running backup server reaches the sync server, as its status says. */
+function describeStatus(status: ServerStatus | null): string[] {
+  if (!status) return ['The backup server has not run with this data folder yet - is it started, with this folder mounted?']
+  const lines = [`sync server: ${status.server}`]
+  const age = Date.now() - status.updatedAt
+  if (age > 3 * STATUS_EVERY_MS) lines.push(`status from ${day(status.updatedAt)} - the backup server does not seem to run now`)
+  if (status.connected) lines.push(`connected since ${day(status.since)}; the relay answers ${status.registered.length} route(s) for it`)
+  else if (status.error) lines.push(`NOT connected since ${day(status.since)}: ${status.error}`)
+  else lines.push('not connected: it connects only while it has an invitation or a vault to answer')
+  return lines
+}
+
+/** Why an invitation is not answered yet, and what to look at. */
+function diagnose(status: ServerStatus | null): string[] {
+  const lines = describeStatus(status)
+  if (status && !status.connected && status.error) {
+    lines.push('Check that this container reaches the sync server at that address. On the same host as the sync server,')
+    lines.push('its public address often does not work from inside a container: use the internal one instead,')
+    lines.push('e.g. ws://<LAN address of the host>:1234. A reverse proxy must pass WebSocket upgrades on /relay.')
+  }
+  lines.push('obsidian-connect-backup status shows it again; the log has every attempt.')
+  return lines
+}
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv
@@ -42,6 +74,34 @@ async function main(argv: string[]): Promise<number> {
       console.log(`  ${code}`)
       console.log('In Obsidian: Settings -> Obsidian Connect -> Backups -> Connect a backup server, with this invitation.')
       console.log('Whoever enters it connects a vault of theirs to this backup server; pass it on as you would a password.')
+      // The running backup server takes it up from the data folder and registers it at the sync server; wait for that.
+      const routeId = (await backupRouteKeys(Invites.secretOf(invite))).routeId
+      const deadline = Date.now() + INVITE_WAIT_MS
+      let status = await readStatus(dataDir)
+      while (!status?.registered.includes(routeId) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        status = await readStatus(dataDir)
+      }
+      if (status?.registered.includes(routeId)) {
+        console.log(`The backup server answers it at ${status.server} - it can be used now.`)
+        return 0
+      }
+      console.log('')
+      console.log('BUT: the backup server does not answer it at the sync server yet, so connecting with it fails now.')
+      for (const line of diagnose(status)) console.log(`  ${line}`)
+      return 0
+    }
+    case 'status': {
+      const status = await readStatus(dataDir)
+      for (const line of describeStatus(status)) console.log(line)
+      const open = await invites.open()
+      console.log(`invitations waiting: ${open.length}`)
+      for (const invite of open) {
+        const routeId = status?.invites[invite.id]
+        const answered = routeId !== undefined && status?.registered.includes(routeId) === true
+        console.log(`  ${invite.id}  ${invite.label || '-'}  valid until ${day(invite.expiresAt)}  ${answered ? 'answered' : 'NOT answered'}`)
+      }
+      console.log(`vaults connected: ${(await listVaults(dataDir)).length}`)
       return 0
     }
     case 'invites': {
@@ -84,9 +144,19 @@ async function main(argv: string[]): Promise<number> {
       return command === 'help' || command === '--help' ? 0 : 1
   }
 
-  const server = env.OBSIDIAN_CONNECT_SERVER
+  const server = env.OBSIDIAN_CONNECT_SERVER?.trim()
   if (!server) {
     console.error('OBSIDIAN_CONNECT_SERVER is not set: the sync server, e.g. wss://sync.example.com')
+    return 1
+  }
+  if (!/^(wss?|https?):\/\/[^/\s]+/i.test(server)) {
+    console.error(`OBSIDIAN_CONNECT_SERVER is "${server}": give it with its scheme, e.g. wss://sync.example.com or ws://192.168.1.10:1234`)
+    return 1
+  }
+  // A bind-mounted folder Docker made is root's, and this runs as user 1000.
+  const unwritable = await writable(dataDir)
+  if (unwritable) {
+    console.error(`${unwritable}. On the host: chown -R 1000:1000 on the folder mounted at ${dataDir}.`)
     return 1
   }
   const running = await startBackupServer({

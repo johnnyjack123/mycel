@@ -8,6 +8,25 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.11** (2026-10-17) - the backup server says whether it reaches the sync
+  server. The user's first connect on a Pi failed with "the backup server is not
+  connected", and nothing on the backup server said why: the running server only
+  logged "cannot be reached", without a reason. Now it keeps how its relay
+  connection stands - connected since when, or not, and the reason the last attempt
+  gave (`ECONNREFUSED`, a name that does not resolve, a proxy's close code) - and
+  writes it for the command line (`status.json` in the data folder). New:
+  `obsidian-connect-backup status` (the connection, every open invitation answered or
+  not); `invite` waits until the running backup server answers the new invitation and
+  says so, or why not, with what to look at - on the same host as the sync server the
+  public address often does not work from a container. An address without its
+  scheme, which failed silently, and a data folder it cannot write - a bind mount
+  Docker made as root - stop it at start, saying what to do. The device says what
+  "not connected" means for an invitation. `test:backup` 149: the status of a
+  backup server that reaches the sync server and of one that does not, `invite` and
+  `status` run as the operator runs them. CI now starts the image against a real
+  sync server and checks that it registers its invitation, and that it refuses a
+  data folder it cannot write.
+
 - **0.7.10** (2026-10-17) - a fix the user ran into deploying the server on a Pi:
   signed in, the server set up again from scratch, the device signed out by the new
   one - and then stuck. The device still pinned the old server's id, so signing in

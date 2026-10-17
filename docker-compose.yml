@@ -15,7 +15,4 @@ services:
     ports:
       - "${PORT:-1234}:1234"
     volumes:
-      - obsidian-connect-data:/data
-
-volumes:
-  obsidian-connect-data:
+      - ./data:/data

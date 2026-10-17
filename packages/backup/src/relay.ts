@@ -26,11 +26,32 @@ function relayUrl(server: string): string {
   return `${base}/relay?role=backup`
 }
 
+/** How the connection to the relay stands, for `status` and an invitation just made. */
+export interface RelayState {
+  connected: boolean
+  /** Why it is not connected, as the last attempt failed; null while it is, or before any attempt. */
+  error: string | null
+  /** When `connected` last changed. */
+  since: number
+  /** The routes the relay answers for this backup server now. */
+  registered: string[]
+}
+
+/** What a failed WebSocket says about why, as far as Node's says anything. */
+function reasonOf(event: unknown): string | null {
+  const detail = event as { message?: unknown; error?: { message?: unknown; cause?: { code?: unknown; message?: unknown } } }
+  const text = detail.error?.cause?.message ?? detail.error?.cause?.code ?? detail.error?.message ?? detail.message
+  return typeof text === 'string' && text !== '' ? text : null
+}
+
 export class RelayLink {
   private socket: WebSocket | null = null
   private stopped = false
   private attempt = 0
   private timer: ReturnType<typeof setTimeout> | null = null
+  private status = { connected: false, error: null as string | null, since: Date.now() }
+  private lastError: string | null = null
+  private readonly stateListeners = new Set<() => void>()
   /** Route id -> its token, base64: what this backup server answers. */
   private wanted = new Map<string, string>()
   private readonly registered = new Set<string>()
@@ -56,6 +77,7 @@ export class RelayLink {
       this.registered.clear()
       this.closeAll()
       socket?.close()
+      if (this.status.connected) this.changed({ connected: false, error: null })
       return
     }
     if (!this.socket) {
@@ -69,6 +91,22 @@ export class RelayLink {
       this.registered.delete(route)
       this.send({ t: 'unregister', route })
     }
+  }
+
+  state(): RelayState {
+    return { ...this.status, registered: Array.from(this.registered) }
+  }
+
+  /** Fires when the connection opens or closes, or a route is answered. */
+  onState(listener: () => void): () => void {
+    this.stateListeners.add(listener)
+    return () => this.stateListeners.delete(listener)
+  }
+
+  private changed(patch: Partial<typeof this.status>): void {
+    const connected = patch.connected ?? this.status.connected
+    this.status = { ...this.status, ...patch, since: connected !== this.status.connected ? Date.now() : this.status.since }
+    for (const listener of this.stateListeners) listener()
   }
 
   /** Resolves once the relay answers this route for this backup server. */
@@ -100,12 +138,31 @@ export class RelayLink {
     if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(frame))
   }
 
+  private retry(why: string): void {
+    this.changed({ connected: false, error: why })
+    if (this.stopped || this.wanted.size === 0) return
+    const pause = BACKOFF_MS[Math.min(this.attempt, BACKOFF_MS.length - 1)] as number
+    // With the pauses growing to a minute, this says so at most once a minute.
+    log.warn(`the sync server at ${relayUrl(this.server)} cannot be reached: ${why}; trying again in ${pause / 1000} s`)
+    this.attempt += 1
+    this.timer = setTimeout(() => this.connect(), pause)
+  }
+
   private connect(): void {
     this.timer = null
     if (this.stopped || this.wanted.size === 0) return
-    const socket = new WebSocket(relayUrl(this.server))
+    let socket: WebSocket
+    try {
+      socket = new WebSocket(relayUrl(this.server))
+    } catch (error) {
+      // An address WebSocket cannot even parse: said, and tried again, as for any other failure.
+      this.retry(error instanceof Error ? error.message : String(error))
+      return
+    }
     this.socket = socket
+    this.lastError = null
     socket.addEventListener('open', () => {
+      this.changed({ connected: true, error: null })
       for (const token of this.wanted.values()) this.send({ t: 'register', token })
     })
     socket.addEventListener('message', (event) => this.receive(String(event.data)))
@@ -114,16 +171,13 @@ export class RelayLink {
       this.socket = null
       this.registered.clear()
       this.closeAll()
-      if (this.stopped || this.wanted.size === 0) return
-      const pause = BACKOFF_MS[Math.min(this.attempt, BACKOFF_MS.length - 1)] as number
-      // With the pauses growing to a minute, this says so at most once a minute.
-      const why = event.code === 4429 ? `: ${event.reason || 'too many'}` : ''
-      log.warn(`the sync server at ${this.server} cannot be reached${why}; trying again in ${pause / 1000} s`)
-      this.attempt += 1
-      this.timer = setTimeout(() => this.connect(), pause)
+      const why = event.reason ? `${event.reason} (${event.code})` : (this.lastError ?? `the connection closed (${event.code})`)
+      this.retry(why)
     })
-    // An error is followed by a close, which tries again.
-    socket.addEventListener('error', () => undefined)
+    // An error is followed by a close, which tries again; it only says why.
+    socket.addEventListener('error', (event) => {
+      this.lastError = reasonOf(event) ?? this.lastError
+    })
   }
 
   private receive(raw: string): void {
@@ -139,6 +193,7 @@ export class RelayLink {
       this.registered.add(frame.route)
       for (const resolve of this.waiters.get(frame.route) ?? []) resolve()
       this.waiters.delete(frame.route)
+      this.changed({})
     } else if (frame.t === 'incoming') {
       this.open(frame.s, frame.route)
     } else if (frame.t === 'data') {

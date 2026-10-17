@@ -353,6 +353,51 @@ jobs:
             exit 1
           fi
           docker rm -f smoke-backup
+          # A bind-mounted data folder it cannot write - one Docker made, or another
+          # user's - stops it at once, saying what to do, instead of it running blind.
+          mkdir -p unwritable && chmod 755 unwritable
+          if out=$(docker run --rm -e OBSIDIAN_CONNECT_SERVER=ws://127.0.0.1:9 -v "$PWD/unwritable:/data" obsidian-connect-backup:smoke 2>&1); then
+            echo "::error::the backup server started with a data folder it cannot write"
+            exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -q 'chown -R 1000:1000'
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      # The image against a real sync server: it registers its invitation at the
+      # relay, "status" says so, and "invite" sees a new one answered. Until now
+      # nothing showed the image actually reaching a sync server.
+      - name: Reaches a sync server
+        run: |
+          set -euo pipefail
+          npm ci
+          OBSIDIAN_CONNECT_JWT_SECRET=ci-only-secret npm run start:server > server.log 2>&1 &
+          for _ in $(seq 1 30); do curl -sf http://localhost:1234/health > /dev/null && break; sleep 1; done
+          docker run -d --name relay-backup --network host \
+            -e OBSIDIAN_CONNECT_SERVER=ws://127.0.0.1:1234 \
+            --tmpfs /run/obsidian-connect-backup:mode=1777 \
+            -v smoke-backup-data:/data \
+            obsidian-connect-backup:smoke
+          answered=false
+          for _ in $(seq 1 20); do
+            status=$(docker exec relay-backup obsidian-connect-backup status)
+            if echo "$status" | grep -q 'connected since' && echo "$status" | grep -Eq 'smoke .*[0-9]  answered'; then answered=true; break; fi
+            sleep 1
+          done
+          echo "$status"
+          docker logs relay-backup
+          if [ "$answered" != true ]; then
+            echo "::error::the backup server in the image did not register its invitation at the sync server"
+            exit 1
+          fi
+          made=$(docker exec relay-backup obsidian-connect-backup invite second)
+          echo "$made"
+          echo "$made" | grep -q 'The backup server answers it at'
+          docker rm -f relay-backup
 
       - uses: docker/login-action@v3
         if: github.ref == 'refs/heads/main'

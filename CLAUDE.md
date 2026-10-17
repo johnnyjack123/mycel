@@ -585,7 +585,8 @@ scanned by an authenticator app and the `otpauth://` link opening one.
   publishes it to `ghcr.io/johnnyjack123/obsidian-connect-server`. A broken
   `Dockerfile` shows up there and nowhere earlier. The `docker-backup` job builds
   and starts `Dockerfile.backup` on every push (restic runs, an invitation is made
-  and kept, the server survives an unreachable sync server) and publishes
+  and kept, the server survives an unreachable sync server, refuses a data folder it
+  cannot write, and registers its invitations at a real sync server) and publishes
   `obsidian-connect-backup` from `main` only. Every Dockerfile copies every
   workspace's `package.json` before `npm ci`.
 - **restic for `test:backup`** is pinned (0.19.1, CI checks its checksum, and so

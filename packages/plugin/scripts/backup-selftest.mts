@@ -4,12 +4,13 @@
 // vault. The server runs here so the test can restore an old copy of it.
 //
 //   npm run test:backup            (restic on the PATH, or OBSIDIAN_CONNECT_RESTIC naming it)
-import { spawnSync } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { PassThrough } from 'node:stream'
+import { fileURLToPath } from 'node:url'
 import { check, delay, Device, eventually, failures, finish, useServer, VAULT } from './harness.mjs'
 
 const { loadConfig } = await import('../../server/src/config.js')
@@ -24,6 +25,9 @@ const { TarHasher } = await import('../../backup/src/tarcheck.js')
 const { alignTrusted, TrustedRefused } = await import('../../backup/src/trusted.js')
 const { startBackupServer } = await import('../../backup/src/server.js')
 const { Invites } = await import('../../backup/src/invites.js')
+const { readStatus } = await import('../../backup/src/status.js')
+/** The operator's command, as the image has it. */
+const BACKUP_BIN = fileURLToPath(new URL('../../backup/bin/obsidian-connect-backup.mjs', import.meta.url))
 const { listVaults } = await import('../../backup/src/service.js')
 const { backupRouteKeys, encodeBackupInvite, fromBase64, newBackupSecret, openSession } = await import('@obsidian-connect/shared/crypto')
 const { backupSettingsText, docRoom } = await import('@obsidian-connect/shared')
@@ -487,6 +491,8 @@ try {
       (error: unknown) => (error instanceof Error ? error.message : String(error))
     )
   const NOT_CONNECTED = 'the backup server is not connected'
+  // What the device says when nothing answers an invitation: where to look, not the relay's words.
+  const NO_INVITATION = 'No backup server answers this invitation'
   type Status = { targets: string[]; problems: string[]; running: boolean; nextRunAt: number | null; runs: Array<{ ok: boolean; error?: string; accessEnded?: boolean }> }
 
   // The operator's invitations.
@@ -494,9 +500,57 @@ try {
     const late = await backupServer.invite('late')
     check(/^([0-9A-HJKMNP-TV-Z]{5}-){5}[0-9A-HJKMNP-TV-Z]{5}$/.test(late), 'the operator makes an invitation, written like a recovery code', late)
     check((await refusal(A3.openInviteSession('ABCDE-FGHJK'))).includes('not an invitation'), 'a typo in it is caught on the device')
-    check((await refusal(A3.openInviteSession(await encodeBackupInvite(newBackupSecret())))) === NOT_CONNECTED, 'an invitation nobody made reaches nothing')
+    check((await refusal(A3.openInviteSession(await encodeBackupInvite(newBackupSecret())))).startsWith(NO_INVITATION), 'an invitation nobody made reaches nothing')
+
+    // What the operator sees: the status the running backup server writes, through the commands themselves.
+    check(
+      await eventually(async () => {
+        const status = await readStatus(backupData)
+        return status?.connected === true && Object.values(status.invites).some((route) => status.registered.includes(route))
+      }),
+      'the running backup server writes for the command line that it reaches the sync server and answers the invitation',
+      await readStatus(backupData)
+    )
+    // Not spawnSync: the backup server runs in this process, and has to take the invitation up meanwhile.
+    const operator = (args: string[], dataDir = backupData): Promise<string> =>
+      new Promise((resolve) => {
+        execFile(process.execPath, [BACKUP_BIN, ...args], { env: { ...process.env, OBSIDIAN_CONNECT_BACKUP_DATA: dataDir }, encoding: 'utf8', timeout: 60_000 }, (_error, stdout, stderr) =>
+          resolve(`${stdout}${stderr}`)
+        )
+      })
+    const invited = await operator(['invite', 'from', 'the', 'shell'])
+    check(invited.includes('The backup server answers it at') && !invited.includes('BUT'), '"invite" waits until the running backup server answers it, and says so', invited)
+    const shown = await operator(['status'])
+    check(/connected since/.test(shown) && /from the shell .* answered/.test(shown) && !shown.includes('NOT answered'), '"status" shows the connection and every invitation answered', shown)
+    {
+      // One that cannot reach the sync server says so, and why - where the device only heard "not connected".
+      const lonely = join(root, 'backup-unreachable')
+      const unreachable = await startBackupServer({
+        server: 'ws://127.0.0.1:9',
+        dataDir: lonely,
+        root: join(root, 'backup-root-unreachable'),
+        workDir: join(root, 'ram-unreachable'),
+        resticBinary: RESTIC,
+        name: 'unreachable',
+        version: 'test',
+        tickMs: 100,
+        watchMs: 100
+      })
+      stops.push(() => unreachable.close())
+      await new Invites(lonely).create('nobody answers')
+      check(
+        await eventually(async () => {
+          const status = await readStatus(lonely)
+          return status?.connected === false && typeof status.error === 'string' && status.error.length > 0
+        }, 10_000),
+        'a backup server that cannot reach the sync server writes so, and why',
+        await readStatus(lonely)
+      )
+      const stuck = await operator(['status'], lonely)
+      check(stuck.includes('NOT connected') && stuck.includes('NOT answered'), '"status" tells the operator', stuck)
+    }
     clock += 8 * DAY_MS
-    check(await eventually(async () => (await refusal(A3.openInviteSession(late, 2_000))) === NOT_CONNECTED, 10_000), 'one older than a week reaches nothing either')
+    check(await eventually(async () => (await refusal(A3.openInviteSession(late, 2_000))).startsWith(NO_INVITATION), 10_000), 'one older than a week reaches nothing either')
 
     // What the command line does: it writes the data folder, and the running backup server takes it up.
     const made = await new Invites(backupData).create('from the command line', clock)
@@ -507,7 +561,7 @@ try {
     }, 10_000)
     check(reached, 'an invitation made on the command line is answered within moments')
     await new Invites(backupData).remove(made.invite.id)
-    check(await eventually(async () => (await refusal(A3.openInviteSession(made.code, 2_000))) === NOT_CONNECTED, 10_000), 'and one withdrawn there reaches nothing')
+    check(await eventually(async () => (await refusal(A3.openInviteSession(made.code, 2_000))).startsWith(NO_INVITATION), 10_000), 'and one withdrawn there reaches nothing')
   }
 
   const invitation = await backupServer.invite('for anna')
@@ -524,7 +578,7 @@ try {
     'it connects its vault, handing the grant over the session, and gets a pairing of its own back'
   )
   check(await eventually(() => !link.open, 10_000), 'that spends the invitation, and its session ends')
-  check((await refusal(A3.openInviteSession(invitation, 5_000))) === NOT_CONNECTED, 'it opens nothing a second time')
+  check((await refusal(A3.openInviteSession(invitation, 5_000))).startsWith(NO_INVITATION), 'it opens nothing a second time')
   {
     const listed = await listVaults(backupData)
     check(
