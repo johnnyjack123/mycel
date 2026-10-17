@@ -150,8 +150,7 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-`feat/backup-rollback` (0.7.6 to 0.7.9) is complete and goes into `main` right after
-0.7.9's commit; the merge and its CI run are recorded under "Verification state".
+Nothing. `feat/backup-rollback` (0.7.6 to 0.7.9) is merged into `main` and still exists.
 
 ## Decisions made (not visible in the code)
 
@@ -274,7 +273,12 @@ It takes about three minutes here.
 At 0.7.9, run 2026-10-17 before its commit: `typecheck` and `build` pass; `test:merge`
 164, `test:load` 14, `test:rooms` 284, `test:sync` 26, `test:recovery` 56,
 `test:account` 50, `test:rollback` 52, `test:backup` 144 - all pass; against a scratch
-server on 1235, `test:socket` 19 and `test:vault` 230 pass. Not on a device.
+server on 1235, `test:socket` 19 and `test:vault` 230 pass. CI on the branch failed
+once in `test:backup` - a race in `disconnect` the development machine never lost
+(`docs/CHANGELOG.md`, 0.7.9) -, fixed in `5f6e46a`, then green. The merge into `main`
+(`2219f5e`, 2026-10-17): CI green - the tests, the `docker` job (server image) and
+`docker-backup`, which published both images; the `latest-build` pre-release holds
+0.7.9. Not on a device.
 
 At 0.7.8, run 2026-10-17 before its commit: `typecheck` and `build` pass; `test:merge`
 164, `test:load` 14, `test:rooms` 284, `test:sync` 26, `test:recovery` 56,
