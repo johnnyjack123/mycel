@@ -185,6 +185,13 @@ someone's notes. Treat them as rules, not preferences.
     connection, no editor, a closed log - that took the live copy's editor saves
     for edits and merged them with conflict markers. Every stop bumps `syncRun`,
     `openSync` checks it after every wait, and an unloaded plugin never starts.
+27. **Renames from other devices are applied in rounds, and a swap via a name
+    nobody claims.** Two notes or files that swapped names elsewhere each waited
+    for the place the other held, forever; a restart's scan then took each file
+    for an edit of the other note. `DocStore.applyRemoteRenames` and
+    `AttachmentStore.followRenames` move one of the two to a free name first
+    (`aside`), which neither the index, a rename event nor a scan may take for a
+    note or file of its own. Rolling back renames closes such cycles often.
 
 ## Architecture
 
@@ -342,24 +349,34 @@ people: whoever runs it can read the vaults on it.
   that the reading routes accept for that one vault (`reader`/`roomReader` in
   `http.ts`). A password change, a recovery and removing the account end every key;
   the device that changed the password hands out new ones at once.
-- **Reached only through the sync server.** The backup server has a **code**; it
-  registers at `/relay` under the hash of a token derived from it, and a device opens
-  a session there. The session's key depends on the code, which never travels: each
-  end proves it knows it (`openSession`/`answerSession`/`finishSession`, `SessionCipher`
-  in `shared/crypto`), so the relay can neither read nor pose as either end. A
-  connected vault answers only to a session that showed the vault's key
-  (`vaultControlProof`). The device hands over a **grant** - backup key, vault key,
-  the account's key pair (shared notes are sealed to it) - inside the session.
+- **Reached only through the sync server, on a secret per route.** The backup
+  server registers at `/relay` one **route** per secret it holds - the hash of a
+  token derived from it (`backupRouteKeys`) -, all on one connection. A secret is
+  an operator's one-time **invitation** (`invites.ts`, 7 days) or a vault's
+  **pairing**. A session's key depends on the route's secret, which never travels:
+  each end proves it knows it (`openSession`/`answerSession`/`finishSession`,
+  `SessionCipher` in `shared/crypto`), so the relay can neither read nor pose as
+  either end. On an invitation's route a session can only `connect`: the device
+  hands over a **grant** - backup key, vault key, the account's key pair (shared
+  notes are sealed to it) - and gets the vault's pairing secret back, kept in the
+  vault's settings (`backupServer:<routeId>`); the invitation is spent, *after* the
+  answer (spending drops its route, and the relay ends the session with it). On a
+  pairing's route a session reaches that vault and nothing else, and a vault
+  paired with one account is never taken over by another. A password change
+  `rekey`s over the pairing; only a lost vault needs a new invitation.
 - **Set up from the plugin.** Destinations and schedule live in the vault's settings
   document (`backupServer:`, `backupTarget:`, `backupSchedule:`), which the backup
   server reads with its key; local folders only below its backup folder, never in or
-  around another vault's.
+  around another vault's. After a change the device waits until the backup server's
+  status carries the hash of the same settings (`backupSettingsText`) - comparing
+  ids let a run go by the settings before an edit of retention.
 - **A run** (`run.ts`): what changed into an encrypted cache (rooms by their tag, a log
   from its last frame, compared - invariant 19), the layout from the index (vault,
   trash, settings without contacts), notes and canvases into a RAM disk for restic,
   every other file as a tar stream (killed before it ends when producing it fails),
   every snapshot checked back, the trusted copy brought level - never emptied, only
-  its own files touched, held when half the notes vanished.
+  its own files touched, held when more than its guard's share (50 % unless set) of
+  the notes, or of the files, vanished - counted apart.
 
 ### Around the notes
 
@@ -378,6 +395,8 @@ people: whoever runs it can read the vaults on it.
   plugin's menu for that file. Beside it a mark says whether the note is shared
   and whether only to read; a note shared to read only also gets a lock in the
   header of every view showing it - a phone has no status bar.
+- **The settings are in tabs** - Account, Contacts, Backups, This device, All
+  devices; signed out only Account and This device.
 - **The settings tab is live** (`settings.ts` `refresh`): a change of the
   account-wide settings from another device draws it again, and so does the
   account's state - 2FA, the recovery code - which the server announces with
@@ -481,6 +500,20 @@ the server lost it. Retention is account-wide; the owner's
 and uploads it; the server drops those frames only then, and keeps a member's
 join snapshot while it is still their starting point.
 
+**Rolling back** (`sync/Rollback.ts`, `history/RollbackModal.ts`, 0.7.8): the vault
+or a folder back to a moment. The index replayed to it (`history/RoomHistory.ts`)
+and each note's history give the plan; a fresh backup on every backup server
+(`Backups.backUpFresh`) and a copy into the plugin's `rollbacks/` come first -
+`apply` refuses otherwise, unless agreed -, a `rollback:<id>` record in the
+settings, then trashing, moving, restoring and editing as a person would, so every
+device follows and it can be undone. Others' shared notes stay; own shared notes
+go back for everyone. A moment before a snapshot's time is out of reach; a
+compaction stamps the newest change it folds in. Out of reach is filled from the
+newest backup at or before the moment (0.7.9, `backup/src/restore.ts`, read only
+over the pairing); with the index itself out of reach the whole plan comes from it,
+by path. The backup made first forgets nothing (`keepAll`), so the snapshot read
+next is still there.
+
 The retention is also the **trash** (`sync/Trash.ts`, "Deleted notes…"): a
 deleted note of one's own stays restorable for that long, on any device —
 restoring revives its index entry and pulls it from its document, next to a
@@ -502,6 +535,7 @@ npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart 
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
+npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices — in-process server
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by OBSIDIAN_CONNECT_RESTIC (where it lies here: docs/PROGRESS.md)
 # needs a server that lets tests create accounts:
@@ -550,8 +584,8 @@ scanned by an authenticator app and the `otpauth://` link opening one.
   only, starts the image once (health check, `invite` through the CLI) and
   publishes it to `ghcr.io/johnnyjack123/obsidian-connect-server`. A broken
   `Dockerfile` shows up there and nowhere earlier. The `docker-backup` job builds
-  and starts `Dockerfile.backup` on every push (restic runs, the code is made and
-  kept, the server survives an unreachable sync server) and publishes
+  and starts `Dockerfile.backup` on every push (restic runs, an invitation is made
+  and kept, the server survives an unreachable sync server) and publishes
   `obsidian-connect-backup` from `main` only. Every Dockerfile copies every
   workspace's `package.json` before `npm ci`.
 - **restic for `test:backup`** is pinned (0.19.1, CI checks its checksum, and so

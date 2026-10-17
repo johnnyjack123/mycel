@@ -169,6 +169,8 @@ export class AttachmentStore {
   private readonly transfers: Transfers = { uploads: 0, downloads: 0 }
   /** fileId -> when this device last wrote another device's version into the file. */
   private readonly written = new Map<string, number>()
+  /** Names a file waits at while two swap names (`followRenames`); nothing may take one for a file of its own. */
+  private readonly aside = new Set<string>()
   private applying: Promise<void> = Promise.resolve()
   private scanning: Promise<void> | null = null
   private retryTimer: number | null = null
@@ -479,7 +481,7 @@ export class AttachmentStore {
    * its content changed, so it is read whatever its stat says.
    */
   async syncLocal(file: TFile, changed = false): Promise<void> {
-    if (!this.tracks(file)) return
+    if (!this.tracks(file) || this.aside.has(file.path)) return
     const path = file.path
     const fileId = this.index.idForPath(path) ?? this.state.attachmentAt(path) ?? (await this.index.nextId(path))
     const bytes = Math.max(file.stat.size, this.index.entry(fileId)?.size ?? 0)
@@ -684,6 +686,8 @@ export class AttachmentStore {
       if (this.index.idForPath(oldPath)) await this.onDelete(oldPath)
       return
     }
+    // Moved out of another's way by `followRenames`, which keeps the state itself.
+    if (this.aside.has(file.path)) return
     // The new path first, for the reason notes look it up first: a rename this
     // device applied for another one arrives here too.
     const fileId = this.index.idForPath(file.path) ?? this.index.idForPath(oldPath)
@@ -827,6 +831,7 @@ export class AttachmentStore {
 
   /** Renames and new content for files this device has. */
   private async follow(): Promise<void> {
+    await this.followRenames()
     const changed = this.index.live().filter(({ fileId, entry }) => {
       const known = this.state.attachment(fileId)
       return known && (known.path !== entry.path || known.hash !== entry.hash)
@@ -834,6 +839,64 @@ export class AttachmentStore {
     await this.pool(changed, ({ fileId, entry }) =>
       this.guarded(fileId, Math.max(entry.size, this.state.attachment(fileId)?.size ?? 0), () => this.followOne(fileId))
     )
+  }
+
+  /**
+   * Renames other devices made, in rounds, before anything else: a file whose
+   * new place another file still holds waits for it to move on, and of two
+   * that swapped names one waits at a free name meanwhile - as notes do
+   * (`DocStore.applyRemoteRenames`). One at a time, each followed singly, two
+   * that swapped stayed where they were.
+   */
+  private async followRenames(): Promise<void> {
+    const pending = this.index.live().flatMap(({ fileId, entry }) => {
+      const known = this.state.attachment(fileId)
+      return known && known.path !== entry.path && !this.isExcluded(entry.path) ? [{ fileId, at: known.path, to: entry.path }] : []
+    })
+    for (let round = 0; pending.length > 0 && round < pending.length * 3 + 3; round += 1) {
+      if (this.stopped) return
+      let moved = false
+      for (const item of pending.slice()) {
+        if (this.app.vault.getAbstractFileByPath(item.to)) continue
+        await this.withLock(item.fileId, () => this.renameTo(item.fileId, item.to)).catch((error: unknown) => this.failed(error))
+        pending.splice(pending.indexOf(item), 1)
+        moved = true
+      }
+      if (moved) continue
+      const blocked = pending.find((item) => pending.some((other) => other !== item && other.at === item.to))
+      if (!blocked) return
+      const occupant = pending.find((other) => other.at === blocked.to) as (typeof pending)[number]
+      let aside = besides(occupant.at, 'moving', 1)
+      for (let n = 2; this.app.vault.getAbstractFileByPath(aside) || this.index.idForPath(aside); n += 1) aside = besides(occupant.at, 'moving', n)
+      const went = await this.withLock(occupant.fileId, () => this.renameTo(occupant.fileId, aside, true)).catch((error: unknown) => {
+        this.failed(error)
+        return false
+      })
+      if (!went) return
+      occupant.at = aside
+    }
+  }
+
+  /** Moves a file where the index has it - or, `aside`, out of another's way for a moment. */
+  private async renameTo(fileId: string, target: string, aside = false): Promise<boolean> {
+    const known = this.state.attachment(fileId)
+    const file = known ? this.app.vault.getAbstractFileByPath(known.path) : null
+    if (!known || !(file instanceof TFile) || this.app.vault.getAbstractFileByPath(target)) return false
+    if (!aside && this.index.entry(fileId)?.path !== target) return false
+    await this.ensureFolder(parentOf(target))
+    // Before the rename: its event must find the name taken already.
+    if (aside) this.aside.add(target)
+    else this.aside.delete(known.path)
+    try {
+      // Not `fileManager.renameFile`: links travel inside the notes (invariant 22).
+      await this.app.vault.rename(file, target)
+    } catch (error) {
+      if (aside) this.aside.delete(target)
+      throw error
+    }
+    this.state.setAttachment(fileId, { ...known, path: target })
+    log.info(aside ? `${known.path}: out of the way at ${target}, two files swap names` : `${known.path}: renamed on another device to ${target}`)
+    return true
   }
 
   private async followOne(fileId: string): Promise<void> {
@@ -1175,6 +1238,124 @@ export class AttachmentStore {
     })
     log.info(`${file.path}: an earlier version saved as ${path}`)
     return copy
+  }
+
+  // --- rolling back ------------------------------------------------------------------
+  // As with notes, a rollback trashes, moves, brings back and replaces files
+  // the way a person would, and every device follows.
+
+  /** Every entry of the index, live and deleted. */
+  allEntries(): Array<{ fileId: string; entry: AttachmentEntry }> {
+    return [...this.index.live(), ...this.index.deleted()]
+  }
+
+  entryOf(fileId: string): AttachmentEntry | undefined {
+    return this.index.entry(fileId)
+  }
+
+  /** Which of these contents the server no longer has. */
+  missingContents(hashes: string[]): Promise<string[]> {
+    return hashes.length === 0 ? Promise.resolve([]) : this.blobs.missing(hashes)
+  }
+
+  /** What this device holds of a file, for a rollback's copy; null when it is on the server only. */
+  async currentBytes(fileId: string): Promise<Bytes | null> {
+    const entry = this.index.entry(fileId)
+    const file = entry && !entry.deletedAt ? this.app.vault.getAbstractFileByPath(entry.path) : null
+    return file instanceof TFile ? new Uint8Array(await this.app.vault.readBinary(file)) : null
+  }
+
+  /**
+   * A file that did not exist at the moment rolled back to goes to the trash -
+   * once the server holds what it holds now, so the trash brings that back
+   * (invariant 23).
+   */
+  async trashFile(fileId: string): Promise<void> {
+    const entry = this.index.entry(fileId)
+    if (!entry || entry.deletedAt) return
+    const file = this.app.vault.getAbstractFileByPath(entry.path)
+    await this.guarded(fileId, file instanceof TFile ? file.stat.size : 0, async () => {
+      if (file instanceof TFile) {
+        const read = await this.read(file)
+        if (!read) throw new Error(`${entry.path} is being written; try again in a moment`)
+        if (!(await this.blobs.has(read.hash))) await this.upload(read.data, read.hash)
+        if (read.hash !== entry.hash) this.index.setContent(fileId, read.hash, read.data.length)
+        if (!(await this.stillHolds(file, read))) throw new Error(`${entry.path} changed meanwhile; try again`)
+      }
+      this.index.markDeleted(fileId)
+      this.state.forgetAttachment(fileId)
+      // Its delete event then finds nothing left to do.
+      if (file instanceof TFile) await this.app.fileManager.trashFile(file)
+    })
+    log.info(`${entry.path}: moved to the trash by a rollback`)
+    for (const listener of this.localListeners) listener({ kind: 'deleted', entry })
+  }
+
+  /** Moves a file back, with `vault.rename` (invariant 22). */
+  async moveFile(fileId: string, path: string): Promise<void> {
+    const entry = this.index.entry(fileId)
+    if (!entry || entry.deletedAt || entry.path === path) return
+    const file = this.app.vault.getAbstractFileByPath(entry.path)
+    if (!(file instanceof TFile)) {
+      this.index.rename(fileId, path)
+      return
+    }
+    const from = file.path
+    await this.ensureFolder(parentOf(path))
+    await this.app.vault.rename(file, path)
+    await this.onRename(file, from)
+  }
+
+  /** Brings a deleted file back with the content it had then, at `path` or next to it. Returns where it went. */
+  async reviveFile(fileId: string, path: string, hash: string, size: number): Promise<string | null> {
+    const entry = this.index.entry(fileId)
+    if (!entry) return null
+    if (!entry.deletedAt) return entry.path
+    let target = path
+    for (let n = 1; this.app.vault.getAbstractFileByPath(target) || this.index.idForPath(target); n += 1) target = besides(path, 'restored', n)
+    await this.guarded(fileId, size, async () => {
+      this.index.revive(fileId, target, hash, size)
+      this.state.forgetAttachment(fileId)
+      await this.pull(fileId)
+    })
+    for (const listener of this.localListeners) listener({ kind: 'restored', entry })
+    return target
+  }
+
+  /**
+   * Content only a backup still had, put back into the vault's store - checked
+   * against the hash it is named by - so an entry can name it again.
+   */
+  async uploadContent(data: Bytes, hash: string): Promise<void> {
+    if ((await contentHash(data)) !== hash) throw new Error(`the content does not match its hash ${hash.slice(0, 12)}`)
+    await this.memory.run(data.length, () => this.upload(data, hash))
+  }
+
+  /**
+   * A file a backup holds that the vault knows under no name any more: written
+   * into the vault, where it is taken in like any new file. Returns where it
+   * went - next to its old place when that is taken.
+   */
+  async createFile(path: string, data: Bytes, hash: string): Promise<string> {
+    if ((await contentHash(data)) !== hash) throw new Error(`the content does not match its hash ${hash.slice(0, 12)}`)
+    let target = path
+    for (let n = 1; this.app.vault.getAbstractFileByPath(target) || this.index.idForPath(target); n += 1) target = besides(path, 'restored', n)
+    await this.ensureFolder(parentOf(target))
+    await this.app.vault.createBinary(target, buffer(data))
+    return target
+  }
+
+  /**
+   * A file's content as it was - like restoring a version: what it holds now
+   * stays a version of its own. A file this device left on the server only
+   * changes in the index; it comes with the new content when it is needed.
+   */
+  async setFileContent(fileId: string, hash: string, size: number): Promise<void> {
+    const entry = this.index.entry(fileId)
+    if (!entry || entry.deletedAt) return
+    const file = this.app.vault.getAbstractFileByPath(entry.path)
+    if (file instanceof TFile) await this.restoreVersion(file, hash)
+    else this.index.setContent(fileId, hash, size)
   }
 
   /**

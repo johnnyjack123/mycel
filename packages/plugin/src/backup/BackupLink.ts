@@ -1,22 +1,23 @@
 import type { RelayFrame } from '@obsidian-connect/shared'
 import {
   SessionCipher,
-  backupServerKeys,
-  decodeBackupServerCode,
+  backupRouteKeys,
+  decodeBackupInvite,
   finishSession,
+  fromBase64,
   openSession,
   sessionProof,
-  vaultControlProof,
   type Bytes,
   type SessionAnswer,
   type SessionKeys
 } from '@obsidian-connect/shared/crypto'
 
-// A session with a backup server, through the sync server's relay. The code
-// never leaves this device: the backup server proves it knows it before this
-// device says anything but an ephemeral key, and this device proves it in
-// turn - so a sync server that relays the session can neither read it nor
-// pose as either end.
+// A session with a backup server, through the sync server's relay, on the
+// route of a secret the two share: an invitation, or the vault's pairing. The
+// secret never leaves this device: the backup server proves it knows it
+// before this device says anything but an ephemeral key, and this device
+// proves it in turn - so a sync server that relays the session can neither
+// read it nor pose as either end.
 
 export class BackupLinkError extends Error {}
 
@@ -41,8 +42,7 @@ export class BackupSession {
     private readonly socket: WebSocket,
     private readonly session: number,
     private readonly cipher: SessionCipher,
-    private readonly keys: SessionKeys,
-    /** What the sync server knows the backup server by. */
+    /** The route the session runs on. */
     readonly routeId: string
   ) {}
 
@@ -111,11 +111,6 @@ export class BackupSession {
     })
   }
 
-  /** Shows the backup server this device holds the vault's key - for this session only. */
-  async authorize<T>(vaultId: string, vaultKey: Bytes): Promise<T> {
-    return this.call<T>('authorize', { vaultId, proof: await vaultControlProof(vaultKey, vaultId, this.keys.transcript) })
-  }
-
   close(): void {
     this.end('closed')
     if (this.socket.readyState === WebSocket.OPEN) {
@@ -125,15 +120,24 @@ export class BackupSession {
   }
 }
 
+/** A session on an invitation's route: it can connect a vault, once. */
+export async function openInviteSession(serverUrl: string, token: string, code: string, timeoutMs = OPEN_TIMEOUT_MS): Promise<BackupSession> {
+  const secret = await decodeBackupInvite(code)
+  if (!secret) throw new BackupLinkError('That is not an invitation to a backup server. Check it for a typo.')
+  return openBackupSession(serverUrl, token, secret, timeoutMs)
+}
+
+/** A session on a vault's pairing route: everything about that vault's backups. */
+export function openPairingSession(serverUrl: string, token: string, pairing: string, timeoutMs = OPEN_TIMEOUT_MS): Promise<BackupSession> {
+  return openBackupSession(serverUrl, token, fromBase64(pairing), timeoutMs)
+}
+
 /**
- * Opens a session with the backup server whose code this is. Rejects when the
- * code is none, the backup server is not connected to the sync server, or it
- * cannot prove it knows the code.
+ * Opens a session on the route of this secret. Rejects when nothing answers
+ * the route, or what answers cannot prove it knows the secret.
  */
-export async function openBackupSession(serverUrl: string, token: string, code: string, timeoutMs = OPEN_TIMEOUT_MS): Promise<BackupSession> {
-  const secret = await decodeBackupServerCode(code)
-  if (!secret) throw new BackupLinkError("That is not a backup server's code. Check it for a typo.")
-  const keys = await backupServerKeys(secret)
+async function openBackupSession(serverUrl: string, token: string, secret: Bytes, timeoutMs: number): Promise<BackupSession> {
+  const keys = await backupRouteKeys(secret)
   const opening = await openSession()
   const socket = new WebSocket(relayUrl(serverUrl, token))
 
@@ -186,7 +190,7 @@ export async function openBackupSession(serverUrl: string, token: string, code: 
           return
         }
         cipher = new SessionCipher(sessionKeys, 'plugin')
-        link = new BackupSession(socket, sessionId, cipher, sessionKeys, keys.routeId)
+        link = new BackupSession(socket, sessionId, cipher, keys.routeId)
         const proof = await sessionProof(keys.psk, 'plugin', sessionKeys.transcript)
         sendData({ c: await cipher.seal(JSON.stringify({ proof })) })
         return

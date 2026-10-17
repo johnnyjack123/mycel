@@ -128,6 +128,12 @@ export class DocStore {
   private readonly held = new Map<string, Set<string>>()
   /** Documents whose file and document have agreed at least once this session. */
   private readonly agreed = new Set<string>()
+  /**
+   * Names a note waits at while two swap names (`applyRemoteRenames`). The
+   * index does not know them; a scan or rename event taking one for a note of
+   * its own would make a second note of it.
+   */
+  private readonly aside = new Set<string>()
   private readonly readyListeners = new Set<() => void>()
   private readonly leaveListeners = new Set<(docId: string) => void>()
   private readonly reviewListeners = new Set<(review: Omit<Review, 'id'>) => void>()
@@ -626,7 +632,7 @@ export class DocStore {
    * through here, and every branch that can delete takes a backup first.
    */
   async syncFile(file: TFile): Promise<void> {
-    if (!this.tracks(file)) return
+    if (!this.tracks(file) || this.aside.has(file.path)) return
     const path = file.path
     const known = this.index.docIdForPath(path)
     const docId = known ?? (await this.index.ensure(path))
@@ -885,6 +891,8 @@ export class DocStore {
       this.early.push(() => this.onRename(file, oldPath))
       return
     }
+    // Moved out of another's way by `applyRemoteRenames`, which keeps the state itself.
+    if (this.aside.has(file.path)) return
     // Not `tracks`: moving a note into an excluded folder still moves it. Left
     // at the old path in the index, it would be pulled back in right there.
     //
@@ -1046,30 +1054,65 @@ export class DocStore {
     }
   }
 
+  /**
+   * Renames other devices made, in rounds: a note whose new place another
+   * note still holds waits for that one to move on. Two that swapped names -
+   * by hand, or rolled back - would wait for each other forever, and this
+   * device kept each file under the other's name; so one of them waits at a
+   * free name meanwhile (`aside`).
+   */
   private async applyRemoteRenames(): Promise<void> {
-    for (const { docId, entry } of this.index.live()) {
-      if (this.stopped) return
+    const pending = this.index.live().flatMap(({ docId, entry }) => {
       const known = this.state.get(docId)
-      if (!known || known.path === entry.path) continue
-      await this.withLock(docId, async () => {
-        const target = this.index.pathFor(docId)
-        const current = this.app.vault.getAbstractFileByPath(known.path)
-        if (!target || !(current instanceof TFile)) return
-        if (this.app.vault.getAbstractFileByPath(target)) return
-        try {
-          await this.ensureFolder(parentOf(target))
-          // Not `fileManager.renameFile`: that rewrites the links to the note
-          // in other notes, which the renaming device has already done - and
-          // sent along with those notes. Both edits arriving concurrently put
-          // every rewritten link in twice.
-          await this.app.vault.rename(current, target)
-          this.state.set(docId, { ...known, path: target })
-          log.info(`${known.path}: renamed on another device to ${target}`)
-        } catch (error) {
-          log.error(`renaming ${known.path} to ${target} failed`, error)
-        }
-      })
+      return known && known.path !== entry.path ? [{ docId, at: known.path, to: entry.path }] : []
+    })
+    for (let round = 0; pending.length > 0 && round < pending.length * 3 + 3; round += 1) {
+      if (this.stopped) return
+      let moved = false
+      for (const item of pending.slice()) {
+        if (this.app.vault.getAbstractFileByPath(item.to)) continue
+        await this.followRename(item.docId, item.to)
+        pending.splice(pending.indexOf(item), 1)
+        moved = true
+      }
+      if (moved) continue
+      const blocked = pending.find((item) => pending.some((other) => other !== item && other.at === item.to))
+      if (!blocked) return
+      const occupant = pending.find((other) => other.at === blocked.to) as (typeof pending)[number]
+      const stem = occupant.at.replace(/\.md$/, '')
+      let aside = `${stem} (moving).md`
+      for (let n = 2; this.app.vault.getAbstractFileByPath(aside) || this.index.docIdForPath(aside); n += 1) aside = `${stem} (moving ${n}).md`
+      if (!(await this.followRename(occupant.docId, aside, true))) return
+      occupant.at = aside
     }
+  }
+
+  /** Moves a note's file where the index has it - or, `aside`, out of another's way for a moment. */
+  private followRename(docId: string, target: string, aside = false): Promise<boolean> {
+    return this.withLock(docId, async () => {
+      const known = this.state.get(docId)
+      const current = known ? this.app.vault.getAbstractFileByPath(known.path) : null
+      if (!known || !(current instanceof TFile) || this.app.vault.getAbstractFileByPath(target)) return false
+      if (!aside && this.index.pathFor(docId) !== target) return false
+      try {
+        await this.ensureFolder(parentOf(target))
+        // Before the rename: its event must find the name taken already.
+        if (aside) this.aside.add(target)
+        else this.aside.delete(known.path)
+        // Not `fileManager.renameFile`: that rewrites the links to the note
+        // in other notes, which the renaming device has already done - and
+        // sent along with those notes. Both edits arriving concurrently put
+        // every rewritten link in twice.
+        await this.app.vault.rename(current, target)
+        this.state.set(docId, { ...known, path: target })
+        log.info(aside ? `${known.path}: out of the way at ${target}, two notes swap names` : `${known.path}: renamed on another device to ${target}`)
+        return true
+      } catch (error) {
+        if (aside) this.aside.delete(target)
+        log.error(`renaming ${known.path} to ${target} failed`, error)
+        return false
+      }
+    })
   }
 
   /** Creates the files of notes that exist in the index but not in this vault. */
@@ -1303,6 +1346,96 @@ export class DocStore {
     const handle = await this.handleFor(docId)
     const edits = textEdits(handle.text(), text)
     if (edits.length > 0) handle.doc.transact(() => applyTextEdits(handle.ytext, edits), RESTORE_ORIGIN)
+  }
+
+  // --- rolling back -----------------------------------------------------------
+  // A rollback changes nothing in a way of its own: it trashes, moves, brings
+  // back and edits notes as a person would, so every device follows and the
+  // rollback itself becomes history that can be rolled back.
+
+  /** Every entry of the index, live and deleted. */
+  allEntries(): Array<{ docId: string; entry: IndexEntry }> {
+    return [...this.index.live(), ...this.index.deleted()]
+  }
+
+  /** Whether anything at all lies at this path in the vault. */
+  pathTaken(path: string): boolean {
+    return this.app.vault.getAbstractFileByPath(path) !== null
+  }
+
+  /** What a note says on this device now: its file, or failing that its loaded document; null for neither. */
+  async currentText(docId: string): Promise<string | null> {
+    const file = this.fileFor(docId)
+    if (file && this.exists(file)) return this.app.vault.read(file)
+    const handle = this.handles.get(docId)
+    return handle && !handle.isDestroyed ? handle.text() : null
+  }
+
+  /** A note that did not exist at the moment rolled back to goes to the trash, here and everywhere. */
+  async trashNote(docId: string): Promise<void> {
+    const path = this.index.pathFor(docId)
+    if (!path) return
+    const file = this.app.vault.getAbstractFileByPath(path)
+    // The index first: the file's delete event then finds nothing left to do.
+    await this.onDelete(path)
+    if (file instanceof TFile) await this.app.fileManager.trashFile(file)
+  }
+
+  /** Moves a note back, its file too where this device has it - with `vault.rename`, as another device's rename (invariant 22). */
+  async moveNote(docId: string, path: string): Promise<void> {
+    const from = this.index.pathFor(docId)
+    if (!from || from === path) return
+    const file = this.app.vault.getAbstractFileByPath(from)
+    if (!(file instanceof TFile)) {
+      this.index.rename(docId, path)
+      return
+    }
+    await this.ensureFolder(parentOf(path))
+    await this.app.vault.rename(file, path)
+    // The rename event does the same; whichever comes second finds it done.
+    await this.onRename(file, from)
+  }
+
+  /** Brings a deleted note back at `path`, or next to it when that is taken. Returns where it went. */
+  async reviveNote(docId: string, path: string): Promise<string | null> {
+    const entry = this.index.entry(docId)
+    if (!entry) return null
+    if (!entry.deletedAt) return entry.path
+    const target = this.freeRestorePath(path)
+    await this.withLock(docId, async () => {
+      this.index.revive(docId, target)
+      await this.pull(docId)
+    })
+    return target
+  }
+
+  /**
+   * A note a backup holds that the vault knows under no name any more: a new
+   * file, which becomes a note like any other the moment it is created.
+   * Returns where it went - next to its old place when that is taken.
+   */
+  async createNote(path: string, text: string): Promise<string> {
+    const target = this.freeRestorePath(path)
+    await this.ensureFolder(parentOf(target))
+    await this.app.vault.create(target, text)
+    return target
+  }
+
+  /**
+   * A note's text as it was, as an edit - like restoring a version, so it
+   * travels and can be undone. Worked out only against the document the
+   * server sent: edits computed against a stale copy would let in again what
+   * came after (invariant 1).
+   */
+  async rollBackText(docId: string, text: string): Promise<void> {
+    await this.withLock(docId, async () => {
+      const handle = await this.handleFor(docId)
+      if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs))) {
+        throw new Error(`the server did not send ${this.index.pathFor(docId) ?? docId}`)
+      }
+      const edits = textEdits(handle.text(), text)
+      if (edits.length > 0) handle.doc.transact(() => applyTextEdits(handle.ytext, edits), RESTORE_ORIGIN)
+    })
   }
 
   /** A loaded note's handle, for the history view and sharing. */

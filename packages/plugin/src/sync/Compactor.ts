@@ -59,11 +59,17 @@ export class Compactor {
     const log = await this.api.log(room)
     const doc = new Y.Doc()
     try {
+      // The time of the newest change folded in: a rollback reaches back to
+      // it and no further (`RoomHistory`). An earlier snapshot of this room
+      // may say when it was made instead, which is later - and safe.
+      let newest = 0
       if (log.snapshot) {
         const key = await crypto.key(log.snapshot.epoch)
         if (!key) return false
         const plaintext = await decrypt(key, fromBase64(log.snapshot.data), snapshotAad(room, log.snapshot.epoch))
-        Y.applyUpdate(doc, unpackFrame(plaintext).update)
+        const snapshot = unpackFrame(plaintext)
+        Y.applyUpdate(doc, snapshot.update)
+        newest = snapshot.authorTs
       }
       let uptoSeq = 0
       for (const frame of log.frames) {
@@ -72,14 +78,16 @@ export class Compactor {
         // A frame that cannot be read here cannot be folded in either.
         if (!key) return false
         const plaintext = await decrypt(key, fromBase64(frame.data), frameAad(room, frame.epoch))
-        Y.applyUpdate(doc, unpackFrame(plaintext).update)
+        const change = unpackFrame(plaintext)
+        Y.applyUpdate(doc, change.update)
+        newest = Math.max(newest, change.authorTs)
         uptoSeq = frame.seq
       }
       if (uptoSeq === 0) return false
       // Under the current epoch: everyone who still has access holds that key.
       const key = await crypto.key(log.epoch)
       if (!key) return false
-      const data = await encrypt(key, packFrame(Date.now(), Y.encodeStateAsUpdate(doc)), snapshotAad(room, log.epoch))
+      const data = await encrypt(key, packFrame(newest, Y.encodeStateAsUpdate(doc)), snapshotAad(room, log.epoch))
       await this.api.snapshot(room, { uptoSeq, epoch: log.epoch, data: toBase64(data) })
       return true
     } finally {

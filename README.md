@@ -54,9 +54,9 @@ A backup server of your own (`ghcr.io/johnnyjack123/obsidian-connect-backup`, ne
 to `docker-compose.backup.yml`) pulls a vault, decrypts it in its memory and keeps
 it in restic repositories - a disk, a NAS, a cloud -, every backup for as long as you
 choose, and optionally a decrypted copy of the newest version. It reads and never
-writes, needs no port of its own, and is set up entirely from the plugin's settings
-with the code it shows when it starts. `docs/BACKUP.md` has the details, restoring
-included.
+writes, needs no port of its own, and is set up entirely from the plugin's settings,
+with a one-time invitation from whoever runs it. `docs/BACKUP.md` has the details,
+restoring included.
 
 ## Build the plugin
 
@@ -177,6 +177,17 @@ versions counts as an error, so it is easy to find - followed by everything.
 what was deleted on any of your devices and brings it back. Deleted notes and
 files stay restorable for the history retention; after that the server deletes
 them, unless a note is still shared with someone.
+
+**Roll the vault back…** (also *Roll this folder back…* in every folder's menu, and
+*All devices* in the settings) takes the vault, or a folder, back to a moment within
+the history retention: notes get their text then, what came later goes to the
+trash, what was deleted since comes back, renames are undone. Before anything
+changes, every backup server makes a fresh backup and a copy of everything that
+changes goes into the plugin folder (`rollbacks/`). It happens as ordinary changes,
+so every device follows and the rollback can be undone from the same window. Notes
+others share with you stay as they are; your own shared notes go back for everyone.
+Further back than the history reaches, a backup server's backups fill in on their
+own.
 
 If the server ever lost data or was restored from an older backup, the plugin
 notices, syncs nothing for the affected notes and asks once whether this device

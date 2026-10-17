@@ -32,8 +32,9 @@ export interface OutFile {
 
 export interface VaultLayout {
   files: OutFile[]
-  /** Live notes, for noticing a vault that suddenly lost most of them. */
+  /** Live notes and files, for noticing a vault that suddenly lost most of either. */
   liveNotes: number
+  liveFiles: number
   /** Blobs the layout reads, by blob id, with their content hash. */
   blobs: Map<string, string>
   /** Rooms the index still names; the cache lets go of the others. */
@@ -96,6 +97,7 @@ export async function buildLayout(cache: Cache, keys: VaultKeys, now: number): P
   const layout: VaultLayout = {
     files: [],
     liveNotes: 0,
+    liveFiles: 0,
     blobs: new Map(),
     rooms: new Set([indexRoom(vaultId), settingsRoom(vaultId)]),
     incomplete: new Set(),
@@ -175,6 +177,7 @@ export async function buildLayout(cache: Cache, keys: VaultKeys, now: number): P
     const liveFiles = Array.from(attachments.entries())
       .filter(([, entry]) => !entry.deletedAt)
       .sort(([a], [b]) => (a < b ? -1 : 1))
+    layout.liveFiles = liveFiles.length
     for (const [, entry] of liveFiles) await fileOut(entry, place(`${folder}/${safePath(entry.path)}`, (n) => ` (${n})`))
 
     // The newest deletion keeps the plain path; older ones of the same path

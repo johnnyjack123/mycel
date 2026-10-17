@@ -417,3 +417,227 @@ password), `disconnect`. Taken without asking:
 - restic runs in the tests: CI installs a pinned release; on the development machine
   the same release lies in a folder outside the repository, named by
   `OBSIDIAN_CONNECT_RESTIC`.
+
+## After the first build (0.7.6 to 0.7.9)
+
+Decided with the user on 2026-10-16, after 0.7.5, on `feat/backup-rollback`. The user
+pointed out that one code per backup server, for everyone it serves, cannot be taken
+from one person without taking it from all, and lets anyone who has it use the
+backup server's disk; asked for the settings in tabs; for the trusted copy's guard to
+count files too, with a limit of one's own; and for rolling a vault back.
+
+### Invitations and a pairing per vault *(0.7.6)*
+
+Decided: no code shared by everyone any more. The operator invites per person, the
+invitation works once, and from then on the vault and the backup server share a
+secret of their own.
+
+- **Inviting:** `obsidian-connect-backup invite [label]` on the backup server prints a
+  one-time invitation - 30 characters like a recovery code, with a check of its own
+  kind, so neither passes for the other - valid seven days. `invites` lists the open
+  ones, `revoke <id>` withdraws one. They lie in the data volume (`invites.json`); the
+  running backup server takes a new one up within seconds.
+- **Routes:** every open invitation and every paired vault is a route of its own at
+  the relay, derived from its secret as the code's was (route token, route id, the
+  handshake's key). The relay keeps many routes per connection.
+- **Connecting:** the device opens a session on the invitation's route and hands over
+  the grant. The backup server checks it (the backup key signs in, for this vault and
+  this account), makes a **pairing secret** for this vault, sends it inside the
+  session, and spends the invitation - its route is dropped. The device keeps the
+  pairing secret in the vault's settings (`backupServer:<routeId>`), so every device
+  of the account reaches the backup server for this vault.
+- **A session on a pairing's route belongs to that vault.** Only devices of the
+  account know its secret, so nothing else needs proving. A session on an
+  invitation's route can ask `info` and `connect`, nothing else.
+- **Bound to the account:** a vault paired once is never taken over by an invitation
+  of another account; the same account connecting it again with a new invitation
+  replaces the pairing.
+- **A password change or a recovery** still ends every backup key of the account -
+  only that account's. The pairing stands: a device with the password hands the
+  backup server a new key over the pairing's session (`rekey`), at once or any time
+  later ("Connect again…" asks for the password only).
+- **Disconnecting** from a device as before, or by the operator,
+  `obsidian-connect-backup disconnect <vaultId>`: pairing, grant and cache go, the
+  route is dropped; the devices are told the backup server no longer has the vault.
+  `vaults` lists the paired vaults: id, account, label, last run.
+- The backup server's own code (`code`, `identity.json`) goes.
+
+**As built (0.7.6).** One point turned out differently, two had to be ordered:
+
+- *A vault the operator disconnected is not said to be gone.* Its route goes with it,
+  and an unanswered route looks the same to the device as a backup server that is
+  down - which is all the sync server could tell it either. The device shows "cannot
+  be reached" and, once the last good backup is overdue, a notice; *Disconnect* still
+  works then (it forgets the backup server here). "No longer has this vault" is said
+  only in the moment between the vault going and its route.
+- *The invitation is spent after the answer.* Spending drops its route, and the relay
+  ends a session whose route goes - spent first, the device never heard its pairing.
+- *The answer waits for the pairing's route.* The device opens a session on the new
+  route right after connecting; `connect` answers once the relay has registered it
+  (at most 10 s).
+- A vault paired again keeps nothing of the settings read under the old route; the
+  device moves destinations and schedule to the new one and has them read at once.
+
+### The settings in tabs, destinations editable, the guard *(0.7.7)*
+
+- Tabs: **Account · Contacts · Backups · This device · All devices**; signed out,
+  Account and This device.
+- A destination can be changed afterwards: how long restic keeps backups - the
+  presets, or numbers of one's own per rule - and the credentials; for the trusted
+  copy its guard. Location and password stay: another location or password is
+  another repository, added anew.
+- **The guard counts notes and files.** It holds the trusted copy when more than a
+  share of them vanished since the copy last followed - 50 % unless set otherwise
+  for that copy (10 to 90 %, or off).
+
+**As built (0.7.7).**
+
+- *Notes and files are counted apart*, each against the limit: counted together, a
+  vault of a thousand pictures could lose all of its fifty notes and stay below it.
+  Fewer than ten of a kind when the copy last followed are not counted, as before;
+  files are counted from the first time the copy follows under 0.7.7.
+- *A changed destination is read before it is used.* The device used to wait until
+  the backup server listed the same destinations and schedule; a change of retention
+  keeps every id, so a run started right after saving went by the settings before it.
+  The status now carries a hash of what the backup server read for its route
+  (`backupSettingsText`, the same text on both ends), and the device waits for its own.
+- New credentials are checked by the backup server before they are saved, as a new
+  destination is. Retention: three presets or one's own numbers per rule; all empty
+  keeps every backup.
+- The tabs keep their place while the plugin runs. Signing in, creating an account and
+  recovering are forms on the Account tab; switching tabs leaves the form, forgetting
+  the passwords typed.
+
+### Rolling back *(0.7.8 from the history, 0.7.9 from restic)*
+
+Decided:
+
+- **The vault, or a folder**, back to a moment: the vault from the settings, a folder
+  from its menu.
+- **Notes others share are left alone;** own notes shared with others are rolled back
+  too, and the confirmation lists them - it changes them for the others as well.
+- **Before anything changes:** a fresh backup on every connected backup server, run
+  and checked; if one fails, no rollback - unless the person confirms explicitly. And
+  always a local copy of everything the rollback is about to change or remove, in the
+  plugin's folder (`rollbacks/<time>/`), kept as long as the merge backups.
+- **Where it comes from:** the history on the sync server, as far as it reaches; where
+  it does not, the newest restic snapshot at or before that moment on a backup
+  server - without the person having to do anything.
+
+How:
+
+- **The vault at T:** the index replayed to T - paths, live or deleted, the files'
+  contents by hash -, and every note's text at T from its history, ordered by author
+  time as the history view orders it.
+- **Applied as changes, never by rewinding a log:** a note gets its text at T as an
+  edit (the way a restored version is); a note that did not exist at T, or was deleted
+  then, goes to the trash; one deleted since comes back; a rename since T is undone;
+  a file gets its content at T as an earlier version does; files that came later go
+  to the trash, files deleted since come back. Every device follows as with any edit;
+  one that was offline adds what it wrote meanwhile on top.
+- **It can be undone:** the rollback is part of the history, and the settings record
+  it (`rollback:<id>` - when, to when, what) before it starts. "Undo the rollback of …"
+  rolls the same scope back to the moment before it - also for one that broke off.
+- **How far the history reaches:** a note's history knows T when it holds no snapshot,
+  or T lies at or after its snapshot's content. From 0.7.8 a compaction stamps its
+  snapshot with the time of the newest change it folds in; an older snapshot only
+  says when the compaction ran, and its content is then taken to be older than that
+  minus the retention. A file's content at T is there while the server keeps it.
+- **From restic** (0.7.9): the device asks every backup server of the vault for the
+  newest notes snapshot at or before T and the newest files snapshot at or before
+  that; the backup server reads the paths asked for from them and sends their content
+  over the session in pieces - it still only reads. A rollback before anything the
+  history knows takes the whole vault from the snapshot: what it holds is the vault at
+  T, by path.
+- **Neither reaches** a note or file: the confirmation names it, and the rollback goes
+  on without it only if the person agrees.
+
+**As built (0.7.8).** Taken without asking, beyond the decisions above:
+
+- *Where it lives:* the command "Roll the vault back to an earlier moment…", *All
+  devices → Roll back…*, and every folder's menu ("Roll this folder back…"; the root
+  folder's rolls back the vault). The dialog chooses the moment (a date and time, or an
+  hour, a day, a week ago), shows how far the history reaches, lists what changes per
+  kind, the shared notes among them and what is out of reach, and offers "Undo…" for
+  the last five rollbacks.
+- *The reach is decided per room and errs on the safe side:* a moment is reachable when
+  every frame is readable and the moment lies at or after the snapshot's time. Old
+  snapshots carry their compaction time, so their notes reach less far than they
+  could; from now on a compaction stamps the newest change it folds in (`Compactor`).
+  The vault index's reach bounds the whole vault: before it, nothing can be planned
+  (0.7.9 takes restic then).
+- *A folder* is what lies in it now and what lay in it then: a note moved out of it
+  since moves back in, one moved in since moves back out.
+- *Left alone:* notes others share in (an `owner` then or now), files that came with
+  such a note (`via`), and paths the exclusions name. Notes of the account that were
+  forked from a share are left alone too.
+- *What "now" is:* the note's text on the server, which the same log gives. A note
+  whose text there equals its text then is not touched, even if this device holds an
+  unsent edit of it.
+- *Order:* first what came later goes to the trash (it frees paths), then moves - in
+  rounds, a swap via a free name -, then what comes back from the trash (next to its
+  old place when that is taken), then texts and contents. A text is applied only
+  against the document the server sent (`DocStore.rollBackText`, invariant 1); a file's
+  content is replaced like restoring a version, and a file is trashed only once the
+  server holds what it holds (invariant 23). What fails on its own is listed and the
+  rest goes on; the record says `failed` then.
+- *The gate is in the core,* not only in the dialog: `Rollback.apply` refuses a plan
+  whose backups did not all go through, or with parts out of reach, unless the consent
+  says otherwise. With no backup server connected only the copy is taken.
+- *The copy* lies in `rollbacks/<date time>/` in the plugin's folder: every note and
+  file that changes or goes, as this device has it, at its path, and `rollback.json`
+  with the plan. Pruned with the merge backups. The records (`rollback:<id>`) keep the
+  newest 20.
+- *Reading the history* takes one request per note in scope that existed then: the
+  server keeps no "changed since" per room. Fine for a vault of hundreds of notes,
+  slow for many thousands; a server-side last-change time per room would let the plan
+  skip what did not change.
+- *A sync bug the test found:* two notes - or files - that swapped names on one device
+  never swapped on the others: each rename waited for a place the other held, and a
+  restart's scan then took each file for an edit of the other note. Renames from other
+  devices are applied in rounds now, one of two that swapped waiting at a free name the
+  index and the scan never claim (invariant 27). A rollback undoing renames closes such
+  cycles often.
+
+**As built (0.7.9).** Rolling back from restic, without anything to do by hand:
+
+- *Three calls on the vault's pairing,* read only: `backupAt` (the newest notes
+  snapshot at or before the moment over the vault's repositories, and the files
+  snapshot that was newest then - a remote repository may hold several vaults, so a
+  notes snapshot must name the vault's folder on the RAM disk, a files snapshot its
+  stream), `backupList` (every note and file by path with its SHA-256, read by
+  dumping both snapshots as tar; kept a while) and `backupRead` (the paths asked for,
+  in pieces of 192 KiB as session events, the notes snapshot first, the files stream
+  only for what it did not hold). The backup server checks that the repository named
+  is one of the vault's and takes the folder from its own knowledge.
+- *Where the index still reaches,* only what the history does not - a note's text, a
+  file's content the sync server let go of - comes from the backup, matched by the
+  note's or file's path then. *Where the index does not reach,* the whole plan comes
+  from the backup by path: what lies at a path now gets the backup's text or content,
+  what is in the trash at that path comes back, what the vault knows under no name
+  any more comes back as a new note or file, and what is not in the backup goes to the
+  trash. Notes in the share folder the vault has no trace of stay away: most likely
+  someone else's.
+- *Content the sync server still has* is taken from there; only what it lost is read
+  from the backup and uploaded before an entry names it (invariant 23). A new file is
+  written from the backup's bytes.
+- *The backup made first forgets nothing* (`keepAll`): its retention could otherwise let
+  go of the very snapshot the rollback reads next - which a mutation test showed.
+- *A bug on the way:* the backup server sealed its session messages concurrently, and
+  one overtaking another on its way out would end the session at the device - a run's
+  `finished` event during any request could do it, a stream of pieces made it likely.
+  Its sends are in order now, as the plugin's always were.
+- *And one CI found:* `disconnect` dropped the vault's route before its answer was
+  out; with no route left the relay connection closed and the session ended first.
+  The route goes after the answer now, like a spent invitation's.
+
+### Order of work
+
+6. **0.7.6** - invitations and pairings: relay with many routes per connection, the
+   backup server's invitations and pairings, `connect`/`rekey`, the operator's commands,
+   the plugin connecting with an invitation and rekeying over the pairing.
+7. **0.7.7** - the tabs, editing a destination, the guard over notes and files with
+   its limit.
+8. **0.7.8** - rolling back from the history: the vault or a folder, the backups and
+   the local copy first, the record and undoing it; the compaction's content time.
+9. **0.7.9** - rolling back from restic where the history does not reach.

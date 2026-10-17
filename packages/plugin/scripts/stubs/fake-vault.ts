@@ -22,10 +22,15 @@ function parentOf(path: string): string {
 /** The plugin-folder side: `DataAdapter` as StateStore and BackupStore use it. */
 export class FakeAdapter {
   readonly files = new Map<string, string>()
+  readonly binaries = new Map<string, Uint8Array>()
   private readonly dirs = new Set<string>()
 
   async exists(path: string): Promise<boolean> {
-    return this.files.has(path) || this.dirs.has(path)
+    return this.files.has(path) || this.binaries.has(path) || this.dirs.has(path)
+  }
+
+  async writeBinary(path: string, data: ArrayBuffer): Promise<void> {
+    this.binaries.set(path, new Uint8Array(data.slice(0)))
   }
 
   async mkdir(path: string): Promise<void> {
@@ -50,13 +55,14 @@ export class FakeAdapter {
     const direct = (candidate: string): boolean =>
       candidate.startsWith(`${path}/`) && !candidate.slice(path.length + 1).includes('/')
     return {
-      files: Array.from(this.files.keys()).filter(direct),
+      files: [...this.files.keys(), ...this.binaries.keys()].filter(direct),
       folders: Array.from(this.dirs).filter(direct)
     }
   }
 
   async rmdir(path: string): Promise<void> {
     for (const key of Array.from(this.files.keys())) if (key.startsWith(`${path}/`)) this.files.delete(key)
+    for (const key of Array.from(this.binaries.keys())) if (key.startsWith(`${path}/`)) this.binaries.delete(key)
     for (const key of Array.from(this.dirs)) if (key === path || key.startsWith(`${path}/`)) this.dirs.delete(key)
   }
 

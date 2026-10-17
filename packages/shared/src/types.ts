@@ -331,11 +331,11 @@ export interface KeepPolicy {
 // entry per key, so every device sees and changes them and the backup server
 // reads them with its backup key.
 
-/** `backupServer:<routeId>`: a backup server the vault is connected to. */
+/** `backupServer:<routeId>`: a backup server the vault is paired with; the route is the pairing's. */
 export interface BackupServerSetting {
   routeId: string
-  /** The backup server's code: every device of the account reaches it with it. */
-  code: string
+  /** The pairing secret, base64: every device of the account reaches the backup server for this vault with it. */
+  pairing: string
   label: string
   /** Its backup key on the sync server, which any device deletes when disconnecting it. */
   keyId: string
@@ -356,7 +356,24 @@ export interface BackupTargetSetting {
   /** Credentials the location needs, e.g. `AWS_ACCESS_KEY_ID`. */
   env?: Record<string, string>
   keep?: KeepPolicy
+  /**
+   * The trusted copy only: the share of the notes, or of the files, in percent,
+   * that may vanish since the copy last followed before it waits for a
+   * confirmation. 10 to 90; absent: `BACKUP_GUARD_DEFAULT`; 0: it never waits.
+   */
+  guard?: number
   addedAt: number
+}
+
+export const BACKUP_GUARD_DEFAULT = 50
+export const BACKUP_GUARD_MIN = 10
+export const BACKUP_GUARD_MAX = 90
+
+/** A guard as set, made one the backup server uses: 0, or 10 to 90. */
+export function backupGuard(value: unknown): number {
+  if (value === 0) return 0
+  if (typeof value !== 'number' || !Number.isFinite(value)) return BACKUP_GUARD_DEFAULT
+  return Math.min(BACKUP_GUARD_MAX, Math.max(BACKUP_GUARD_MIN, Math.round(value)))
 }
 
 /** `backupSchedule:<routeId>`: how often that backup server backs the vault up on its own. */
@@ -370,23 +387,64 @@ export const BACKUP_SERVER_KEY = 'backupServer:'
 export const BACKUP_TARGET_KEY = 'backupTarget:'
 export const BACKUP_SCHEDULE_KEY = 'backupSchedule:'
 
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (value && typeof value === 'object') {
+    const object = value as Record<string, unknown>
+    const keys = Object.keys(object)
+      .filter((key) => object[key] !== undefined)
+      .sort()
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
+/**
+ * What a backup server reads for its route - the destinations and the
+ * schedule -, written the same way on both ends. A device hashes it to tell
+ * whether the backup server has read the newest settings: an edit that keeps
+ * every destination's id is a change too.
+ */
+export function backupSettingsText(settings: Iterable<[string, unknown]>, routeId: string): string {
+  const taken: Array<[string, unknown]> = []
+  for (const [key, value] of settings) {
+    const own =
+      key === `${BACKUP_SCHEDULE_KEY}${routeId}` ||
+      (key.startsWith(BACKUP_TARGET_KEY) && Boolean(value) && typeof value === 'object' && (value as { server?: unknown }).server === routeId)
+    if (own) taken.push([key, value])
+  }
+  taken.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  return canonical(taken)
+}
+
 /**
  * Frames on the sync server's `/relay`, JSON. The sync server numbers each
  * session (`s`) and forwards its data (`d`) without reading it: inside is a
  * session between a device and a backup server, encrypted end to end.
  */
 export type RelayFrame =
-  /** backup server -> sync server: the route token derived from its code. */
+  /** backup server -> sync server: one more route, by the token derived from its secret. */
   | { t: 'register'; token: string }
   | { t: 'registered'; route: string }
-  /** device -> sync server: a session to that backup server; `ref` matches the answer. */
+  /** backup server -> sync server: a route it no longer answers - an invitation spent, a vault disconnected. */
+  | { t: 'unregister'; route: string }
+  /** device -> sync server: a session on that route; `ref` matches the answer. */
   | { t: 'open'; route: string; ref: number }
   | { t: 'opened'; ref: number; s: number }
-  /** sync server -> backup server: someone opened a session. */
-  | { t: 'incoming'; s: number }
+  /** sync server -> backup server: someone opened a session on one of its routes. */
+  | { t: 'incoming'; s: number; route: string }
   | { t: 'data'; s: number; d: string }
   | { t: 'close'; s: number; reason?: string }
   | { t: 'error'; error: string; ref?: number }
+
+/** What connecting with an invitation answers, inside the session. */
+export interface BackupConnected {
+  vaultId: string
+  /** The pairing secret, base64, from now on the vault's way to this backup server. */
+  pairing: string
+  /** The route of the pairing this one replaced - the same vault connected again; null for a first. */
+  replaced: string | null
+}
 
 /** What a backup server tells about itself. */
 export interface BackupServerInfo {
@@ -436,10 +494,42 @@ export interface BackupVaultStatus {
   seen: string[]
   /** The schedule as it read it; 0 for none. */
   everyHours: number
+  /** SHA-256, hex, of `backupSettingsText` as it last read the settings; empty before it did. */
+  settingsDigest: string
   /** Settings the backup server cannot use, and why. */
   problems: string[]
   /** Newest first. */
   runs: BackupRunStatus[]
+}
+
+/** One backup of a vault a backup server can read a rollback's content from: a notes snapshot and the files snapshot of then. */
+export interface BackupSnapshotRef {
+  /** The destination (`backupTarget` id) whose repository holds it. */
+  destination: string
+  /** The vault's folder in the backup. */
+  folder: string
+  notes: { id: string; time: number }
+  files: { id: string; time: number } | null
+}
+
+/** A note or file in a backup, by its path in the vault. */
+export interface BackupListedEntry {
+  path: string
+  size: number
+  /** SHA-256 of the content, hex - as attachments name their content. */
+  hash: string
+  /** Which snapshot holds it: notes and canvases, or the stream of every other file. */
+  part: 'notes' | 'files'
+}
+
+/** A piece of a backup's content on its way to a device, as a session event `backup-data`. */
+export interface BackupDataEvent {
+  /** The request it answers. */
+  rid: string
+  path: string
+  /** Base64; empty on the last piece of a file that ended. */
+  data: string
+  last: boolean
 }
 
 /**

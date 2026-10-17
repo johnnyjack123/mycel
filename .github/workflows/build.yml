@@ -66,6 +66,12 @@ jobs:
       - name: Account self-test
         run: npm run test:account
 
+      # Its own server in-process: a vault rolled back to a moment from the
+      # history - notes, names, files, a shared note -, the gate before it,
+      # every device following, undoing it, a folder, a compacted history.
+      - name: Rollback self-test
+        run: npm run test:rollback
+
       # The backup server hands vaults to restic, so its self-test runs a real
       # one: the release the image will carry, checked against its checksum.
       - name: Install restic
@@ -316,20 +322,23 @@ jobs:
           cache-from: type=gha,scope=backup
           cache-to: type=gha,mode=max,scope=backup
 
-      # restic runs; the code is made once and kept in the data volume, as the
-      # unprivileged user; and the backup server keeps running while the sync
-      # server it is pointed at does not answer - it tries again, it does not die.
+      # restic runs; an invitation is made and kept in the data volume, as the
+      # unprivileged user; and the backup server, which then has a route to
+      # answer, keeps running while the sync server it is pointed at does not
+      # answer - it tries again, it does not die.
       - name: Smoke test
         run: |
           set -euo pipefail
           docker run --rm --entrypoint restic obsidian-connect-backup:smoke version
           docker volume create smoke-backup-data
-          code=$(docker run --rm -v smoke-backup-data:/data obsidian-connect-backup:smoke obsidian-connect-backup code)
-          echo "code: $code"
+          made=$(docker run --rm -v smoke-backup-data:/data obsidian-connect-backup:smoke obsidian-connect-backup invite smoke)
+          echo "$made"
+          code=$(echo "$made" | sed -n 2p | tr -d ' ')
           echo "$code" | grep -Eq '^([0-9A-Z]{5}-){5}[0-9A-Z]{5}$'
-          again=$(docker run --rm -v smoke-backup-data:/data obsidian-connect-backup:smoke obsidian-connect-backup code)
-          if [ "$code" != "$again" ]; then
-            echo "::error::the code was not kept in the data volume"
+          listed=$(docker run --rm -v smoke-backup-data:/data obsidian-connect-backup:smoke obsidian-connect-backup invites)
+          echo "$listed"
+          if ! echo "$listed" | grep -q '  smoke  '; then
+            echo "::error::the invitation was not kept in the data volume"
             exit 1
           fi
           docker run -d --name smoke-backup \

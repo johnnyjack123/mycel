@@ -22,9 +22,14 @@ How it is built and why: `docs/PHASE6.md`.
   plaintext. It is for you, or a household - not a service for strangers.
 - **The sync server learns nothing new.** It only relays between your device and the
   backup server, and what it relays is encrypted between the two with a key that
-  depends on the backup server's code, which never leaves either.
-- **Its code is a key to it.** Whoever has the code can connect vaults of their own
-  to it (and use its disk) - never touch yours. Keep the code like a password.
+  depends on a secret only the two know, which never leaves either.
+- **A vault is connected with an invitation, once.** The operator makes one per
+  person (`obsidian-connect-backup invite`); it connects one vault, once, within a
+  week. From then on the vault has a secret of its own with the backup server - kept
+  in the account's encrypted settings, so all its devices and nobody else reach it -
+  and the backup server knows which account the vault belongs to. Nobody else can see
+  it, start it, change where it goes or take it over, not even with an invitation of
+  their own.
 
 ## Running it
 
@@ -36,12 +41,24 @@ cp backup.env .env                    # then edit it: the sync server, the backu
 sudo mkdir -p /srv/obsidian-backups
 sudo chown -R 1000:1000 /srv/obsidian-backups
 docker compose -f docker-compose.backup.yml up -d
-docker compose -f docker-compose.backup.yml exec obsidian-connect-backup obsidian-connect-backup code
+docker compose -f docker-compose.backup.yml exec obsidian-connect-backup obsidian-connect-backup invite Anna
 ```
 
-The last line prints the backup server's code. Its log shows it too, the first time
-it starts. The image is private while the repository is; sign in once with
+The last line prints an invitation for Anna; pass it on as you would a password. The
+image is private while the repository is; sign in once with
 `docker login ghcr.io -u johnnyjack123` and a token that may read packages.
+
+The operator's commands, all through `docker compose -f docker-compose.backup.yml exec obsidian-connect-backup obsidian-connect-backup …`:
+
+| Command | What it does |
+|---|---|
+| `invite [name]` | An invitation for one person to connect one vault, once, within 7 days. |
+| `invites` | The invitations not used yet. |
+| `revoke <id>` | Withdraws an invitation. |
+| `vaults` | The vaults connected: id, account, the invitation's name, the last backup. |
+| `disconnect <vault>` | Forgets a vault: its keys go, it is backed up no more. Its repositories and trusted copy stay. |
+
+The running backup server takes each of them up within seconds.
 
 Updating: `docker compose -f docker-compose.backup.yml pull && docker compose -f docker-compose.backup.yml up -d`.
 
@@ -62,17 +79,18 @@ PDFs and other files never do - they stream into restic one at a time. A vault o
 5000 notes takes a few dozen megabytes. A vault bigger than the RAM disk fails its
 backup with "no space left"; give it more.
 
-**The data volume** holds the code, the keys of every vault connected and an
-encrypted cache of them (so a backup fetches only what changed). Back it up only if
-you want to keep the backup server's code; losing it means connecting the vaults to
-a new code, nothing more.
+**The data volume** holds the invitations, the keys and secret of every vault
+connected and an encrypted cache of them (so a backup fetches only what changed).
+Back it up only if you want to keep the connections; losing it means connecting the
+vaults again with new invitations, nothing more - the repositories are not in it.
 
 ## Setting it up in Obsidian
 
-*Settings → Obsidian Connect → Backup servers*:
+*Settings → Obsidian Connect → Backups*:
 
-1. **Connect a backup server…** - its code and your password. It backs up once a day
-   until you choose otherwise.
+1. **Connect a backup server…** - the invitation and your password. It backs up once
+   a day until you choose otherwise. Your other devices find it in the settings by
+   themselves.
 2. **Add a destination…** - one or more:
    - **A restic repository.** A folder relative to the backup folder (`nas/obsidian`),
      or a location restic knows: `s3:s3.amazonaws.com/bucket/obsidian`,
@@ -81,11 +99,18 @@ a new code, nothing more.
      The repository password: "Make one" makes a strong one. It is kept in your
      account's settings, encrypted, so every device can show it - **write it down as
      well**: without it nobody can read the repository. A cloud folder mounted on the
-     host is just another folder.
+     host is just another folder. How long backups are kept: a preset, or numbers of
+     your own - the last so many, and the newest of each of so many hours, days,
+     weeks, months, years.
    - **The trusted copy.** A folder that holds the newest version of everything,
      decrypted. It must be empty, or one the backup server wrote before; the backup
      server deletes only what it wrote itself.
 3. **How often**, and **Back up now** whenever you like.
+
+The pencil next to a destination changes it afterwards: how long a repository keeps
+backups and its credentials, or when the trusted copy waits. Its location and
+password stay - another location or password is another repository, added as a
+destination of its own.
 
 Each destination is checked by the backup server before it is saved: whether it can
 write there, whether the repository opens with that password (it is made where there
@@ -94,12 +119,21 @@ the trusted copy waits, or when there was no good backup for a while - also when
 backup server cannot be reached.
 
 **After a password change** the device that made it hands every backup server a new
-key at once; a password change ends the old ones, as it signs out every other device.
-One that was not reachable then says so in the settings; connect it again there.
+key at once, over the vault's own connection; a password change ends the old keys,
+as it signs out every other device. One that was not reachable then says so in the
+settings: *Connect again…* asks for the password - no new invitation is needed. Only
+a backup server that lost the vault (its operator disconnected it, or its data volume
+is gone) needs a new invitation; until then it looks like one that cannot be reached.
 
-**The trusted copy waits** when the vault suddenly lost more than half of its notes:
-the sync server may have lost data, and the copy must not follow that. The restic
-backups go on as always. If you deleted the notes on purpose, *Follow anyway*.
+**Connecting the same vault again** with a new invitation replaces its connection;
+its destinations and schedule carry on.
+
+**The trusted copy waits** when more than half of the vault's notes, or more than
+half of its files, are gone since the copy last followed: the sync server may have
+lost data, and the copy must not follow that. Notes and files are counted apart, so a
+vault of many pictures that lost its notes is caught too; fewer than ten of either
+are not counted. The share is the copy's own setting - 10 to 90 %, or never. The
+restic backups go on as always. If you deleted them on purpose, *Follow anyway*.
 
 ## What a backup holds
 
@@ -118,6 +152,15 @@ Every backup is checked: restic's own check, every note's path and size in the n
 snapshot, the newest notes read back byte for byte; once a week a part of the stored
 data is read in full, and every file of the files snapshot is read back and compared
 by its hash.
+
+## Rolling back from Obsidian
+
+*Roll the vault back…* in the plugin (or *Roll this folder back…* in a folder's menu)
+takes the vault back to a moment from the history on the sync server - and where
+that no longer reaches, from the newest backup at or before that moment on a backup
+server, read back over the same encrypted connection; nothing to restore by hand.
+Before anything changes, every backup server makes a fresh backup (forgetting no
+older one this time, so the backup rolled back from stays). See the README.
 
 ## Restoring
 
@@ -146,6 +189,8 @@ For trying it on a laptop: restic on the PATH (or `OBSIDIAN_CONNECT_RESTIC`), th
 ```bash
 OBSIDIAN_CONNECT_SERVER=ws://localhost:1234 OBSIDIAN_CONNECT_BACKUP_DATA=./backup-data \
 OBSIDIAN_CONNECT_BACKUP_ROOT=./backups npm run start:backup
+# in a second terminal:
+OBSIDIAN_CONNECT_BACKUP_DATA=./backup-data node packages/backup/bin/obsidian-connect-backup.mjs invite me
 ```
 
 Outside Linux there is no RAM disk; the notes then lie in the system's temporary

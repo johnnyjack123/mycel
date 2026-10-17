@@ -8,6 +8,104 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.9** (2026-10-17) - rolling back further than the history reaches, from restic
+  (decided with the user: "history first, restic where it no longer reaches - a
+  manual restore would be a nuisance"). The backup server reads a vault's own backups
+  back over its pairing, read only: the newest backup at or before a moment, what it
+  holds by path with SHA-256, and the paths asked for, in pieces. A rollback takes
+  what the history no longer reaches from there - a note's text, a file's content
+  the sync server let go of -, and when the vault index itself is out of reach, the
+  whole vault by path. Content the sync server still has comes from there; only what
+  it lost is read back and uploaded before an index entry names it. The backup a
+  rollback makes first forgets no snapshot, so the one it reads from next is still
+  there. The dialog says where content comes from. And a fix: the backup server
+  sealed session messages concurrently, so a message could overtake another and end
+  the session at the device (a run finishing during a request could do it; a stream
+  of pieces made it likely) - its sends are in order now. `test:backup` 144: a vault
+  rolled back by name from a real backup with its history compacted away - texts,
+  a note that came later, one deleted since, a picture whose content only the backup
+  still had, a note someone else shares in kept -; one note filled from the backup
+  while the other comes from the history; a repository not the vault's refused.
+  Checked by putting the bugs back: with the fresh backup forgetting as usual, the
+  rollback from the backup failed - its snapshot was gone - and with any repository
+  accepted, the refusal check failed; nothing else. CI on the branch then found a
+  race the development machine never lost: disconnecting a backup server's last
+  vault dropped its last route, its relay connection closed, and that overtook the
+  answer to `disconnect` - "the other side went away". The route now goes only once
+  the answer is out, as a spent invitation's does (0.7.6).
+
+- **0.7.8** (2026-10-17) - rolling back, from the history (asked for by the user, with
+  a backup of everything first). *Roll the vault back…* (command, *All devices*, the
+  root folder's menu) or *Roll this folder back…*: choose a moment, see per kind what
+  changes - texts, what came later and goes to the trash, what comes back, renames
+  undone, files likewise -, which of them are shared with others, and what the
+  history no longer reaches. Before anything changes, every backup server makes a
+  fresh, checked backup; if one fails, nothing changes unless the person says so. A
+  copy of everything that changes goes into the plugin folder, `rollbacks/<date
+  time>/`, and a record into the account's settings, from which every device offers
+  "Undo…". Then the plan is applied as changes a person could make, so every device
+  follows. Others' shared notes stay as they are. A compaction now stamps its snapshot
+  with the time of the newest change it holds, so the history reaches as far as it
+  can. And a sync bug the new test found: two notes, or files, that swapped names on
+  one device never swapped on the others - each rename waited for the place the other
+  held - and a restart's scan then took each file for an edit of the other note
+  (invariant 27). `test:rollback` 52 (new, in CI): the plan, the gate refusing before
+  anything changes, the vault as it was on every device and for the person a note is
+  shared with, the copy, the trash, undoing the rollback, a folder alone, a note
+  compacted past the moment out of reach and left alone only when agreed, the index
+  compacted past it. `test:backup` 126: a fresh backup started and waited for. Checked
+  by putting the bugs back: without the swap via a free name, without the gate in the
+  core, and with the compaction stamped with its own time, exactly those checks
+  failed, plus those that follow from a rollback the gate let through. The dialog is
+  for a device.
+
+- **0.7.7** (2026-10-17) - the settings in tabs (Account, Contacts, Backups, This
+  device, All devices; signed out, Account and This device), asked for by the user as
+  the one long page grew. A destination can be changed afterwards (the pencil next to
+  it): a repository's retention - a preset or numbers of one's own per rule - and
+  credentials, checked by the backup server before they are saved; the trusted copy's
+  guard. Each row says what it keeps or when it waits. **The guard counts notes and
+  files, apart:** the trusted copy waits when more than its share (50 % unless set, 10
+  to 90 %, or never) of the notes, or of the files, vanished since it last followed -
+  counted together, a vault of many pictures could lose all its notes unnoticed. And a
+  fix the new check found on its first run: after a change of retention a backup
+  started right away went by the settings before it - the device waited only until the
+  backup server listed the same destinations, and the ids had not changed (the
+  repository kept 4 snapshots where `last 1` should have left 2). The status now
+  carries a hash of the settings the backup server read for its route, and the device
+  waits for the hash of its own. `test:backup` 125: the guard's arithmetic (notes and
+  files apart, the limits, off, too few to count), its value as read from the
+  settings, the settings hash the same on both ends, pictures vanishing holding the
+  copy and naming the files, a guard turned off following at once, a retention changed
+  from the settings taking effect with the next backup. The tabs and the dialog are
+  for a device.
+
+- **0.7.6** (2026-10-17) - invitations, and a pairing per vault, instead of one code
+  per backup server (asked for by the user: one code for everyone could not be taken
+  from one person without taking it from all, and let anyone with it use the disk).
+  The operator invites per person (`obsidian-connect-backup invite [name]`, `invites`,
+  `revoke`, `vaults`, `disconnect`); an invitation connects one vault, once, within a
+  week. Connecting gives the vault a secret of its own with the backup server, kept in
+  the account's encrypted settings; a session on it reaches that vault and nothing
+  else, and the backup server keeps whose vault it is, so another account cannot take
+  it over. A password change hands out a new key over the pairing - no new invitation;
+  connecting the same vault again replaces its pairing and keeps its destinations. The
+  relay keeps many routes per connection (an invitation, every vault) and ends a
+  route's sessions when it goes; the backup server's code and `code` command are gone.
+  Two orderings the first run of the test found: the invitation was spent before the
+  answer, so the relay ended the session before the device heard its pairing; and a
+  vault connected again named its new route as the one replaced, so its destinations
+  stayed behind. `test:rooms` 284 (routes, unregistering, limits), `test:merge` 164,
+  `test:backup` 103: invitations made, mistyped, expired, made and withdrawn on the
+  command line, spent; a vault's pairing, someone with only its route turned away,
+  another account neither connecting nor rekeying someone else's vault, the operator
+  disconnecting one vault while the others carry on, the password change, connecting
+  again. Checked by putting the protections back out: without spending an invitation,
+  and without the check that a grant belongs to the paired vault, the checks for them
+  failed, and one more that follows from the takeover (Ben's destination check then
+  ran against Anna's vault), nothing else. CI's smoke test makes and lists an invitation in the data volume.
+  The dialogs are for a device.
+
 - **0.7.5** (2026-10-16) - a backup server whose key ended - a password change while it
   could not be reached - or which lost what it knew of the vault shows "Connect
   again…" in the settings: the code is filled in, the password gives it a new key,

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, rm, utimes, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { BackupGrant, KeepPolicy } from '@obsidian-connect/shared'
+import { BACKUP_GUARD_DEFAULT, type BackupGrant, type KeepPolicy } from '@obsidian-connect/shared'
 import { Cache } from './cache.js'
 import { bytesOf, chunksOf, hashOf, sizeOf } from './content.js'
 import { fetchBlobs, fetchRooms } from './fetch.js'
@@ -30,6 +30,8 @@ export interface JobConfig {
   destinations: Destination[]
   /** A folder for the decrypted copy of the newest version; null for none. */
   trusted: string | null
+  /** The share of the notes, or of the files, in percent, that may vanish before the copy waits; 0: never. */
+  trustedGuard?: number
 }
 
 export interface Job {
@@ -97,13 +99,19 @@ export interface RunnerOptions {
   pruneMs?: number
   /** How often every room is fetched again, not only those whose tag changed. */
   verifyCacheMs?: number
-  /** Below half of this many notes since the last run, the trusted copy is held. */
+  /** Fewer notes, or files, than this when the copy last followed: the guard does not count them. */
   vanishFloor?: number
 }
 
 export interface RunControl {
-  /** The person confirmed that the vault lost that many notes on purpose; the trusted copy follows. */
+  /** The person confirmed that the vault lost that much on purpose; the trusted copy follows. */
   acceptShrink?: boolean
+  /**
+   * Forget no snapshot this time: the run a rollback asks for first, which
+   * may read from an older backup right after - one this run's retention
+   * would otherwise let go of. The next run forgets as usual.
+   */
+  keepAll?: boolean
 }
 
 interface DestinationState {
@@ -114,8 +122,9 @@ interface DestinationState {
 }
 
 interface JobState {
-  /** Live notes when the trusted copy last followed the vault. */
+  /** Live notes and files when the trusted copy last followed the vault. */
   liveNotes?: number
+  liveFiles?: number
   verifiedCacheAt?: number
   destinations: Record<string, DestinationState>
 }
@@ -147,6 +156,29 @@ function filesDigest(files: readonly OutFile[]): string {
   const digest = createHash('sha256')
   for (const file of files) digest.update(`${file.path}\0${hashOf(file)}\0${file.mtime}\n`)
   return digest.digest('hex')
+}
+
+/**
+ * Why the trusted copy should wait, or null: more than `guard` percent of the
+ * notes, or of the files, vanished since it last followed. Counted apart - a
+ * vault of a thousand pictures losing all of its fifty notes is the case to
+ * catch. A count below `floor` then is too small to tell anything.
+ */
+export function vanished(
+  before: { notes?: number; files?: number },
+  now: { notes: number; files: number },
+  guard: number,
+  floor: number
+): string | null {
+  if (guard <= 0) return null
+  const lost: string[] = []
+  const count = (was: number | undefined, is: number, what: string): void => {
+    if (was === undefined || was < floor) return
+    if (is < was * (1 - guard / 100)) lost.push(`${is} ${what} (${was} when the copy last followed)`)
+  }
+  count(before.notes, now.notes, 'notes')
+  count(before.files, now.files, 'files')
+  return lost.length > 0 ? `the vault has ${lost.join(' and ')}; the trusted copy waits until that is confirmed` : null
 }
 
 /** Lays the notes out below `root`, each file with the time it last changed. */
@@ -242,7 +274,7 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
   try {
     await writeNotes(workRoot, folder, notes, cache, keys)
     for (const destination of job.config.destinations) {
-      report.destinations.push(await backUpTo(destination, workRoot, folder, notes, streamed, digest, state, cache, keys, options, now))
+      report.destinations.push(await backUpTo(destination, workRoot, folder, notes, streamed, digest, state, cache, keys, options, now, control))
     }
   } catch (error) {
     report.error = message(error)
@@ -251,24 +283,28 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
     await rm(workRoot, { recursive: true, force: true })
   }
 
+  const live = { notes: layout.liveNotes, files: layout.liveFiles }
   if (job.config.trusted) {
-    const floor = options.vanishFloor ?? 10
-    const before = state.liveNotes ?? 0
-    if (before >= floor && layout.liveNotes < before / 2 && !control.acceptShrink) {
-      report.trusted = { ok: true, held: `the vault has ${layout.liveNotes} notes, the last copy ${before}; the trusted copy waits until that is confirmed` }
-      log.warn(`backup of ${grant.vaultId}: trusted copy held, ${layout.liveNotes} notes after ${before}`)
+    const held = control.acceptShrink
+      ? null
+      : vanished({ notes: state.liveNotes, files: state.liveFiles }, live, job.config.trustedGuard ?? BACKUP_GUARD_DEFAULT, options.vanishFloor ?? 10)
+    if (held) {
+      report.trusted = { ok: true, held }
+      log.warn(`backup of ${grant.vaultId}: trusted copy held, ${held}`)
     } else {
       try {
         const aligned = await alignTrusted(job.config.trusted, grant.vaultId, layout.files, layout.incomplete, cache, keys)
         report.trusted = { ok: true, ...aligned }
-        state.liveNotes = layout.liveNotes
+        state.liveNotes = live.notes
+        state.liveFiles = live.files
       } catch (error) {
         report.trusted = { ok: false, error: message(error) }
         if (!(error instanceof TrustedRefused)) log.error(`backup of ${grant.vaultId}: trusted copy failed`, error)
       }
     }
   } else {
-    state.liveNotes = layout.liveNotes
+    state.liveNotes = live.notes
+    state.liveFiles = live.files
   }
 
   report.ok = !report.error && report.destinations.every((destination) => destination.ok) && report.trusted?.ok !== false
@@ -292,7 +328,8 @@ async function backUpTo(
   cache: Cache,
   keys: VaultKeys,
   options: RunnerOptions,
-  now: () => number
+  now: () => number,
+  control: RunControl
 ): Promise<DestinationReport> {
   const restic = options.restic
   const repo: ResticRepo = { repository: destination.repository, password: destination.password, env: destination.env }
@@ -321,7 +358,7 @@ async function backUpTo(
       known.filesDigest = digest
     }
 
-    if (destination.keep) {
+    if (destination.keep && !control.keepAll) {
       await restic.forget(repo, destination.keep)
       if (now() - (known.pruneAt ?? 0) >= (options.pruneMs ?? WEEK_MS)) {
         await restic.prune(repo)
