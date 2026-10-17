@@ -57,7 +57,8 @@ function diagnose(status: ServerStatus | null): string[] {
   if (status && !status.connected && status.error) {
     lines.push('Check that this container reaches the sync server at that address. On the same host as the sync server,')
     lines.push('its public address often does not work from inside a container: use the internal one instead,')
-    lines.push('e.g. ws://<LAN address of the host>:1234. A reverse proxy must pass WebSocket upgrades on /relay.')
+    lines.push('e.g. ws://<LAN address of the host>:1234 - ws://, not wss://: the sync server itself speaks no TLS on')
+    lines.push('its port; wss:// is for an address with TLS in front of it. A reverse proxy must pass WebSocket upgrades on /relay.')
   }
   lines.push('obsidian-connect-backup status shows it again; the log has every attempt.')
   return lines

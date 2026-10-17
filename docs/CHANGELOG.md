@@ -8,6 +8,18 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.12** (2026-10-18) - 0.7.11's `status` on the user's Pi said "NOT connected:
+  the connection closed (1006)" for `wss://192.168.168.67:1234`: TLS to the sync
+  server's own port, which speaks plain `ws://` - and 1006 says nothing more. A
+  connection that fails without a reason now makes the backup server ask the sync
+  server's `/health` over HTTP and over TLS, and say what it found: no TLS on that
+  port (use `ws://`), TLS where `ws://` was given (use `wss://`), or a server that
+  answers while its proxy does not pass `/relay` on as a WebSocket. The backup
+  server's data folder in `docker-compose.backup.yml` is `./backup-data` (asked for by
+  the user), so it can lie next to the sync server's compose file, whose is `./data`.
+  `test:backup` 150: a backup server given `wss://` for the test server's port says to
+  use `ws://`.
+
 - **0.7.11** (2026-10-17) - the backup server says whether it reaches the sync
   server. The user's first connect on a Pi failed with "the backup server is not
   connected", and nothing on the backup server said why: the running server only

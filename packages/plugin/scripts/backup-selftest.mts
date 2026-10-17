@@ -548,6 +548,27 @@ try {
       )
       const stuck = await operator(['status'], lonely)
       check(stuck.includes('NOT connected') && stuck.includes('NOT answered'), '"status" tells the operator', stuck)
+
+      // wss:// on the sync server's own port, which has no TLS: what the user's Pi had, seen as "closed (1006)" alone.
+      const tls = join(root, 'backup-wss')
+      const wrongScheme = await startBackupServer({
+        server: `wss://127.0.0.1:${port}`,
+        dataDir: tls,
+        root: join(root, 'backup-root-wss'),
+        workDir: join(root, 'ram-wss'),
+        resticBinary: RESTIC,
+        name: 'wss',
+        version: 'test',
+        tickMs: 100,
+        watchMs: 100
+      })
+      stops.push(() => wrongScheme.close())
+      await new Invites(tls).create('wrong scheme')
+      check(
+        await eventually(async () => (await readStatus(tls))?.error?.includes(`use ws://127.0.0.1:${port} instead of wss://`) === true, 15_000),
+        'one given wss:// for a port without TLS asks the sync server over HTTP, and says to use ws://',
+        await readStatus(tls)
+      )
     }
     clock += 8 * DAY_MS
     check(await eventually(async () => (await refusal(A3.openInviteSession(late, 2_000))).startsWith(NO_INVITATION), 10_000), 'one older than a week reaches nothing either')

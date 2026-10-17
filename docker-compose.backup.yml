@@ -11,9 +11,10 @@ services:
       # What devices are shown this backup server as.
       OBSIDIAN_CONNECT_BACKUP_NAME: ${OBSIDIAN_CONNECT_BACKUP_NAME:-backup server}
     volumes:
-      # Its invitations, the keys of the vaults connected to it, and their encrypted cache.
-      # The folder must belong to user 1000 (`chown -R 1000:1000 data`).
-      - ./data:/data
+      # Its invitations, the keys of the vaults connected to it, and their encrypted cache -
+      # a folder of its own, so this file can lie next to the sync server's, whose is ./data.
+      # It must belong to user 1000 (`chown -R 1000:1000 backup-data`).
+      - ./backup-data:/data
       # Every local destination lies below this folder; mount what should be reachable.
       - ${BACKUP_FOLDER:-./backups}:/backup
     # The notes of a vault lie here, decrypted, during a backup - in memory, never on a disk.

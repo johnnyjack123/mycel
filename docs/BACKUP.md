@@ -38,9 +38,9 @@ from this repository: `docker-compose.backup.yml` and `docs/backup.env`.
 
 ```bash
 cp backup.env .env                    # then edit it: the sync server, the backup folder
-mkdir -p data                         # the data folder next to the compose file
+mkdir -p backup-data                  # its data folder, next to the compose file
 sudo mkdir -p /srv/obsidian-backups
-sudo chown -R 1000:1000 data /srv/obsidian-backups
+sudo chown -R 1000:1000 backup-data /srv/obsidian-backups
 docker compose -f docker-compose.backup.yml up -d
 docker compose -f docker-compose.backup.yml exec obsidian-connect-backup obsidian-connect-backup invite Anna
 ```
@@ -52,9 +52,8 @@ with `docker login ghcr.io -u johnnyjack123` and a token that may read packages.
 
 Both folders must belong to user 1000, as which the backup server runs: a folder
 Docker makes for a bind mount belongs to root, and the backup server then stops at
-start, saying so. Keep the backup server in a folder of its own, away from the sync
-server's `docker-compose.yml`: both mount `./data`, and next to each other they
-would share one data folder.
+start, saying so. Its data folder is `./backup-data`, so the file can lie next to the
+sync server's `docker-compose.yml`, whose is `./data`.
 
 The operator's commands, all through `docker compose -f docker-compose.backup.yml exec obsidian-connect-backup obsidian-connect-backup …`:
 
@@ -104,8 +103,11 @@ backup server for it. `obsidian-connect-backup status` on the backup server says
   does not loop it back. Use an address the container reaches directly, such as
   `ws://192.168.1.10:1234` (the host's address in the LAN, the sync server's port).
   It does not have to be the address your devices use; it only has to be the same
-  server. Behind a reverse proxy, `/relay` must be passed on as a WebSocket, like
-  `/vault/`.
+  server. **`ws://`, not `wss://`, on the sync server's own port:** it speaks no TLS
+  there - `wss://` is for an address with TLS in front of it, a reverse proxy. The
+  backup server asks the sync server over HTTP when a connection fails without a
+  reason, and `status` then says which it is. Behind a reverse proxy, `/relay` must
+  be passed on as a WebSocket, like `/vault/`.
 - **connected**, but the invitation **NOT answered**: the running backup server has
   not taken it up - made with another data folder than the one it runs with, or
   already used or withdrawn (`invites` lists the open ones).

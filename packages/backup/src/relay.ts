@@ -1,5 +1,6 @@
 import type { RelayFrame } from '@obsidian-connect/shared'
 import { log } from './log.js'
+import { explainUnreachable } from './probe.js'
 
 // The backup server's one connection to the sync server's relay. It answers a
 // route for every open invitation and every paired vault, each registered by
@@ -51,6 +52,8 @@ export class RelayLink {
   private timer: ReturnType<typeof setTimeout> | null = null
   private status = { connected: false, error: null as string | null, since: Date.now() }
   private lastError: string | null = null
+  /** What asking the sync server over HTTP last found, said once in the log. */
+  private explained: string | null = null
   private readonly stateListeners = new Set<() => void>()
   /** Route id -> its token, base64: what this backup server answers. */
   private wanted = new Map<string, string>()
@@ -148,6 +151,15 @@ export class RelayLink {
     this.timer = setTimeout(() => this.connect(), pause)
   }
 
+  /** Asks the sync server over HTTP why the WebSocket failed, and says so where it is shown. */
+  private async explain(why: string): Promise<void> {
+    const found = await explainUnreachable(this.server).catch(() => null)
+    if (!found || this.status.connected || this.stopped) return
+    this.changed({ error: `${why}: ${found}` })
+    if (found !== this.explained) log.warn(`the sync server at ${this.server}: ${found}`)
+    this.explained = found
+  }
+
   private connect(): void {
     this.timer = null
     if (this.stopped || this.wanted.size === 0) return
@@ -162,6 +174,7 @@ export class RelayLink {
     this.socket = socket
     this.lastError = null
     socket.addEventListener('open', () => {
+      this.explained = null
       this.changed({ connected: true, error: null })
       for (const token of this.wanted.values()) this.send({ t: 'register', token })
     })
@@ -173,6 +186,8 @@ export class RelayLink {
       this.closeAll()
       const why = event.reason ? `${event.reason} (${event.code})` : (this.lastError ?? `the connection closed (${event.code})`)
       this.retry(why)
+      // "Closed (1006)" alone helped nobody - wss:// on the sync server's own port looked exactly like that.
+      if (!event.reason && !this.lastError) void this.explain(why)
     })
     // An error is followed by a close, which tries again; it only says why.
     socket.addEventListener('error', (event) => {

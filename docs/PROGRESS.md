@@ -270,6 +270,9 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
+At 0.7.12, run 2026-10-18 before its commit (straight to `main`): `typecheck` and
+`build` pass; `test:merge`, `test:load`, `test:rooms` and `test:backup` 150 - all pass.
+
 At 0.7.11, run 2026-10-17 before its commit (straight to `main`): `typecheck` and
 `build` pass; `test:merge` 164, `test:load` 14, `test:rooms` 284, `test:backup` 149 -
 all pass. Two earlier `test:backup` runs died at the start, before anything 0.7.11
@@ -383,10 +386,11 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
   the old server's id pinned; 0.7.10 offers "Use this server" in that state.
 - The user decided against binding invitations to an account id (little gain), kept
   the compose files with bind mounts, and hit "the backup server is not connected"
-  connecting the backup container on the Pi - cause not known yet (asked for
-  `status` and the log; the likely one: the public address does not loop back to the
-  same host). 0.7.11 makes the backup server say whether it reaches the sync server
-  and why not (`status`, `invite` waiting for it).
+  connecting the backup container on the Pi. 0.7.11 makes the backup server say
+  whether it reaches the sync server and why not (`status`, `invite` waiting for it).
+  Its `status` showed the cause (2026-10-18): `wss://` to the sync server's own port,
+  which has no TLS - told to use `ws://192.168.168.67:1234`. 0.7.12 names that cause
+  itself, and gives the backup server `./backup-data` as its folder, as the user asked.
 
 ### 2026-10-16
 - After 0.7.5 the user asked for invitations instead of one code, the settings in
