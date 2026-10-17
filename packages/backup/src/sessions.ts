@@ -57,6 +57,7 @@ export function serveSession(session: IncomingSession, deps: SessionDeps): void 
   let cipher: SessionCipher | null = null
   let proven = false
   let spent = false
+  let afterReply: (() => void) | null = null
   let work: Promise<unknown> = Promise.resolve()
   let unsubscribe: (() => void) | null = null
 
@@ -137,8 +138,12 @@ export function serveSession(session: IncomingSession, deps: SessionDeps): void 
     } catch (error) {
       await reply({ id: message.id, e: error instanceof Error ? error.message : String(error) })
     }
-    // Only after the answer: spending the invitation drops its route, and the relay ends this session with it.
+    // Only after the answer: spending the invitation, or letting the vault go,
+    // drops a route, and the relay ends this session with it.
     if (spent && route.kind === 'invite') await deps.spend(route.inviteId)
+    const after = afterReply
+    afterReply = null
+    after?.()
   }
 
   const answer = async (method: string, params: Record<string, unknown>): Promise<unknown> => {
@@ -191,7 +196,9 @@ export function serveSession(session: IncomingSession, deps: SessionDeps): void 
         await service.rekey(vaultId, params.grant as BackupGrant)
         return service.status(vaultId)
       case 'disconnect':
-        await service.disconnect(vaultId)
+        // The route goes only once the answer is out: the relay ends the session with it.
+        await service.disconnect(vaultId, false)
+        afterReply = () => service.announceRoutes()
         return { ok: true }
       default:
         throw new Error(`no such request: ${method}`)

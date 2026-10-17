@@ -627,6 +627,9 @@ How:
   one overtaking another on its way out would end the session at the device - a run's
   `finished` event during any request could do it, a stream of pieces made it likely.
   Its sends are in order now, as the plugin's always were.
+- *And one CI found:* `disconnect` dropped the vault's route before its answer was
+  out; with no route left the relay connection closed and the session ended first.
+  The route goes after the answer now, like a spent invitation's.
 
 ### Order of work
 

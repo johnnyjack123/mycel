@@ -28,7 +28,11 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
   while the other comes from the history; a repository not the vault's refused.
   Checked by putting the bugs back: with the fresh backup forgetting as usual, the
   rollback from the backup failed - its snapshot was gone - and with any repository
-  accepted, the refusal check failed; nothing else.
+  accepted, the refusal check failed; nothing else. CI on the branch then found a
+  race the development machine never lost: disconnecting a backup server's last
+  vault dropped its last route, its relay connection closed, and that overtook the
+  answer to `disconnect` - "the other side went away". The route now goes only once
+  the answer is out, as a spent invitation's does (0.7.6).
 
 - **0.7.8** (2026-10-17) - rolling back, from the history (asked for by the user, with
   a backup of everything first). *Roll the vault back…* (command, *All devices*, the

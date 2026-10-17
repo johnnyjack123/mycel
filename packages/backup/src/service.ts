@@ -274,11 +274,21 @@ export class BackupService {
     log.info(`vault ${vaultId} got a new backup key`)
   }
 
-  /** Forgets a vault: its keys, its cache, its runs. Its repositories and trusted copy stay where they are. */
-  async disconnect(vaultId: string): Promise<void> {
+  /**
+   * Forgets a vault: its keys, its cache, its runs. Its repositories and
+   * trusted copy stay where they are. `announce`: drop its route now - a
+   * session on that route answers first and announces it after
+   * (`announceRoutes`), since the relay ends the session with its route.
+   */
+  async disconnect(vaultId: string, announce = true): Promise<void> {
     this.vaults.delete(vaultId)
     await rm(vaultDir(this.options.dataDir, vaultId), { recursive: true, force: true })
     log.info(`vault ${vaultId} disconnected`)
+    if (announce) this.routesChanged()
+  }
+
+  /** The routes to answer changed, said by whoever held it back. */
+  announceRoutes(): void {
     this.routesChanged()
   }
 
