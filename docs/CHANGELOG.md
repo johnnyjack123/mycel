@@ -8,6 +8,31 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.8** (2026-10-17) - rolling back, from the history (asked for by the user, with
+  a backup of everything first). *Roll the vault back…* (command, *All devices*, the
+  root folder's menu) or *Roll this folder back…*: choose a moment, see per kind what
+  changes - texts, what came later and goes to the trash, what comes back, renames
+  undone, files likewise -, which of them are shared with others, and what the
+  history no longer reaches. Before anything changes, every backup server makes a
+  fresh, checked backup; if one fails, nothing changes unless the person says so. A
+  copy of everything that changes goes into the plugin folder, `rollbacks/<date
+  time>/`, and a record into the account's settings, from which every device offers
+  "Undo…". Then the plan is applied as changes a person could make, so every device
+  follows. Others' shared notes stay as they are. A compaction now stamps its snapshot
+  with the time of the newest change it holds, so the history reaches as far as it
+  can. And a sync bug the new test found: two notes, or files, that swapped names on
+  one device never swapped on the others - each rename waited for the place the other
+  held - and a restart's scan then took each file for an edit of the other note
+  (invariant 27). `test:rollback` 52 (new, in CI): the plan, the gate refusing before
+  anything changes, the vault as it was on every device and for the person a note is
+  shared with, the copy, the trash, undoing the rollback, a folder alone, a note
+  compacted past the moment out of reach and left alone only when agreed, the index
+  compacted past it. `test:backup` 126: a fresh backup started and waited for. Checked
+  by putting the bugs back: without the swap via a free name, without the gate in the
+  core, and with the compaction stamped with its own time, exactly those checks
+  failed, plus those that follow from a rollback the gate let through. The dialog is
+  for a device.
+
 - **0.7.7** (2026-10-17) - the settings in tabs (Account, Contacts, Backups, This
   device, All devices; signed out, Account and This device), asked for by the user as
   the one long page grew. A destination can be changed afterwards (the pencil next to

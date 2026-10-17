@@ -552,6 +552,53 @@ How:
 - **Neither reaches** a note or file: the confirmation names it, and the rollback goes
   on without it only if the person agrees.
 
+**As built (0.7.8).** Taken without asking, beyond the decisions above:
+
+- *Where it lives:* the command "Roll the vault back to an earlier moment…", *All
+  devices → Roll back…*, and every folder's menu ("Roll this folder back…"; the root
+  folder's rolls back the vault). The dialog chooses the moment (a date and time, or an
+  hour, a day, a week ago), shows how far the history reaches, lists what changes per
+  kind, the shared notes among them and what is out of reach, and offers "Undo…" for
+  the last five rollbacks.
+- *The reach is decided per room and errs on the safe side:* a moment is reachable when
+  every frame is readable and the moment lies at or after the snapshot's time. Old
+  snapshots carry their compaction time, so their notes reach less far than they
+  could; from now on a compaction stamps the newest change it folds in (`Compactor`).
+  The vault index's reach bounds the whole vault: before it, nothing can be planned
+  (0.7.9 takes restic then).
+- *A folder* is what lies in it now and what lay in it then: a note moved out of it
+  since moves back in, one moved in since moves back out.
+- *Left alone:* notes others share in (an `owner` then or now), files that came with
+  such a note (`via`), and paths the exclusions name. Notes of the account that were
+  forked from a share are left alone too.
+- *What "now" is:* the note's text on the server, which the same log gives. A note
+  whose text there equals its text then is not touched, even if this device holds an
+  unsent edit of it.
+- *Order:* first what came later goes to the trash (it frees paths), then moves - in
+  rounds, a swap via a free name -, then what comes back from the trash (next to its
+  old place when that is taken), then texts and contents. A text is applied only
+  against the document the server sent (`DocStore.rollBackText`, invariant 1); a file's
+  content is replaced like restoring a version, and a file is trashed only once the
+  server holds what it holds (invariant 23). What fails on its own is listed and the
+  rest goes on; the record says `failed` then.
+- *The gate is in the core,* not only in the dialog: `Rollback.apply` refuses a plan
+  whose backups did not all go through, or with parts out of reach, unless the consent
+  says otherwise. With no backup server connected only the copy is taken.
+- *The copy* lies in `rollbacks/<date time>/` in the plugin's folder: every note and
+  file that changes or goes, as this device has it, at its path, and `rollback.json`
+  with the plan. Pruned with the merge backups. The records (`rollback:<id>`) keep the
+  newest 20.
+- *Reading the history* takes one request per note in scope that existed then: the
+  server keeps no "changed since" per room. Fine for a vault of hundreds of notes,
+  slow for many thousands; a server-side last-change time per room would let the plan
+  skip what did not change.
+- *A sync bug the test found:* two notes - or files - that swapped names on one device
+  never swapped on the others: each rename waited for a place the other held, and a
+  restart's scan then took each file for an edit of the other note. Renames from other
+  devices are applied in rounds now, one of two that swapped waiting at a free name the
+  index and the scan never claim (invariant 27). A rollback undoing renames closes such
+  cycles often.
+
 ### Order of work
 
 6. **0.7.6** - invitations and pairings: relay with many routes per connection, the

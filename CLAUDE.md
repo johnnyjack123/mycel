@@ -185,6 +185,13 @@ someone's notes. Treat them as rules, not preferences.
     connection, no editor, a closed log - that took the live copy's editor saves
     for edits and merged them with conflict markers. Every stop bumps `syncRun`,
     `openSync` checks it after every wait, and an unloaded plugin never starts.
+27. **Renames from other devices are applied in rounds, and a swap via a name
+    nobody claims.** Two notes or files that swapped names elsewhere each waited
+    for the place the other held, forever; a restart's scan then took each file
+    for an edit of the other note. `DocStore.applyRemoteRenames` and
+    `AttachmentStore.followRenames` move one of the two to a free name first
+    (`aside`), which neither the index, a rename event nor a scan may take for a
+    note or file of its own. Rolling back renames closes such cycles often.
 
 ## Architecture
 
@@ -493,6 +500,16 @@ the server lost it. Retention is account-wide; the owner's
 and uploads it; the server drops those frames only then, and keeps a member's
 join snapshot while it is still their starting point.
 
+**Rolling back** (`sync/Rollback.ts`, `history/RollbackModal.ts`, 0.7.8): the vault
+or a folder back to a moment. The index replayed to it (`history/RoomHistory.ts`)
+and each note's history give the plan; a fresh backup on every backup server
+(`Backups.backUpFresh`) and a copy into the plugin's `rollbacks/` come first -
+`apply` refuses otherwise, unless agreed -, a `rollback:<id>` record in the
+settings, then trashing, moving, restoring and editing as a person would, so every
+device follows and it can be undone. Others' shared notes stay; own shared notes
+go back for everyone. A moment before a snapshot's time is out of reach; a
+compaction stamps the newest change it folds in.
+
 The retention is also the **trash** (`sync/Trash.ts`, "Deleted notes…"): a
 deleted note of one's own stays restorable for that long, on any device —
 restoring revives its index entry and pulls it from its document, next to a
@@ -514,6 +531,7 @@ npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart 
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
+npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices — in-process server
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by OBSIDIAN_CONNECT_RESTIC (where it lies here: docs/PROGRESS.md)
 # needs a server that lets tests create accounts:

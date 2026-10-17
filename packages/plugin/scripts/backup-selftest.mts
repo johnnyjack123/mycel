@@ -738,6 +738,14 @@ try {
       check(count() === 2, "the next backup keeps only what the new retention says - the newest notes and files snapshot", count())
     }
 
+    // What a rollback asks for first.
+    {
+      const runsBefore = (await backups.ask(again.routeId))?.status?.runs.length ?? 0
+      const fresh = await backups.backUpFresh(again.routeId, { pollMs: 200 })
+      const runsAfter = (await backups.ask(again.routeId))?.status?.runs.length ?? 0
+      check(fresh.ok && runsAfter > runsBefore, 'a fresh backup for a rollback is started and waited for until it is checked', { fresh, runsBefore, runsAfter })
+    }
+
     // Every device of the account sees it, and may start or disconnect it.
     const A4 = new Device(`anna${run}`, false)
     A4.password = newPassword

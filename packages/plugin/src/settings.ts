@@ -1001,6 +1001,13 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       .setDesc('Restore what was deleted on any of your devices, within the time above. Also in a folder\'s menu, and as a command.')
       .addButton((button) => button.setButtonText('Open the trash').onClick(() => this.plugin.openTrash()))
 
+    new Setting(containerEl)
+      .setName('Roll back')
+      .setDesc(
+        "The whole vault back to an earlier moment, within the time above - after a mistake, or something that went wrong. A folder alone: in the folder's menu. Every backup server makes a fresh backup first, and the rollback can be undone."
+      )
+      .addButton((button) => button.setButtonText('Roll back…').onClick(() => this.plugin.openRollback()))
+
     const usage = new Setting(containerEl)
       .setName('Attachments on the server')
       .setDesc('Asking the server…')

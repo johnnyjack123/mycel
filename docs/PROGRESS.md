@@ -1,12 +1,12 @@
 # Progress
 
-_Last updated: 2026-10-17 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - was built as 0.7.0 to 0.7.5 and merged into `main`. After it the user asked for more, decided on 2026-10-16 (`docs/PHASE6.md`, "After the first build"), built on `feat/backup-rollback`: 0.7.6 invitations and a pairing per vault, 0.7.7 settings in tabs, editable destinations, the guard over notes and files (both done); then 0.7.8 rolling back from the history; 0.7.9 rolling back from restic. Merged when 0.7.9 is done; then the user tries it. 0.6.8 is the last version confirmed on the user's devices.**_
+_Last updated: 2026-10-17 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - was built as 0.7.0 to 0.7.5 and merged into `main`. After it the user asked for more, decided on 2026-10-16 (`docs/PHASE6.md`, "After the first build"), built on `feat/backup-rollback`: 0.7.6 invitations and a pairing per vault, 0.7.7 settings in tabs, editable destinations, the guard over notes and files, 0.7.8 rolling back from the history (all three done); then 0.7.9 rolling back from restic. Merged when 0.7.9 is done; then the user tries it. 0.6.8 is the last version confirmed on the user's devices.**_
 
 ## Where we are
 
 Monorepo (`npm` workspaces): `packages/shared`, `packages/server`, `packages/plugin`,
 `packages/backup`.
-**Read `CLAUDE.md` first** - invariants (26 of them, each from a real bug), the
+**Read `CLAUDE.md` first** - invariants (27 of them, each from a real bug), the
 architecture, the version roadmap to 1.0.0 and the conventions. Designs:
 `docs/PHASE2.md` (keys, sharing), `docs/PHASE3.md` (accounts without names,
 contacts, forks, trash, surviving the server), `docs/PHASE4.md` (attachments),
@@ -78,7 +78,10 @@ everyone is a weakness, and asked for rolling a vault back, with a backup of
 everything first. Decided with the user and written down in `docs/PHASE6.md`, "After
 the first build", in four steps on `feat/backup-rollback`. **Built:** 0.7.6
 invitations and a pairing per vault; 0.7.7 the settings in tabs, destinations
-editable, the guard over notes and files apart. Next: 0.7.8, rolling back.
+editable, the guard over notes and files apart; 0.7.8 rolling the vault or a folder
+back from the history, with fresh backups and a local copy first, undoable - and a
+fix for two notes or files swapping names on another device (invariant 27). Next:
+0.7.9, rolling back from restic where the history does not reach.
 
 **What the user does then**, once 0.7.9 is merged (nothing of 0.7 has been on a device
 yet):
@@ -95,16 +98,19 @@ yet):
    *Back up now*; then restore once with restic as `docs/BACKUP.md` shows.
 
 What only a device shows: the settings section and both dialogs, the notice, the
-WebSocket to `/relay` from Obsidian on desktop and on a phone, "Connect again…".
+WebSocket to `/relay` from Obsidian on desktop and on a phone, "Connect again…", the
+settings tabs, the rollback dialog (the date and time field, the lists) and the
+folder menu's "Roll this folder back…".
 
 ## Roadmap
 
 Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
-- **0.7 - the backup server.** Built up to 0.7.6, 0.7.7 to 0.7.9 to come; see "Next
-  step". Left for later, noticed while building: a device's relay connection is not
-  closed when the account's devices are signed out (it reaches only backup servers
-  whose pairing it has).
+- **0.7 - the backup server.** Built up to 0.7.8, 0.7.9 to come; see "Next step".
+  Left for later, noticed while building: a device's relay connection is not closed
+  when the account's devices are signed out (it reaches only backup servers whose
+  pairing it has); planning a rollback reads one log per note, since the server keeps
+  no last-change time per room (`docs/PHASE6.md`, as built 0.7.8).
 - **0.8 - sharing a folder, and the small fixes.** Sharing a whole folder,
   including what is added to it later (not designed yet). Besides, every fix that
   has to be in before 0.9:
@@ -142,8 +148,8 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-`feat/backup-rollback`, from `main` after 0.7.5: 0.7.6 and 0.7.7 committed and pushed;
-0.7.8 and 0.7.9 as planned at the end of `docs/PHASE6.md`. Not merged.
+`feat/backup-rollback`, from `main` after 0.7.5: 0.7.6 to 0.7.8 committed and pushed;
+0.7.9 as planned at the end of `docs/PHASE6.md`. Not merged.
 
 ## Decisions made (not visible in the code)
 
@@ -263,6 +269,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
+At 0.7.8, run 2026-10-17 before its commit: `typecheck` and `build` pass; `test:merge`
+164, `test:load` 14, `test:rooms` 284, `test:sync` 26, `test:recovery` 56,
+`test:account` 50, `test:rollback` 52 (new), `test:backup` 126 - all pass; against a
+scratch server on 1235, `test:socket` 19 and `test:vault` 230 pass. CI on the branch
+was green for 0.7.7. Not merged, not on a device.
+
 At 0.7.7, run 2026-10-17 before its commit: `typecheck` and `build` pass; `test:merge`
 164, `test:load` 14, `test:rooms` 284, `test:sync` 26, `test:recovery` 56,
 `test:account` 50, `test:backup` 125 - all pass; against a scratch server on 1235,
@@ -339,6 +351,8 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 - 0.7.6: invitations and a pairing per vault, as decided the day before.
 - 0.7.7: the settings in tabs, destinations editable, the guard over notes and files;
   a backup started right after a change of retention no longer goes by the old one.
+- 0.7.8: rolling back from the history; two notes or files swapping names now swap on
+  every device.
 
 ### 2026-10-16
 - After 0.7.5 the user asked for invitations instead of one code, the settings in

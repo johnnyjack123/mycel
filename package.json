@@ -1,6 +1,6 @@
 {
   "name": "obsidian-connect",
-  "version": "0.7.7",
+  "version": "0.7.8",
   "private": true,
   "type": "module",
   "description": "End-to-end encrypted CRDT (Yjs) synchronization and live collaboration for Obsidian vaults.",
@@ -24,7 +24,8 @@
     "test:vault": "npm run test:vault -w @obsidian-connect/plugin",
     "test:recovery": "npm run test:recovery -w @obsidian-connect/plugin",
     "test:account": "npm run test:account -w @obsidian-connect/plugin",
-    "test:backup": "npm run test:backup -w @obsidian-connect/plugin"
+    "test:backup": "npm run test:backup -w @obsidian-connect/plugin",
+    "test:rollback": "npm run test:rollback -w @obsidian-connect/plugin"
   },
   "overrides": {
     "@codemirror/state": "6.5.0",

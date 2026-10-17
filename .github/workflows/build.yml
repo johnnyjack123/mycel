@@ -66,6 +66,12 @@ jobs:
       - name: Account self-test
         run: npm run test:account
 
+      # Its own server in-process: a vault rolled back to a moment from the
+      # history - notes, names, files, a shared note -, the gate before it,
+      # every device following, undoing it, a folder, a compacted history.
+      - name: Rollback self-test
+        run: npm run test:rollback
+
       # The backup server hands vaults to restic, so its self-test runs a real
       # one: the release the image will carry, checked against its checksum.
       - name: Install restic

@@ -1,6 +1,6 @@
 {
   "name": "@obsidian-connect/plugin",
-  "version": "0.7.7",
+  "version": "0.7.8",
   "private": true,
   "type": "module",
   "main": "main.js",
@@ -15,7 +15,8 @@
     "test:vault": "tsx --tsconfig scripts/tsconfig.json scripts/vault-selftest.mts",
     "test:recovery": "tsx --tsconfig scripts/tsconfig.json scripts/recovery-selftest.mts",
     "test:account": "tsx --tsconfig scripts/tsconfig.json scripts/account-selftest.mts",
-    "test:backup": "tsx --tsconfig scripts/tsconfig.json scripts/backup-selftest.mts"
+    "test:backup": "tsx --tsconfig scripts/tsconfig.json scripts/backup-selftest.mts",
+    "test:rollback": "tsx --tsconfig scripts/tsconfig.json scripts/rollback-selftest.mts"
   },
   "dependencies": {
     "@obsidian-connect/shared": "*",

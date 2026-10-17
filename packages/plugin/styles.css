@@ -196,6 +196,19 @@
   font-weight: 600;
 }
 
+/* What a rollback changes, one list per kind, folded. */
+.connect-rollback-list {
+  margin: 0.25em 0;
+}
+
+.connect-rollback-list ul {
+  max-height: 12em;
+  overflow-y: auto;
+  margin: 0.25em 0 0.5em;
+  font-size: var(--font-ui-small);
+  word-break: break-word;
+}
+
 /* A backup server's own rows below its name. */
 .connect-backup-server {
   margin-top: 1em;

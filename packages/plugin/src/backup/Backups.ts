@@ -362,6 +362,45 @@ export class Backups {
   }
 
   /**
+   * A backup made now, and waited for until it is checked - for a rollback,
+   * which must not begin before every backup server holds what is about to
+   * change. A run under way is let finish first: it may have read the vault
+   * before the last changes. Never throws; says how it went.
+   */
+  async backUpFresh(routeId: string, options: { pollMs?: number; timeoutMs?: number } = {}): Promise<{ ok: boolean; error?: string }> {
+    const pollMs = options.pollMs ?? 2_000
+    const deadline = Date.now() + (options.timeoutMs ?? 60 * 60 * 1000)
+    const wait = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, pollMs))
+    try {
+      const session = await this.session(routeId)
+      let status = await session.call<BackupVaultStatus>('status')
+      while (status.running) {
+        if (Date.now() > deadline) return { ok: false, error: 'a backup under way did not finish' }
+        await wait()
+        status = await session.call<BackupVaultStatus>('status')
+      }
+      const before = status.runs[0]?.startedAt
+      const count = status.runs.length
+      await session.call<BackupVaultStatus>('run')
+      for (;;) {
+        if (Date.now() > deadline) return { ok: false, error: 'the backup did not finish in time' }
+        await wait()
+        status = await session.call<BackupVaultStatus>('status')
+        this.remember(routeId, { status, error: null })
+        const last = status.runs[0]
+        // A new run: another first entry - not its time, which is the backup server's clock.
+        if (!status.running && last && (last.startedAt !== before || status.runs.length !== count)) {
+          this.changed()
+          if (last.ok) return { ok: true }
+          return { ok: false, error: last.error ?? last.destinations.find((destination) => !destination.ok)?.error ?? 'the backup failed' }
+        }
+      }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /**
    * What deserves a notice: a backup server whose last run failed, whose
    * trusted copy waits, or whose last good backup is overdue - also when it
    * cannot be reached, since a backup server that is down is the case that

@@ -49,6 +49,7 @@ const { SharedFiles } = await import('../src/share/SharedFiles.js')
 const { Contacts } = await import('../src/share/Contacts.js')
 const { openInviteSession, openPairingSession } = await import('../src/backup/BackupLink.js')
 const { Backups } = await import('../src/backup/Backups.js')
+const { Rollback } = await import('../src/sync/Rollback.js')
 const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
 )
@@ -416,6 +417,24 @@ export class Device {
       }
     })
     return this.backupsController
+  }
+
+  /** Rolling the vault back, wired the way main.ts wires it. */
+  get rollback(): InstanceType<typeof Rollback> {
+    const keys = this.keys
+    if (!keys || !this.store || !this.settings) throw new Error('not running')
+    return new Rollback({
+      api: this.api,
+      vaultId: keys.vaultId,
+      indexCrypto: keys.indexCrypto(),
+      docCrypto: (docId) => keys.ownDocCrypto(docId),
+      store: this.store,
+      attachments: this.attachments,
+      settings: this.settings,
+      adapter: this.vault.adapter as never,
+      root: 'plugin',
+      isExcluded: () => false
+    })
   }
 
   /** A session on an invitation's route, through the sync server's relay, as connecting opens one. */

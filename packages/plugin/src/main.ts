@@ -58,6 +58,8 @@ import { RecoveryModal } from './history/RecoveryModal'
 import { StateStore } from './sync/StateStore'
 import { Trash } from './sync/Trash'
 import { TrashModal } from './history/TrashModal'
+import { Rollback, pruneRollbackCopies } from './sync/Rollback'
+import { RollbackModal } from './history/RollbackModal'
 import { FileVersionsModal } from './history/FileVersionsModal'
 import { ReviewStore, type Review } from './sync/Reviews'
 import { ReviewListModal, ReviewModal } from './history/ReviewModal'
@@ -309,6 +311,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     })
     this.addCommand({ id: 'open-backups', name: 'Browse backups', callback: () => this.openBackups() })
     this.addCommand({ id: 'deleted-notes', name: 'Deleted notes and files…', callback: () => this.openTrash() })
+    this.addCommand({ id: 'roll-back', name: 'Roll the vault back to an earlier moment…', callback: () => this.openRollback() })
     this.addCommand({ id: 'copy-log', name: 'Copy the log (for a bug report)', callback: () => void this.copyLog() })
     this.addCommand({ id: 'compare-versions', name: 'Compare the two versions of this note', callback: () => void this.openReview() })
     this.addCommand({ id: 'review-notes', name: 'Notes with two versions…', callback: () => void this.openReviews() })
@@ -892,6 +895,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.movedSettings = null
     store.setOptions(this.storeOptions())
     void this.backups.prune(this.shared().backupRetentionDays)
+    void pruneRollbackCopies(this.app.vault.adapter, root, this.shared().backupRetentionDays)
 
     await this.runStart()
   }
@@ -1005,6 +1009,28 @@ export default class ObsidianConnectPlugin extends Plugin {
       return
     }
     new TrashModal(this.app, this.trash, this.shared().historyRetentionDays, folder).open()
+  }
+
+  /** Rolls the vault, or `folder`, back to an earlier moment. */
+  openRollback(folder = ''): void {
+    const { store, keys, accountSettings } = this
+    if (!store?.ready || !keys || !accountSettings) {
+      new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
+      return
+    }
+    const rollback = new Rollback({
+      api: this.api,
+      vaultId: keys.vaultId,
+      indexCrypto: keys.indexCrypto(),
+      docCrypto: (docId) => keys.ownDocCrypto(docId),
+      store,
+      attachments: this.attachments?.isReady ? this.attachments : null,
+      settings: accountSettings,
+      adapter: this.app.vault.adapter,
+      root: this.pluginDir(),
+      isExcluded: (path) => store.isExcluded(path)
+    })
+    new RollbackModal(this.app, rollback, this.backupsOf(), accountSettings, folder).open()
   }
 
   /** The version history of a file that is not a note - the active one unless given. */
@@ -1241,7 +1267,10 @@ export default class ObsidianConnectPlugin extends Plugin {
     if (file instanceof TFolder) {
       if (!store?.ready) return []
       const folder = file.isRoot() ? null : file.path
-      return [{ title: 'Deleted notes and files…', icon: 'trash-2', run: () => this.openTrash(folder) }]
+      return [
+        { title: 'Deleted notes and files…', icon: 'trash-2', run: () => this.openTrash(folder) },
+        { title: folder ? 'Roll this folder back…' : 'Roll the vault back…', icon: 'history', run: () => this.openRollback(folder ?? '') }
+      ]
     }
     if (!(file instanceof TFile)) return []
     if (file.extension !== 'md') {

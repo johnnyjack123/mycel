@@ -73,6 +73,26 @@ export interface PendingContact {
   requestedAt: number
 }
 
+/** `rollback:<id>`: one rollback of the vault or a folder. */
+export interface RollbackRecord {
+  id: string
+  /** When it began, before it changed anything: undoing it rolls back to just before this. */
+  startedAt: number
+  /** The moment it rolled back to. */
+  to: number
+  /** '' for the whole vault. */
+  folder: string
+  /** `running` on a record whose device went away meanwhile: it broke off. */
+  state: 'running' | 'done' | 'failed'
+  notes: number
+  files: number
+  finishedAt?: number
+  error?: string
+}
+
+const ROLLBACK_KEY = 'rollback:'
+const ROLLBACKS_KEPT = 20
+
 // One key per entry, so two devices adding different contacts at once do not
 // overwrite each other the way one shared object would.
 const CONTACT = 'contact:'
@@ -225,6 +245,20 @@ export class AccountSettings {
 
   setBackupSchedule(routeId: string, schedule: BackupScheduleSetting | null): void {
     this.put(`${BACKUP_SCHEDULE_KEY}${routeId}`, schedule)
+  }
+
+  // Every rollback of the vault, kept before it changes anything: every device
+  // shows it, and undoing it rolls the same place back to just before it.
+
+  rollbacks(): RollbackRecord[] {
+    return this.entries<RollbackRecord>(ROLLBACK_KEY).sort((a, b) => b.startedAt - a.startedAt)
+  }
+
+  setRollback(record: RollbackRecord): void {
+    this.doc.transact(() => {
+      this.map.set(`${ROLLBACK_KEY}${record.id}`, record)
+      for (const old of this.rollbacks().slice(ROLLBACKS_KEPT)) this.map.delete(`${ROLLBACK_KEY}${old.id}`)
+    }, 'local')
   }
 
   /** `remote`: the change came from another device - or from this device's copy as it loaded. */

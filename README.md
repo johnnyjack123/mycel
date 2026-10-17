@@ -178,6 +178,15 @@ what was deleted on any of your devices and brings it back. Deleted notes and
 files stay restorable for the history retention; after that the server deletes
 them, unless a note is still shared with someone.
 
+**Roll the vault back…** (also *Roll this folder back…* in every folder's menu, and
+*All devices* in the settings) takes the vault, or a folder, back to a moment within
+the history retention: notes get their text then, what came later goes to the
+trash, what was deleted since comes back, renames are undone. Before anything
+changes, every backup server makes a fresh backup and a copy of everything that
+changes goes into the plugin folder (`rollbacks/`). It happens as ordinary changes,
+so every device follows and the rollback can be undone from the same window. Notes
+others share with you stay as they are; your own shared notes go back for everyone.
+
 If the server ever lost data or was restored from an older backup, the plugin
 notices, syncs nothing for the affected notes and asks once whether this device
 or the server is right. The answer holds for all your devices; a backup of this
