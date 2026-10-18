@@ -10,6 +10,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { PassThrough } from 'node:stream'
+import { createServer as createHttpServer } from 'node:http'
 import { createServer } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { check, delay, Device, eventually, failures, finish, useServer, VAULT } from './harness.mjs'
@@ -565,6 +566,24 @@ try {
       check(tried.includes('ECONNREFUSED') && tried.includes('network_mode: host'), '"check" tries the way from here, says where it ends and what works on one host', tried)
       const works = await operator(['check'], lonely, `ws://127.0.0.1:${port}`)
       check(works.includes('opened - the relay takes this backup server'), 'and with the right address, that the relay takes it', works)
+
+      // A reverse proxy that refuses this backup server - by address, by user agent - while devices get through.
+      const proxy = createHttpServer((_request, response) => {
+        response.writeHead(403, { server: 'openresty' })
+        response.end('forbidden')
+      })
+      await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve))
+      const proxyPort = (proxy.address() as { port: number }).port
+      try {
+        const refused = await operator(['check'], lonely, `ws://localhost:${proxyPort}`)
+        check(
+          refused.includes('DNS: localhost -> ') && refused.includes('answered by "openresty"') && refused.includes('something in front of it refuses this backup server'),
+          '"check" shows the address the name resolves to here, who answered, and that a proxy in front refuses it',
+          refused
+        )
+      } finally {
+        proxy.close()
+      }
 
       // wss:// on the sync server's own port, which has no TLS: what the user's Pi had, seen as "closed (1006)" alone.
       const tls = join(root, 'backup-wss')

@@ -117,6 +117,15 @@ backup server for it. `obsidian-connect-backup status` on the backup server says
   backup server asks the sync server over HTTP when a connection fails without a
   reason, and `status` then says which it is. Behind a reverse proxy, `/relay` must
   be passed on as a WebSocket, like `/vault/`.
+- **HTTP 403** (or 401) on `/health`: something in front of the sync server refuses the
+  backup server - the sync server itself never answers so. `check` shows the address the
+  name resolves to inside the container and who answered. A container often resolves
+  differently from your devices: Docker falls back to public DNS when the host's
+  resolver is `127.0.0.1` (a Pi running Pi-hole), so it reaches the public address
+  and takes another way. Give the container your DNS (`dns: [<Pi-hole's LAN
+  address>]` in the compose file) or pin the name (`extra_hosts:
+  ["sync.example.com:<the proxy's address>"]`), and let the proxy's access list admit
+  the address the container comes from. A filter on the user agent would see `node`.
 - **connected**, but the invitation **NOT answered**: the running backup server has
   not taken it up - made with another data folder than the one it runs with, or
   already used or withdrawn (`invites` lists the open ones).

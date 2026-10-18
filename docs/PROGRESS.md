@@ -276,6 +276,9 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
+At 0.7.16, run 2026-10-18 before its commit (straight to `main`): `typecheck` and
+`build` pass; `test:merge`, `test:load`, `test:rooms` and `test:backup` 154 pass.
+
 At 0.7.15, run 2026-10-18 before its commit (straight to `main`): `typecheck` and
 `build` pass; `test:merge`, `test:load`, `test:rooms` and `test:backup` 153 pass;
 `docker/entrypoint.sh` passes `sh -n`. The entrypoint itself runs only in the images,
@@ -422,6 +425,11 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
   before the ack, and the admin CLI writes `accounts.json` from a second process) -
   the user put both into 0.9's hardening (Roadmap). And asked for the folder to be
   taken over without a `chown` by hand: 0.7.15.
+- The new sync server works for devices over `wss://` through the proxy; the backup
+  server with the same address got HTTP 403 on `/health` - something in front of the
+  sync server refusing it (the user's network: Pi with Pi-hole, iptables forwarding
+  443 to the server in a subnet). Asked for `check`'s DNS line, `wget -S` and the
+  proxy's log; 0.7.16 shows the resolved address and who answered. Waiting.
 
 ### 2026-10-16
 - After 0.7.5 the user asked for invitations instead of one code, the settings in

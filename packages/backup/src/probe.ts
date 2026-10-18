@@ -7,7 +7,12 @@
 
 const PROBE_MS = 5_000
 
-type Outcome = { ok: true; status: number } | { ok: false; reason: string }
+type Outcome = { ok: true; status: number; server: string | null } | { ok: false; reason: string }
+
+/** Who answered, by its `Server` header - nginx, openresty, a router's own: often what tells a proxy from the sync server. */
+function by(outcome: Outcome): string {
+  return outcome.ok && outcome.server ? ` (answered by "${outcome.server}")` : ''
+}
 
 /** What a failed request means, for someone setting up a container - not only what Node calls it. */
 function plainly(error: unknown): string {
@@ -27,7 +32,7 @@ function plainly(error: unknown): string {
 async function ask(url: string): Promise<Outcome> {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(PROBE_MS) })
-    return { ok: true, status: response.status }
+    return { ok: true, status: response.status, server: response.headers.get('server') }
   } catch (error) {
     return { ok: false, reason: plainly(error) }
   }
@@ -48,8 +53,24 @@ export async function explainUnreachable(server: string): Promise<string | null>
       ? `no TLS on this port - the sync server answers plain http there: use ws://${host} instead of wss://`
       : `this address speaks TLS: use wss://${host} instead of ws://`
   }
-  if (asGiven.ok) return `the address answers HTTP ${asGiven.status} on /health - is it the sync server?`
+  if (asGiven.ok && (asGiven.status === 401 || asGiven.status === 403)) {
+    return `the address answers HTTP ${asGiven.status} on /health${by(asGiven)} - the sync server never does: something in front of it refuses this backup server. A reverse proxy's access list (this container comes from another address than your devices), a filter on the user agent (this is "node", not a browser), or another server under that name - a container often resolves a name differently from your devices (Docker falls back to public DNS when the host's resolver is 127.0.0.1, as on a Pi-hole). "check" shows the address it resolves`
+  }
+  if (asGiven.ok) return `the address answers HTTP ${asGiven.status} on /health${by(asGiven)} - is it the sync server?`
   return asGiven.reason || null
+}
+
+/** The addresses this container resolves the name to - which a device elsewhere may not. */
+async function resolved(host: string): Promise<string> {
+  const name = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '')
+  if (/^[\d.]+$/.test(name) || name.includes(':')) return `${name} (an address, nothing to resolve)`
+  try {
+    const { lookup } = await import('node:dns/promises')
+    const found = await lookup(name, { all: true })
+    return `${name} -> ${found.map((entry) => entry.address).join(', ')}`
+  } catch (error) {
+    return `${name} does not resolve here: ${error instanceof Error ? error.message : String(error)}`
+  }
 }
 
 /**
@@ -61,9 +82,9 @@ export async function checkRelay(server: string): Promise<{ ok: boolean; lines: 
   const base = server.trim().replace(/\/+$/, '')
   const host = base.replace(/^[a-z]+:\/\//i, '')
   const secure = /^(wss|https):/i.test(base)
-  const lines: string[] = []
+  const lines: string[] = [`DNS: ${await resolved(host)}`]
   const health = await ask(`${secure ? 'https' : 'http'}://${host}/health`)
-  lines.push(health.ok ? `HTTP ${secure ? 'https' : 'http'}://${host}/health: ${health.status}` : `HTTP ${secure ? 'https' : 'http'}://${host}/health: ${health.reason}`)
+  lines.push(health.ok ? `HTTP ${secure ? 'https' : 'http'}://${host}/health: ${health.status}${by(health)}` : `HTTP ${secure ? 'https' : 'http'}://${host}/health: ${health.reason}`)
   const relay = `${secure ? 'wss' : 'ws'}://${host}/relay?role=backup`
   const opened = await new Promise<string | null>((resolve) => {
     let socket: WebSocket

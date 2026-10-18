@@ -8,6 +8,17 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.16** (2026-10-18) - the user's backup server, given the same `wss://` address
+  as the devices that sync fine through a reverse proxy, reported "HTTP 403 on
+  /health - is it the sync server?": something in front of the sync server refused
+  it. The status now says so, with the usual reasons - the proxy's access list, a
+  filter on the user agent, or a container resolving the name to another address
+  (Docker falls back to public DNS when the host's resolver is 127.0.0.1, as on a
+  Pi-hole). `check` shows the address the name resolves to inside the container and
+  who answered (the `Server` header). `docs/BACKUP.md` gives the ways out: the
+  container's `dns:`, `extra_hosts:`, the proxy's access list. `test:backup` 154: a
+  proxy answering 403 recognised as such by `check`.
+
 - **0.7.15** (2026-10-18) - no more `chown` by hand (asked for by the user: "other
   containers manage that too"). Both images start as root only long enough to hand
   their data folder - and the backup server its backup folder itself, not what lies in
