@@ -141,8 +141,9 @@ export class RelayLink {
     if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(frame))
   }
 
-  private retry(why: string): void {
-    this.changed({ connected: false, error: why })
+  /** `generic`: a failure that said nothing of its own; what asking over HTTP found stays beside it, attempt after attempt. */
+  private retry(why: string, generic = false): void {
+    this.changed({ connected: false, error: generic && this.explained ? `${why}: ${this.explained}` : why })
     if (this.stopped || this.wanted.size === 0) return
     const pause = BACKOFF_MS[Math.min(this.attempt, BACKOFF_MS.length - 1)] as number
     // With the pauses growing to a minute, this says so at most once a minute.
@@ -155,9 +156,9 @@ export class RelayLink {
   private async explain(why: string): Promise<void> {
     const found = await explainUnreachable(this.server).catch(() => null)
     if (!found || this.status.connected || this.stopped) return
-    this.changed({ error: `${why}: ${found}` })
     if (found !== this.explained) log.warn(`the sync server at ${this.server}: ${found}`)
     this.explained = found
+    this.changed({ error: `${why}: ${found}` })
   }
 
   private connect(): void {
@@ -185,9 +186,10 @@ export class RelayLink {
       this.registered.clear()
       this.closeAll()
       const why = event.reason ? `${event.reason} (${event.code})` : (this.lastError ?? `the connection closed (${event.code})`)
-      this.retry(why)
       // "Closed (1006)" alone helped nobody - wss:// on the sync server's own port looked exactly like that.
-      if (!event.reason && !this.lastError) void this.explain(why)
+      const generic = !event.reason && !this.lastError
+      this.retry(why, generic)
+      if (generic) void this.explain(why)
     })
     // An error is followed by a close, which tries again; it only says why.
     socket.addEventListener('error', (event) => {

@@ -10,6 +10,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { PassThrough } from 'node:stream'
+import { createServer } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { check, delay, Device, eventually, failures, finish, useServer, VAULT } from './harness.mjs'
 
@@ -512,11 +513,10 @@ try {
       await readStatus(backupData)
     )
     // Not spawnSync: the backup server runs in this process, and has to take the invitation up meanwhile.
-    const operator = (args: string[], dataDir = backupData): Promise<string> =>
+    const operator = (args: string[], dataDir = backupData, server?: string): Promise<string> =>
       new Promise((resolve) => {
-        execFile(process.execPath, [BACKUP_BIN, ...args], { env: { ...process.env, OBSIDIAN_CONNECT_BACKUP_DATA: dataDir }, encoding: 'utf8', timeout: 60_000 }, (_error, stdout, stderr) =>
-          resolve(`${stdout}${stderr}`)
-        )
+        const env = { ...process.env, OBSIDIAN_CONNECT_BACKUP_DATA: dataDir, ...(server ? { OBSIDIAN_CONNECT_SERVER: server } : {}) }
+        execFile(process.execPath, [BACKUP_BIN, ...args], { env, encoding: 'utf8', timeout: 60_000 }, (_error, stdout, stderr) => resolve(`${stdout}${stderr}`))
       })
     const invited = await operator(['invite', 'from', 'the', 'shell'])
     check(invited.includes('The backup server answers it at') && !invited.includes('BUT'), '"invite" waits until the running backup server answers it, and says so', invited)
@@ -525,8 +525,16 @@ try {
     {
       // One that cannot reach the sync server says so, and why - where the device only heard "not connected".
       const lonely = join(root, 'backup-unreachable')
+      // A port nothing listens on - not 9, which fetch refuses outright as a "bad port".
+      const closedPort = await new Promise<number>((resolve) => {
+        const probe = createServer()
+        probe.listen(0, '127.0.0.1', () => {
+          const { port: free } = probe.address() as { port: number }
+          probe.close(() => resolve(free))
+        })
+      })
       const unreachable = await startBackupServer({
-        server: 'ws://127.0.0.1:9',
+        server: `ws://127.0.0.1:${closedPort}`,
         dataDir: lonely,
         root: join(root, 'backup-root-unreachable'),
         workDir: join(root, 'ram-unreachable'),
@@ -547,7 +555,16 @@ try {
         await readStatus(lonely)
       )
       const stuck = await operator(['status'], lonely)
-      check(stuck.includes('NOT connected') && stuck.includes('NOT answered'), '"status" tells the operator', stuck)
+      check(stuck.includes('NOT connected') && stuck.includes('NOT answered') && stuck.includes('backup server test'), '"status" tells the operator, and which version runs', stuck)
+      check(
+        await eventually(async () => (await readStatus(lonely))?.error?.includes('nothing listens at that address') === true, 15_000),
+        'and says plainly why, from asking over HTTP - the explanation staying beside every new attempt',
+        await readStatus(lonely)
+      )
+      const tried = await operator(['check'], lonely, `ws://127.0.0.1:${closedPort}`)
+      check(tried.includes('ECONNREFUSED') && tried.includes('network_mode: host'), '"check" tries the way from here, says where it ends and what works on one host', tried)
+      const works = await operator(['check'], lonely, `ws://127.0.0.1:${port}`)
+      check(works.includes('opened - the relay takes this backup server'), 'and with the right address, that the relay takes it', works)
 
       // wss:// on the sync server's own port, which has no TLS: what the user's Pi had, seen as "closed (1006)" alone.
       const tls = join(root, 'backup-wss')

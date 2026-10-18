@@ -3,6 +3,7 @@
 //   obsidian-connect-backup                     run: register at the sync server, back up on schedule and on request
 //   obsidian-connect-backup invite [label]      a one-time invitation for one person to connect one vault
 //   obsidian-connect-backup status              whether it reaches the sync server, and which invitations it answers
+//   obsidian-connect-backup check               try the way to the sync server's relay from here, now, step by step
 //   obsidian-connect-backup invites             the invitations not used yet
 //   obsidian-connect-backup revoke <id>         withdraw an invitation
 //   obsidian-connect-backup vaults              the vaults connected
@@ -19,6 +20,7 @@ import { writable } from './config.js'
 import { Invites } from './invites.js'
 import { log } from './log.js'
 import { startBackupServer } from './server.js'
+import { checkRelay } from './probe.js'
 import { listVaults } from './service.js'
 import { STATUS_EVERY_MS, readStatus, type ServerStatus } from './status.js'
 
@@ -29,6 +31,7 @@ const USAGE = `usage:
   obsidian-connect-backup                     run the backup server
   obsidian-connect-backup invite [label]      a one-time invitation for one person to connect one vault (valid 7 days)
   obsidian-connect-backup status              whether it reaches the sync server, and which invitations it answers
+  obsidian-connect-backup check               try the way to the sync server's relay from here, now, step by step
   obsidian-connect-backup invites             the invitations not used yet
   obsidian-connect-backup revoke <id>         withdraw an invitation
   obsidian-connect-backup vaults              the vaults connected: id, account, label, last backup
@@ -42,7 +45,7 @@ const INVITE_WAIT_MS = 20_000
 /** Whether the running backup server reaches the sync server, as its status says. */
 function describeStatus(status: ServerStatus | null): string[] {
   if (!status) return ['The backup server has not run with this data folder yet - is it started, with this folder mounted?']
-  const lines = [`sync server: ${status.server}`]
+  const lines = [`backup server ${status.version ?? '0.7.11 or older'} (this command: ${pkg.version})`, `sync server: ${status.server}`]
   const age = Date.now() - status.updatedAt
   if (age > 3 * STATUS_EVERY_MS) lines.push(`status from ${day(status.updatedAt)} - the backup server does not seem to run now`)
   if (status.connected) lines.push(`connected since ${day(status.since)}; the relay answers ${status.registered.length} route(s) for it`)
@@ -51,15 +54,20 @@ function describeStatus(status: ServerStatus | null): string[] {
   return lines
 }
 
+/** What to try when the backup server runs on the same host as the sync server, or does not reach it. */
+const SAME_HOST = [
+  'On the same host as the sync server, a container often reaches neither its public address nor its LAN',
+  'address. What works:',
+  '  - both compose files in one folder (one compose project, one network): ws://obsidian-connect:1234',
+  '  - or "network_mode: host" for the backup server in docker-compose.backup.yml: ws://127.0.0.1:1234',
+  'ws://, not wss://, on the sync server\'s own port; wss:// is for an address with TLS in front of it.',
+  'A reverse proxy must pass WebSocket upgrades on /relay. "obsidian-connect-backup check" tries it again.'
+]
+
 /** Why an invitation is not answered yet, and what to look at. */
 function diagnose(status: ServerStatus | null): string[] {
   const lines = describeStatus(status)
-  if (status && !status.connected && status.error) {
-    lines.push('Check that this container reaches the sync server at that address. On the same host as the sync server,')
-    lines.push('its public address often does not work from inside a container: use the internal one instead,')
-    lines.push('e.g. ws://<LAN address of the host>:1234 - ws://, not wss://: the sync server itself speaks no TLS on')
-    lines.push('its port; wss:// is for an address with TLS in front of it. A reverse proxy must pass WebSocket upgrades on /relay.')
-  }
+  if (status && !status.connected && status.error) lines.push(...SAME_HOST)
   lines.push('obsidian-connect-backup status shows it again; the log has every attempt.')
   return lines
 }
@@ -91,6 +99,21 @@ async function main(argv: string[]): Promise<number> {
       console.log('BUT: the backup server does not answer it at the sync server yet, so connecting with it fails now.')
       for (const line of diagnose(status)) console.log(`  ${line}`)
       return 0
+    }
+    case 'check': {
+      // From this container, now, whatever the running backup server last saw.
+      const server = env.OBSIDIAN_CONNECT_SERVER?.trim() ?? ''
+      console.log(`backup server ${pkg.version}, sync server: ${server || '(OBSIDIAN_CONNECT_SERVER is not set)'}`)
+      if (!server) return 1
+      const checked = await checkRelay(server)
+      for (const line of checked.lines) console.log(`  ${line}`)
+      if (checked.ok) {
+        console.log('The relay takes this backup server at that address. If "status" still says NOT connected, the running')
+        console.log('backup server has another address or is older: docker compose up -d after changing .env or pulling.')
+        return 0
+      }
+      for (const line of SAME_HOST) console.log(line)
+      return 1
     }
     case 'status': {
       const status = await readStatus(dataDir)

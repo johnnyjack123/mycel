@@ -8,6 +8,18 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.13** (2026-10-18) - with `ws://192.168.168.67:1234` the user's backup server
+  still said only "closed (1006)": the container does not reach the host's LAN
+  address, as on many hosts where the sync server runs too. And the status could
+  not tell an old image from a new one, and lost 0.7.12's explanation with every new
+  attempt. Now: `status` names the running version; what asking over HTTP found stays
+  beside every new attempt; common failures are said plainly (no answer - a firewall;
+  refused - nothing listens there; a name that does not resolve); and `check` tries the
+  way to the relay from inside the container, now, step by step, with what works on
+  one host - both compose files in one folder and `ws://obsidian-connect:1234`, or
+  `network_mode: host` and `ws://127.0.0.1:1234`. `test:backup` 153: `check` against
+  a port nothing listens on and against the sync server, the plain explanation kept.
+
 - **0.7.12** (2026-10-18) - 0.7.11's `status` on the user's Pi said "NOT connected:
   the connection closed (1006)" for `wss://192.168.168.67:1234`: TLS to the sync
   server's own port, which speaks plain `ws://` - and 1006 says nothing more. A

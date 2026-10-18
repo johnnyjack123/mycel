@@ -61,6 +61,7 @@ The operator's commands, all through `docker compose -f docker-compose.backup.ym
 |---|---|
 | `invite [name]` | An invitation for one person to connect one vault, once, within 7 days. |
 | `status` | Whether it reaches the sync server - and why not -, and which invitations it answers. |
+| `check` | Tries the way to the sync server's relay from inside the container, now, step by step. |
 | `invites` | The invitations not used yet. |
 | `revoke <id>` | Withdraws an invitation. |
 | `vaults` | The vaults connected: id, account, the invitation's name, the last backup. |
@@ -98,12 +99,19 @@ vaults again with new invitations, nothing more - the repositories are not in it
 backup server for it. `obsidian-connect-backup status` on the backup server says why:
 
 - **NOT connected**, with a reason: the container does not reach the sync server at
-  `OBSIDIAN_CONNECT_SERVER`. On the same host as the sync server, the public address
-  (`wss://sync.example.com`) often does not work from inside a container - the router
-  does not loop it back. Use an address the container reaches directly, such as
-  `ws://192.168.1.10:1234` (the host's address in the LAN, the sync server's port).
-  It does not have to be the address your devices use; it only has to be the same
-  server. **`ws://`, not `wss://`, on the sync server's own port:** it speaks no TLS
+  `OBSIDIAN_CONNECT_SERVER`; `check` tries it step by step. On the same host as the
+  sync server, a container often reaches neither the public address (the router does
+  not loop it back) nor the host's LAN address (a firewall such as ufw drops traffic
+  from Docker's networks). What works there:
+  - both compose files in one folder - one compose project, one network - and
+    `OBSIDIAN_CONNECT_SERVER=ws://obsidian-connect:1234`, the sync server's container;
+  - or `network_mode: host` for the backup server in `docker-compose.backup.yml` and
+    `OBSIDIAN_CONNECT_SERVER=ws://127.0.0.1:1234`. It needs no port of its own, so
+    nothing else changes.
+
+  On another machine, use an address it reaches the sync server by, such as
+  `ws://192.168.1.10:1234`. It does not have to be the address your devices use; it
+  only has to be the same server. **`ws://`, not `wss://`, on the sync server's own port:** it speaks no TLS
   there - `wss://` is for an address with TLS in front of it, a reverse proxy. The
   backup server asks the sync server over HTTP when a connection fails without a
   reason, and `status` then says which it is. Behind a reverse proxy, `/relay` must

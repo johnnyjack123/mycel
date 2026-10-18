@@ -8,6 +8,8 @@ import { join } from 'node:path'
 // device said "the backup server is not connected".
 
 export interface ServerStatus {
+  /** The running backup server's version; absent from 0.7.11. */
+  version?: string
   /** The sync server, as configured. */
   server: string
   /** When written: on every change, and every minute while it runs. */

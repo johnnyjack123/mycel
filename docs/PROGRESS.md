@@ -270,6 +270,9 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
+At 0.7.13, run 2026-10-18 before its commit (straight to `main`): `typecheck` and
+`build` pass; `test:merge`, `test:load`, `test:rooms` and `test:backup` 153 - all pass.
+
 At 0.7.12, run 2026-10-18 before its commit (straight to `main`): `typecheck` and
 `build` pass; `test:merge`, `test:load`, `test:rooms` and `test:backup` 150 - all pass.
 
@@ -391,6 +394,11 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
   Its `status` showed the cause (2026-10-18): `wss://` to the sync server's own port,
   which has no TLS - told to use `ws://192.168.168.67:1234`. 0.7.12 names that cause
   itself, and gives the backup server `./backup-data` as its folder, as the user asked.
+  With `ws://` it still failed with 1006: the container does not reach the host's LAN
+  address (most likely a firewall between Docker's networks and the host). Advised:
+  `network_mode: host` and `ws://127.0.0.1:1234`, or the sync server's container name
+  on a shared network; 0.7.13 adds `check` and keeps the explanation in `status`.
+  Waiting for the user's result.
 
 ### 2026-10-16
 - After 0.7.5 the user asked for invitations instead of one code, the settings in

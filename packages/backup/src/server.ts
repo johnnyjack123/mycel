@@ -85,6 +85,7 @@ export async function startBackupServer(options: BackupServerOptions): Promise<R
       .then(async () => {
         const state = relay.state()
         await writeStatus(options.dataDir, {
+          version: options.version,
           server: options.server,
           updatedAt: Date.now(),
           connected: state.connected,
