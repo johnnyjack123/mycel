@@ -8,6 +8,15 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.14** (2026-10-18) - the sync server checks at start that it can write its
+  data folder. With the compose file's bind mount, a `data` folder Docker made
+  belongs to root while the image runs as user 1000: the user's server started,
+  failed on the first request that wrote (`EACCES ... /data/server.json`), and the
+  plugin only said it "answers, but not as expected". Now it stops at once, saying to
+  give the folder to user 1000. `docs/SERVER.md` and the README make and hand over the
+  folder before the first start, and say what a reverse proxy must pass on (`/vault/`
+  and `/relay` as WebSockets). CI's smoke test of the server image checks the refusal.
+
 - **0.7.13** (2026-10-18) - with `ws://192.168.168.67:1234` the user's backup server
   still said only "closed (1006)": the container does not reach the host's LAN
   address, as on many hosts where the sync server runs too. And the status could

@@ -265,6 +265,15 @@ jobs:
             exit 1
           fi
           docker rm -f smoke
+          # A bind-mounted data folder it cannot write stops it at once, saying what
+          # to do - before, it ran and failed every request that wrote.
+          mkdir -p unwritable && chmod 755 unwritable
+          if out=$(docker run --rm -e OBSIDIAN_CONNECT_JWT_SECRET=smoke-only -v "$PWD/unwritable:/data" obsidian-connect-server:smoke 2>&1); then
+            echo "::error::the server started with a data folder it cannot write"
+            exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -q 'chown -R 1000:1000'
 
       - uses: docker/login-action@v3
         with:

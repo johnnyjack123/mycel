@@ -26,6 +26,7 @@ every push to `main`. On the server, next to `docker-compose.yml`:
 
 ```bash
 cp server.env .env           # from docs/; set OBSIDIAN_CONNECT_JWT_SECRET
+mkdir -p data && sudo chown -R 1000:1000 data
 docker compose up -d
 docker compose exec obsidian-connect obsidian-connect invite
 ```

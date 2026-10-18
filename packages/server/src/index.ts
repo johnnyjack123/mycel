@@ -1,8 +1,34 @@
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { loadConfig, loadEnvFile } from './config.js'
 import { startServer } from './server.js'
 
+/**
+ * Whether the server can write its data folder - a file written and removed.
+ * A bind-mounted folder Docker made belongs to root while the image runs as
+ * user 1000; the server then failed on the first request, and a device only
+ * heard that it "answers, but not as expected".
+ */
+async function writable(folder: string): Promise<string | null> {
+  try {
+    await mkdir(folder, { recursive: true })
+    const probe = join(folder, `.obsidian-connect-probe-${process.pid}`)
+    await writeFile(probe, '')
+    await rm(probe, { force: true })
+    return null
+  } catch (error) {
+    return `cannot write into ${folder}: ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
 const envFile = loadEnvFile()
-const server = await startServer(loadConfig())
+const config = loadConfig()
+const unwritable = await writable(config.dataDir)
+if (unwritable) {
+  console.error(`[obsidian-connect] ${unwritable}. On the host, give the folder mounted there to the user the server runs as - for the image: chown -R 1000:1000 <folder>.`)
+  process.exit(1)
+}
+const server = await startServer(config)
 if (envFile) console.info(`[obsidian-connect] settings from ${envFile}`)
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

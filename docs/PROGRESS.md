@@ -270,6 +270,11 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
+At 0.7.14, run 2026-10-18 before its commit (straight to `main`): `typecheck` and
+`build` pass; `test:merge`, `test:load`, `test:rooms` pass; the server's entry stopped
+with the folder message on an unwritable data folder and, on a scratch server on 1235,
+started normally (`test:socket` 19).
+
 At 0.7.13, run 2026-10-18 before its commit (straight to `main`): `typecheck` and
 `build` pass; `test:merge`, `test:load`, `test:rooms` and `test:backup` 153 - all pass.
 
@@ -398,7 +403,12 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
   address (most likely a firewall between Docker's networks and the host). Advised:
   `network_mode: host` and `ws://127.0.0.1:1234`, or the sync server's container name
   on a shared network; 0.7.13 adds `check` and keeps the explanation in `status`.
-  Waiting for the user's result.
+- The user then moved to the layout of later - the sync server on its own host
+  behind a reverse proxy with TLS - and hit `EACCES` on `/data/server.json`: the
+  bind-mounted `data` folder was root's. 0.7.14 checks that at start. The user also
+  asked whether files instead of a database can lose data under concurrent requests;
+  answered (writes per file are serialized and atomic; open: appends are not fsync'd
+  before the ack, and the admin CLI writes `accounts.json` from a second process).
 
 ### 2026-10-16
 - After 0.7.5 the user asked for invitations instead of one code, the settings in

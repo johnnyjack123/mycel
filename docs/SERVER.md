@@ -11,11 +11,21 @@ On the server you only need two files from this repository, `docker-compose.yml`
 
 ```bash
 cp server.env .env           # then edit it
+mkdir -p data                # the data folder, next to docker-compose.yml
+sudo chown -R 1000:1000 data # the server runs as user 1000
 docker compose up -d
 docker compose exec obsidian-connect obsidian-connect invite
 ```
 
-Updating: `docker compose pull && docker compose up -d`. The data volume stays.
+The data folder must belong to user 1000: a folder Docker makes for the bind mount
+belongs to root, and the server then stops at start, saying so in
+`docker compose logs`.
+
+Updating: `docker compose pull && docker compose up -d`. The data folder stays.
+
+Behind a reverse proxy with TLS, devices are given `wss://<your domain>`. The proxy
+must pass WebSocket upgrades on `/vault/` and on `/relay` (backup servers) to port
+1234; plain `ws://` on the port itself is what the server speaks.
 
 GitHub makes a package private when the repository is. Either set the package to
 public (*GitHub → Packages → obsidian-connect-server → Package settings*), or sign
@@ -31,8 +41,8 @@ password. The server never learns the name or the password: it finds an account 
 key derived from both together, and knows accounts only by random ids. Losing the
 password means losing access to the encrypted notes (the devices keep their files).
 
-Data lives in the `obsidian-connect-data` volume. Everything in it is ciphertext or a
-random id. What the server can tell: which account ids exist, which note ids, who is
+Data lives in the `data` folder next to `docker-compose.yml`. Everything in it is
+ciphertext or a random id. What the server can tell: which account ids exist, which note ids, who is
 whose contact and who shares with whom by id, and when and how much was written.
 Attachments - images, PDFs, every file that is not a note - lie encrypted under
 `users/<account>/<vault>/blobs/`, named by a keyed hash of their content: the server
@@ -44,7 +54,7 @@ Backups of the notes themselves - decrypted, in restic repositories - are what a
 backup server is for, which every account sets up for its own vaults: `docs/BACKUP.md`.
 The sync server only relays to it (`/relay`) and hands it a read-only key.
 
-**Back up the whole volume, and keep `server.json` with `accounts.json`.** It holds
+**Back up the whole data folder, and keep `server.json` with `accounts.json`.** It holds
 the server's id, which is part of every account's salt: a server with another id opens
 no account, even with the right name and password.
 
