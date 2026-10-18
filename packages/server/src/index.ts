@@ -25,7 +25,9 @@ const envFile = loadEnvFile()
 const config = loadConfig()
 const unwritable = await writable(config.dataDir)
 if (unwritable) {
-  console.error(`[obsidian-connect] ${unwritable}. On the host, give the folder mounted there to the user the server runs as - for the image: chown -R 1000:1000 <folder>.`)
+  console.error(
+    `[obsidian-connect] ${unwritable}. The image hands its data folder to PUID:PGID by itself - unless it is started as another user ("user:" in compose): then give the folder to that user (chown -R <uid>:<gid> <folder>), or leave "user:" out.`
+  )
   process.exit(1)
 }
 const server = await startServer(config)

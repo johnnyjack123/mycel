@@ -585,10 +585,16 @@ scanned by an authenticator app and the `otpauth://` link opening one.
   publishes it to `ghcr.io/johnnyjack123/obsidian-connect-server`. A broken
   `Dockerfile` shows up there and nowhere earlier. The `docker-backup` job builds
   and starts `Dockerfile.backup` on every push (restic runs, an invitation is made
-  and kept, the server survives an unreachable sync server, refuses a data folder it
-  cannot write, and registers its invitations at a real sync server) and publishes
+  and kept, the server survives an unreachable sync server, takes over a bind-mounted
+  folder that is not its own, and registers its invitations at a real sync server) and publishes
   `obsidian-connect-backup` from `main` only. Every Dockerfile copies every
   workspace's `package.json` before `npm ci`.
+- **Both images start as root and drop to `PUID`:`PGID` (1000:1000)** in
+  `docker/entrypoint.sh`, after handing their data folder to that user - a
+  bind-mounted folder Docker made is root's. `docker exec` bypasses the entrypoint
+  and runs as root, so the `bin/*.mjs` wrappers drop to the same user themselves: a
+  file the CLI wrote as root (`accounts.json`, an invitation) could not be written or
+  read by the running server afterwards. Never put `USER` back into a Dockerfile.
 - **restic for `test:backup`** is pinned (0.19.1, CI checks its checksum, and so
   does `Dockerfile.backup` per architecture). On the development machine it lies
   outside the repository; `docs/PROGRESS.md` says where.
@@ -709,7 +715,7 @@ between two snapshots, never a merge.
   | 0.6 | recovery codes and 2FA |
   | 0.7 | the backup server (`docs/PHASE6.md`) |
   | 0.8 | sharing a folder, and the small fixes listed for it in `docs/PROGRESS.md` |
-  | 0.9 | hardening and a security audit: signatures per author, every note live, a name without "Obsidian" |
+  | 0.9 | hardening and a security audit: signatures per author, every note live, durable writes on the server (fsync before the ack, a lock against the admin CLI), a name without "Obsidian" |
   | 1.0.0 | all of the above done and verified on devices |
   | later | syncing plugins and their settings (moved back by the user, 2026-10-14) |
 - **Rebuild after anything that swaps the sources.** A bundle built during a

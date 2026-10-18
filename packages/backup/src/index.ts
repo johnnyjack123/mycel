@@ -177,10 +177,12 @@ async function main(argv: string[]): Promise<number> {
     console.error(`OBSIDIAN_CONNECT_SERVER is "${server}": give it with its scheme, e.g. wss://sync.example.com or ws://192.168.1.10:1234`)
     return 1
   }
-  // A bind-mounted folder Docker made is root's, and this runs as user 1000.
+  // The image's entrypoint hands the folder over; started as another user, nobody did.
   const unwritable = await writable(dataDir)
   if (unwritable) {
-    console.error(`${unwritable}. On the host: chown -R 1000:1000 on the folder mounted at ${dataDir}.`)
+    console.error(
+      `${unwritable}. The image hands ${dataDir} to PUID:PGID by itself - unless it is started as another user ("user:" in compose): then give the folder to that user (chown -R <uid>:<gid> <folder>), or leave "user:" out.`
+    )
     return 1
   }
   const running = await startBackupServer({

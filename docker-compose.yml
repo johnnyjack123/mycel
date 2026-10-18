@@ -12,6 +12,9 @@ services:
       OBSIDIAN_CONNECT_LOG_UPDATES: ${OBSIDIAN_CONNECT_LOG_UPDATES:-false}
       OBSIDIAN_CONNECT_MAX_FILE_MB: ${OBSIDIAN_CONNECT_MAX_FILE_MB:-100}
       OBSIDIAN_CONNECT_QUOTA_MB: ${OBSIDIAN_CONNECT_QUOTA_MB:-}
+      # The user the server runs as; the image hands ./data to it at every start.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
     ports:
       - "${PORT:-1234}:1234"
     volumes:

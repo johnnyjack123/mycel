@@ -11,15 +11,16 @@ On the server you only need two files from this repository, `docker-compose.yml`
 
 ```bash
 cp server.env .env           # then edit it
-mkdir -p data                # the data folder, next to docker-compose.yml
-sudo chown -R 1000:1000 data # the server runs as user 1000
 docker compose up -d
 docker compose exec obsidian-connect obsidian-connect invite
 ```
 
-The data folder must belong to user 1000: a folder Docker makes for the bind mount
-belongs to root, and the server then stops at start, saying so in
-`docker compose logs`.
+The data folder `./data` next to `docker-compose.yml` needs no preparing: the image
+starts as root only long enough to hand it to the user the server runs as -
+`PUID`:`PGID`, 1000:1000 unless set in `.env` - and runs the server as that user. The
+`obsidian-connect` command runs as that user too, also through `docker compose exec`.
+Started as another user instead (`user:` in compose), it hands nothing over; the
+server then stops at start if it cannot write the folder, saying so.
 
 Updating: `docker compose pull && docker compose up -d`. The data folder stays.
 

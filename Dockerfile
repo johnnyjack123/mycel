@@ -15,10 +15,13 @@ RUN npm ci --omit=dev --workspace @obsidian-connect/server
 
 FROM node:24-alpine
 WORKDIR /app
+# su-exec: the entrypoint hands /data to the server's user, then runs it as that user.
+RUN apk add --no-cache su-exec
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=1234 \
-    OBSIDIAN_CONNECT_DATA_DIR=/data
+    OBSIDIAN_CONNECT_DATA_DIR=/data \
+    OBSIDIAN_CONNECT_OWN=/data
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY packages/shared/package.json packages/shared/
@@ -26,11 +29,14 @@ COPY packages/shared/src packages/shared/src
 COPY packages/server/package.json packages/server/
 COPY packages/server/src packages/server/src
 COPY packages/server/bin packages/server/bin
-RUN chmod +x packages/server/bin/obsidian-connect.mjs \
+COPY docker/entrypoint.sh /usr/local/bin/obsidian-connect-entrypoint
+RUN chmod +x packages/server/bin/obsidian-connect.mjs /usr/local/bin/obsidian-connect-entrypoint \
  && ln -s /app/packages/server/bin/obsidian-connect.mjs /usr/local/bin/obsidian-connect \
  && mkdir -p /data \
  && chown node:node /data
-USER node
+# No USER: the entrypoint starts as root, hands the folder over and drops to
+# PUID:PGID (1000:1000, the image's node user) before the server runs.
 VOLUME /data
 EXPOSE 1234
+ENTRYPOINT ["/usr/local/bin/obsidian-connect-entrypoint"]
 CMD ["node", "--import", "tsx", "packages/server/src/index.ts"]

@@ -128,7 +128,13 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
     device shows that too and why.
   - Whatever the open questions below turn up, and anything the user finds on the
     devices until then.
-- **0.9 - hardening and a security audit.** Frames signed per author, not only
+- **0.9 - hardening and a security audit.** Durable writes on the sync server,
+  asked for by the user (2026-10-18): a frame is acknowledged once the operating
+  system took it, not once it is on the disk - `fsync` the log before the ack (and
+  the atomic writes before their rename), so a power cut on a Pi with an SD card no
+  longer ends in devices being asked about notes the server lost; and a lock file, so
+  the admin CLI - a second process - and the server never write `accounts.json` at
+  once (one of two writes could be lost now). Frames signed per author, not only
   authenticated by the note's key (`docs/PHASE3.md`); every note live without all
   of them in memory - the device watches every note's room without loading it,
   the server announces new frames, and the note is loaded briefly, written and let
@@ -270,6 +276,11 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
+At 0.7.15, run 2026-10-18 before its commit (straight to `main`): `typecheck` and
+`build` pass; `test:merge`, `test:load`, `test:rooms` and `test:backup` 153 pass;
+`docker/entrypoint.sh` passes `sh -n`. The entrypoint itself runs only in the images,
+so only CI's smoke tests show it working (no Docker on the development machine).
+
 At 0.7.14, run 2026-10-18 before its commit (straight to `main`): `typecheck` and
 `build` pass; `test:merge`, `test:load`, `test:rooms` pass; the server's entry stopped
 with the folder message on an unwritable data folder and, on a scratch server on 1235,
@@ -408,7 +419,9 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
   bind-mounted `data` folder was root's. 0.7.14 checks that at start. The user also
   asked whether files instead of a database can lose data under concurrent requests;
   answered (writes per file are serialized and atomic; open: appends are not fsync'd
-  before the ack, and the admin CLI writes `accounts.json` from a second process).
+  before the ack, and the admin CLI writes `accounts.json` from a second process) -
+  the user put both into 0.9's hardening (Roadmap). And asked for the folder to be
+  taken over without a `chown` by hand: 0.7.15.
 
 ### 2026-10-16
 - After 0.7.5 the user asked for invitations instead of one code, the settings in

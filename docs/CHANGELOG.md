@@ -8,6 +8,21 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.15** (2026-10-18) - no more `chown` by hand (asked for by the user: "other
+  containers manage that too"). Both images start as root only long enough to hand
+  their data folder - and the backup server its backup folder itself, not what lies in
+  it - to the user they run as, `PUID`:`PGID` (1000:1000 unless set), and then run as
+  that user (`docker/entrypoint.sh`, `su-exec`), as many images do. `docker exec` goes
+  past an entrypoint and runs as root; the `obsidian-connect` and
+  `obsidian-connect-backup` commands therefore drop to the same user themselves - an
+  `accounts.json` or an invitation written as root could not be written or read by the
+  running server afterwards. Started with `user:` in compose, nothing is handed over,
+  and 0.7.14's check says what to do. CI now starts both images on a bind-mounted
+  folder that is someone else's - the runner's - and checks that it is taken over,
+  that what the commands write through `docker exec` belongs to user 1000, that the
+  program does not run as root, and that the backup server still answers an invitation
+  made that way; and that started as another user, an unwritable folder is refused.
+
 - **0.7.14** (2026-10-18) - the sync server checks at start that it can write its
   data folder. With the compose file's bind mount, a `data` folder Docker made
   belongs to root while the image runs as user 1000: the user's server started,

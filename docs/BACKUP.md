@@ -38,9 +38,6 @@ from this repository: `docker-compose.backup.yml` and `docs/backup.env`.
 
 ```bash
 cp backup.env .env                    # then edit it: the sync server, the backup folder
-mkdir -p backup-data                  # its data folder, next to the compose file
-sudo mkdir -p /srv/obsidian-backups
-sudo chown -R 1000:1000 backup-data /srv/obsidian-backups
 docker compose -f docker-compose.backup.yml up -d
 docker compose -f docker-compose.backup.yml exec obsidian-connect-backup obsidian-connect-backup invite Anna
 ```
@@ -50,10 +47,13 @@ waits until the running backup server answers the invitation at the sync server 
 says so - or says why not. The image is private while the repository is; sign in once
 with `docker login ghcr.io -u johnnyjack123` and a token that may read packages.
 
-Both folders must belong to user 1000, as which the backup server runs: a folder
-Docker makes for a bind mount belongs to root, and the backup server then stops at
-start, saying so. Its data folder is `./backup-data`, so the file can lie next to the
-sync server's `docker-compose.yml`, whose is `./data`.
+Neither folder needs preparing: the image starts as root only long enough to hand
+its data folder `./backup-data` - and the backup folder itself, not what already lies
+in it - to the user it runs as (`PUID`:`PGID`, 1000:1000 unless set), and runs as that
+user; so do its commands through `docker compose exec`. Destinations it makes inside
+the backup folder are its own; one you made there beforehand must be writable by that
+user. Its data folder is `./backup-data`, so the file can lie next to the sync
+server's `docker-compose.yml`, whose is `./data`.
 
 The operator's commands, all through `docker compose -f docker-compose.backup.yml exec obsidian-connect-backup obsidian-connect-backup …`:
 
@@ -78,6 +78,7 @@ Updating: `docker compose -f docker-compose.backup.yml pull && docker compose -f
 | `BACKUP_FOLDER` | `./backups` | The host folder mounted at `/backup`; every local destination lies below it. |
 | `RAM_DISK` | `1g` | The memory a vault's notes may take during a backup. |
 | `OBSIDIAN_CONNECT_BACKUP_DEBUG` | `false` | More in the log. |
+| `PUID`, `PGID` | `1000` | The user and group it runs as; the image hands its folders to them at every start. |
 
 The container's own paths, if you run it some other way: `OBSIDIAN_CONNECT_BACKUP_DATA`
 (`/data`), `OBSIDIAN_CONNECT_BACKUP_ROOT` (`/backup`), `OBSIDIAN_CONNECT_BACKUP_WORK`

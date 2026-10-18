@@ -265,15 +265,31 @@ jobs:
             exit 1
           fi
           docker rm -f smoke
-          # A bind-mounted data folder it cannot write stops it at once, saying what
-          # to do - before, it ran and failed every request that wrote.
+          # A bind-mounted folder that is not the server's - here the runner's - is
+          # handed over at start; the admin command, run as root through docker exec,
+          # writes as the server's user too; and the server itself does not run as root.
+          mkdir -p hostdata
+          docker run -d --name smoke-bind -p 1235:1234 -e OBSIDIAN_CONNECT_JWT_SECRET=smoke-only -v "$PWD/hostdata:/data" obsidian-connect-server:smoke
+          for _ in $(seq 1 30); do curl -sf http://localhost:1235/health > /dev/null && break; sleep 1; done
+          docker exec smoke-bind obsidian-connect invite
+          owners=$(docker exec smoke-bind stat -c '%u' /data /data/accounts.json /proc/1 | sort -u)
+          echo "owners: $owners"
+          if [ "$owners" != "1000" ]; then
+            echo "::error::the data folder, what the CLI wrote, or the server process is not user 1000's"
+            docker logs smoke-bind
+            exit 1
+          fi
+          docker exec smoke-bind obsidian-connect user list | grep -q 'invite code(s) not used yet'
+          docker rm -f smoke-bind
+          # Started as another user nothing is handed over: a folder it cannot write
+          # stops it at once, saying what to do.
           mkdir -p unwritable && chmod 755 unwritable
-          if out=$(docker run --rm -e OBSIDIAN_CONNECT_JWT_SECRET=smoke-only -v "$PWD/unwritable:/data" obsidian-connect-server:smoke 2>&1); then
+          if out=$(docker run --rm --user 4321:4321 -e OBSIDIAN_CONNECT_JWT_SECRET=smoke-only -v "$PWD/unwritable:/data" obsidian-connect-server:smoke 2>&1); then
             echo "::error::the server started with a data folder it cannot write"
             exit 1
           fi
           echo "$out"
-          echo "$out" | grep -q 'chown -R 1000:1000'
+          echo "$out" | grep -q 'leave "user:" out'
 
       - uses: docker/login-action@v3
         with:
@@ -362,15 +378,15 @@ jobs:
             exit 1
           fi
           docker rm -f smoke-backup
-          # A bind-mounted data folder it cannot write - one Docker made, or another
-          # user's - stops it at once, saying what to do, instead of it running blind.
+          # Started as another user nothing is handed over: a data folder it cannot
+          # write stops it at once, saying what to do, instead of it running blind.
           mkdir -p unwritable && chmod 755 unwritable
-          if out=$(docker run --rm -e OBSIDIAN_CONNECT_SERVER=ws://127.0.0.1:9 -v "$PWD/unwritable:/data" obsidian-connect-backup:smoke 2>&1); then
+          if out=$(docker run --rm --user 4321:4321 -e OBSIDIAN_CONNECT_SERVER=ws://127.0.0.1:9 -v "$PWD/unwritable:/data" obsidian-connect-backup:smoke 2>&1); then
             echo "::error::the backup server started with a data folder it cannot write"
             exit 1
           fi
           echo "$out"
-          echo "$out" | grep -q 'chown -R 1000:1000'
+          echo "$out" | grep -q 'leave "user:" out'
 
       - uses: actions/setup-node@v7
         with:
@@ -386,26 +402,31 @@ jobs:
           npm ci
           OBSIDIAN_CONNECT_JWT_SECRET=ci-only-secret npm run start:server > server.log 2>&1 &
           for _ in $(seq 1 30); do curl -sf http://localhost:1234/health > /dev/null && break; sleep 1; done
+          # A bind-mounted data folder that is the runner's, as a fresh setup's would be someone else's:
+          # handed over at start, and an invitation made through docker exec - as root - read by
+          # the running backup server, which runs as user 1000.
+          mkdir -p backup-bind
           docker run -d --name relay-backup --network host \
             -e OBSIDIAN_CONNECT_SERVER=ws://127.0.0.1:1234 \
             --tmpfs /run/obsidian-connect-backup:mode=1777 \
-            -v smoke-backup-data:/data \
+            -v "$PWD/backup-bind:/data" \
             obsidian-connect-backup:smoke
-          answered=false
-          for _ in $(seq 1 20); do
-            status=$(docker exec relay-backup obsidian-connect-backup status)
-            if echo "$status" | grep -q 'connected since' && echo "$status" | grep -Eq 'smoke .*[0-9]  answered'; then answered=true; break; fi
-            sleep 1
-          done
+          sleep 2
+          made=$(docker exec relay-backup obsidian-connect-backup invite smoke)
+          echo "$made"
+          status=$(docker exec relay-backup obsidian-connect-backup status)
           echo "$status"
           docker logs relay-backup
-          if [ "$answered" != true ]; then
+          if ! echo "$made" | grep -q 'The backup server answers it at' || ! echo "$status" | grep -Eq 'smoke .*[0-9]  answered'; then
             echo "::error::the backup server in the image did not register its invitation at the sync server"
             exit 1
           fi
-          made=$(docker exec relay-backup obsidian-connect-backup invite second)
-          echo "$made"
-          echo "$made" | grep -q 'The backup server answers it at'
+          owners=$(docker exec relay-backup stat -c '%u' /data /data/invites.json /proc/1 | sort -u)
+          echo "owners: $owners"
+          if [ "$owners" != "1000" ]; then
+            echo "::error::the data folder, the invitation written through docker exec, or the backup server process is not user 1000's"
+            exit 1
+          fi
           docker rm -f relay-backup
 
       - uses: docker/login-action@v3
