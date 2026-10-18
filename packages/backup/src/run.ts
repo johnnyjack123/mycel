@@ -15,8 +15,8 @@ import { TarWriter } from './tar.js'
 import { TrustedRefused, alignTrusted } from './trusted.js'
 
 // One backup of one vault: fetch what changed into the encrypted cache, decide
-// what the backup holds, decrypt it in memory, hand it to restic for every
-// destination, check that it reads back, and bring the trusted copy level.
+// what the backup holds, decrypt it in memory, hand it to restic, check that
+// it reads back, and then bring the trusted copy level.
 
 export interface Destination {
   id: string
@@ -288,12 +288,15 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
     const held = control.acceptShrink
       ? null
       : vanished({ notes: state.liveNotes, files: state.liveFiles }, live, job.config.trustedGuard ?? BACKUP_GUARD_DEFAULT, options.vanishFloor ?? 10)
-    if (held) {
+    if (!report.destinations.some((destination) => destination.ok)) {
+      // Never ahead of the repository: what the copy deletes is in a snapshot first.
+      report.trusted = { ok: false, error: 'left as it was, since the repository did not take this backup' }
+    } else if (held) {
       report.trusted = { ok: true, held }
       log.warn(`backup of ${grant.vaultId}: trusted copy held, ${held}`)
     } else {
       try {
-        const aligned = await alignTrusted(job.config.trusted, grant.vaultId, layout.files, layout.incomplete, cache, keys)
+        const aligned = await alignTrusted(job.config.trusted, grant.vaultId, folder, layout.files, layout.incomplete, cache, keys)
         report.trusted = { ok: true, ...aligned }
         state.liveNotes = live.notes
         state.liveFiles = live.files

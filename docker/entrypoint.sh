@@ -8,8 +8,9 @@
 #                              (only what is not theirs yet: a large folder is
 #                              not walked again on every start)
 #   OBSIDIAN_CONNECT_OWN_TOP   folders handed over themselves, never what lies
-#                              in them - a backup folder may hold repositories
-#                              of others, or be a mounted cloud
+#                              in them - the backup server's folders for
+#                              repositories and copies may be a NAS share or
+#                              a mounted cloud
 #
 # Started as another user (`user:` in compose), it runs the program as is; the
 # program then says if it cannot write its folder.

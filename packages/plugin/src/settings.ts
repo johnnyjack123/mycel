@@ -3,8 +3,8 @@ import { generatePassword } from './account/password'
 import type { ServerProbe } from './account/probe'
 import { PasswordReveal } from './account/reveal'
 import { busy, type BusyButton } from './busy'
-import type { BackupDestinationStatus, BackupRunStatus, BackupTargetSetting, BackupVaultStatus } from '@obsidian-connect/shared'
-import { describeGuard, describeKeep } from './backup/BackupModals'
+import type { BackupDestinationStatus, BackupRunStatus, BackupTaskSetting, BackupVaultStatus } from '@obsidian-connect/shared'
+import { describeGuard, describeKeep, describeRepository } from './backup/BackupModals'
 import { NO_LONGER_HAS_VAULT, SCHEDULES, type Backups } from './backup/Backups'
 import type ObsidianConnectPlugin from './main'
 import type { OpenCode } from './share/Contacts'
@@ -28,18 +28,21 @@ function describeBackupServer(error: string | null, status: BackupVaultStatus | 
   return `Last backup ${when(last.finishedAt)}: ${last.notes} notes, ${last.files} files${checked}.${next}`
 }
 
-function describeTarget(target: BackupTargetSetting, outcome: BackupDestinationStatus | undefined, taken: boolean, trusted: BackupRunStatus['trusted']): string {
-  if (!taken) return 'The backup server does not use this one - see why below.'
-  if (target.kind === 'trusted') {
-    const guard = describeGuard(target.guard)
-    if (!trusted) return `Decrypted, the newest version. Filled by the next backup. ${guard}`
-    if (trusted.error) return `Failed: ${trusted.error}`
-    return `Decrypted, the newest version. Up to date with the last backup. ${guard}`
+function describeRepositoryState(task: BackupTaskSetting, outcome: BackupDestinationStatus | undefined, status: BackupVaultStatus | null): string {
+  if (status && !status.ready) {
+    return status.problems.length > 0 ? 'The backup server cannot carry this out - see why below.' : 'The backup server has not read this yet.'
   }
-  const keep = describeKeep(target.keep)
+  const keep = describeKeep(task.keep)
   if (!outcome) return `Encrypted with its own password. Filled by the next backup. ${keep}`
   if (!outcome.ok) return `Failed: ${outcome.error ?? 'unknown'}`
   return `Encrypted with its own password. Last backup ${outcome.checked === 'deep' ? 'read back in full' : 'checked'}. ${keep}`
+}
+
+function describeCopy(task: BackupTaskSetting, trusted: BackupRunStatus['trusted']): string {
+  const guard = describeGuard(task.guard)
+  if (!trusted) return `Decrypted, the newest version. Filled by the next backup. ${guard}`
+  if (trusted.error) return `Not brought up to date: ${trusted.error}`
+  return `Decrypted, the newest version. Up to date with the last backup. ${guard}`
 }
 
 /**
@@ -755,13 +758,21 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     }
     containerEl.createEl('p', {
       cls: 'setting-item-description',
-      text: 'A backup server of your own pulls this vault, decrypts it in its memory and keeps it in restic repositories - every backup, for as long as you choose. These settings apply on all your devices.'
+      text: 'A backup server of your own pulls this vault, decrypts it in its memory and keeps it in a restic repository - every backup, for as long as you choose. These settings apply on all your devices.'
     })
-    for (const server of backups.servers()) this.backupServerRows(containerEl, backups, server.routeId)
-    new Setting(containerEl)
-      .setName('Connect a backup server')
-      .setDesc("With an invitation from its operator. It runs on a computer of yours or someone's you trust, with Docker - see the Obsidian Connect documentation.")
-      .addButton((button) => button.setButtonText('Connect…').onClick(() => this.plugin.openBackupConnect()))
+    const servers = backups.servers()
+    for (const server of servers) this.backupServerRows(containerEl, backups, server.routeId)
+    if (servers.length === 0) {
+      new Setting(containerEl)
+        .setName('Connect a backup server')
+        .setDesc("With an invitation from its operator. It runs on a computer of yours or someone's you trust, with Docker - see the Obsidian Connect documentation.")
+        .addButton((button) => button.setButtonText('Connect…').onClick(() => this.plugin.openBackupConnect()))
+    } else {
+      new Setting(containerEl)
+        .setName('Another backup server')
+        .setDesc('A vault has one backup server. Connecting another replaces this one; its backups stay where they are.')
+        .addButton((button) => button.setButtonText('Replace…').onClick(() => this.plugin.openBackupConnect()))
+    }
   }
 
   private backupServerRows(containerEl: HTMLElement, backups: Backups, routeId: string): void {
@@ -799,7 +810,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button
           .setButtonText('Back up now')
-          .setDisabled(Boolean(view.error) || status?.running === true || view.targets.length === 0)
+          .setDisabled(Boolean(view.error) || status?.running === true || !view.task)
           .onClick(
             () =>
               void this.run(async () => {
@@ -824,47 +835,57 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       )
       .settingEl.addClass('connect-backup-server')
 
-    new Setting(containerEl).setName('Backs up').addDropdown((dropdown) => {
-      const options = [...SCHEDULES]
-      if (!options.some((option) => option.hours === view.everyHours)) options.push({ hours: view.everyHours, label: `Every ${view.everyHours} hours` })
-      for (const option of options) dropdown.addOption(String(option.hours), option.label)
-      dropdown.setValue(String(view.everyHours)).onChange((value) => void this.run(() => backups.setSchedule(routeId, Number(value))))
-    })
-
-    for (const target of view.targets) {
-      const outcome = last?.destinations.find((destination) => destination.id === target.id)
-      const taken = !status || status.targets.includes(target.id)
-      const row = new Setting(containerEl)
-        .setName(`${target.kind === 'trusted' ? 'Trusted copy' : 'Repository'}: ${target.location}`)
-        .setDesc(describeTarget(target, outcome, taken, last?.trusted))
-      if (target.kind === 'restic' && target.password) {
-        const password = target.password
-        row.addExtraButton((button) =>
+    const task = view.task
+    if (!task) {
+      new Setting(containerEl)
+        .setName('Back up this vault')
+        .setDesc('Nothing is backed up yet: say where the repository lies, and whether a decrypted copy is kept too.')
+        .addButton((button) =>
           button
-            .setIcon('key')
-            .setTooltip('Copy the repository password')
-            .onClick(() => {
-              void navigator.clipboard.writeText(password).then(() => new Notice('Repository password copied.'))
-            })
+            .setButtonText('Set up…')
+            .setCta()
+            .onClick(() => void this.run(() => this.plugin.openBackupTask(routeId), button))
         )
-      }
-      row.addExtraButton((button) =>
+    } else {
+      new Setting(containerEl).setName('Backs up').addDropdown((dropdown) => {
+        const options = [...SCHEDULES]
+        if (!options.some((option) => option.hours === task.everyHours)) options.push({ hours: task.everyHours, label: `Every ${task.everyHours} hours` })
+        for (const option of options) dropdown.addOption(String(option.hours), option.label)
+        dropdown.setValue(String(task.everyHours)).onChange((value) => void this.run(() => backups.setSchedule(routeId, Number(value))))
+      })
+      const repository = new Setting(containerEl)
+        .setName(`Repository: ${describeRepository(task, status?.folders.encrypted ?? null)}`)
+        .setDesc(describeRepositoryState(task, last?.destinations[0], status))
+      repository.addExtraButton((button) =>
+        button
+          .setIcon('key')
+          .setTooltip('Copy the repository password')
+          .onClick(() => {
+            void navigator.clipboard.writeText(task.password).then(() => new Notice('Repository password copied.'))
+          })
+      )
+      repository.addExtraButton((button) =>
         button
           .setIcon('pencil')
-          .setTooltip(target.kind === 'trusted' ? 'Change when it waits' : 'Change how long backups are kept, or the credentials')
-          .onClick(() => this.plugin.openBackupTarget(routeId, view.info?.root ?? null, true, target))
+          .setTooltip('Change how long backups are kept, the credentials, the decrypted copy')
+          .onClick(() => void this.plugin.openBackupTask(routeId, task))
       )
-      row.addExtraButton((button) =>
+      repository.addExtraButton((button) =>
         button
           .setIcon('trash')
-          .setTooltip('Remove: no more backups go there. What is there stays.')
-          .onClick(() => void this.run(() => backups.removeTarget(routeId, target.id), button))
+          .setTooltip('Remove: no more backups. The repository and the decrypted copy stay where they are.')
+          .onClick(() => void this.run(() => backups.removeTask(routeId), button))
       )
+      if (task.decrypted) {
+        new Setting(containerEl)
+          .setName(`Decrypted copy: on the backup server${status ? `, ${status.folders.decrypted}` : ''}`)
+          .setDesc(describeCopy(task, last?.trusted))
+      }
     }
 
     if (last?.trusted?.held) {
       new Setting(containerEl)
-        .setName('The trusted copy waits')
+        .setName('The decrypted copy waits')
         .setDesc(`${last.trusted.held}. If they were deleted on purpose, let it follow; if not, find out first - the server may have lost data.`)
         .addButton((button) =>
           button
@@ -879,13 +900,8 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
         )
     }
     for (const problem of status?.problems ?? []) {
-      new Setting(containerEl).setName('Not used').setDesc(problem)
+      new Setting(containerEl).setName('Not carried out').setDesc(problem)
     }
-    new Setting(containerEl).addButton((button) =>
-      button
-        .setButtonText('Add a destination…')
-        .onClick(() => this.plugin.openBackupTarget(routeId, view.info?.root ?? null, view.targets.some((target) => target.kind === 'trusted')))
-    )
   }
 
   private device(containerEl: HTMLElement): void {

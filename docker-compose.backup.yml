@@ -10,15 +10,17 @@ services:
       OBSIDIAN_CONNECT_SERVER: ${OBSIDIAN_CONNECT_SERVER:?set OBSIDIAN_CONNECT_SERVER in .env}
       # What devices are shown this backup server as.
       OBSIDIAN_CONNECT_BACKUP_NAME: ${OBSIDIAN_CONNECT_BACKUP_NAME:-backup server}
-      # The user it runs as; the image hands ./backup-data, and the backup folder itself, to it at every start.
+      # The user it runs as; the image hands the three folders below to it at every start.
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
     volumes:
       # Its invitations, the keys of the vaults connected to it, and their encrypted cache -
       # a folder of its own, so this file can lie next to the sync server's, whose is ./data.
-      - ./backup-data:/data
-      # Every local destination lies below this folder; mount what should be reachable.
-      - ${BACKUP_FOLDER:-./backups}:/backup
+      - ${SERVER_DATA:-./backup-data}:/data
+      # The restic repositories kept on the backup server, one folder per vault, named by its id.
+      - ${ENCRYPTED_VAULTS:-./encrypted-vaults}:/encrypted
+      # The decrypted copies, <account name>/<vault name> - plaintext: a disk you trust.
+      - ${DECRYPTED_VAULTS:-./decrypted-vaults}:/decrypted
     # The notes of a vault lie here, decrypted, during a backup - in memory, never on a disk.
     tmpfs:
       - /run/obsidian-connect-backup:size=${RAM_DISK:-1g},mode=1777

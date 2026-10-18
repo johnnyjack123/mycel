@@ -7,10 +7,11 @@ import {
   type BackupRunStatus,
   type BackupServerInfo,
   type BackupSnapshotRef,
+  type BackupTaskSetting,
   type BackupVaultStatus
 } from '@obsidian-connect/shared'
 import { backupRouteKeys, newBackupSecret, toBase64 } from '@obsidian-connect/shared/crypto'
-import { fetchSettings, readConfig, type VaultConfig } from './config.js'
+import { fetchSettings, readConfig, repositoryOf, writable, type VaultConfig, type VaultFolders } from './config.js'
 import { VaultKeys } from './keys.js'
 import { log } from './log.js'
 import type { Restic } from './restic.js'
@@ -18,12 +19,13 @@ import { vaultFolder } from './layout.js'
 import { listBackup, readBackup, snapshotAt } from './restore.js'
 import { runBackup, type Destination, type RunControl, type RunReport } from './run.js'
 import { AccessEnded, SyncClient } from './sync.js'
+import { copyOf } from './trusted.js'
 
 // The vaults paired with this backup server, their settings, their runs and
 // their schedule. One run at a time over all vaults: each lays its notes out
 // in memory, and two at once would double what that takes.
 //
-//   vaults/<vaultId>/pairing.json   the vault's secret with this backup server, and whose vault it is
+//   vaults/<vaultId>/pairing.json   the vault's secret with this backup server, whose vault it is, its folders
 //   vaults/<vaultId>/grant.json     the backup key and the vault's keys, from a device
 //   vaults/<vaultId>/runs.json      the last runs, for the devices' status
 
@@ -31,8 +33,10 @@ export interface ServiceOptions {
   /** The sync server this backup server registers at and reads from. */
   server: string
   dataDir: string
-  /** The folder local destinations lie below. */
-  root: string
+  /** Every repository kept on the backup server lies here, in a folder named by its vault's id. */
+  encryptedRoot: string
+  /** Every decrypted copy lies here, as `<account name>/<vault name>`. */
+  decryptedRoot: string
   /** The RAM disk. */
   workDir: string
   restic: Restic
@@ -52,6 +56,8 @@ export interface Pairing {
   /** What the operator called the invitation it came with. */
   label: string
   pairedAt: number
+  /** Its decrypted copy's folder below the folder for decrypted vaults, `<account name>/<vault name>`; picked once. */
+  decryptedFolder: string
 }
 
 interface Vault {
@@ -92,9 +98,17 @@ export interface PairedVault {
   vaultId: string
   vaultName: string
   accountId: string
+  accountName: string
   label: string
   pairedAt: number
+  /** Below the folder for decrypted vaults; there only while the task keeps a decrypted copy. */
+  decryptedFolder: string
   lastRun: { at: number; ok: boolean } | null
+}
+
+/** The folders as the operator finds them, named after the folders they lie in. */
+function shownFolders(vaultId: string, pairing: Pairing): { encrypted: string; decrypted: string } {
+  return { encrypted: `encrypted/${vaultId}`, decrypted: `decrypted/${pairing.decryptedFolder}` }
 }
 
 /** What the operator sees of every paired vault, read straight from the data folder. */
@@ -120,8 +134,10 @@ export async function listVaults(dataDir: string): Promise<PairedVault[]> {
         vaultId,
         vaultName: grant.vaultName,
         accountId: pairing.accountId,
+        accountName: grant.accountName ?? '',
         label: pairing.label,
         pairedAt: pairing.pairedAt,
+        decryptedFolder: pairing.decryptedFolder || `${pairing.accountId}/${vaultId}`,
         lastRun: last ? { at: last.startedAt, ok: last.ok } : null
       })
     } catch {
@@ -154,6 +170,8 @@ export class BackupService {
       try {
         const grant = JSON.parse(await readFile(join(dir, vaultId, 'grant.json'), 'utf8')) as BackupGrant
         const pairing = JSON.parse(await readFile(join(dir, vaultId, 'pairing.json'), 'utf8')) as Pairing
+        // Paired before folders were picked per vault: a name that cannot be another's.
+        if (typeof pairing.decryptedFolder !== 'string' || pairing.decryptedFolder === '') pairing.decryptedFolder = `${pairing.accountId}/${vaultId}`
         const runs = await readFile(join(dir, vaultId, 'runs.json'), 'utf8').then(
           (raw) => JSON.parse(raw) as RunReport[],
           () => []
@@ -198,7 +216,7 @@ export class BackupService {
   async info(): Promise<BackupServerInfo> {
     let free: number | undefined
     try {
-      const stats = await statfs(this.options.root)
+      const stats = await statfs(this.options.encryptedRoot)
       free = stats.bavail * stats.bsize
     } catch {
       // not every system says
@@ -209,7 +227,35 @@ export class BackupService {
     } catch (error) {
       restic = `not usable: ${error instanceof Error ? error.message : String(error)}`
     }
-    return { name: this.options.name, version: this.options.version, restic, root: this.options.root, free }
+    return { name: this.options.name, version: this.options.version, restic, free }
+  }
+
+  /** A vault's folders here, absolute. */
+  private folders(vaultId: string, pairing: Pairing): VaultFolders {
+    return {
+      encrypted: join(this.options.encryptedRoot, vaultId),
+      decrypted: join(this.options.decryptedRoot, ...pairing.decryptedFolder.split('/'))
+    }
+  }
+
+  /**
+   * The folder of a vault's decrypted copy: `<account name>/<vault name>`, so
+   * the operator finds each person's vaults - with the account's id added
+   * when another account of that name has the folder, since names are not
+   * unique. A folder holding this vault's copy from an earlier pairing is
+   * taken again.
+   */
+  private async decryptedFolderFor(grant: BackupGrant, label: string): Promise<string> {
+    const vault = vaultFolder(grant.vaultName)
+    const person = vaultFolder(grant.accountName?.trim() || label.trim() || grant.accountId.slice(0, 8))
+    const short = grant.accountId.slice(0, 8)
+    const taken = new Set(Array.from(this.vaults, ([id, other]) => (id === grant.vaultId ? '' : other.pairing.decryptedFolder)))
+    for (const candidate of [`${person}/${vault}`, `${person} (${short})/${vault}`, `${person} (${short})/${vault} (${grant.vaultId.slice(0, 8)})`]) {
+      if (taken.has(candidate)) continue
+      const owner = await copyOf(join(this.options.decryptedRoot, ...candidate.split('/'))).catch(() => '')
+      if (owner === null || owner === grant.vaultId) return candidate
+    }
+    return `${grant.accountId}/${grant.vaultId}`
   }
 
   /** The backup key has to open the vault on the sync server this backup server talks to. */
@@ -243,7 +289,8 @@ export class BackupService {
       routeId: (await backupRouteKeys(secret)).routeId,
       accountId: grant.accountId,
       label,
-      pairedAt: this.now
+      pairedAt: this.now,
+      decryptedFolder: existing?.pairing.decryptedFolder ?? (await this.decryptedFolderFor(grant, label))
     }
     const dir = vaultDir(this.options.dataDir, grant.vaultId)
     await mkdir(dir, { recursive: true })
@@ -275,8 +322,8 @@ export class BackupService {
   }
 
   /**
-   * Forgets a vault: its keys, its cache, its runs. Its repositories and
-   * trusted copy stay where they are. `announce`: drop its route now - a
+   * Forgets a vault: its keys, its cache, its runs. Its repository and
+   * decrypted copy stay where they are. `announce`: drop its route now - a
    * session on that route answers first and announces it after
    * (`announceRoutes`), since the relay ends the session with its route.
    */
@@ -313,7 +360,7 @@ export class BackupService {
 
   // --- a rollback reading from the backups ------------------------------------------
 
-  /** The repositories a vault backs up into, and its folder in them; the settings are read when not known yet. */
+  /** The repository a vault backs up into, and its folder in it; the settings are read when not known yet. */
   private async repositories(vaultId: string): Promise<{ destinations: Destination[]; folder: string }> {
     const vault = this.vaults.get(vaultId)
     if (!vault) throw new Error('this backup server no longer has this vault')
@@ -355,20 +402,48 @@ export class BackupService {
     return readBackup(this.options.restic, found.destination, found.ref, paths, send)
   }
 
-  /** The local folders every other vault's destinations use here. */
-  localPathsBesides(vaultId: string): string[] {
-    return Array.from(this.vaults.entries())
-      .filter(([id]) => id !== vaultId)
-      .flatMap(([, other]) => other.config?.localPaths ?? [])
+  /**
+   * Whether a backup task can be carried out, before a device saves it: its
+   * folders writable, the decrypted copy's not someone else's, the
+   * repository opening with its password - made where there is none yet.
+   */
+  async checkTask(vaultId: string, task: Partial<BackupTaskSetting>): Promise<{ ok: boolean; error?: string; created?: boolean }> {
+    const vault = this.vaults.get(vaultId)
+    if (!vault) throw new Error('this backup server no longer has this vault')
+    if (!task || typeof task !== 'object') return { ok: false, error: 'no backup task given' }
+    const folders = this.folders(vaultId, vault.pairing)
+    const shown = shownFolders(vaultId, vault.pairing)
+    const destination = repositoryOf(task, folders)
+    if ('error' in destination) return { ok: false, error: destination.error }
+    if (task.where === 'local') {
+      const problem = await writable(folders.encrypted)
+      if (problem) return { ok: false, error: problem }
+    }
+    if (task.decrypted === true) {
+      const problem = await writable(folders.decrypted)
+      if (problem) return { ok: false, error: problem }
+      const owner = await copyOf(folders.decrypted)
+      if (owner !== null && owner !== vaultId) return { ok: false, error: `${shown.decrypted} on the backup server holds something else already` }
+    }
+    try {
+      const opened = await this.options.restic.ensureRepo({ repository: destination.repository, password: destination.password, env: destination.env })
+      return { ok: true, created: opened === 'created' }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      if (task.where === 'local' && /password is wrong/.test(reason)) {
+        return { ok: false, error: `a repository from before lies in ${shown.encrypted} under another password - give that one, or have it moved away on the backup server` }
+      }
+      return { ok: false, error: reason }
+    }
   }
 
-  /** Reads the vault's settings again: the entries naming its pairing's route. */
+  /** Reads the vault's settings again: its backup task under its pairing's route. */
   async refresh(vaultId: string): Promise<VaultConfig> {
     const vault = this.vaults.get(vaultId)
     if (!vault) throw new Error('this backup server no longer has this vault')
     const keys = await VaultKeys.open(vault.grant)
     const settings = await fetchSettings(new SyncClient(this.options.server, vault.grant.backupKey), keys)
-    vault.config = readConfig(settings, vault.pairing.routeId, this.options.root, this.localPathsBesides(vaultId))
+    vault.config = readConfig(settings, vault.pairing.routeId, this.folders(vaultId, vault.pairing))
     vault.configAt = this.now
     return vault.config
   }
@@ -380,8 +455,8 @@ export class BackupService {
       vaultId,
       running: vault.running || this.waiting.has(vaultId),
       nextRunAt: this.nextRunAt(vault),
-      targets: vault.config?.accepted ?? [],
-      seen: vault.config?.seen ?? [],
+      ready: vault.config?.ready ?? false,
+      folders: shownFolders(vaultId, vault.pairing),
       everyHours: vault.config?.everyHours ?? 0,
       settingsDigest: vault.config?.digest ?? '',
       problems: vault.config?.problems ?? [],
@@ -420,7 +495,7 @@ export class BackupService {
         config = vault.config
         if (!config) throw error
       }
-      if (config.config.destinations.length === 0 && !config.config.trusted) throw new Error('no destination is set for this backup server')
+      if (!config.ready) throw new Error(config.problems[0] ?? 'the vault has no backup task for this backup server yet')
       report = await runBackup(
         { id: vaultId, grant: { ...vault.grant, server: this.options.server }, config: config.config },
         { dataDir: this.options.dataDir, workDir: this.options.workDir, restic: this.options.restic, now: this.options.now },

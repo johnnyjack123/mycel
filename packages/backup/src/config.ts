@@ -1,41 +1,44 @@
 import { createHash } from 'node:crypto'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
-import { join, relative, resolve, sep, isAbsolute } from 'node:path'
+import { join } from 'node:path'
 import {
-  BACKUP_SCHEDULE_KEY,
-  BACKUP_TARGET_KEY,
+  BACKUP_TASK_KEY,
   SETTINGS_FIELD,
   backupGuard,
   backupSettingsText,
   settingsRoom,
-  type BackupScheduleSetting,
-  type BackupTargetSetting,
+  type BackupTaskSetting,
   type KeepPolicy
 } from '@obsidian-connect/shared'
 import type { VaultKeys } from './keys.js'
 import type { Destination, JobConfig } from './run.js'
 import { SyncError, type SyncClient } from './sync.js'
 
-// What a vault's owner set for this backup server, read from the vault's
-// account-wide settings document - encrypted, synced to every device, read
-// here with the backup key - and checked against what the backup server may
-// do: local paths only below its backup folder, and never into another
-// vault's destination.
+// What a vault's owner set for this backup server - its backup task, read
+// from the vault's account-wide settings document: encrypted, synced to every
+// device, read here with the backup key. The folders are this backup
+// server's to pick, never the settings': a repository on it lies in its
+// folder for encrypted vaults under the vault's id, the decrypted copy in its
+// folder for decrypted vaults under the account's name and the vault's.
 
 export interface VaultConfig {
   config: JobConfig
   /** 0: only when started by hand. */
   everyHours: number
-  /** Settings this backup server cannot use, and why. */
+  /** It found the task, and can carry it out. */
+  ready: boolean
+  /** What in the task this backup server cannot use, and why. */
   problems: string[]
-  /** The local folders the destinations use, absolute. */
-  localPaths: string[]
-  /** The ids of the targets taken. */
-  accepted: string[]
-  /** The ids of every target for this backup server, taken or not. */
-  seen: string[]
   /** Of what was read for this route, for the devices to tell it read their newest settings. */
   digest: string
+}
+
+/** This backup server's folders for one vault, absolute. */
+export interface VaultFolders {
+  /** The repository, when the task keeps it on the backup server. */
+  encrypted: string
+  /** The decrypted copy. */
+  decrypted: string
 }
 
 const KEEP_RULES = ['last', 'hourly', 'daily', 'weekly', 'monthly', 'yearly'] as const
@@ -44,21 +47,6 @@ const KEEP_RULES = ['last', 'hourly', 'daily', 'weekly', 'monthly', 'yearly'] as
 export function isRemote(location: string): boolean {
   if (/^local:/i.test(location) || /^[a-z]:[\\/]/i.test(location)) return false
   return /^[a-z][a-z0-9+.-]*:/i.test(location)
-}
-
-/** The absolute folder a local location means, or why it may not be used. */
-export function localFolder(location: string, root: string): { path: string } | { error: string } {
-  const plain = location.replace(/^local:/i, '').trim()
-  if (plain === '') return { error: 'no folder given' }
-  const absolute = resolve(root, plain)
-  const below = relative(resolve(root), absolute)
-  if (below === '' || below.startsWith('..') || isAbsolute(below)) return { error: `${location} is not a folder below ${root}` }
-  return { path: absolute }
-}
-
-/** Whether two folders are one, or one lies inside the other. */
-export function overlapping(a: string, b: string): boolean {
-  return a === b || a.startsWith(`${b}${sep}`) || b.startsWith(`${a}${sep}`)
 }
 
 function keepOf(value: unknown): KeepPolicy | undefined {
@@ -82,88 +70,55 @@ export function envOf(value: unknown): Record<string, string> | undefined {
 }
 
 /**
- * The settings for this backup server from the vault's settings map.
- * `elsewhere`: local folders other vaults' destinations use here.
+ * The repository a task names - this backup server's folder for the vault, or
+ * the cloud location -, under an id that changes with it: what a run keeps
+ * per repository must not carry over to another one.
  */
-export function readConfig(settings: ReadonlyMap<string, unknown>, routeId: string, root: string, elsewhere: readonly string[]): VaultConfig {
+export function repositoryOf(task: Partial<BackupTaskSetting>, folders: VaultFolders): Destination | { error: string } {
+  if (typeof task.password !== 'string' || task.password === '') return { error: 'the repository needs a password' }
+  if (task.where === 'local') return { id: 'local', repository: folders.encrypted, password: task.password }
+  if (task.where !== 'cloud') return { error: 'the task says neither "local" nor "cloud" for the repository' }
+  const location = typeof task.location === 'string' ? task.location.trim() : ''
+  if (!isRemote(location)) return { error: `"${location}" is not a cloud location: one restic reaches, such as s3:…, b2:…, rest:… or sftp:…` }
+  const destination: Destination = {
+    id: `cloud-${createHash('sha256').update(location).digest('hex').slice(0, 12)}`,
+    repository: location,
+    password: task.password
+  }
+  const env = envOf(task.env)
+  if (env) destination.env = env
+  return destination
+}
+
+/** The vault's backup task for this backup server, from the vault's settings map. */
+export function readConfig(settings: ReadonlyMap<string, unknown>, routeId: string, folders: VaultFolders): VaultConfig {
   const result: VaultConfig = {
     config: { destinations: [], trusted: null },
     everyHours: 0,
+    ready: false,
     problems: [],
-    localPaths: [],
-    accepted: [],
-    seen: [],
     digest: createHash('sha256').update(backupSettingsText(settings, routeId)).digest('hex')
   }
-  const schedule = settings.get(`${BACKUP_SCHEDULE_KEY}${routeId}`) as Partial<BackupScheduleSetting> | undefined
-  if (schedule && typeof schedule.everyHours === 'number' && Number.isFinite(schedule.everyHours) && schedule.everyHours > 0) {
-    result.everyHours = Math.max(1, Math.round(schedule.everyHours))
+  const value = settings.get(`${BACKUP_TASK_KEY}${routeId}`)
+  if (!value || typeof value !== 'object') return result
+  const task = value as Partial<BackupTaskSetting>
+  if (task.server !== routeId) return result
+  if (typeof task.everyHours === 'number' && Number.isFinite(task.everyHours) && task.everyHours > 0) {
+    result.everyHours = Math.max(1, Math.round(task.everyHours))
   }
-
-  const targets: BackupTargetSetting[] = []
-  for (const [key, value] of settings) {
-    if (!key.startsWith(BACKUP_TARGET_KEY) || !value || typeof value !== 'object') continue
-    const target = value as Partial<BackupTargetSetting>
-    if (target.server !== routeId || typeof target.id !== 'string' || typeof target.location !== 'string') continue
-    targets.push(target as BackupTargetSetting)
+  const destination = repositoryOf(task, folders)
+  if ('error' in destination) {
+    result.problems.push(destination.error)
+    return result
   }
-  targets.sort((a, b) => (a.addedAt ?? 0) - (b.addedAt ?? 0) || (a.id < b.id ? -1 : 1))
-  result.seen = targets.map((target) => target.id)
-
-  const claim = (target: BackupTargetSetting, path: string): boolean => {
-    if (elsewhere.some((other) => overlapping(other, path))) {
-      result.problems.push(`${target.location}: another vault on this backup server uses this folder, or one around it`)
-      return false
-    }
-    if (result.localPaths.some((own) => overlapping(own, path))) {
-      result.problems.push(`${target.location}: lies in or around another destination of this vault`)
-      return false
-    }
-    result.localPaths.push(path)
-    return true
+  const keep = keepOf(task.keep)
+  if (keep) destination.keep = keep
+  result.config.destinations.push(destination)
+  if (task.decrypted === true) {
+    result.config.trusted = folders.decrypted
+    result.config.trustedGuard = backupGuard(task.guard)
   }
-
-  for (const target of targets) {
-    if (target.kind === 'trusted') {
-      if (result.config.trusted) {
-        result.problems.push(`${target.location}: only one trusted copy per backup server`)
-        continue
-      }
-      const folder = localFolder(target.location, root)
-      if ('error' in folder) {
-        result.problems.push(folder.error)
-        continue
-      }
-      if (claim(target, folder.path)) {
-        result.config.trusted = folder.path
-        result.config.trustedGuard = backupGuard(target.guard)
-        result.accepted.push(target.id)
-      }
-      continue
-    }
-    if (target.kind !== 'restic') continue
-    if (typeof target.password !== 'string' || target.password === '') {
-      result.problems.push(`${target.location}: the repository needs a password`)
-      continue
-    }
-    let repository = target.location.trim()
-    if (!isRemote(repository)) {
-      const folder = localFolder(repository, root)
-      if ('error' in folder) {
-        result.problems.push(folder.error)
-        continue
-      }
-      if (!claim(target, folder.path)) continue
-      repository = folder.path
-    }
-    const destination: Destination = { id: target.id, repository, password: target.password }
-    const env = envOf(target.env)
-    if (env) destination.env = env
-    const keep = keepOf(target.keep)
-    if (keep) destination.keep = keep
-    result.config.destinations.push(destination)
-    result.accepted.push(target.id)
-  }
+  result.ready = true
   return result
 }
 

@@ -364,19 +364,28 @@ people: whoever runs it can read the vaults on it.
   pairing's route a session reaches that vault and nothing else, and a vault
   paired with one account is never taken over by another. A password change
   `rekey`s over the pairing; only a lost vault needs a new invitation.
-- **Set up from the plugin.** Destinations and schedule live in the vault's settings
-  document (`backupServer:`, `backupTarget:`, `backupSchedule:`), which the backup
-  server reads with its key; local folders only below its backup folder, never in or
-  around another vault's. After a change the device waits until the backup server's
-  status carries the hash of the same settings (`backupSettingsText`) - comparing
-  ids let a run go by the settings before an edit of retention.
+- **One backup server per vault, one task** (0.7.17, `docs/PHASE6.md`, "One backup
+  task per vault"). Connecting another backup server replaces it. The task lives in
+  the vault's settings document (`backupServer:<routeId>`, `backupTask:<routeId>`),
+  which the backup server reads with its key: the restic repository *on the backup
+  server* or *in a cloud* (a restic location and credentials), its password,
+  retention, schedule, and whether a **decrypted copy** (*trusted*) is kept besides.
+  There is always a repository; the copy never stands alone. Nobody types a path:
+  the backup server keeps a repository in `encrypted/<vault id>/` and a copy in
+  `decrypted/<account name>/<vault name>/` (another account of that name gets its id
+  added), picked once at pairing (`decryptedFolder`). After a change the device waits
+  until the backup server's status carries the hash of the same settings
+  (`backupSettingsText`) - comparing ids let a run go by the settings before an edit
+  of retention.
 - **A run** (`run.ts`): what changed into an encrypted cache (rooms by their tag, a log
   from its last frame, compared - invariant 19), the layout from the index (vault,
   trash, settings without contacts), notes and canvases into a RAM disk for restic,
   every other file as a tar stream (killed before it ends when producing it fails),
-  every snapshot checked back, the trusted copy brought level - never emptied, only
-  its own files touched, held when more than its guard's share (50 % unless set) of
-  the notes, or of the files, vanished - counted apart.
+  every snapshot checked back, and only then - once the repository took the run - the
+  copy brought level: the vault at its top so it opens as a vault, trash and settings
+  in its hidden `.obsidian-connect/`, never emptied, only its own files touched, held
+  when more than its guard's share (50 % unless set) of the notes, or of the files,
+  vanished - counted apart.
 
 ### Around the notes
 
@@ -502,7 +511,7 @@ join snapshot while it is still their starting point.
 
 **Rolling back** (`sync/Rollback.ts`, `history/RollbackModal.ts`, 0.7.8): the vault
 or a folder back to a moment. The index replayed to it (`history/RoomHistory.ts`)
-and each note's history give the plan; a fresh backup on every backup server
+and each note's history give the plan; a fresh backup on the backup server
 (`Backups.backUpFresh`) and a copy into the plugin's `rollbacks/` come first -
 `apply` refuses otherwise, unless agreed -, a `rollback:<id>` record in the
 settings, then trashing, moving, restoring and editing as a person would, so every
@@ -585,8 +594,9 @@ scanned by an authenticator app and the `otpauth://` link opening one.
   publishes it to `ghcr.io/johnnyjack123/obsidian-connect-server`. A broken
   `Dockerfile` shows up there and nowhere earlier. The `docker-backup` job builds
   and starts `Dockerfile.backup` on every push (restic runs, an invitation is made
-  and kept, the server survives an unreachable sync server, takes over a bind-mounted
-  folder that is not its own, and registers its invitations at a real sync server) and publishes
+  and kept, ssh is there for `sftp:`, the server survives an unreachable sync server,
+  takes over its three bind-mounted folders when they are not its own, and registers
+  its invitations at a real sync server) and publishes
   `obsidian-connect-backup` from `main` only. Every Dockerfile copies every
   workspace's `package.json` before `npm ci`.
 - **Both images start as root and drop to `PUID`:`PGID` (1000:1000)** in
