@@ -355,6 +355,8 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --entrypoint restic obsidian-connect-backup:smoke version
+          # restic reaches an sftp: repository through ssh.
+          docker run --rm --entrypoint ssh obsidian-connect-backup:smoke -V
           docker volume create smoke-backup-data
           made=$(docker run --rm -v smoke-backup-data:/data obsidian-connect-backup:smoke obsidian-connect-backup invite smoke)
           echo "$made"
@@ -402,14 +404,16 @@ jobs:
           npm ci
           OBSIDIAN_CONNECT_JWT_SECRET=ci-only-secret npm run start:server > server.log 2>&1 &
           for _ in $(seq 1 30); do curl -sf http://localhost:1234/health > /dev/null && break; sleep 1; done
-          # A bind-mounted data folder that is the runner's, as a fresh setup's would be someone else's:
+          # Bind-mounted folders that are the runner's, as a fresh setup's would be someone else's:
           # handed over at start, and an invitation made through docker exec - as root - read by
           # the running backup server, which runs as user 1000.
-          mkdir -p backup-bind
+          mkdir -p backup-bind encrypted-bind decrypted-bind
           docker run -d --name relay-backup --network host \
             -e OBSIDIAN_CONNECT_SERVER=ws://127.0.0.1:1234 \
             --tmpfs /run/obsidian-connect-backup:mode=1777 \
             -v "$PWD/backup-bind:/data" \
+            -v "$PWD/encrypted-bind:/encrypted" \
+            -v "$PWD/decrypted-bind:/decrypted" \
             obsidian-connect-backup:smoke
           sleep 2
           made=$(docker exec relay-backup obsidian-connect-backup invite smoke)
@@ -421,10 +425,10 @@ jobs:
             echo "::error::the backup server in the image did not register its invitation at the sync server"
             exit 1
           fi
-          owners=$(docker exec relay-backup stat -c '%u' /data /data/invites.json /proc/1 | sort -u)
+          owners=$(docker exec relay-backup stat -c '%u' /data /data/invites.json /encrypted /decrypted /proc/1 | sort -u)
           echo "owners: $owners"
           if [ "$owners" != "1000" ]; then
-            echo "::error::the data folder, the invitation written through docker exec, or the backup server process is not user 1000's"
+            echo "::error::a folder, the invitation written through docker exec, or the backup server process is not user 1000's"
             exit 1
           fi
           docker rm -f relay-backup

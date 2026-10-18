@@ -4,10 +4,9 @@ import type {
   BackupGrant,
   BackupListedEntry,
   BackupSnapshotRef,
-  BackupScheduleSetting,
   BackupServerInfo,
   BackupServerSetting,
-  BackupTargetSetting,
+  BackupTaskSetting,
   BackupVaultStatus,
   KeepPolicy
 } from '@obsidian-connect/shared'
@@ -16,11 +15,14 @@ import { log } from '../log'
 import type { AccountSettings } from '../sync/AccountSettings'
 import { openInviteSession, openPairingSession, type BackupSession } from './BackupLink'
 
-// This vault's backup servers, as the settings show them: connecting one with
-// an invitation, where it puts the vault and how often, starting a run, what
-// came of it. The settings - the pairing secrets among them - live in the
-// account-wide settings document, so every device of the account reaches each
-// backup server for this vault; the sessions are this device's own.
+// This vault's backup server, as the settings show it: connecting one with an
+// invitation, its backup task - where the repository lies, how long and how
+// often, a decrypted copy or not -, starting a run, what came of it. A vault
+// has one backup server; connecting another replaces it. The settings - the
+// pairing secret among them - live in the account-wide settings document, so
+// every device of the account reaches the backup server for this vault; the
+// sessions are this device's own. A list all the same: two devices
+// connecting two backup servers at once leave both, until one is let go.
 
 export interface BackupsDeps {
   serverUrl: () => string
@@ -37,8 +39,8 @@ export interface BackupsDeps {
 /** What the settings show for one backup server. */
 export interface BackupServerView {
   setting: BackupServerSetting
-  targets: BackupTargetSetting[]
-  everyHours: number
+  /** Null until it is set up: the backup server backs up nothing before. */
+  task: BackupTaskSetting | null
   /** Null while it was not asked yet, or could not be reached. */
   status: BackupVaultStatus | null
   info: BackupServerInfo | null
@@ -54,7 +56,7 @@ export const SCHEDULES: ReadonlyArray<{ hours: number; label: string }> = [
   { hours: 168, label: 'Every week' }
 ]
 
-const DEFAULT_EVERY_HOURS = 24
+export const DEFAULT_EVERY_HOURS = 24
 // Reading a backup back means restic going through a whole snapshot.
 const READ_TIMEOUT_MS = 30 * 60 * 1000
 export const DEFAULT_KEEP: KeepPolicy = { last: 3, daily: 7, weekly: 5, monthly: 12, yearly: 3 }
@@ -109,8 +111,7 @@ export class Backups {
     const known = this.views.get(routeId)
     return {
       setting,
-      targets: (this.deps.settings()?.backupTargets(routeId) ?? []).sort((a, b) => a.addedAt - b.addedAt),
-      everyHours: this.deps.settings()?.backupSchedule(routeId)?.everyHours ?? 0,
+      task: this.deps.settings()?.backupTask(routeId) ?? null,
       status: known?.status ?? null,
       info: known?.info ?? null,
       error: known?.error ?? null
@@ -174,6 +175,8 @@ export class Backups {
    * Connects this vault with an invitation from a backup server's operator: a
    * backup key for it, handed over inside the session, and the pairing secret
    * it answers with, kept in the settings every device of the account shares.
+   * A vault has one backup server: another one is let go once this one took
+   * the vault. The same one connected again keeps its task.
    */
   async connect(invitation: string, password: string, label: string): Promise<BackupServerSetting> {
     const session = await openInviteSession(this.deps.serverUrl(), this.token, invitation)
@@ -195,17 +198,16 @@ export class Backups {
       const previous = connected.replaced ? this.server(connected.replaced) : undefined
       settings.setBackupServer(routeId, setting)
       if (previous) {
-        // The same vault connected again: its destinations and schedule carry on under the new pairing.
-        for (const target of settings.backupTargets(previous.routeId)) settings.setBackupTarget(target.id, { ...target, server: routeId })
-        const schedule = settings.backupSchedule(previous.routeId)
-        if (schedule) settings.setBackupSchedule(routeId, { ...schedule, server: routeId })
-        settings.setBackupSchedule(previous.routeId, null)
+        // The same vault connected again: its task carries on under the new pairing.
+        const task = settings.backupTask(previous.routeId)
+        if (task) settings.setBackupTask(routeId, { ...task, server: routeId })
+        settings.setBackupTask(previous.routeId, null)
         settings.setBackupServer(previous.routeId, null)
         if (previous.keyId !== grant.keyId) await this.deps.deleteKey(previous.keyId).catch(() => undefined)
         this.forgetSession(previous.routeId)
       }
-      if (!settings.backupSchedule(routeId)) {
-        settings.setBackupSchedule(routeId, { server: routeId, everyHours: DEFAULT_EVERY_HOURS } satisfies BackupScheduleSetting)
+      for (const other of this.servers()) {
+        if (other.routeId !== routeId) await this.disconnect(other.routeId)
       }
       this.remember(routeId, { status: null, info, error: null })
       if (previous) await this.refreshServer(routeId)
@@ -259,7 +261,7 @@ export class Backups {
     return done
   }
 
-  /** Takes the vault off a backup server: its key goes, its settings go. Its repositories stay where they are. */
+  /** Takes the vault off a backup server: its key goes, its settings go. Its repository and copy stay where they are. */
   async disconnect(routeId: string): Promise<void> {
     const setting = this.server(routeId)
     if (!setting) return
@@ -279,58 +281,62 @@ export class Backups {
     if (!setting) return
     await this.deps.deleteKey(setting.keyId).catch(() => undefined)
     const settings = this.settings
-    for (const target of settings.backupTargets(routeId)) settings.setBackupTarget(target.id, null)
-    settings.setBackupSchedule(routeId, null)
+    settings.setBackupTask(routeId, null)
     settings.setBackupServer(routeId, null)
     this.forgetSession(routeId)
     this.views.delete(routeId)
     this.changed()
   }
 
-  /**
-   * Adds a destination after the backup server checked it - its folder, and
-   * for restic the repository and password, made if there is none.
-   */
-  async addTarget(routeId: string, target: Pick<BackupTargetSetting, 'kind' | 'location' | 'password' | 'env' | 'keep' | 'guard'>): Promise<{ created: boolean }> {
+  /** What the backup server says of a task before it is saved. */
+  private async check(routeId: string, task: BackupTaskSetting): Promise<{ created: boolean }> {
     const session = await this.session(routeId)
-    const checked = await session.call<{ ok: boolean; created?: boolean; error?: string }>('check', { target })
-    if (!checked.ok) throw new Error(checked.error ?? 'The backup server cannot use this destination.')
-    const id = toHex(randomBytes(8))
-    this.settings.setBackupTarget(id, { ...target, id, server: routeId, addedAt: Date.now() })
-    await this.refreshServer(routeId)
+    const checked = await session.call<{ ok: boolean; created?: boolean; error?: string }>('check', { task })
+    if (!checked.ok) throw new Error(checked.error ?? 'The backup server cannot carry this out.')
     return { created: checked.created === true }
   }
 
   /**
-   * Changes what can change of a destination: its retention, credentials,
-   * guard. New credentials are checked by the backup server first, as a new
-   * destination is.
+   * Sets the vault's backup task up, once the backup server checked it: its
+   * folders, the repository opening with the password - made where there is
+   * none yet.
    */
-  async updateTarget(routeId: string, id: string, patch: Pick<BackupTargetSetting, 'keep' | 'env' | 'guard'>): Promise<void> {
-    const current = this.settings.backupTargets(routeId).find((target) => target.id === id)
-    if (!current) throw new Error('That destination is gone.')
-    const next: BackupTargetSetting = { ...current }
-    for (const key of ['keep', 'env', 'guard'] as const) {
+  async setTask(routeId: string, task: Omit<BackupTaskSetting, 'server' | 'createdAt' | 'everyHours'> & { everyHours?: number }): Promise<{ created: boolean }> {
+    const full: BackupTaskSetting = { ...task, server: routeId, everyHours: task.everyHours ?? DEFAULT_EVERY_HOURS, createdAt: Date.now() }
+    const checked = await this.check(routeId, full)
+    this.settings.setBackupTask(routeId, full)
+    await this.refreshServer(routeId)
+    return checked
+  }
+
+  /**
+   * Changes what can change of the task: how long and how often, the
+   * credentials, the decrypted copy and its guard. The repository's place and
+   * password stay - another repository is another task. Checked by the backup
+   * server first when the credentials change or the copy is turned on. A key
+   * given as undefined is cleared.
+   */
+  async updateTask(routeId: string, patch: Partial<Pick<BackupTaskSetting, 'keep' | 'env' | 'decrypted' | 'guard' | 'everyHours'>>): Promise<void> {
+    const current = this.settings.backupTask(routeId)
+    if (!current) throw new Error('This vault has no backup task any more.')
+    const next: BackupTaskSetting = { ...current }
+    for (const key of Object.keys(patch) as Array<keyof typeof patch>) {
       if (patch[key] === undefined) delete next[key]
       else (next as unknown as Record<string, unknown>)[key] = patch[key]
     }
-    if (next.kind === 'restic' && JSON.stringify(next.env ?? {}) !== JSON.stringify(current.env ?? {})) {
-      const session = await this.session(routeId)
-      const checked = await session.call<{ ok: boolean; error?: string }>('check', { target: next })
-      if (!checked.ok) throw new Error(checked.error ?? 'The backup server cannot use these credentials.')
-    }
-    this.settings.setBackupTarget(id, next)
+    if (JSON.stringify(next.env ?? {}) !== JSON.stringify(current.env ?? {}) || (next.decrypted && !current.decrypted)) await this.check(routeId, next)
+    this.settings.setBackupTask(routeId, next)
     await this.refreshServer(routeId)
   }
 
-  async removeTarget(routeId: string, id: string): Promise<void> {
-    this.settings.setBackupTarget(id, null)
+  /** No more backups. The repository and the decrypted copy stay where they are. */
+  async removeTask(routeId: string): Promise<void> {
+    this.settings.setBackupTask(routeId, null)
     await this.refreshServer(routeId)
   }
 
   async setSchedule(routeId: string, everyHours: number): Promise<void> {
-    this.settings.setBackupSchedule(routeId, { server: routeId, everyHours })
-    await this.refreshServer(routeId)
+    await this.updateTask(routeId, { everyHours })
   }
 
   /**
@@ -457,25 +463,28 @@ export class Backups {
 
   /**
    * What deserves a notice: a backup server whose last run failed, whose
-   * trusted copy waits, or whose last good backup is overdue - also when it
+   * decrypted copy waits, or whose last good backup is overdue - also when it
    * cannot be reached, since a backup server that is down is the case that
-   * matters. Asks every backup server first.
+   * matters, and when it was never given a task. Asks every backup server
+   * first.
    */
   async problems(now = Date.now()): Promise<string[]> {
     const found: string[] = []
     for (const server of this.servers()) {
       const view = await this.ask(server.routeId)
       if (!view) continue
-      const every = view.everyHours > 0 ? view.everyHours : 72
+      const every = (view.task?.everyHours ?? 0) > 0 ? (view.task?.everyHours as number) : 72
       const lastGood = this.deps.lastGood()[server.routeId] ?? server.addedAt
       const overdue = now - lastGood > 2 * every * HOUR_MS
       const last = view.status?.runs[0]
       if (view.error && NO_LONGER_HAS_VAULT.test(view.error)) {
         found.push(`${server.label} no longer has this vault; connect it again with a new invitation`)
+      } else if (!view.task && overdue) {
+        found.push(`${server.label} backs up nothing: set up the backup in the settings`)
       } else if (view.status && last && !last.ok) {
         found.push(`${server.label}: the last backup failed - ${last.error ?? last.destinations.find((d) => !d.ok)?.error ?? 'see the settings'}`)
       } else if (last?.trusted?.held) {
-        found.push(`${server.label}: the trusted copy waits - ${last.trusted.held}`)
+        found.push(`${server.label}: the decrypted copy waits - ${last.trusted.held}`)
       } else if (overdue) {
         const since = new Date(lastGood).toLocaleString()
         found.push(view.error ? `${server.label} cannot be reached, and the last good backup is from ${since}` : `${server.label}: no good backup since ${since}`)

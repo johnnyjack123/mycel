@@ -15,7 +15,7 @@ import {
   docRoom,
   settingsRoom,
   userColor,
-  type BackupTargetSetting,
+  type BackupTaskSetting,
   type CollabUser,
   type ContactNotice,
   type Notice as ServerNotice,
@@ -32,7 +32,7 @@ import { PasswordPromptModal, RecoveryCodeModal } from './account/RecoveryModals
 import { TotpSetupModal, askKeepTotp, askTotpCode } from './account/TotpModals'
 import { Session, type OpenVault, type SecretStore, type Unlocked } from './account/Session'
 import { Backups } from './backup/Backups'
-import { BackupConnectModal, BackupTargetModal } from './backup/BackupModals'
+import { BackupConnectModal, BackupTaskModal } from './backup/BackupModals'
 import { EditorSync } from './editor/EditorSync'
 import { BackupModal } from './history/BackupModal'
 import { HistoryModal } from './history/HistoryModal'
@@ -680,12 +680,24 @@ export default class ObsidianConnectPlugin extends Plugin {
       new Notice('Obsidian Connect: backups are set up while this vault syncs.')
       return
     }
-    new BackupConnectModal(this.app, this.backupServers, () => this.settingTab?.refresh(), again).open()
+    new BackupConnectModal(
+      this.app,
+      this.backupServers,
+      (connected) => {
+        this.settingTab?.refresh()
+        // A backup server backs up nothing before it has a task: that comes next, unless it carried one over.
+        if (connected && !this.accountSettings?.backupTask(connected.routeId)) void this.openBackupTask(connected.routeId)
+        else if (connected) new Notice(`Obsidian Connect: ${connected.label} is connected and backs up as before.`, 8_000)
+      },
+      again
+    ).open()
   }
 
-  /** `existing`: a destination to change; none adds one. */
-  openBackupTarget(routeId: string, root: string | null, hasTrusted: boolean, existing: BackupTargetSetting | null = null): void {
-    new BackupTargetModal(this.app, this.backupServers, routeId, root, hasTrusted, () => this.settingTab?.refresh(), existing).open()
+  /** `existing`: the task to change; none sets one up. */
+  async openBackupTask(routeId: string, existing: BackupTaskSetting | null = null): Promise<void> {
+    // Asked first when it was not yet, so the form can name the backup server's folders for this vault.
+    if (!this.backupServers.view(routeId)?.status) await this.backupServers.ask(routeId)
+    new BackupTaskModal(this.app, this.backupServers, routeId, () => this.settingTab?.refresh(), existing).open()
   }
 
   private async backUpNow(): Promise<void> {

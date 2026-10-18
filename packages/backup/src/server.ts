@@ -15,8 +15,10 @@ export interface BackupServerOptions {
   /** The sync server, `ws(s)://host:port` as devices are given it. */
   server: string
   dataDir: string
-  /** Local destinations lie below this folder. */
-  root: string
+  /** The repositories kept on the backup server, one folder per vault. */
+  encryptedRoot: string
+  /** The decrypted copies, `<account name>/<vault name>`. */
+  decryptedRoot: string
   /** The RAM disk notes are laid out in during a run. */
   workDir: string
   resticBinary: string
@@ -47,7 +49,8 @@ export async function startBackupServer(options: BackupServerOptions): Promise<R
   const service = await BackupService.open({
     server: options.server,
     dataDir: options.dataDir,
-    root: options.root,
+    encryptedRoot: options.encryptedRoot,
+    decryptedRoot: options.decryptedRoot,
     workDir: options.workDir,
     restic,
     name: options.name,
@@ -108,8 +111,6 @@ export async function startBackupServer(options: BackupServerOptions): Promise<R
     serveSession(session, {
       route: (routeId) => routes.get(routeId) ?? null,
       service,
-      restic,
-      root: options.root,
       now: options.now ?? Date.now,
       paired: async (routeId) => {
         await refreshRoutes()

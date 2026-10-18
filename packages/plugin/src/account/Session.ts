@@ -293,6 +293,7 @@ export class Session {
     const grant: BackupGrant = {
       server: this.serverUrl(),
       accountId: unlocked.accountId,
+      accountName: unlocked.username,
       vaultId: vault.vaultId,
       vaultName: vault.name,
       vaultKey: toBase64(vault.key),

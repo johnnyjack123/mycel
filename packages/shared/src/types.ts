@@ -342,27 +342,38 @@ export interface BackupServerSetting {
   addedAt: number
 }
 
-/** `backupTarget:<id>`: where one backup server puts the vault. */
-export interface BackupTargetSetting {
-  id: string
+/**
+ * `backupTask:<routeId>`: what the vault's backup server does with it. One
+ * per backup server, under its route, so two devices setting it up at once
+ * cannot make two. The backup server picks its folders itself; only a cloud
+ * location is given.
+ */
+export interface BackupTaskSetting {
   /** The backup server's route id. */
   server: string
-  /** `restic`: a repository; `trusted`: the decrypted copy of the newest version. */
-  kind: 'restic' | 'trusted'
-  /** A path on the backup server below its backup folder, or a restic location such as `s3:…`. */
-  location: string
-  /** The repository's password; restic only. */
-  password?: string
-  /** Credentials the location needs, e.g. `AWS_ACCESS_KEY_ID`. */
+  /**
+   * Where the restic repository lies: `local` on the backup server, in its
+   * folder for encrypted vaults under the vault's id; `cloud` at `location`.
+   */
+  where: 'local' | 'cloud'
+  /** A location restic reaches - `s3:…`, `b2:…`, `rest:…`, `sftp:…`; cloud only. */
+  location?: string
+  /** The repository's password. */
+  password: string
+  /** Credentials the cloud location needs, e.g. `AWS_ACCESS_KEY_ID`. */
   env?: Record<string, string>
   keep?: KeepPolicy
+  /** How often it backs the vault up on its own; 0: only when started by hand. */
+  everyHours: number
+  /** Also the decrypted copy of the newest version, in the backup server's folder for decrypted vaults. */
+  decrypted: boolean
   /**
-   * The trusted copy only: the share of the notes, or of the files, in percent,
-   * that may vanish since the copy last followed before it waits for a
-   * confirmation. 10 to 90; absent: `BACKUP_GUARD_DEFAULT`; 0: it never waits.
+   * The decrypted copy's guard: the share of the notes, or of the files, in
+   * percent, that may vanish since the copy last followed before it waits for
+   * a confirmation. 10 to 90; absent: `BACKUP_GUARD_DEFAULT`; 0: it never waits.
    */
   guard?: number
-  addedAt: number
+  createdAt: number
 }
 
 export const BACKUP_GUARD_DEFAULT = 50
@@ -376,16 +387,8 @@ export function backupGuard(value: unknown): number {
   return Math.min(BACKUP_GUARD_MAX, Math.max(BACKUP_GUARD_MIN, Math.round(value)))
 }
 
-/** `backupSchedule:<routeId>`: how often that backup server backs the vault up on its own. */
-export interface BackupScheduleSetting {
-  server: string
-  /** 0: only when started by hand. */
-  everyHours: number
-}
-
 export const BACKUP_SERVER_KEY = 'backupServer:'
-export const BACKUP_TARGET_KEY = 'backupTarget:'
-export const BACKUP_SCHEDULE_KEY = 'backupSchedule:'
+export const BACKUP_TASK_KEY = 'backupTask:'
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -400,21 +403,15 @@ function canonical(value: unknown): string {
 }
 
 /**
- * What a backup server reads for its route - the destinations and the
- * schedule -, written the same way on both ends. A device hashes it to tell
- * whether the backup server has read the newest settings: an edit that keeps
- * every destination's id is a change too.
+ * What a backup server reads for its route - the vault's backup task -,
+ * written the same way on both ends. A device hashes it to tell whether the
+ * backup server has read the newest settings: a retention changed is a
+ * change too.
  */
 export function backupSettingsText(settings: Iterable<[string, unknown]>, routeId: string): string {
-  const taken: Array<[string, unknown]> = []
-  for (const [key, value] of settings) {
-    const own =
-      key === `${BACKUP_SCHEDULE_KEY}${routeId}` ||
-      (key.startsWith(BACKUP_TARGET_KEY) && Boolean(value) && typeof value === 'object' && (value as { server?: unknown }).server === routeId)
-    if (own) taken.push([key, value])
-  }
-  taken.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-  return canonical(taken)
+  let task: unknown = null
+  for (const [key, value] of settings) if (key === `${BACKUP_TASK_KEY}${routeId}`) task = value
+  return canonical(task)
 }
 
 /**
@@ -452,9 +449,7 @@ export interface BackupServerInfo {
   name: string
   version: string
   restic: string
-  /** The folder local paths are taken below. */
-  root: string
-  /** Free space there, in bytes, when the system says. */
+  /** Free space in its folder for encrypted vaults, in bytes, when the system says. */
   free?: number
 }
 
@@ -488,10 +483,10 @@ export interface BackupVaultStatus {
   running: boolean
   /** When the schedule runs it next; null without one. */
   nextRunAt: number | null
-  /** The destinations (`backupTarget` ids) the backup server takes from the settings. */
-  targets: string[]
-  /** Every destination for this backup server it found in the settings, taken or not. */
-  seen: string[]
+  /** It found the vault's backup task in the settings and can carry it out. */
+  ready: boolean
+  /** Its folders for this vault, as its operator finds them: `encrypted/<vaultId>` and `decrypted/<name>/<vault>`. */
+  folders: { encrypted: string; decrypted: string }
   /** The schedule as it read it; 0 for none. */
   everyHours: number
   /** SHA-256, hex, of `backupSettingsText` as it last read the settings; empty before it did. */
@@ -504,7 +499,7 @@ export interface BackupVaultStatus {
 
 /** One backup of a vault a backup server can read a rollback's content from: a notes snapshot and the files snapshot of then. */
 export interface BackupSnapshotRef {
-  /** The destination (`backupTarget` id) whose repository holds it. */
+  /** The repository that holds it, by the id the backup server reports its runs under. */
   destination: string
   /** The vault's folder in the backup. */
   folder: string
@@ -541,6 +536,8 @@ export interface BackupGrant {
   /** The sync server, as the device reaches it (`ws(s)://` or `http(s)://`). */
   server: string
   accountId: string
+  /** The name the account signs in with; the folder of its decrypted copies is named after it. Not unique. */
+  accountName: string
   vaultId: string
   vaultName: string
   vaultKey: string

@@ -52,8 +52,8 @@ The other account commands work the same way: `npm run cli -- user list`,
 
 A backup server of your own (`ghcr.io/johnnyjack123/obsidian-connect-backup`, next
 to `docker-compose.backup.yml`) pulls a vault, decrypts it in its memory and keeps
-it in restic repositories - a disk, a NAS, a cloud -, every backup for as long as you
-choose, and optionally a decrypted copy of the newest version. It reads and never
+it in a restic repository - on the backup server or in a cloud -, every backup for as
+long as you choose, and optionally a decrypted copy of the newest version. It reads and never
 writes, needs no port of its own, and is set up entirely from the plugin's settings,
 with a one-time invitation from whoever runs it. `docs/BACKUP.md` has the details,
 restoring included.
@@ -182,7 +182,7 @@ them, unless a note is still shared with someone.
 *All devices* in the settings) takes the vault, or a folder, back to a moment within
 the history retention: notes get their text then, what came later goes to the
 trash, what was deleted since comes back, renames are undone. Before anything
-changes, every backup server makes a fresh backup and a copy of everything that
+changes, the backup server makes a fresh backup and a copy of everything that
 changes goes into the plugin folder (`rollbacks/`). It happens as ordinary changes,
 so every device follows and the rollback can be undone from the same window. Notes
 others share with you stay as they are; your own shared notes go back for everyone.

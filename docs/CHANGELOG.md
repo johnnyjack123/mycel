@@ -8,6 +8,33 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.17** (2026-10-18) - one backup task per vault, and the backup server picks
+  the paths (decided with the user after the first real test, `docs/PHASE6.md`, "One
+  backup task per vault"). The test had set up a decrypted copy on its own - a backup
+  without a repository and without history, not what the user meant: now there is
+  always a restic repository, and *trusted* adds a decrypted copy beside it. The task
+  says where the repository lies - *on the backup server* or *in a cloud* (a location
+  restic reaches, with credentials) -, its password, retention and schedule, and
+  whether to keep the copy, with its guard. Nobody types a path any more: the backup
+  server has three folders, each a bind mount set in `.env` (`SERVER_DATA` at `/data`,
+  `ENCRYPTED_VAULTS` at `/encrypted`, `DECRYPTED_VAULTS` at `/decrypted`), and keeps a
+  vault's repository in `encrypted/<vault id>/` and its copy in
+  `decrypted/<account name>/<vault name>/` - a second account of the same name gets
+  its id added. The copy holds the vault at its top, so it opens in Obsidian; its
+  trash and settings lie in the hidden `.obsidian-connect/`. It follows only once the
+  repository took the run. A vault has one backup server: connecting another replaces
+  it, its backups staying where they are. A task is checked before it is saved, the
+  repository on the backup server taken up again with its password when the vault
+  comes back, another password refused, saying so. `vaults` names vault and account
+  and lists both folders. The image gets openssh-client for `sftp:`; `rclone:` is no
+  longer offered (no rclone in the image). Settings of 0.7.16 do not carry over.
+  `test:backup` 168: the task read and refused as it should, the folders by id and by
+  name, the name taken by another account, the copy staying put while the repository
+  refuses a run, a repository from before taken up with its password and another
+  refused, the copy's folder refused when someone else filled it, a second backup
+  server replacing the first. CI starts the image with all three folders bind-mounted
+  and checks that each is handed over.
+
 - **0.7.16** (2026-10-18) - the user's backup server, given the same `wss://` address
   as the devices that sync fine through a reverse proxy, reported "HTTP 403 on
   /health - is it the sync server?": something in front of the sync server refused

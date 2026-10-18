@@ -7,12 +7,26 @@ import { chunksOf, hashOf } from './content.js'
 import type { VaultKeys } from './keys.js'
 import type { OutFile } from './layout.js'
 
-// The trusted copy: the newest version of everything, decrypted, in a folder
-// the user trusts - for when the restic password is lost. Brought level with
-// each run instead of emptied and written again, so a run that breaks off
-// leaves a whole copy. It touches only what it wrote itself.
+// The trusted copy: the newest version of everything, decrypted, next to the
+// repository - for when the restic password is lost. Brought level with each
+// run instead of emptied and written again, so a run that breaks off leaves a
+// whole copy. It touches only what it wrote itself.
 
 const MANIFEST = '.obsidian-connect-backup.json'
+/** The trash and the settings, in a folder Obsidian never lists - so no note of the vault can lie there. */
+const EXTRA = '.obsidian-connect'
+
+/**
+ * Where a file of the backup lies in the copy: the vault's own notes and
+ * files at the top, so the copy opens as a vault; what the backup keeps
+ * beside the vault - its trash, its settings - in a hidden folder.
+ */
+export function copyPath(path: string, folder: string): string {
+  if (path.startsWith(`${folder}/`)) return path.slice(folder.length + 1)
+  if (path.startsWith(`${folder} (trash)/`)) return `${EXTRA}/trash/${path.slice(`${folder} (trash)/`.length)}`
+  if (path === `${folder} settings.json`) return `${EXTRA}/settings.json`
+  return `${EXTRA}/${path}`
+}
 
 interface Manifest {
   vaultId: string
@@ -45,6 +59,24 @@ async function readManifest(folder: string): Promise<Manifest | null> {
   }
 }
 
+/**
+ * Whose copy a folder holds: the vault's id, null for a folder that is empty
+ * or not there, '' for one somebody else filled.
+ */
+export async function copyOf(where: string): Promise<string | null> {
+  const folder = resolve(where)
+  let present: string[]
+  try {
+    present = await readdir(folder)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  if (present.length === 0) return null
+  const manifest = await readManifest(folder).catch(() => null)
+  return manifest?.vaultId ?? ''
+}
+
 async function sizeOnDisk(path: string): Promise<number | null> {
   try {
     return (await stat(path)).size
@@ -69,17 +101,21 @@ async function pruneEmpty(folder: string, from: string): Promise<void> {
 }
 
 /**
- * Brings the folder level with the run's files. `keep`: paths whose content
- * this run could not have, or only in part - what the copy has of them stays.
+ * Brings the folder level with the run's files, laid out by `copyPath` for
+ * the vault's folder `vault`. `keep`: paths whose content this run could not
+ * have, or only in part - what the copy has of them stays.
  */
 export async function alignTrusted(
   where: string,
   vaultId: string,
-  files: readonly OutFile[],
-  keep: ReadonlySet<string>,
+  vault: string,
+  backedUp: readonly OutFile[],
+  incomplete: ReadonlySet<string>,
   cache: Cache,
   keys: VaultKeys
 ): Promise<TrustedResult> {
+  const files = backedUp.map((file) => ({ ...file, path: copyPath(file.path, vault) }))
+  const keep = new Set(Array.from(incomplete, (path) => copyPath(path, vault)))
   const folder = resolve(where)
   await mkdir(folder, { recursive: true })
   const manifest = await readManifest(folder)

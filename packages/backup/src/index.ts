@@ -34,8 +34,8 @@ const USAGE = `usage:
   obsidian-connect-backup check               try the way to the sync server's relay from here, now, step by step
   obsidian-connect-backup invites             the invitations not used yet
   obsidian-connect-backup revoke <id>         withdraw an invitation
-  obsidian-connect-backup vaults              the vaults connected: id, account, label, last backup
-  obsidian-connect-backup disconnect <vault>  forget a vault - its repositories and trusted copy stay`
+  obsidian-connect-backup vaults              the vaults connected: whose, which, their folders, the last backup
+  obsidian-connect-backup disconnect <vault>  forget a vault - its repository and decrypted copy stay`
 
 const day = (ms: number): string => new Date(ms).toISOString().slice(0, 16).replace('T', ' ')
 
@@ -145,7 +145,9 @@ async function main(argv: string[]): Promise<number> {
       if (vaults.length === 0) console.log('no vault is connected')
       for (const vault of vaults) {
         const last = vault.lastRun ? `last backup ${day(vault.lastRun.at)} ${vault.lastRun.ok ? 'ok' : 'failed'}` : 'no backup yet'
-        console.log(`${vault.vaultId}  account ${vault.accountId}  ${vault.label || '-'}  connected ${day(vault.pairedAt)}  ${last}`)
+        console.log(`${vault.vaultId}  "${vault.vaultName}" of ${vault.accountName || '?'} (account ${vault.accountId})  invitation ${vault.label || '-'}  connected ${day(vault.pairedAt)}  ${last}`)
+        // The decrypted copy is there only while the vault's task keeps one; a cloud repository is not here at all.
+        console.log(`    encrypted/${vault.vaultId}  decrypted/${vault.decryptedFolder}`)
       }
       return 0
     }
@@ -157,7 +159,7 @@ async function main(argv: string[]): Promise<number> {
       }
       // The running backup server notices its folder gone within seconds.
       await rm(join(dataDir, 'vaults', vaultId), { recursive: true, force: true })
-      console.log(`${vaultId} is disconnected: its keys and cache are gone, its repositories and trusted copy stay.`)
+      console.log(`${vaultId} is disconnected: its keys and cache are gone, its repository and decrypted copy stay.`)
       return 0
     }
     case undefined:
@@ -185,10 +187,21 @@ async function main(argv: string[]): Promise<number> {
     )
     return 1
   }
+  const encryptedRoot = env.OBSIDIAN_CONNECT_BACKUP_ENCRYPTED ?? '/encrypted'
+  const decryptedRoot = env.OBSIDIAN_CONNECT_BACKUP_DECRYPTED ?? '/decrypted'
+  // Not fatal: a vault backing up to a cloud needs neither, and a device setting up a task hears the same.
+  for (const [folder, what] of [
+    [encryptedRoot, 'repositories on this backup server'],
+    [decryptedRoot, 'decrypted copies']
+  ] as const) {
+    const problem = await writable(folder)
+    if (problem) log.warn(`${problem} - no ${what} until it can`)
+  }
   const running = await startBackupServer({
     server,
     dataDir,
-    root: env.OBSIDIAN_CONNECT_BACKUP_ROOT ?? '/backup',
+    encryptedRoot,
+    decryptedRoot,
     workDir: env.OBSIDIAN_CONNECT_BACKUP_WORK ?? (process.platform === 'linux' ? '/run/obsidian-connect-backup' : join(tmpdir(), 'obsidian-connect-backup')),
     resticBinary: env.OBSIDIAN_CONNECT_RESTIC ?? 'restic',
     name: env.OBSIDIAN_CONNECT_BACKUP_NAME ?? hostname(),

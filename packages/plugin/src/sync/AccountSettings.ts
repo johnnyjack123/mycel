@@ -1,13 +1,11 @@
 import * as Y from 'yjs'
 import {
-  BACKUP_SCHEDULE_KEY,
   BACKUP_SERVER_KEY,
-  BACKUP_TARGET_KEY,
+  BACKUP_TASK_KEY,
   SETTINGS_FIELD,
   backupSettingsText,
-  type BackupScheduleSetting,
   type BackupServerSetting,
-  type BackupTargetSetting
+  type BackupTaskSetting
 } from '@obsidian-connect/shared'
 
 // Settings that must be the same on every device of an account travel in a
@@ -220,8 +218,10 @@ export class AccountSettings {
     this.put(`${PENDING}${codeId}`, pending)
   }
 
-  // The vault's backups: which backup servers, where each puts the vault,
-  // how often. The backup server reads these with its backup key.
+  // The vault's backups: its backup server, and the task it carries out -
+  // where the repository lies, how long it keeps backups, how often, and
+  // whether a decrypted copy is kept too. The backup server reads these with
+  // its backup key.
 
   backupServers(): BackupServerSetting[] {
     return this.entries<BackupServerSetting>(BACKUP_SERVER_KEY)
@@ -231,20 +231,13 @@ export class AccountSettings {
     this.put(`${BACKUP_SERVER_KEY}${routeId}`, server)
   }
 
-  backupTargets(routeId?: string): BackupTargetSetting[] {
-    return this.entries<BackupTargetSetting>(BACKUP_TARGET_KEY).filter((target) => routeId === undefined || target.server === routeId)
+  backupTask(routeId: string): BackupTaskSetting | null {
+    const task = this.map.get(`${BACKUP_TASK_KEY}${routeId}`) as BackupTaskSetting | undefined
+    return task && typeof task === 'object' && task.server === routeId ? task : null
   }
 
-  setBackupTarget(id: string, target: BackupTargetSetting | null): void {
-    this.put(`${BACKUP_TARGET_KEY}${id}`, target)
-  }
-
-  backupSchedule(routeId: string): BackupScheduleSetting | null {
-    return (this.map.get(`${BACKUP_SCHEDULE_KEY}${routeId}`) as BackupScheduleSetting | undefined) ?? null
-  }
-
-  setBackupSchedule(routeId: string, schedule: BackupScheduleSetting | null): void {
-    this.put(`${BACKUP_SCHEDULE_KEY}${routeId}`, schedule)
+  setBackupTask(routeId: string, task: BackupTaskSetting | null): void {
+    this.put(`${BACKUP_TASK_KEY}${routeId}`, task)
   }
 
   // Every rollback of the vault, kept before it changes anything: every device

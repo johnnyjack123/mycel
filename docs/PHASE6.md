@@ -185,6 +185,9 @@ destinations do not overwrite each other:
   location, the restic password, environment variables (credentials), the retention;
 - `backupSchedule:<routeId>` - when it runs.
 
+*From 0.7.17* the destinations and the schedule are one entry, the vault's backup
+task, `backupTask:<routeId>` - see "One backup task per vault" below.
+
 The session only carries what cannot wait for the document: connecting, "back up now",
 status and progress, checking a destination ("not writable", "wrong password").
 
@@ -196,6 +199,10 @@ backup server refuses a path outside it, and a path inside a destination of anot
 vault - two vaults writing into one repository or one trusted copy would destroy each
 other's. A vault's name only names the folder inside its own destinations, so two
 vaults with the same name do not collide.
+
+*From 0.7.17* nobody gives a path: the backup server has a folder for encrypted vaults
+(`/encrypted`) and one for decrypted ones (`/decrypted`) and names the vault's folders
+in them itself - see below.
 
 ## A run
 
@@ -641,3 +648,64 @@ How:
 8. **0.7.8** - rolling back from the history: the vault or a folder, the backups and
    the local copy first, the record and undoing it; the compaction's content time.
 9. **0.7.9** - rolling back from restic where the history does not reach.
+
+## One backup task per vault (0.7.17)
+
+Decided with the user on 2026-10-18, after the first real test on the user's Pi. A
+decrypted copy set up on its own had made a "backup" without a repository and
+without history - not what the user meant: there is always a restic repository, for
+rolling back, and *trusted* means a decrypted copy besides. And a path typed into the
+plugin makes no sense to whoever sets the vault up; the operator says where the
+backup server's folders lie, the backup server names what goes into them.
+
+- **Three folders, three bind mounts**, set in `.env`: `SERVER_DATA` (`/data`, its own
+  data), `ENCRYPTED_VAULTS` (`/encrypted`, the repositories kept on the backup server)
+  and `DECRYPTED_VAULTS` (`/decrypted`, the decrypted copies).
+- **The paths are the backup server's:** a vault's repository lies in
+  `encrypted/<vault id>/`, its copy in `decrypted/<account name>/<vault name>/` - the
+  names so the operator finds a person's vaults. The vault id is an HMAC of the vault's
+  name under the account's secret: never the same for two vaults, meaningless to
+  anyone else. An account name is not unique, so a second account of the same name
+  gets its account's id added (`anna (3f2a9c01)/Notes`).
+- **One task per vault**, set up in the plugin: the repository *on the backup server*
+  or *in a cloud* (a location restic reaches, with its credentials), its password,
+  the retention, the schedule, and a checkbox for the decrypted copy with its guard.
+  When it is on, every run makes the snapshot and keeps the copy - which lies on the
+  backup server either way. Putting the copy into a cloud is the operator's to decide,
+  by mounting one at `DECRYPTED_VAULTS`; the plugin warns that only a cloud of one's
+  own will do.
+- **One backup server per vault.** Connecting another replaces it: the first is told
+  to forget the vault and its key is deleted; its backups stay where they are. A
+  second place comes from the task itself (the repository in a cloud, the copy on the
+  backup server).
+- Nothing of 0.7.16's settings carries over: the user starts afresh.
+
+**As built (0.7.17).** Taken without asking, beyond the decisions above:
+
+- *The setting:* `backupTask:<routeId>` - `where` (`local`, `cloud`), `location` and
+  `env` for a cloud, `password`, `keep`, `everyHours`, `decrypted`, `guard`. One entry
+  under the route, so two devices setting it up at once cannot make two. The digest a
+  device waits for is the task's canonical text.
+- *A task is checked before it is saved* (`check` on the pairing, `BackupService.checkTask`):
+  the folders writable, the copy's folder empty or this vault's, the repository opening
+  with the password - made where there is none. The repository on the backup server is
+  always the vault's folder there, so a vault connected again finds its repository and
+  takes it up with the password it had; another password is refused, saying so.
+- *The repository's place and password stay* once set: another repository is another
+  task. Retention, schedule, credentials, the copy and its guard change; credentials
+  changed or the copy turned on are checked first.
+- *The copy follows only once the repository took the run* - never ahead of it, so
+  whatever the copy deletes is in a snapshot first.
+- *The copy is the vault at its top:* `decrypted/<name>/<vault>/` opens in Obsidian as
+  a vault; the trash and the settings, which a restic snapshot keeps beside the vault's
+  folder, lie in its hidden `.obsidian-connect/` (`copyPath`) - a folder Obsidian never
+  lists, so no note's path can be one of them.
+- *The copy's folder is picked once,* when the vault is first paired, and kept in the
+  pairing (`decryptedFolder`); a later change of the account's name does not move it.
+  A folder holding this vault's copy from an earlier pairing is taken again. The
+  account's name comes in the grant (`accountName`); without one, the invitation's
+  label stands in, else the account's id.
+- *The image* gets openssh-client, for `sftp:` repositories (a key mounted at
+  `/home/node/.ssh`); rclone is not in it, so `rclone:` locations are not offered.
+- `vaults` names the vault and the account and lists both folders; the plugin shows
+  them next to the repository and the copy.

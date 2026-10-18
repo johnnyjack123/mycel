@@ -33,14 +33,16 @@ RUN set -eu; \
 FROM node:24-alpine
 WORKDIR /app
 # su-exec: the entrypoint hands the folders to the backup server's user, then runs it as that user.
-RUN apk add --no-cache su-exec
+# openssh-client: restic reaches an sftp: repository through ssh.
+RUN apk add --no-cache su-exec openssh-client
 ENV NODE_ENV=production \
     OBSIDIAN_CONNECT_BACKUP_DATA=/data \
-    OBSIDIAN_CONNECT_BACKUP_ROOT=/backup \
+    OBSIDIAN_CONNECT_BACKUP_ENCRYPTED=/encrypted \
+    OBSIDIAN_CONNECT_BACKUP_DECRYPTED=/decrypted \
     OBSIDIAN_CONNECT_BACKUP_WORK=/run/obsidian-connect-backup \
     OBSIDIAN_CONNECT_RESTIC=/usr/local/bin/restic \
     OBSIDIAN_CONNECT_OWN=/data \
-    OBSIDIAN_CONNECT_OWN_TOP="/backup /run/obsidian-connect-backup"
+    OBSIDIAN_CONNECT_OWN_TOP="/encrypted /decrypted /run/obsidian-connect-backup"
 COPY --from=restic /restic /usr/local/bin/restic
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
@@ -52,8 +54,8 @@ COPY packages/backup/bin packages/backup/bin
 COPY docker/entrypoint.sh /usr/local/bin/obsidian-connect-entrypoint
 RUN chmod +x packages/backup/bin/obsidian-connect-backup.mjs /usr/local/bin/obsidian-connect-entrypoint \
  && ln -s /app/packages/backup/bin/obsidian-connect-backup.mjs /usr/local/bin/obsidian-connect-backup \
- && mkdir -p /data /backup /run/obsidian-connect-backup \
- && chown node:node /data /backup /run/obsidian-connect-backup
+ && mkdir -p /data /encrypted /decrypted /run/obsidian-connect-backup \
+ && chown node:node /data /encrypted /decrypted /run/obsidian-connect-backup
 # No USER: the entrypoint starts as root, hands the folders over and drops to
 # PUID:PGID (1000:1000, the image's node user) before the backup server runs.
 VOLUME /data

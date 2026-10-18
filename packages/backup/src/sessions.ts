@@ -1,9 +1,7 @@
-import type { BackupConnected, BackupDataEvent, BackupGrant, BackupSnapshotRef, BackupTargetSetting } from '@obsidian-connect/shared'
+import type { BackupConnected, BackupDataEvent, BackupGrant, BackupSnapshotRef, BackupTaskSetting } from '@obsidian-connect/shared'
 import { SessionCipher, answerSession, sameMac, sessionProof, type Bytes, type SessionHello, type SessionKeys } from '@obsidian-connect/shared/crypto'
-import { envOf, isRemote, localFolder, overlapping, writable } from './config.js'
 import { log } from './log.js'
 import type { IncomingSession } from './relay.js'
-import type { Restic } from './restic.js'
 import type { BackupService } from './service.js'
 
 // A device's session with this backup server, through the relay. It opens in
@@ -22,8 +20,6 @@ export interface SessionDeps {
   /** The route a session was opened on; null when it is not answered (any more). */
   route: (routeId: string) => Route | null
   service: BackupService
-  restic: Restic
-  root: string
   now: () => number
   /** Resolves once the relay answers a vault's new pairing route, so the device can reach it right away. */
   paired: (routeId: string) => Promise<void>
@@ -191,7 +187,7 @@ export function serveSession(session: IncomingSession, deps: SessionDeps): void 
         return { found }
       }
       case 'check':
-        return checkTarget(deps, vaultId, params.target as BackupTargetSetting)
+        return service.checkTask(vaultId, params.task as Partial<BackupTaskSetting>)
       case 'rekey':
         await service.rekey(vaultId, params.grant as BackupGrant)
         return service.status(vaultId)
@@ -213,27 +209,4 @@ export function serveSession(session: IncomingSession, deps: SessionDeps): void 
     })
   })
   session.onClose(() => unsubscribe?.())
-}
-
-/** Whether a destination can be used: its folder, its repository and password - made when there is none yet. */
-async function checkTarget(deps: SessionDeps, vaultId: string, target: BackupTargetSetting): Promise<{ ok: boolean; error?: string; created?: boolean }> {
-  if (!target || typeof target.location !== 'string') return { ok: false, error: 'no destination given' }
-  const others = deps.service.localPathsBesides(vaultId)
-  let repository = target.location.trim()
-  if (!isRemote(repository) || target.kind === 'trusted') {
-    const folder = localFolder(repository, deps.root)
-    if ('error' in folder) return { ok: false, error: folder.error }
-    if (others.some((other) => overlapping(other, folder.path))) return { ok: false, error: 'another vault on this backup server uses this folder, or one around it' }
-    const problem = await writable(folder.path)
-    if (problem) return { ok: false, error: problem }
-    repository = folder.path
-  }
-  if (target.kind === 'trusted') return { ok: true }
-  if (typeof target.password !== 'string' || target.password === '') return { ok: false, error: 'the repository needs a password' }
-  try {
-    const opened = await deps.restic.ensureRepo({ repository, password: target.password, env: envOf(target.env) })
-    return { ok: true, created: opened === 'created' }
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) }
-  }
 }

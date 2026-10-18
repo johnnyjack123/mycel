@@ -4,7 +4,8 @@ import {
   BACKUP_GUARD_MAX,
   BACKUP_GUARD_MIN,
   backupGuard,
-  type BackupTargetSetting,
+  type BackupServerSetting,
+  type BackupTaskSetting,
   type KeepPolicy
 } from '@obsidian-connect/shared'
 import { generatePassword } from '../account/password'
@@ -15,7 +16,8 @@ import { DEFAULT_KEEP, type Backups } from './Backups'
 /**
  * Connects a backup server with an invitation from its operator, and the
  * password for the key it gets. `again`: one paired before whose key ended -
- * a new key over the pairing, the password alone.
+ * a new key over the pairing, the password alone. A vault has one backup
+ * server, so connecting another replaces the one it has.
  */
 export class BackupConnectModal extends Modal {
   private code = ''
@@ -26,7 +28,7 @@ export class BackupConnectModal extends Modal {
   constructor(
     app: App,
     private readonly backups: Backups,
-    private readonly done: () => void,
+    private readonly done: (connected: BackupServerSetting | null) => void,
     private readonly again: { routeId: string; label: string } | null = null
   ) {
     super(app)
@@ -37,19 +39,26 @@ export class BackupConnectModal extends Modal {
     this.titleEl.setText(this.again ? `A new key for ${this.again.label}` : 'Connect a backup server')
     if (this.again) {
       this.contentEl.createEl('p', {
-        text: 'Its key ended: a password change or a recovery ends every backup key of the account. Your password makes it a new one; its destinations and backups stay as they are.'
+        text: 'Its key ended: a password change or a recovery ends every backup key of the account. Your password makes it a new one; its backup task and backups stay as they are.'
       })
       this.passwordRow()
       this.connectButton()
       return
     }
     this.contentEl.createEl('p', {
-      text: "A backup server keeps this vault in restic repositories wherever you choose - a disk, a NAS, a cloud. Its operator gives you an invitation for it (obsidian-connect-backup invite); it works once, for one vault, within a week."
+      text: 'A backup server keeps this vault in a restic repository - on the backup server or in a cloud. Its operator gives you an invitation for it (obsidian-connect-backup invite); it works once, for one vault, within a week.'
     })
     this.contentEl.createEl('p', {
       cls: 'setting-item-description',
       text: 'It gets a key that reads this vault and nothing else: it can never change your notes. Whoever runs it can read this vault - connect only one you trust. The invitation never leaves this device; the sync server only passes on what is encrypted between the two.'
     })
+    const current = this.backups.servers()
+    if (current.length > 0) {
+      this.contentEl.createEl('p', {
+        cls: 'setting-item-description mod-warning',
+        text: `This vault is backed up by ${current.map((server) => server.label).join(', ')}. A vault has one backup server: connecting another replaces it, and it stops backing up this vault. Its backups stay where they are.`
+      })
+    }
     new Setting(this.contentEl).setName('Invitation').addText((text) => {
       text.setPlaceholder('XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX').onChange((value) => {
         this.code = value.trim()
@@ -66,7 +75,7 @@ export class BackupConnectModal extends Modal {
         })
       )
     this.passwordRow()
-    this.connectButton()
+    this.connectButton(current.length > 0 ? 'Replace and connect' : 'Connect')
   }
 
   private passwordRow(): void {
@@ -80,10 +89,10 @@ export class BackupConnectModal extends Modal {
     if (this.again) window.setTimeout(() => password.inputEl.focus(), 0)
   }
 
-  private connectButton(): void {
+  private connectButton(text = 'Connect'): void {
     new Setting(this.contentEl).addButton((button) =>
       button
-        .setButtonText('Connect')
+        .setButtonText(text)
         .setCta()
         .onClick(() => void this.submit(button))
     )
@@ -96,6 +105,7 @@ export class BackupConnectModal extends Modal {
       return
     }
     this.working = true
+    let connected: BackupServerSetting | null = null
     try {
       await busy(button, async () => {
         if (this.again) {
@@ -103,11 +113,10 @@ export class BackupConnectModal extends Modal {
           new Notice(`Obsidian Connect: ${this.again.label} has a new key and backs up as before.`, 8_000)
           return
         }
-        const connected = await this.backups.connect(this.code, this.password, this.label)
-        new Notice(`Obsidian Connect: ${connected.label} is connected. Add a destination next - until then it backs up nothing.`, 8_000)
+        connected = await this.backups.connect(this.code, this.password, this.label)
       })
       this.close()
-      this.done()
+      this.done(connected)
     } catch (error) {
       new Notice(`Connecting failed: ${error instanceof Error ? error.message : String(error)}`, 10_000)
     } finally {
@@ -166,19 +175,28 @@ export function describeGuard(guard: number | undefined): string {
     : `Waits when more than ${share} % of the notes, or of the files, vanish at once.`
 }
 
+/** Where the repository lies, as the settings name it. */
+export function describeRepository(task: BackupTaskSetting, folder: string | null): string {
+  if (task.where === 'cloud') return task.location ?? ''
+  return folder ? `on the backup server, ${folder}` : 'on the backup server'
+}
+
 /**
- * One place a backup server puts the vault: a restic repository, or the
- * trusted copy. Adds one, or changes one: how long backups are kept, the
- * credentials, the guard - its location and password stay, since another
- * location or password is another repository.
+ * The vault's backup task: where the restic repository lies - on the backup
+ * server, in a folder it names after the vault's id, or in a cloud -, its
+ * password, how long backups are kept, and whether a decrypted copy is kept
+ * on the backup server too. Sets one up, or changes one: everything but the
+ * repository's place and password, since another place or password is
+ * another repository.
  */
-export class BackupTargetModal extends Modal {
-  private kind: BackupTargetSetting['kind'] = 'restic'
+export class BackupTaskModal extends Modal {
+  private where: BackupTaskSetting['where'] = 'local'
   private location = ''
   private password = ''
   private env = ''
   private keep = 'default'
   private custom: KeepPolicy = { ...DEFAULT_KEEP }
+  private decrypted = false
   private guard = BACKUP_GUARD_DEFAULT
   private working = false
   private readonly reveal = new PasswordReveal(true)
@@ -187,127 +205,115 @@ export class BackupTargetModal extends Modal {
     app: App,
     private readonly backups: Backups,
     private readonly routeId: string,
-    /** The backup server's backup folder, for the description. */
-    private readonly root: string | null,
-    private readonly hasTrusted: boolean,
     private readonly done: () => void,
-    private readonly existing: BackupTargetSetting | null = null
+    private readonly existing: BackupTaskSetting | null = null
   ) {
     super(app)
     if (existing) {
-      this.kind = existing.kind
-      this.location = existing.location
+      this.where = existing.where
+      this.location = existing.location ?? ''
       this.env = Object.entries(existing.env ?? {})
         .map(([name, value]) => `${name}=${value}`)
         .join('\n')
       this.keep = presetOf(existing.keep)
       if (existing.keep) this.custom = { ...existing.keep }
+      this.decrypted = existing.decrypted
       this.guard = backupGuard(existing.guard)
     }
   }
 
+  /** The backup server's folders for this vault, once it was asked. */
+  private get folders(): { encrypted: string; decrypted: string } | null {
+    return this.backups.view(this.routeId)?.status?.folders ?? null
+  }
+
   onOpen(): void {
-    this.titleEl.setText(this.existing ? 'Change a destination' : 'Add a destination')
+    this.titleEl.setText(this.existing ? 'Change the backup' : 'Back up this vault')
     this.render()
   }
 
   private render(): void {
     const { contentEl } = this
     contentEl.empty()
-    const folder = this.root ? `a folder below ${this.root} on the backup server` : "a folder below the backup server's backup folder"
+    const folders = this.folders
     if (this.existing) {
       new Setting(contentEl)
-        .setName(this.kind === 'restic' ? 'Repository' : 'Trusted copy')
-        .setDesc(`${this.location}. Another location or password is another repository: add that as a destination of its own.`)
-    } else {
-      new Setting(contentEl).setName('Kind').addDropdown((dropdown: DropdownComponent) => {
-        dropdown.addOption('restic', 'A restic repository - encrypted, every backup kept')
-        if (!this.hasTrusted) dropdown.addOption('trusted', 'The trusted copy - decrypted, the newest version only')
-        dropdown.setValue(this.kind).onChange((value) => {
-          this.kind = value === 'trusted' ? 'trusted' : 'restic'
-          this.render()
-        })
-      })
-      new Setting(contentEl)
-        .setName(this.kind === 'restic' ? 'Location' : 'Folder')
+        .setName('Repository')
         .setDesc(
-          this.kind === 'restic'
-            ? `Relative to the backup folder (nas/obsidian), ${folder}, or a location restic knows: s3:…, b2:…, sftp:…, rest:…, rclone:…. A cloud folder mounted on the backup server's host is a folder like any other.`
-            : `${folder[0]?.toUpperCase()}${folder.slice(1)}. It must be empty, or one the backup server wrote before.`
+          `${describeRepository(this.existing, folders?.encrypted ?? null)}. Its place and password stay; for another repository, remove this backup and set up a new one.`
         )
-        .addText((text) =>
-          text
-            .setPlaceholder(this.kind === 'restic' ? 'nas/obsidian' : 'trusted/obsidian')
-            .setValue(this.location)
+    } else {
+      new Setting(contentEl)
+        .setName('Repository')
+        .setDesc('restic keeps every backup there, encrypted with its own password.')
+        .addDropdown((dropdown: DropdownComponent) => {
+          dropdown.addOption('local', folders ? `On the backup server - ${folders.encrypted}` : 'On the backup server')
+          dropdown.addOption('cloud', 'In a cloud')
+          dropdown.setValue(this.where).onChange((value) => {
+            this.where = value === 'cloud' ? 'cloud' : 'local'
+            this.render()
+          })
+        })
+      if (this.where === 'cloud') {
+        new Setting(contentEl)
+          .setName('Location')
+          .setDesc('A location restic reaches: s3:…, b2:…, rest:…, azure:…, gs:…, swift:…, or sftp:… - which needs an SSH key on the backup server.')
+          .addText((text) =>
+            text
+              .setPlaceholder('s3:s3.amazonaws.com/bucket/obsidian')
+              .setValue(this.location)
+              .onChange((value) => {
+                this.location = value.trim()
+              })
+          )
+      }
+      this.passwordRow()
+    }
+    if (this.where === 'cloud') {
+      new Setting(contentEl)
+        .setName('Credentials')
+        .setDesc('One per line, NAME=value - e.g. AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for S3, B2_ACCOUNT_ID and B2_ACCOUNT_KEY for B2.')
+        .addTextArea((area: TextAreaComponent) =>
+          area
+            .setPlaceholder('AWS_ACCESS_KEY_ID=…\nAWS_SECRET_ACCESS_KEY=…')
+            .setValue(this.env)
             .onChange((value) => {
-              this.location = value.trim()
+              this.env = value
             })
         )
     }
-    if (this.kind === 'trusted') this.trustedRows()
-    else this.resticRows()
+    this.keepRows()
+    this.decryptedRows()
     new Setting(contentEl).addButton((button) =>
       button
-        .setButtonText(this.existing ? 'Save' : 'Check and add')
+        .setButtonText(this.existing ? 'Save' : 'Check and save')
         .setCta()
         .onClick(() => void this.submit(button))
     )
   }
 
-  private trustedRows(): void {
-    const { contentEl } = this
-    contentEl.createEl('p', {
-      cls: 'setting-item-description mod-warning',
-      text: 'Every note and file of the vault lies there unencrypted, as it is now, and is brought up to date by every backup. Use it only on a disk you trust. It is what is left when the repository password is lost.'
-    })
-    new Setting(contentEl)
-      .setName('Wait when much vanishes')
+  private passwordRow(): void {
+    const passwordSetting = new Setting(this.contentEl)
+      .setName('Repository password')
       .setDesc(
-        'When this share of the notes, or of the files, is gone since the copy last followed, it waits for you to confirm - the sync server may have lost data, and the copy must not follow that. The restic backups go on either way.'
+        'restic encrypts the repository with it. It is kept in your account, encrypted, so every device can show it - write it down as well: without it nobody can read the repository, not even you.'
       )
-      .addDropdown((dropdown: DropdownComponent) => {
-        for (let share = BACKUP_GUARD_MIN; share <= BACKUP_GUARD_MAX; share += 10) {
-          dropdown.addOption(String(share), share === BACKUP_GUARD_DEFAULT ? `More than ${share} % (the default)` : `More than ${share} %`)
-        }
-        dropdown.addOption('0', 'Never - always follow')
-        dropdown.setValue(String(this.guard)).onChange((value) => {
-          this.guard = Number(value)
-        })
+    const password = new TextComponent(passwordSetting.controlEl)
+    password.setValue(this.password).onChange((value) => {
+      this.password = value
+    })
+    this.reveal.attach(passwordSetting, password.inputEl)
+    passwordSetting.addButton((button) =>
+      button.setButtonText('Make one').onClick(() => {
+        this.password = generatePassword()
+        password.setValue(this.password)
+        this.reveal.set(true)
       })
+    )
   }
 
-  private resticRows(): void {
+  private keepRows(): void {
     const { contentEl } = this
-    if (!this.existing) {
-      const passwordSetting = new Setting(contentEl)
-        .setName('Repository password')
-        .setDesc(
-          'restic encrypts the repository with it. It is kept in your account, encrypted, so every device can show it - write it down as well: without it nobody can read the repository, not even you.'
-        )
-      const password = new TextComponent(passwordSetting.controlEl)
-      password.setValue(this.password).onChange((value) => {
-        this.password = value
-      })
-      this.reveal.attach(passwordSetting, password.inputEl)
-      passwordSetting.addButton((button) =>
-        button.setButtonText('Make one').onClick(() => {
-          this.password = generatePassword()
-          password.setValue(this.password)
-          this.reveal.set(true)
-        })
-      )
-    }
-    new Setting(contentEl)
-      .setName('Credentials')
-      .setDesc('For a cloud location: one per line, NAME=value - e.g. AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for S3, B2_ACCOUNT_ID and B2_ACCOUNT_KEY for B2.')
-      .addTextArea((area: TextAreaComponent) =>
-        area
-          .setPlaceholder('AWS_ACCESS_KEY_ID=…\nAWS_SECRET_ACCESS_KEY=…')
-          .setValue(this.env)
-          .onChange((value) => {
-            this.env = value
-          })
-      )
     new Setting(contentEl).setName('Keep').addDropdown((dropdown: DropdownComponent) => {
       for (const option of KEEPS) dropdown.addOption(option.id, option.label)
       dropdown.addOption(CUSTOM, 'Numbers of my own')
@@ -340,7 +346,43 @@ export class BackupTargetModal extends Modal {
     }
   }
 
+  private decryptedRows(): void {
+    const { contentEl } = this
+    const folder = this.folders?.decrypted
+    new Setting(contentEl)
+      .setName('Decrypted copy (trusted)')
+      .setDesc(
+        `Also the newest version of every note and file, decrypted, ${folder ? `in ${folder}` : 'in its folder for decrypted vaults'} on the backup server - for the day the repository password is lost. Brought up to date by every backup, once the repository took it.`
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.decrypted).onChange((value) => {
+          this.decrypted = value
+          this.render()
+        })
+      )
+    if (!this.decrypted) return
+    contentEl.createEl('p', {
+      cls: 'setting-item-description mod-warning',
+      text: "Every note and file lies there unencrypted. Turn it on only for a backup server whose disk you trust. Should its folder for decrypted vaults lie in a cloud, then only in a cloud that is your own: any other provider could read every note."
+    })
+    new Setting(contentEl)
+      .setName('Wait when much vanishes')
+      .setDesc(
+        'When this share of the notes, or of the files, is gone since the copy last followed, it waits for you to confirm - the sync server may have lost data, and the copy must not follow that. The repository takes every backup either way.'
+      )
+      .addDropdown((dropdown: DropdownComponent) => {
+        for (let share = BACKUP_GUARD_MIN; share <= BACKUP_GUARD_MAX; share += 10) {
+          dropdown.addOption(String(share), share === BACKUP_GUARD_DEFAULT ? `More than ${share} % (the default)` : `More than ${share} %`)
+        }
+        dropdown.addOption('0', 'Never - always follow')
+        dropdown.setValue(String(this.guard)).onChange((value) => {
+          this.guard = Number(value)
+        })
+      })
+  }
+
   private credentials(): Record<string, string> | undefined {
+    if (this.where !== 'cloud') return undefined
     const env: Record<string, string> = {}
     for (const line of this.env.split('\n')) {
       const equals = line.indexOf('=')
@@ -360,43 +402,37 @@ export class BackupTargetModal extends Modal {
 
   private async submit(button: BusyButton): Promise<void> {
     if (this.working) return
-    if (!this.existing && !this.location) {
-      new Notice('Enter where to put the backups.')
+    if (!this.existing && this.where === 'cloud' && !this.location) {
+      new Notice('Enter the cloud location.')
       return
     }
-    if (!this.existing && this.kind === 'restic' && !this.password) {
+    if (!this.existing && !this.password) {
       new Notice('The repository needs a password - "Make one" makes a strong one.')
       return
     }
     this.working = true
     try {
       await busy(button, async () => {
+        const guard = this.decrypted && this.guard !== BACKUP_GUARD_DEFAULT ? this.guard : undefined
         if (this.existing) {
-          await this.backups.updateTarget(
-            this.routeId,
-            this.existing.id,
-            this.kind === 'restic' ? { keep: this.keepPolicy(), env: this.credentials() } : { guard: this.guard }
-          )
+          await this.backups.updateTask(this.routeId, { keep: this.keepPolicy(), env: this.credentials(), decrypted: this.decrypted, guard })
           new Notice('Obsidian Connect: saved.')
           return
         }
-        const target: Pick<BackupTargetSetting, 'kind' | 'location' | 'password' | 'env' | 'keep' | 'guard'> = { kind: this.kind, location: this.location }
-        if (this.kind === 'restic') {
-          target.password = this.password
-          const env = this.credentials()
-          if (env) target.env = env
-          const keep = this.keepPolicy()
-          if (keep) target.keep = keep
-        } else if (this.guard !== BACKUP_GUARD_DEFAULT) {
-          target.guard = this.guard
-        }
-        const added = await this.backups.addTarget(this.routeId, target)
-        new Notice(added.created ? 'Obsidian Connect: the repository was made and added.' : 'Obsidian Connect: added.')
+        const task: Omit<BackupTaskSetting, 'server' | 'createdAt' | 'everyHours'> = { where: this.where, password: this.password, decrypted: this.decrypted }
+        if (this.where === 'cloud') task.location = this.location
+        const env = this.credentials()
+        if (env) task.env = env
+        const keep = this.keepPolicy()
+        if (keep) task.keep = keep
+        if (guard !== undefined) task.guard = guard
+        const made = await this.backups.setTask(this.routeId, task)
+        new Notice(made.created ? 'Obsidian Connect: the repository was made; the vault is backed up from now on.' : 'Obsidian Connect: the vault is backed up from now on.')
       })
       this.close()
       this.done()
     } catch (error) {
-      new Notice(`The backup server cannot use this: ${error instanceof Error ? error.message : String(error)}`, 10_000)
+      new Notice(`The backup server cannot carry this out: ${error instanceof Error ? error.message : String(error)}`, 10_000)
     } finally {
       this.working = false
     }

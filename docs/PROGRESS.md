@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-17 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - was built as 0.7.0 to 0.7.5 and merged into `main`. After it the user asked for more, decided on 2026-10-16 (`docs/PHASE6.md`, "After the first build"), built on `feat/backup-rollback`: 0.7.6 invitations and a pairing per vault, 0.7.7 settings in tabs, editable destinations, the guard over notes and files, 0.7.8 rolling back from the history, 0.7.9 rolling back from restic where the history does not reach - all built; merged into `main` once 0.7.9 was done (see "Verification state"). Next: the user tries it. 0.6.8 is the last version confirmed on the user's devices.**_
+_Last updated: 2026-10-18 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - was built as 0.7.0 to 0.7.5 and merged into `main`. After it the user asked for more, decided on 2026-10-16 (`docs/PHASE6.md`, "After the first build"): 0.7.6 to 0.7.9, merged. 0.7.10 to 0.7.16 came from setting it up on the user's network. 0.7.17, after the first real test (2026-10-18): one backup task per vault, paths picked by the backup server, one backup server per vault - on `feat/backup-task`. Next: the user tries 0.7.17. 0.6.8 is the last version confirmed on the user's devices.**_
 
 ## Where we are
 
@@ -84,18 +84,25 @@ fix for two notes or files swapping names on another device (invariant 27); 0.7.
 rolling back further than the history reaches, from the backups on a backup server,
 without anything to restore by hand.
 
-**What the user does next** (nothing of 0.7 has been on a device yet):
+**0.7.10 to 0.7.16** (2026-10-17/18) came from setting it up on the user's network:
+"Use this server", the backup server's `status`/`check`, the data folders handed over
+by the images. **0.7.17** (2026-10-18), after the first real test: one backup task per
+vault - always a restic repository, the decrypted copy beside it on request -, the
+paths picked by the backup server in three bind-mounted folders, one backup server per
+vault (`docs/PHASE6.md`, "One backup task per vault").
 
-1. Install the plugin on the devices, and restart the sync server with the same
-   version - it gains the backup keys and the relay; nobody is signed out by the
-   update. A reverse proxy in front of it must pass WebSocket upgrades on `/relay` too.
-2. On a Linux host with Docker: `docker-compose.backup.yml` and `docs/backup.env` as
-   `docs/BACKUP.md` says; `docker login ghcr.io` first (the image is private like the
-   repository); `obsidian-connect-backup invite <name>` in the container. Not tried
-   yet: the image on a real host, a bind-mounted backup folder owned by uid 1000, the
-   RAM disk size, an S3/B2 location.
-3. In Obsidian: *Connect a backup server…* with the invitation, add a destination,
-   *Back up now*; then restore once with restic as `docs/BACKUP.md` shows.
+**What the user does next** (the backup server connected on the Pi on 2026-10-18):
+
+1. Install 0.7.17 on the devices. The sync server is unchanged since 0.7.15 apart
+   from its version.
+2. On the Pi: the new `docker-compose.backup.yml` and `docs/backup.env`
+   (`SERVER_DATA`, `ENCRYPTED_VAULTS`, `DECRYPTED_VAULTS`), keeping the user's
+   `extra_hosts`; start afresh - nothing of 0.7.16's settings carries over.
+   `obsidian-connect-backup invite <name>` in the container. Not tried yet: the RAM
+   disk size, an S3/B2 location, `sftp:` with a mounted key.
+3. In Obsidian: *Connect a backup server…* with the invitation, set up the task (the
+   form opens by itself), *Back up now*; then restore once with restic as
+   `docs/BACKUP.md` shows, and open the decrypted copy as a vault.
 4. Try a rollback on a test folder: *Roll this folder back…* in its menu, an hour
    back; look at the list, roll back, then *Undo…*.
 
@@ -265,8 +272,9 @@ resolving `[[Ideas/Roadmap]]` to `Shared/Ideas/Roadmap.md` and `![[x.png]]` to
   coming back just before. If it fails again, find out whether that move to the trash
   is a race in the fork on return (0.8).
 - The Docker image is private, like the repository: pulling it needs `docker login
-  ghcr.io` with a token that may read packages. It has passed CI's smoke test but
-  has not run on a real server yet.
+  ghcr.io` with a token that may read packages. Both images run on the user's hosts
+  (2026-10-18); a backup into a repository of the backup server was seen working,
+  0.7.17's layout not yet.
 
 ## Verification state
 
@@ -275,6 +283,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15; nothing on the PATH). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
+
+At 0.7.17, run 2026-10-18 on `feat/backup-task` before its commit: `typecheck` and
+`build` pass; `test:merge` 164, `test:load` 14, `test:rooms` 284, `test:sync` 26,
+`test:recovery`, `test:account`, `test:rollback`, `test:backup` 168, and against a
+scratch server on 1235 `test:socket` 19 and `test:vault` 230 - all pass. The new
+compose layout and the folders' handover run only in the image (CI).
 
 At 0.7.16, run 2026-10-18 before its commit (straight to `main`): `typecheck` and
 `build` pass; `test:merge`, `test:load`, `test:rooms` and `test:backup` 154 pass.
@@ -395,6 +409,21 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 ---
 
 ## Log
+
+### 2026-10-18
+- The 403 was the network, not the backup server: the container resolved the name
+  through Docker's DNS to the public address; with `dns:` it reached the Pi itself,
+  where the DNAT to the HP applies only on `eth0`, not on Docker's bridges; with
+  `extra_hosts` straight to the HP the HP's answers were dropped by the user's
+  `PI5-FWD` rule (`-i eth1 -s 10.0.0.0/24 -j DROP`, in `DOCKER-USER`). An
+  `ESTABLISHED,RELATED` accept before it and the Pi's subnet address in the proxy's
+  access list fixed it - no image changed, as the user asked.
+- First real test: the backup server connected; the user set up a decrypted copy on
+  its own and found no repository - not what was meant. Decided together: always a
+  restic repository, *trusted* adds the copy; paths picked by the backup server in
+  three bind-mounted folders; one task per vault; one backup server per vault; no
+  carrying over of 0.7.16's settings (`docs/PHASE6.md`, "One backup task per vault").
+  Built as 0.7.17 on `feat/backup-task`.
 
 ### 2026-10-17
 - 0.7.6: invitations and a pairing per vault, as decided the day before.
