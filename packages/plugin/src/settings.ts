@@ -28,8 +28,10 @@ function describeBackupServer(error: string | null, status: BackupVaultStatus | 
   return `Last backup ${when(last.finishedAt)}: ${last.notes} notes, ${last.files} files${checked}.${next}`
 }
 
-function describeRepositoryState(task: BackupTaskSetting, outcome: BackupDestinationStatus | undefined, ready: boolean): string {
-  if (!ready) return 'The backup server cannot carry this out - see why below.'
+function describeRepositoryState(task: BackupTaskSetting, outcome: BackupDestinationStatus | undefined, status: BackupVaultStatus | null): string {
+  if (status && !status.ready) {
+    return status.problems.length > 0 ? 'The backup server cannot carry this out - see why below.' : 'The backup server has not read this yet.'
+  }
   const keep = describeKeep(task.keep)
   if (!outcome) return `Encrypted with its own password. Filled by the next backup. ${keep}`
   if (!outcome.ok) return `Failed: ${outcome.error ?? 'unknown'}`
@@ -851,10 +853,9 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
         for (const option of options) dropdown.addOption(String(option.hours), option.label)
         dropdown.setValue(String(task.everyHours)).onChange((value) => void this.run(() => backups.setSchedule(routeId, Number(value))))
       })
-      const ready = !status || status.ready
       const repository = new Setting(containerEl)
         .setName(`Repository: ${describeRepository(task, status?.folders.encrypted ?? null)}`)
-        .setDesc(describeRepositoryState(task, last?.destinations[0], ready))
+        .setDesc(describeRepositoryState(task, last?.destinations[0], status))
       repository.addExtraButton((button) =>
         button
           .setIcon('key')
