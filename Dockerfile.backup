@@ -30,20 +30,43 @@ RUN set -eu; \
     bunzip2 /restic.bz2; \
     chmod +x /restic
 
+# rclone's own release, checked against its checksum: restic reaches every cloud
+# rclone knows through it (rclone:<remote>:<path>).
+FROM alpine:3.22 AS rclone
+ARG RCLONE_VERSION=1.75.1
+ARG TARGETARCH
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) sum=982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab ;; \
+      arm64) sum=03f2504174034b6d004152ed7369251c9a9ec1f7e0836eda420f5c7a5ec0dff9 ;; \
+      *) echo "no rclone release checked for ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    wget -q -O /rclone.zip "https://github.com/rclone/rclone/releases/download/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${TARGETARCH:-amd64}.zip"; \
+    echo "${sum}  /rclone.zip" | sha256sum -c -; \
+    unzip -q /rclone.zip -d /unpacked; \
+    mv "/unpacked/rclone-v${RCLONE_VERSION}-linux-${TARGETARCH:-amd64}/rclone" /rclone; \
+    chmod +x /rclone
+
 FROM node:24-alpine
 WORKDIR /app
 # su-exec: the entrypoint hands the folders to the backup server's user, then runs it as that user.
-# openssh-client: restic reaches an sftp: repository through ssh.
-RUN apk add --no-cache su-exec openssh-client
+# openssh-client: restic reaches an sftp: repository through ssh. ca-certificates: TLS to a cloud.
+RUN apk add --no-cache su-exec openssh-client ca-certificates
+# rclone's remotes live in the data folder: they survive an update, and rclone can
+# write back a refreshed token.
 ENV NODE_ENV=production \
     OBSIDIAN_CONNECT_BACKUP_DATA=/data \
     OBSIDIAN_CONNECT_BACKUP_ENCRYPTED=/encrypted \
     OBSIDIAN_CONNECT_BACKUP_DECRYPTED=/decrypted \
     OBSIDIAN_CONNECT_BACKUP_WORK=/run/obsidian-connect-backup \
     OBSIDIAN_CONNECT_RESTIC=/usr/local/bin/restic \
-    OBSIDIAN_CONNECT_OWN=/data \
+    RCLONE_CONFIG=/data/rclone/rclone.conf \
+    RCLONE_CACHE_DIR=/data/rclone/cache \
+    OBSIDIAN_CONNECT_OWN="/data /data/rclone" \
     OBSIDIAN_CONNECT_OWN_TOP="/encrypted /decrypted /run/obsidian-connect-backup"
 COPY --from=restic /restic /usr/local/bin/restic
+COPY --from=rclone /rclone /usr/local/lib/rclone/rclone
+COPY docker/rclone.sh /usr/local/bin/rclone
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY packages/shared/package.json packages/shared/
@@ -52,7 +75,7 @@ COPY packages/backup/package.json packages/backup/
 COPY packages/backup/src packages/backup/src
 COPY packages/backup/bin packages/backup/bin
 COPY docker/entrypoint.sh /usr/local/bin/obsidian-connect-entrypoint
-RUN chmod +x packages/backup/bin/obsidian-connect-backup.mjs /usr/local/bin/obsidian-connect-entrypoint \
+RUN chmod +x packages/backup/bin/obsidian-connect-backup.mjs /usr/local/bin/obsidian-connect-entrypoint /usr/local/bin/rclone \
  && ln -s /app/packages/backup/bin/obsidian-connect-backup.mjs /usr/local/bin/obsidian-connect-backup \
  && mkdir -p /data /encrypted /decrypted /run/obsidian-connect-backup \
  && chown node:node /data /encrypted /decrypted /run/obsidian-connect-backup

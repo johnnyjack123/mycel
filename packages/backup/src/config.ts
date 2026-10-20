@@ -6,12 +6,15 @@ import {
   SETTINGS_FIELD,
   backupGuard,
   backupSettingsText,
+  scheduleHours,
   settingsRoom,
+  type BackupAt,
   type BackupTaskSetting,
   type KeepPolicy
 } from '@obsidian-connect/shared'
 import type { VaultKeys } from './keys.js'
 import type { Destination, JobConfig } from './run.js'
+import { atOf, knownZone } from './schedule.js'
 import { SyncError, type SyncClient } from './sync.js'
 
 // What a vault's owner set for this backup server - its backup task, read
@@ -23,8 +26,10 @@ import { SyncError, type SyncClient } from './sync.js'
 
 export interface VaultConfig {
   config: JobConfig
-  /** 0: only when started by hand. */
+  /** About how many hours lie between two backups; 0: only when started by hand. */
   everyHours: number
+  /** At a time of day instead of every so many hours. */
+  at: BackupAt | null
   /** It found the task, and can carry it out. */
   ready: boolean
   /** What in the task this backup server cannot use, and why. */
@@ -95,6 +100,7 @@ export function readConfig(settings: ReadonlyMap<string, unknown>, routeId: stri
   const result: VaultConfig = {
     config: { destinations: [], trusted: null },
     everyHours: 0,
+    at: null,
     ready: false,
     problems: [],
     digest: createHash('sha256').update(backupSettingsText(settings, routeId)).digest('hex')
@@ -105,6 +111,12 @@ export function readConfig(settings: ReadonlyMap<string, unknown>, routeId: stri
   if (task.server !== routeId) return result
   if (typeof task.everyHours === 'number' && Number.isFinite(task.everyHours) && task.everyHours > 0) {
     result.everyHours = Math.max(1, Math.round(task.everyHours))
+  }
+  const at = atOf(task.at)
+  if (at) {
+    if (!knownZone(at.zone)) result.problems.push(`the time zone ${at.zone} is not known on the backup server, so it goes by UTC`)
+    result.at = at
+    result.everyHours = scheduleHours({ everyHours: result.everyHours, at })
   }
   const destination = repositoryOf(task, folders)
   if ('error' in destination) {

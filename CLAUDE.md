@@ -377,6 +377,14 @@ people: whoever runs it can read the vaults on it.
   until the backup server's status carries the hash of the same settings
   (`backupSettingsText`) - comparing ids let a run go by the settings before an edit
   of retention.
+- **When** (0.7.18): every so many hours, or at a time of day (`at`: daily or on a
+  weekday) by the IANA zone of the device that set it - a container runs in UTC
+  (`schedule.ts`, both changes of the clocks tested). A scheduled run that is due
+  waits until the vault's room tags stayed as they were for five minutes, at most an
+  hour (`BackupService.stillBusy`): a device merely connected holds nothing up. Runs
+  asked for - *Back up now*, the backup before a rollback - never wait. rclone is in
+  the image for `rclone:` repositories, behind a wrapper that drops to `PUID`:`PGID`,
+  its remotes in `/data/rclone/rclone.conf`.
 - **A run** (`run.ts`): what changed into an encrypted cache (rooms by their tag, a log
   from its last frame, compared - invariant 19), the layout from the index (vault,
   trash, settings without contacts), notes and canvases into a RAM disk for restic,
@@ -594,9 +602,11 @@ scanned by an authenticator app and the `otpauth://` link opening one.
   publishes it to `ghcr.io/johnnyjack123/obsidian-connect-server`. A broken
   `Dockerfile` shows up there and nowhere earlier. The `docker-backup` job builds
   and starts `Dockerfile.backup` on every push (restic runs, an invitation is made
-  and kept, ssh is there for `sftp:`, the server survives an unreachable sync server,
-  takes over its three bind-mounted folders when they are not its own, and registers
-  its invitations at a real sync server) and publishes
+  and kept, ssh is there for `sftp:`, restic makes a repository through rclone, the
+  server survives an unreachable sync server, takes over its three bind-mounted
+  folders when they are not its own - and `rclone config` through `docker exec`
+  leaves its file to user 1000 -, and registers its invitations at a real sync
+  server) and publishes
   `obsidian-connect-backup` from `main` only. Every Dockerfile copies every
   workspace's `package.json` before `npm ci`.
 - **Both images start as root and drop to `PUID`:`PGID` (1000:1000)** in
@@ -607,7 +617,8 @@ scanned by an authenticator app and the `otpauth://` link opening one.
   read by the running server afterwards. Never put `USER` back into a Dockerfile.
 - **restic for `test:backup`** is pinned (0.19.1, CI checks its checksum, and so
   does `Dockerfile.backup` per architecture). On the development machine it lies
-  outside the repository; `docs/PROGRESS.md` says where.
+  outside the repository; `docs/PROGRESS.md` says where. rclone is pinned the same
+  way in `Dockerfile.backup` (1.75.1) and runs only in the image.
 - **`main.js` is CommonJS inside a `"type": "module"` package.** Obsidian
   evaluates it itself; Node needs a `.cjs` copy (see `load-selftest.mjs`).
 - **Never put raw control characters in source.** A NUL sentinel in the glob

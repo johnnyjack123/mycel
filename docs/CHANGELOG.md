@@ -8,6 +8,25 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.18** (2026-10-20) - when the backup server backs up, rclone, the password
+  (asked for by the user after the first backups on the Pi; `docs/PHASE6.md`, "When it
+  backs up, rclone, the password"). A backup at a time of day - every night at three
+  unless set otherwise, or weekly on one day - by the clock of the device that set it,
+  summer time included; every hour, every 6 hours and only by hand stay. A scheduled
+  backup that is due waits until the vault's notes and files stayed as they were for
+  five minutes, at most an hour; a device merely connected holds nothing up, and *Back
+  up now* never waits. The first backup runs as soon as a task is saved. The image has
+  rclone (1.75.1, checksum pinned), so a repository can lie in any cloud rclone knows
+  (`rclone:<remote>:<path>`); `rclone config` in the container keeps its remotes in the
+  data folder and runs as the backup server's user even through `docker exec`. The
+  repository password is shown behind an eye instead of copied - a clipboard history
+  would keep it. `test:backup` 187: the next time across both changes of the clocks,
+  weekly, in another zone and in one not known; the backup that waits while someone
+  writes, runs after five quiet minutes, and after an hour of writing all the same; the
+  default of three by this device's clock. CI makes and lists a restic repository
+  through rclone in the image, and checks that `rclone config` through `docker exec`
+  leaves the configuration to user 1000.
+
 - **0.7.17** (2026-10-18) - one backup task per vault, and the backup server picks
   the paths (decided with the user after the first real test, `docs/PHASE6.md`, "One
   backup task per vault"). The test had set up a decrypted copy on its own - a backup

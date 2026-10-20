@@ -18,6 +18,7 @@ import type { Restic } from './restic.js'
 import { vaultFolder } from './layout.js'
 import { listBackup, readBackup, snapshotAt } from './restore.js'
 import { runBackup, type Destination, type RunControl, type RunReport } from './run.js'
+import { nextAt } from './schedule.js'
 import { AccessEnded, SyncClient } from './sync.js'
 import { copyOf } from './trusted.js'
 
@@ -68,9 +69,15 @@ interface Vault {
   configAt: number
   running: boolean
   runs: RunReport[]
+  /** A scheduled run that is due, waiting for nobody to write: what the rooms looked like when last looked at. */
+  quiet: { tags: string; checkedAt: number; until: number } | null
 }
 
 const HOUR_MS = 60 * 60 * 1000
+/** A scheduled run waits until the vault's rooms stayed as they were this long... */
+const QUIET_MS = 5 * 60 * 1000
+/** ...but no longer than this: someone writing all day must not hold every backup off. */
+const LONGEST_WAIT_MS = 60 * 60 * 1000
 
 function vaultDir(dataDir: string, vaultId: string): string {
   return join(dataDir, 'vaults', vaultId)
@@ -176,7 +183,7 @@ export class BackupService {
           (raw) => JSON.parse(raw) as RunReport[],
           () => []
         )
-        service.vaults.set(vaultId, { grant, pairing, config: null, configAt: 0, running: false, runs })
+        service.vaults.set(vaultId, { grant, pairing, config: null, configAt: 0, running: false, runs, quiet: null })
       } catch (error) {
         log.warn(`vault ${vaultId} could not be loaded`, error)
       }
@@ -303,7 +310,7 @@ export class BackupService {
       existing.config = null
       existing.configAt = 0
     } else {
-      this.vaults.set(grant.vaultId, { grant, pairing, config: null, configAt: 0, running: false, runs: [] })
+      this.vaults.set(grant.vaultId, { grant, pairing, config: null, configAt: 0, running: false, runs: [], quiet: null })
     }
     log.info(`vault ${grant.vaultId} paired${label ? ` (${label})` : ''}`)
     this.routesChanged()
@@ -455,6 +462,7 @@ export class BackupService {
       vaultId,
       running: vault.running || this.waiting.has(vaultId),
       nextRunAt: this.nextRunAt(vault),
+      waitingUntil: vault.quiet?.until ?? null,
       ready: vault.config?.ready ?? false,
       folders: shownFolders(vaultId, vault.pairing),
       everyHours: vault.config?.everyHours ?? 0,
@@ -464,10 +472,51 @@ export class BackupService {
     }
   }
 
+  /** After the last run started, or the pairing: a run started by hand counts too. */
   private nextRunAt(vault: Vault): number | null {
-    const hours = vault.config?.everyHours ?? 0
-    if (hours <= 0) return null
-    return (vault.runs.at(-1)?.startedAt ?? vault.pairing.pairedAt) + hours * HOUR_MS
+    if (!vault.config?.ready) return null
+    const since = vault.runs.at(-1)?.startedAt ?? vault.pairing.pairedAt
+    if (vault.config.at) return nextAt(vault.config.at, since)
+    const hours = vault.config.everyHours
+    return hours > 0 ? since + hours * HOUR_MS : null
+  }
+
+  /** What tells whether anything in the vault changed: its rooms' tags. */
+  private async roomTags(vault: Vault): Promise<string> {
+    const client = new SyncClient(this.options.server, vault.grant.backupKey)
+    await client.signIn()
+    const { rooms } = await client.rooms()
+    return rooms
+      .map((room) => `${room.room}:${room.tag}`)
+      .sort()
+      .join('\n')
+  }
+
+  /**
+   * Whether a scheduled run that is due waits, since someone is writing in
+   * the vault: its rooms changed within the last minutes. A device merely
+   * connected changes nothing and holds nothing up; the wait ends after an
+   * hour whatever goes on. Looked at once per quiet period, not every tick.
+   */
+  private async stillBusy(vault: Vault): Promise<boolean> {
+    const now = this.now
+    const quiet = vault.quiet
+    if (quiet && now >= quiet.until) return false
+    if (quiet && now - quiet.checkedAt < QUIET_MS) return true
+    let tags: string
+    try {
+      tags = await this.roomTags(vault)
+    } catch {
+      // Whether anyone writes cannot be told; the run says whatever went wrong.
+      return false
+    }
+    if (!quiet) {
+      vault.quiet = { tags, checkedAt: now, until: now + LONGEST_WAIT_MS }
+      return true
+    }
+    if (tags === quiet.tags) return false
+    vault.quiet = { ...quiet, tags, checkedAt: now }
+    return true
   }
 
   /** Queues a run; a vault already waiting is not queued twice. */
@@ -528,8 +577,10 @@ export class BackupService {
   }
 
   /**
-   * Starts every run that is due. The settings are read again first, at most
-   * once an hour per vault, so a schedule changed on a device takes hold.
+   * Starts every run that is due, once nobody writes in its vault. The
+   * settings are read again first, at most once an hour per vault, so a
+   * schedule changed on a device takes hold. Runs asked for - "Back up now",
+   * the backup before a rollback - never wait.
    */
   async tick(): Promise<void> {
     await this.reload()
@@ -539,7 +590,17 @@ export class BackupService {
         await this.refresh(vaultId).catch((error: unknown) => log.warn(`reading the settings of ${vaultId} failed`, error))
       }
       const next = this.nextRunAt(vault)
-      if (next !== null && next <= this.now) void this.run(vaultId).catch(() => undefined)
+      if (next === null || next > this.now) {
+        vault.quiet = null
+        continue
+      }
+      const waited = vault.quiet !== null
+      if (await this.stillBusy(vault)) {
+        if (!waited) log.info(`backup of ${vaultId} is due; waiting until nobody writes in the vault`)
+        continue
+      }
+      vault.quiet = null
+      void this.run(vaultId).catch(() => undefined)
     }
   }
 
