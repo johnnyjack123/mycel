@@ -57,6 +57,8 @@ export interface TrustedReport {
   ok: boolean
   /** Why the copy was left as it was. */
   held?: string
+  /** The same in numbers, for a device to show. */
+  shrunk?: Shrunk[]
   written?: number
   deleted?: number
   kept?: number
@@ -194,28 +196,42 @@ export function followedAt(followed: readonly Counted[], now: Counted, confirmed
   return [...followed.filter((entry) => entry.at >= now.at - WEEK_MS), now].slice(-COUNTS_KEPT)
 }
 
+/** A kind of which more vanished than the guard lets through: how many there are, and the most there were. */
+export interface Shrunk {
+  what: 'notes' | 'files'
+  now: number
+  before: number
+}
+
 /**
- * Why the trusted copy should wait, or null: more than `guard` percent of the
- * notes, or of the files, vanished against `before` (`guardReference`).
- * Counted apart - a vault of a thousand pictures losing all of its fifty notes
- * is the case to catch. A count below `floor` then is too small to tell
- * anything.
+ * What vanished beyond the guard: more than `guard` percent of the notes, or
+ * of the files, against `before` (`guardReference`). Counted apart - a vault
+ * of a thousand pictures losing all of its fifty notes is the case to catch.
+ * A count below `floor` then is too small to tell anything.
  */
+export function shrunk(before: { notes?: number; files?: number }, now: { notes: number; files: number }, guard: number, floor: number): Shrunk[] {
+  if (guard <= 0) return []
+  const lost: Shrunk[] = []
+  const count = (was: number | undefined, is: number, what: Shrunk['what']): void => {
+    if (was === undefined || was < floor) return
+    if (is < was * (1 - guard / 100)) lost.push({ what, now: is, before: was })
+  }
+  count(before.notes, now.notes, 'notes')
+  count(before.files, now.files, 'files')
+  return lost
+}
+
+/** Why the trusted copy should wait, in words, or null. */
 export function vanished(
   before: { notes?: number; files?: number },
   now: { notes: number; files: number },
   guard: number,
   floor: number
 ): string | null {
-  if (guard <= 0) return null
-  const lost: string[] = []
-  const count = (was: number | undefined, is: number, what: string): void => {
-    if (was === undefined || was < floor) return
-    if (is < was * (1 - guard / 100)) lost.push(`${is} ${what} (${was} at most in the week before)`)
-  }
-  count(before.notes, now.notes, 'notes')
-  count(before.files, now.files, 'files')
-  return lost.length > 0 ? `the vault has ${lost.join(' and ')}; the trusted copy waits until that is confirmed` : null
+  const lost = shrunk(before, now, guard, floor)
+  if (lost.length === 0) return null
+  const told = lost.map((kind) => `${kind.now} ${kind.what} (${kind.before} at most in the week before)`)
+  return `the vault has ${told.join(' and ')}; the trusted copy waits until that is confirmed`
 }
 
 /** Lays the notes out below `root`, each file with the time it last changed. */
@@ -328,7 +344,9 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
   delete state.liveFiles
   if (job.config.trusted) {
     const guard = job.config.trustedGuard ?? BACKUP_GUARD_DEFAULT
-    const held = control.acceptShrink ? null : vanished(guardReference(state.followed), live, guard, options.vanishFloor ?? 10)
+    const reference = guardReference(state.followed)
+    const lost = control.acceptShrink ? [] : shrunk(reference, live, guard, options.vanishFloor ?? 10)
+    const held = lost.length > 0 ? vanished(reference, live, guard, options.vanishFloor ?? 10) : null
     // Following with the guard off takes whatever vanished, as a confirmation does.
     const confirmed = control.acceptShrink === true || guard <= 0
     if (!report.destinations.some((destination) => destination.ok)) {
@@ -336,7 +354,7 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
       report.trusted = { ok: false, error: 'left as it was, since the repository did not take this backup' }
     } else if (held) {
       // Nothing is counted while it waits: the counts it waits against stay, however long.
-      report.trusted = { ok: true, held }
+      report.trusted = { ok: true, held, shrunk: lost }
       log.warn(`backup of ${grant.vaultId}: trusted copy held, ${held}`)
     } else {
       try {

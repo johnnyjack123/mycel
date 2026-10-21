@@ -379,8 +379,9 @@ people: whoever runs it can read the vaults on it.
   until the backup server's status carries the hash of the same settings
   (`backupSettingsText`) - comparing ids let a run go by the settings before an edit
   of retention.
-- **When** (0.7.18): every so many hours, or at a time of day (`at`: daily or on a
-  weekday) by the IANA zone of the device that set it - a container runs in UTC
+- **When** (0.7.18): every so many hours, or at a time of day (`at`: on the days in
+  `weekdays`, every day without them; 0.7.18's single `weekday` still read) by the
+  IANA zone of the device that set it - a container runs in UTC
   (`schedule.ts`, both changes of the clocks tested). A scheduled run that is due
   waits until the vault's room tags stayed as they were for five minutes, at most an
   hour (`BackupService.stillBusy`): a device merely connected holds nothing up. Runs
@@ -398,7 +399,10 @@ people: whoever runs it can read the vaults on it.
   vanished - counted apart, and against the most of the week's followed runs
   (`guardReference`), not the last one: measured by the last, a loss split over two
   runs went through. Only a confirmation, or following with the guard off, starts it
-  afresh; nothing is counted while the copy waits.
+  afresh; nothing is counted while the copy waits. A held copy is asked about in a
+  window over everything (`CopyWaitsModal`) - with the settings, whatever the tab,
+  and live -, and letting it follow is waited for to the end (`Backups.followCopy`):
+  a row that only said "waits" and stayed after the click left the user guessing.
 
 ### Around the notes
 

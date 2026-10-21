@@ -5,6 +5,7 @@ import {
   type BackupDataEvent,
   type BackupGrant,
   type BackupListedEntry,
+  type BackupRunStatus,
   type BackupSnapshotRef,
   type BackupServerInfo,
   type BackupServerSetting,
@@ -79,6 +80,9 @@ export class Backups {
   private readonly sessions = new Map<string, Promise<BackupSession>>()
   private readonly views = new Map<string, { status: BackupVaultStatus | null; info: BackupServerInfo | null; error: string | null }>()
   private readonly listeners = new Set<() => void>()
+  /** Backup servers letting a held copy follow just now: nothing asks about it meanwhile. */
+  private readonly followingCopy = new Set<string>()
+  private readonly dismissed = new Set<string>()
 
   constructor(private readonly deps: BackupsDeps) {}
 
@@ -388,6 +392,20 @@ export class Backups {
    * before the last changes. Never throws; says how it went.
    */
   async backUpFresh(routeId: string, options: { pollMs?: number; timeoutMs?: number; keepAll?: boolean } = {}): Promise<{ ok: boolean; error?: string }> {
+    const outcome = await this.runAndWait(routeId, { keepAll: options.keepAll === true }, options)
+    return outcome.ok ? { ok: true } : { ok: false, error: outcome.error }
+  }
+
+  /**
+   * Starts a run and waits until it is done: a run under way first - asked to
+   * run then, the backup server would merely hand back the one under way, with
+   * the options it started with -, then this one. Never throws.
+   */
+  private async runAndWait(
+    routeId: string,
+    params: { keepAll?: boolean; acceptShrink?: boolean },
+    options: { pollMs?: number; timeoutMs?: number } = {}
+  ): Promise<{ ok: boolean; error?: string; run?: BackupRunStatus }> {
     const pollMs = options.pollMs ?? 2_000
     const deadline = Date.now() + (options.timeoutMs ?? 60 * 60 * 1000)
     const wait = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, pollMs))
@@ -401,7 +419,7 @@ export class Backups {
       }
       const before = status.runs[0]?.startedAt
       const count = status.runs.length
-      await session.call<BackupVaultStatus>('run', { keepAll: options.keepAll === true })
+      await session.call<BackupVaultStatus>('run', params)
       for (;;) {
         if (Date.now() > deadline) return { ok: false, error: 'the backup did not finish in time' }
         await wait()
@@ -411,12 +429,51 @@ export class Backups {
         // A new run: another first entry - not its time, which is the backup server's clock.
         if (!status.running && last && (last.startedAt !== before || status.runs.length !== count)) {
           this.changed()
-          if (last.ok) return { ok: true }
-          return { ok: false, error: last.error ?? last.destinations.find((destination) => !destination.ok)?.error ?? 'the backup failed' }
+          if (last.ok) return { ok: true, run: last }
+          return { ok: false, run: last, error: last.error ?? last.destinations.find((destination) => !destination.ok)?.error ?? last.trusted?.error ?? 'the backup failed' }
         }
       }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  // --- a decrypted copy the guard holds -------------------------------------------------------
+
+  /** That backup server's newest run, when it left the decrypted copy waiting - not while the copy is being let follow. */
+  heldCopy(routeId: string): { run: BackupRunStatus; key: string } | null {
+    if (this.followingCopy.has(routeId)) return null
+    const run = this.views.get(routeId)?.status?.runs[0]
+    const held = run?.trusted?.held
+    return run && held ? { run, key: `${routeId}\n${held}` } : null
+  }
+
+  /** Asked about it already, and told "not now": not again until it waits for another reason, or the plugin starts again. */
+  dismissHold(key: string): void {
+    this.dismissed.add(key)
+  }
+
+  holdDismissed(key: string): boolean {
+    return this.dismissed.has(key)
+  }
+
+  following(routeId: string): boolean {
+    return this.followingCopy.has(routeId)
+  }
+
+  /**
+   * Lets a held decrypted copy follow the vault: a run that takes what
+   * vanished, waited for until it is checked - whoever asked hears how it
+   * went, not merely that it started.
+   */
+  async followCopy(routeId: string): Promise<{ ok: boolean; error?: string; run?: BackupRunStatus }> {
+    this.followingCopy.add(routeId)
+    this.changed()
+    try {
+      return await this.runAndWait(routeId, { acceptShrink: true }, { pollMs: 1_500 })
+    } finally {
+      this.followingCopy.delete(routeId)
+      await this.ask(routeId)
     }
   }
 
