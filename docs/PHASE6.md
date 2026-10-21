@@ -754,6 +754,14 @@ older ones by its retention.
   belongs to user 1000.
 - *The password* is behind an eye next to the repository, as selectable text, hidden
   again when the settings close.
+- *0.7.19, asked for by the user:* the days as buttons and the time as an hour and a
+  minute in Obsidian's dropdowns. The schedule holds several days (`weekdays`;
+  0.7.18's `weekday` read as one); the overdue notice waits for the longest gap
+  between them (`scheduleHours`). And a held copy is asked about in a window over
+  everything (`CopyWaitsModal`), opened with the settings whatever the tab and live
+  while they are open, with what vanished in numbers (`trusted.shrunk` in the run's
+  report); letting the copy follow is waited for to the end (`Backups.followCopy`),
+  "not now" kept per hold (`dismissHold`).
 - *Two bugs from the user's test, fixed before it went out.* The guard measured a run
   against the last run the copy followed, so a loss arriving over two runs passed in
   two halves; it now measures against the most of the followed runs in the week

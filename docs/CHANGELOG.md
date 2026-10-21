@@ -8,6 +8,37 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
+- **0.7.19** (2026-10-21) - the schedule looks better (asked for by the user, the
+  time above all): *On these days* with a button per day, Monday first - all seven
+  are every day, and workdays only or one day a week are a click away -, the time as
+  an hour and a minute in Obsidian's own dropdowns instead of the browser's time
+  field, and the next backup said under it ("Next backup: tomorrow, 03:00
+  (Europe/Berlin)"), the server's line no longer repeating it. A few clicks on the
+  days are saved as one change. The schedule holds several days now (`weekdays`);
+  0.7.18's single day is still read. The notice for an overdue backup waits for the
+  longest gap between the days - three days over a weekend for workdays. Asked on
+  the way: the trash does not count for the guard, only what is in the vault.
+
+  And a held decrypted copy can no longer go unseen (the user tried the guard: only
+  a row at the very bottom said so, and after *Follow anyway* it stayed, so nobody
+  knew whether it had worked). A window over everything asks about it - opened when
+  the settings open, whatever the tab, and live when a run holds the copy while they
+  are open; the backup notice opens it with a click. It says what vanished in
+  numbers ("Notes: 9 now - 24 at most in the week before, 63 % gone"), and offers
+  *Deleted notes…*, *Not now* and *Let the copy follow*. Letting it follow is waited
+  for to the end: the button spins, the window says what goes on, and it closes only
+  once the run is done, with a notice of what was written and removed - or it says
+  why not. Meanwhile the row in the Backups tab says that the copy follows, and
+  nothing asks again. *Not now* is kept until the copy waits for another reason or
+  the plugin starts again. The backup server's report carries the numbers
+  (`trusted.shrunk`). `test:backup`: the copy held after twenty notes deleted -
+  however the deletions reach the backup server -, the numbers on the device, "not
+  now" kept for that hold only, nothing asking while the copy follows, and following
+  waited for to the end.
+  `test:backup`: the next workday across the weekend and the change of the clocks,
+  the same night midweek, the days read sorted and once, a week of days as every
+  day, 0.7.18's single day, the longest gap.
+
 - **0.7.18** (2026-10-20) - when the backup server backs up, rclone, the password
   (asked for by the user after the first backups on the Pi; `docs/PHASE6.md`, "When it
   backs up, rclone, the password"). A backup at a time of day - every night at three

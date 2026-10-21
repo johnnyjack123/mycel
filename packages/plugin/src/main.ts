@@ -33,6 +33,7 @@ import { TotpSetupModal, askKeepTotp, askTotpCode } from './account/TotpModals'
 import { Session, type OpenVault, type SecretStore, type Unlocked } from './account/Session'
 import { Backups } from './backup/Backups'
 import { BackupConnectModal, BackupTaskModal } from './backup/BackupModals'
+import { CopyWaitsModal } from './backup/CopyWaitsModal'
 import { EditorSync } from './editor/EditorSync'
 import { BackupModal } from './history/BackupModal'
 import { HistoryModal } from './history/HistoryModal'
@@ -207,6 +208,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     }
   })
   private backupCheck: number | null = null
+  /** The window about a held decrypted copy, while it is open. */
+  private copyWaits: CopyWaitsModal | null = null
 
   private unlocked: Unlocked | null = null
   private vault: OpenVault | null = null
@@ -728,6 +731,24 @@ export default class ObsidianConnectPlugin extends Plugin {
     else new Notice(`Obsidian Connect: ${servers.length - done} backup server(s) could not be reached and need connecting again - see the settings.`, 0)
   }
 
+  /**
+   * Asks about a decrypted copy the guard holds, over everything: one window
+   * at a time, and not for a hold the person already said "not now" to
+   * unless `again`. True when one is open now.
+   */
+  openCopyWaits(routeId: string, again = false): boolean {
+    if (this.copyWaits) return true
+    const held = this.backupServers.heldCopy(routeId)
+    if (!held || (!again && this.backupServers.holdDismissed(held.key))) return false
+    const label = this.backupServers.servers().find((server) => server.routeId === routeId)?.label ?? 'The backup server'
+    this.copyWaits = new CopyWaitsModal(this.app, this.backupServers, routeId, label, held.run, held.key, () => this.openTrash(), () => {
+      this.copyWaits = null
+      this.settingTab?.refresh()
+    })
+    this.copyWaits.open()
+    return true
+  }
+
   /** A notice when backups are not well: failed, waiting, or overdue. Asked now and then while the vault syncs. */
   private scheduleBackupCheck(): void {
     if (this.backupCheck !== null) return
@@ -735,7 +756,14 @@ export default class ObsidianConnectPlugin extends Plugin {
       const backups = this.backupsOf()
       if (!backups || backups.servers().length === 0) return
       const problems = await backups.problems()
-      if (problems.length > 0) new Notice(`Obsidian Connect - backups:\n${problems.join('\n')}`, 0)
+      if (problems.length === 0) return
+      const held = backups.servers().filter((server) => backups.heldCopy(server.routeId))
+      const notice = new Notice(`Obsidian Connect - backups:\n${problems.join('\n')}${held.length > 0 ? '\nClick here to decide what the decrypted copy does.' : ''}`, 0)
+      if (held.length > 0) {
+        notice.noticeEl.addEventListener('click', () => {
+          for (const server of held) if (this.openCopyWaits(server.routeId, true)) break
+        })
+      }
     }
     window.setTimeout(() => void check(), BACKUP_CHECK_DELAY_MS)
     this.backupCheck = window.setInterval(() => void check(), BACKUP_CHECK_EVERY_MS)
@@ -1085,6 +1113,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     // A start under way stops at its next step; what it built so far goes below.
     this.syncRun += 1
     this.opening = false
+    this.copyWaits?.close()
     this.backupServers.closeSessions()
     // Editors first: releasing them hands their files back to the store,
     // which must still be there to take them.

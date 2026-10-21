@@ -3,7 +3,15 @@ import { generatePassword } from './account/password'
 import type { ServerProbe } from './account/probe'
 import { PasswordReveal } from './account/reveal'
 import { busy, type BusyButton } from './busy'
-import type { BackupAt, BackupDestinationStatus, BackupRunStatus, BackupTaskSetting, BackupVaultStatus } from '@obsidian-connect/shared'
+import {
+  scheduleDays,
+  scheduleHours,
+  type BackupAt,
+  type BackupDestinationStatus,
+  type BackupRunStatus,
+  type BackupTaskSetting,
+  type BackupVaultStatus
+} from '@obsidian-connect/shared'
 import { describeGuard, describeKeep, describeRepository } from './backup/BackupModals'
 import { NO_LONGER_HAS_VAULT, defaultSchedule, deviceZone, type Backups } from './backup/Backups'
 import type ObsidianConnectPlugin from './main'
@@ -15,18 +23,31 @@ function when(ms: number): string {
   return date.toDateString() === new Date().toDateString() ? `today ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : date.toLocaleString()
 }
 
-/** One line about a backup server: reachable, what its last backup did, when the next comes. */
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** A moment soon, as a person says it: today, tomorrow, a weekday, a date - with the time, never the seconds. */
+function soon(ms: number): string {
+  const date = new Date(ms)
+  const time = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+  const midnight = (day: Date): number => new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime()
+  const days = Math.round((midnight(date) - midnight(new Date())) / DAY_MS)
+  if (days === 0) return `today, ${time}`
+  if (days === 1) return `tomorrow, ${time}`
+  if (days > 1 && days < 7) return `${date.toLocaleDateString('en-GB', { weekday: 'long' })}, ${time}`
+  return `${date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })}, ${time}`
+}
+
+/** One line about a backup server: reachable, what its last backup did. When the next comes is the schedule's to say. */
 function describeBackupServer(error: string | null, status: BackupVaultStatus | null): string {
   if (error) return `Not reachable: ${error}`
   if (!status) return 'Asking the backup server…'
-  const next = status.nextRunAt ? ` Next ${when(status.nextRunAt)}.` : ''
   if (status.running) return 'Backing up now…'
   if (status.waitingUntil) return `A backup is due and waits until nobody writes in the vault - at the latest until ${when(status.waitingUntil)}.`
   const last = status.runs[0]
-  if (!last) return `No backup yet.${next}`
-  if (!last.ok) return `The last backup, ${when(last.startedAt)}, failed: ${last.error ?? 'see below'}.${next}`
+  if (!last) return 'No backup yet.'
+  if (!last.ok) return `The last backup, ${when(last.startedAt)}, failed: ${last.error ?? 'see below'}.`
   const checked = last.destinations.every((destination) => destination.checked) ? ', read back and checked' : ''
-  return `Last backup ${when(last.finishedAt)}: ${last.notes} notes, ${last.files} files${checked}.${next}`
+  return `Last backup ${when(last.finishedAt)}: ${last.notes} notes, ${last.files} files${checked}.`
 }
 
 function describeRepositoryState(task: BackupTaskSetting, outcome: BackupDestinationStatus | undefined, status: BackupVaultStatus | null): string {
@@ -39,26 +60,26 @@ function describeRepositoryState(task: BackupTaskSetting, outcome: BackupDestina
   return `Encrypted with its own password. Last backup ${outcome.checked === 'deep' ? 'read back in full' : 'checked'}. ${keep}`
 }
 
-const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-
-/** `HH:MM`, as a time field holds it. */
-function clockOf(minutes: number): string {
-  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
-}
-
-function minutesOf(text: string): number | null {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim())
-  if (!match) return null
-  const hours = Number(match[1])
-  const minutes = Number(match[2])
-  return hours < 24 && minutes < 60 ? hours * 60 + minutes : null
-}
+/** The week from Monday, as the day buttons show it; 0 is Sunday, as `Date` counts. */
+const WEEK_FROM_MONDAY = [1, 2, 3, 4, 5, 6, 0]
+const DAY_SHORT = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 /** Which entry of the schedule's dropdown a task is. */
 function scheduleChoice(task: BackupTaskSetting): string {
-  if (task.at) return task.at.weekday === undefined ? 'daily' : 'weekly'
+  if (task.at) return 'days'
   if (task.everyHours <= 0) return 'manual'
   return task.everyHours === 1 || task.everyHours === 6 ? `every-${task.everyHours}` : 'custom'
+}
+
+/** The schedule in a few words: when the next backup comes, and by whose clock. */
+function describeSchedule(task: BackupTaskSetting, status: BackupVaultStatus | null): string {
+  if (!task.at && task.everyHours <= 0) return 'Only when started here - and before a rollback.'
+  const next = status?.nextRunAt ? `Next backup: ${soon(status.nextRunAt)}` : ''
+  if (!task.at) return next ? `${next}.` : ''
+  const zone = deviceZone()
+  if (task.at.zone !== zone) return `${next ? `${next} - ` : ''}by the clock of ${task.at.zone}, where it was set; a change here takes this device's (${zone}).`
+  return next ? `${next} (${zone}).` : `By the clock here (${zone}).`
 }
 
 function describeCopy(task: BackupTaskSetting, trusted: BackupRunStatus['trusted']): string {
@@ -200,6 +221,26 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     if (!signedIn) {
       if (this.probe === undefined && this.probing === 0) void this.checkServer()
       else this.showProbe()
+    }
+    this.watchBackups()
+  }
+
+  /**
+   * Every backup server asked once while the settings are open, whatever the
+   * tab - its answer, and every run it finishes meanwhile, draws the tab
+   * again. A decrypted copy the guard holds is then asked about over
+   * everything: with backups at night, nobody saw the run that held it.
+   */
+  private watchBackups(): void {
+    const backups = this.plugin.settings.username ? this.plugin.backupsOf() : null
+    if (!backups) return
+    for (const server of backups.servers()) {
+      if (!this.backupsAsked.has(server.routeId)) {
+        this.backupsAsked.add(server.routeId)
+        void backups.ask(server.routeId)
+        continue
+      }
+      if (this.plugin.openCopyWaits(server.routeId)) return
     }
   }
 
@@ -804,10 +845,6 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private backupServerRows(containerEl: HTMLElement, backups: Backups, routeId: string): void {
     const view = backups.view(routeId)
     if (!view) return
-    if (!this.backupsAsked.has(routeId)) {
-      this.backupsAsked.add(routeId)
-      void backups.ask(routeId)
-    }
     const status = view.status
     const last = status?.runs[0]
     const confirming = this.disconnecting === routeId
@@ -873,7 +910,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
             .onClick(() => void this.run(() => this.plugin.openBackupTask(routeId), button))
         )
     } else {
-      this.scheduleRow(containerEl, backups, routeId, task)
+      this.scheduleRow(containerEl, backups, routeId, task, status)
       const repository = new Setting(containerEl)
         .setName(`Repository: ${describeRepository(task, status?.folders.encrypted ?? null)}`)
         .setDesc(describeRepositoryState(task, last?.destinations[0], status))
@@ -914,21 +951,22 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       }
     }
 
-    if (last?.trusted?.held) {
+    if (backups.following(routeId)) {
       new Setting(containerEl)
+        .setName('The decrypted copy follows the vault')
+        .setDesc('Backing up, and bringing the copy level with the vault - as long as a backup takes. A notice says when it is done.')
+        .settingEl.addClass('connect-copy-waits')
+    } else if (backups.heldCopy(routeId)) {
+      const row = new Setting(containerEl)
         .setName('The decrypted copy waits')
-        .setDesc(`${last.trusted.held}. If they were deleted on purpose, let it follow; if not, find out first - the server may have lost data.`)
+        .setDesc(`${last?.trusted?.held ?? ''}. If they were deleted on purpose, let it follow; if not, find out first - the server may have lost data.`)
         .addButton((button) =>
           button
-            .setButtonText('Follow anyway')
+            .setButtonText('Decide…')
             .setWarning()
-            .onClick(
-              () =>
-                void this.run(async () => {
-                  await backups.runNow(routeId, true)
-                }, button)
-            )
+            .onClick(() => this.plugin.openCopyWaits(routeId, true))
         )
+      row.settingEl.addClass('connect-copy-waits')
     }
     for (const problem of status?.problems ?? []) {
       new Setting(containerEl).setName(status?.ready ? 'Note' : 'Not carried out').setDesc(problem)
@@ -937,51 +975,76 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
   /**
    * When the backup server backs up on its own: every so many hours, or at a
-   * time of day - daily, or on one weekday - by this device's time zone. The
-   * time is taken once the field is left, not on every keystroke.
+   * time of day on the days chosen - by this device's time zone. A day button
+   * is saved a moment after the last click, so a few clicks in a row are one
+   * change, not one each.
    */
-  private scheduleRow(containerEl: HTMLElement, backups: Backups, routeId: string, task: BackupTaskSetting): void {
+  private scheduleRow(containerEl: HTMLElement, backups: Backups, routeId: string, task: BackupTaskSetting, status: BackupVaultStatus | null): void {
     const choice = scheduleChoice(task)
-    const at = (patch: Partial<BackupAt>): BackupAt => ({ minutes: task.at?.minutes ?? defaultSchedule().at.minutes, zone: deviceZone(), ...patch })
-    const set = (everyHours: number, schedule?: BackupAt): void => void this.run(() => backups.setSchedule(routeId, everyHours, schedule))
-    const row = new Setting(containerEl).setName('Backs up')
-    if (task.at) {
-      const zone = deviceZone()
-      row.setDesc(task.at.zone === zone ? `By the clock here (${zone}).` : `By the clock of ${task.at.zone}, where it was set; changing the time takes this device's (${zone}).`)
+    const set = (schedule: { everyHours: number; at?: BackupAt }): void => void this.run(() => backups.setSchedule(routeId, schedule.everyHours, schedule.at))
+    // A time of day; all seven days are every day, and need no list.
+    const timed = (days: number[], minutes: number): { everyHours: number; at: BackupAt } => {
+      const at: BackupAt = { minutes, zone: deviceZone() }
+      if (days.length < 7) at.weekdays = [...days].sort((a, b) => a - b)
+      return { everyHours: scheduleHours({ everyHours: 0, at }), at }
     }
+    const row = new Setting(containerEl).setName('Backs up').setDesc(describeSchedule(task, status))
     row.addDropdown((dropdown) => {
-      dropdown.addOption('manual', 'Only when started here')
-      dropdown.addOption('every-1', 'Every hour')
+      dropdown.addOption('days', 'On these days')
       dropdown.addOption('every-6', 'Every 6 hours')
-      dropdown.addOption('daily', 'Every day at')
-      dropdown.addOption('weekly', 'Every week on')
+      dropdown.addOption('every-1', 'Every hour')
+      dropdown.addOption('manual', 'Only when started here')
       if (choice === 'custom') dropdown.addOption('custom', `Every ${task.everyHours} hours`)
       dropdown.setValue(choice).onChange((value) => {
-        if (value === 'manual') set(0)
-        else if (value === 'every-1') set(1)
-        else if (value === 'every-6') set(6)
-        else if (value === 'daily') set(24, at({}))
-        else if (value === 'weekly') set(168, at({ weekday: task.at?.weekday ?? 0 }))
+        if (value === 'manual') set({ everyHours: 0 })
+        else if (value === 'every-1') set({ everyHours: 1 })
+        else if (value === 'every-6') set({ everyHours: 6 })
+        else if (value === 'days') set(timed(scheduleDays({}), defaultSchedule().at.minutes))
       })
     })
-    if (choice === 'weekly') {
-      row.addDropdown((dropdown) => {
-        WEEKDAY_NAMES.forEach((name, day) => dropdown.addOption(String(day), name))
-        dropdown.setValue(String(task.at?.weekday ?? 0)).onChange((value) => set(168, at({ weekday: Number(value) })))
+    if (!task.at) return
+
+    const minutes = task.at.minutes
+    const chosen = new Set(scheduleDays(task.at))
+    const days = new Setting(containerEl)
+    days.settingEl.addClass('connect-schedule')
+    const buttons = days.infoEl.createDiv({ cls: 'connect-days', attr: { role: 'group', 'aria-label': 'Days' } })
+    let saving: number | null = null
+    for (const day of WEEK_FROM_MONDAY) {
+      const button = buttons.createEl('button', { cls: 'connect-day', text: DAY_SHORT[day], attr: { type: 'button', title: DAY_NAMES[day] ?? '' } })
+      const show = (): void => {
+        button.toggleClass('is-active', chosen.has(day))
+        button.setAttr('aria-pressed', String(chosen.has(day)))
+      }
+      show()
+      button.addEventListener('click', () => {
+        // One day stays: a schedule of no days is "only when started here", which the dropdown says.
+        if (chosen.has(day) && chosen.size === 1) return
+        if (chosen.has(day)) chosen.delete(day)
+        else chosen.add(day)
+        show()
+        if (saving !== null) window.clearTimeout(saving)
+        saving = window.setTimeout(() => {
+          saving = null
+          set(timed(Array.from(chosen), minutes))
+        }, 800)
       })
     }
-    if (task.at) {
-      const schedule = task.at
-      row.addText((text) => {
-        text.inputEl.type = 'time'
-        text.setValue(clockOf(schedule.minutes))
-        text.inputEl.addEventListener('change', () => {
-          const minutes = minutesOf(text.getValue())
-          if (minutes === null || minutes === schedule.minutes) return
-          set(choice === 'weekly' ? 168 : 24, at({ minutes, ...(schedule.weekday === undefined ? {} : { weekday: schedule.weekday }) }))
-        })
-      })
-    }
+
+    days.controlEl.addClass('connect-time')
+    days.controlEl.createSpan({ cls: 'connect-time-word', text: 'at' })
+    days.addDropdown((hour) => {
+      for (let value = 0; value < 24; value += 1) hour.addOption(String(value), String(value).padStart(2, '0'))
+      hour.setValue(String(Math.floor(minutes / 60))).onChange((value) => set(timed(Array.from(chosen), Number(value) * 60 + (minutes % 60))))
+      hour.selectEl.setAttr('aria-label', 'Hour')
+    })
+    days.controlEl.createSpan({ cls: 'connect-time-word', text: ':' })
+    days.addDropdown((minute) => {
+      const options = new Set([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, minutes % 60])
+      for (const value of Array.from(options).sort((a, b) => a - b)) minute.addOption(String(value), String(value).padStart(2, '0'))
+      minute.setValue(String(minutes % 60)).onChange((value) => set(timed(Array.from(chosen), Math.floor(minutes / 60) * 60 + Number(value))))
+      minute.selectEl.setAttr('aria-label', 'Minute')
+    })
   }
 
   private device(containerEl: HTMLElement): void {

@@ -1,4 +1,4 @@
-import type { BackupAt } from '@obsidian-connect/shared'
+import { scheduleDays, type BackupAt } from '@obsidian-connect/shared'
 
 // When a backup at a time of day comes next - in the time zone of the device
 // that set it: a container's clock runs in UTC, and "at three at night" means
@@ -66,11 +66,12 @@ function instantOf(year: number, month: number, day: number, minutes: number, zo
 /** The first moment after `after` the schedule names; a zone this runtime does not know counts as UTC. */
 export function nextAt(at: BackupAt, after: number): number {
   const zone = knownZone(at.zone) ? at.zone : 'UTC'
+  const days = new Set(scheduleDays(at))
   const today = wallClock(after, zone)
   for (let offset = 0; offset <= 8; offset += 1) {
     // The date alone, at noon: a change of the clocks never moves it to another day.
     const date = new Date(Date.UTC(today.year, today.month - 1, today.day + offset, 12))
-    if (at.weekday !== undefined && date.getUTCDay() !== at.weekday) continue
+    if (!days.has(date.getUTCDay())) continue
     const instant = instantOf(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate(), at.minutes, zone)
     if (instant > after) return instant
   }
@@ -81,10 +82,17 @@ export function nextAt(at: BackupAt, after: number): number {
 /** A schedule as the settings hold it, or null when it is not one. */
 export function atOf(value: unknown): BackupAt | null {
   if (!value || typeof value !== 'object') return null
-  const { minutes, weekday, zone } = value as Partial<BackupAt>
+  const { minutes, weekday, weekdays, zone } = value as Partial<BackupAt>
   if (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < 0 || minutes > 1439) return null
   if (typeof zone !== 'string' || zone === '') return null
   const at: BackupAt = { minutes, zone }
-  if (typeof weekday === 'number' && Number.isInteger(weekday) && weekday >= 0 && weekday <= 6) at.weekday = weekday
+  const day = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 6
+  if (Array.isArray(weekdays)) {
+    // Days out of range dropped; none left is every day.
+    const valid = weekdays.filter(day)
+    if (valid.length > 0 && valid.length < 7) at.weekdays = scheduleDays({ weekdays: valid })
+  } else if (day(weekday)) {
+    at.weekdays = [weekday]
+  }
   return at
 }

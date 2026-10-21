@@ -218,6 +218,78 @@
   font-weight: 600;
 }
 
+/* A decrypted copy the guard holds, or one being let follow: not a row to scroll past. */
+.connect-copy-waits {
+  border-left: 3px solid var(--color-orange);
+  padding-left: 0.75em;
+}
+
+/* What vanished, in the window that asks about it. */
+.connect-shrunk {
+  margin: 0.5em 0 0.75em;
+  padding-left: 1.25em;
+}
+
+.connect-shrunk li {
+  margin: 0.2em 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.connect-follow-status:empty {
+  display: none;
+}
+
+/* The days a backup runs on, one button each, and the time beside them; they wrap on a phone. */
+.connect-schedule {
+  flex-wrap: wrap;
+  gap: 0.75em;
+  border-top: none;
+  padding-top: 0;
+}
+
+.connect-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35em;
+}
+
+.connect-days button.connect-day {
+  min-width: 2.6em;
+  padding: 0.3em 0.55em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-form-field);
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+.connect-days button.connect-day:hover {
+  color: var(--text-normal);
+  border-color: var(--interactive-accent);
+}
+
+.connect-days button.connect-day.is-active {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-weight: 600;
+}
+
+.connect-time {
+  gap: 0.3em;
+}
+
+.connect-time .connect-time-word {
+  color: var(--text-muted);
+}
+
+.connect-time select.dropdown {
+  min-width: 4em;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Dark on light whatever the theme, with a quiet zone: scanners need both. */
 .connect-qr {
   width: min(240px, 70vw);

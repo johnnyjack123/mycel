@@ -186,9 +186,10 @@ backup server for it. `obsidian-connect-backup status` on the backup server says
      there or in a cloud. It follows only once the repository took the backup, so
      what it deletes is in a snapshot first.
 3. The first backup runs as soon as the task is saved. **When** after that: every
-   night at three unless you choose otherwise - every day or every week on one day at
-   a time of your choosing, or every hour, or every 6 hours, or only by hand -, and
-   **Back up now** whenever you like.
+   night at three unless you choose otherwise - *On these days*, a button per day
+   (all seven are every day; workdays only, or Sundays only, work too) and the hour
+   and minute -, or every hour, or every 6 hours, or only by hand -, and **Back up
+   now** whenever you like. The settings say when the next backup comes.
 
 **When it backs up.** A time of day goes by the clock of the device that set it - its
 time zone, summer time included -, not the container's, which runs in UTC. A backup
@@ -253,8 +254,13 @@ two backups went through, each half below the limit (0.7.18). Notes and files ar
 counted apart, so a vault of many pictures that lost its notes is caught too; fewer
 than ten of either are not counted. The share is the copy's own setting - 10 to 90 %,
 or never. Every backup is measured, those started by hand too. The restic backups go
-on as always. If you deleted them on purpose, *Follow anyway* - that, or setting the
-guard to never, starts the measuring afresh. Deleted notes stay in the copy's hidden
+on as always. Obsidian asks about it in a window over everything - when the settings
+open, whatever the tab, and at once when a backup holds the copy while they are open;
+the backup notice opens it with a click. It says how many notes and files there are
+now and at most in the week before. If you deleted them on purpose, *Let the copy
+follow*: the window stays until that backup is done and a notice says what was
+removed. *Not now* leaves it waiting - the Backups tab keeps a *Decide…* for later.
+Letting it follow, or setting the guard to never, starts the measuring afresh. Deleted notes stay in the copy's hidden
 trash (`.obsidian-connect/trash/`) as long as the vault's trash keeps them.
 
 ## What a backup holds

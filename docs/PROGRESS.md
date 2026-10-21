@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-20 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - was built as 0.7.0 to 0.7.5 and merged into `main`. After it the user asked for more, decided on 2026-10-16 (`docs/PHASE6.md`, "After the first build"): 0.7.6 to 0.7.9, merged. 0.7.10 to 0.7.16 came from setting it up on the user's network. 0.7.17 (2026-10-18): one backup task per vault, paths picked by the backup server, one backup server per vault - merged; backups by hand work on the user's Pi. 0.7.18 (2026-10-20): a time of day, waiting while someone writes, rclone, the password shown - on `feat/backup-schedule`. Next: the user checks the scheduled backup; then 0.8. 0.6.8 is the last version confirmed on the user's devices.**_
+_Last updated: 2026-10-20 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - was built as 0.7.0 to 0.7.5 and merged into `main`. After it the user asked for more, decided on 2026-10-16 (`docs/PHASE6.md`, "After the first build"): 0.7.6 to 0.7.9, merged. 0.7.10 to 0.7.16 came from setting it up on the user's network. 0.7.17 (2026-10-18): one backup task per vault, paths picked by the backup server, one backup server per vault - merged; backups by hand work on the user's Pi. 0.7.18 (2026-10-21): a time of day, waiting while someone writes, rclone, the password shown, the guard over a week, the relay's ping - merged. 0.7.19 (2026-10-21): the schedule's day buttons and time, a window over everything for a held copy - on `feat/schedule-days`. Next: the user checks the scheduled backup and the window; then 0.8. 0.6.8 is the last version confirmed on the user's devices.**_
 
 ## Where we are
 
@@ -97,7 +97,8 @@ considers 0.7 nearly done.
 
 **What the user does next:**
 
-1. Install 0.7.18 on the devices; `docker compose pull && docker compose up -d` on
+1. Install 0.7.19 on the devices (0.7.19 changes the plugin and the backup server
+   only); `docker compose pull && docker compose up -d` on
    the Pi **and on the sync server's host** - the relay pings its connections from
    0.7.18 on, without which the backup server's connection goes every minute behind
    the proxy. The task from 0.7.17 carries on; its schedule ("every 24 hours") stays
@@ -286,6 +287,13 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
+At 0.7.19, run 2026-10-21 on `feat/schedule-days` before its commit: `typecheck` and
+`build` pass; `test:merge` 164, `test:load` 14, `test:rooms` 286, `test:sync` 26,
+`test:recovery` 64, `test:account` 50, `test:rollback` 52, `test:backup` 212, and
+against a scratch server on 1235 `test:socket` 19 and `test:vault` 230 - all pass.
+The day buttons, the time dropdowns and the window over a held copy are the settings
+tab and a modal: only a device shows them.
+
 At 0.7.18, run 2026-10-21 on `feat/backup-schedule` before the commit with the two
 fixes: `typecheck` and `build` pass; `test:merge` 164, `test:load` 14, `test:rooms`
 286, `test:sync` 26, `test:recovery` 64, `test:account` 50, `test:rollback` 52,
@@ -418,6 +426,16 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 ---
 
 ## Log
+
+### 2026-10-21
+- 0.7.18 merged; the sync server needs it too (the relay's ping). The user asked for
+  a nicer schedule - the time above all - and chose day buttons over two rows or one
+  sentence; built as 0.7.19 on `feat/schedule-days`. Answered: the trash does not
+  count for the guard, only the notes and files in the vault.
+- The user tried the guard: it held, but only a row at the very bottom said so, and
+  after *Follow anyway* the row stayed - nobody could tell whether it worked. Asked
+  for a window over everything, in the settings, live, gone once decided. Added to
+  0.7.19: `CopyWaitsModal`, letting the copy follow waited for to the end.
 
 ### 2026-10-20
 - 0.7.17 runs on the Pi; backups by hand work. The user asked for rclone, for

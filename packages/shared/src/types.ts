@@ -385,15 +385,34 @@ export interface BackupTaskSetting {
 export interface BackupAt {
   /** Minutes after midnight, 0 to 1439. */
   minutes: number
-  /** 0 Sunday to 6 Saturday; absent: every day. */
+  /** The days, 0 Sunday to 6 Saturday; absent: every day. */
+  weekdays?: number[]
+  /** One day, as 0.7.18 set it; `weekdays` from 0.7.19 on. */
   weekday?: number
   /** An IANA time zone, e.g. `Europe/Berlin`. */
   zone: string
 }
 
-/** About how many hours lie between two backups a task asks for; 0 for none. */
+const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6]
+
+/** The days a time of day backs up on, 0 Sunday to 6 Saturday, sorted - every day unless it names some. */
+export function scheduleDays(at: Pick<BackupAt, 'weekdays' | 'weekday'>): number[] {
+  const named = at.weekdays ?? (at.weekday === undefined ? EVERY_DAY : [at.weekday])
+  const days = Array.from(new Set(named.filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))).sort((a, b) => a - b)
+  return days.length > 0 ? days : [...EVERY_DAY]
+}
+
+/** At most how many hours lie between two backups a task asks for - the longest gap between its days; 0 for none. */
 export function scheduleHours(task: Pick<BackupTaskSetting, 'everyHours' | 'at'>): number {
-  if (task.at) return task.at.weekday === undefined ? 24 : 168
+  if (task.at) {
+    const days = scheduleDays(task.at)
+    let longest = 0
+    days.forEach((day, index) => {
+      const next = days[(index + 1) % days.length] as number
+      longest = Math.max(longest, (next - day + 7) % 7 || 7)
+    })
+    return longest * 24
+  }
   return task.everyHours > 0 ? task.everyHours : 0
 }
 
@@ -495,7 +514,17 @@ export interface BackupRunStatus {
   files: number
   problems: string[]
   destinations: BackupDestinationStatus[]
-  trusted?: { ok: boolean; held?: string; written?: number; deleted?: number; kept?: number; error?: string }
+  trusted?: {
+    ok: boolean
+    /** Why the copy waits, in words. */
+    held?: string
+    /** The same in numbers: per kind, how many there are now and the most at the runs it followed in the week before. */
+    shrunk?: Array<{ what: 'notes' | 'files'; now: number; before: number }>
+    written?: number
+    deleted?: number
+    kept?: number
+    error?: string
+  }
 }
 
 /** One vault on a backup server, as its owner's devices see it. */

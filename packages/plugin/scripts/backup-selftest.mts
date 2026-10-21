@@ -33,7 +33,7 @@ const { readStatus } = await import('../../backup/src/status.js')
 const BACKUP_BIN = fileURLToPath(new URL('../../backup/bin/obsidian-connect-backup.mjs', import.meta.url))
 const { listVaults } = await import('../../backup/src/service.js')
 const { backupRouteKeys, encodeBackupInvite, fromBase64, newBackupSecret, openSession } = await import('@obsidian-connect/shared/crypto')
-const { backupSettingsText, docRoom } = await import('@obsidian-connect/shared')
+const { backupSettingsText, docRoom, scheduleHours } = await import('@obsidian-connect/shared')
 type BackupConnected = import('@obsidian-connect/shared').BackupConnected
 
 type RunReport = Awaited<ReturnType<typeof runBackup>>
@@ -273,7 +273,29 @@ function untar(archive: string, into: string): boolean {
     )
     const task = { server: 'r', where: 'local', password: 'p', everyHours: 0, decrypted: false, createdAt: 1 }
     const weekly = readConfig(new Map([['backupTask:r', { ...task, at: { minutes: 180, weekday: 0, zone: 'Europe/Berlin' } }]]), 'r', { encrypted: 'e', decrypted: 'd' })
-    check(weekly.ready && weekly.at?.weekday === 0 && weekly.everyHours === 168 && weekly.problems.length === 0, 'the backup server reads a weekly time and counts it as a week', weekly)
+    check(
+      weekly.ready && weekly.at?.weekdays?.join() === '0' && weekly.everyHours === 168 && weekly.problems.length === 0,
+      'the backup server reads a weekly time as 0.7.18 set it, and counts it as a week',
+      weekly
+    )
+
+    // Several days, as the day buttons set them.
+    const workdays = { minutes: 180, weekdays: [1, 2, 3, 4, 5], zone: 'Europe/Berlin' }
+    check(
+      iso(nextAt(workdays, at('2026-10-23T10:00'))) === '2026-10-26T02:00',
+      'on workdays at three: from a Friday morning, the Monday - by the winter clock, the clocks having gone back on Sunday'
+    )
+    check(iso(nextAt(workdays, at('2026-10-21T00:30'))) === '2026-10-21T01:00', 'and on a Wednesday the same night')
+    check(
+      atOf({ minutes: 60, weekdays: [5, 1, 9, 1], zone: 'UTC' })?.weekdays?.join() === '1,5' && atOf({ minutes: 60, weekdays: [0, 1, 2, 3, 4, 5, 6], zone: 'UTC' })?.weekdays === undefined,
+      'days are taken sorted, once each, without one out of range; all seven are every day'
+    )
+    check(
+      scheduleHours({ everyHours: 0, at: workdays }) === 72 &&
+        scheduleHours({ everyHours: 0, at: { minutes: 0, weekdays: [3], zone: 'UTC' } }) === 168 &&
+        scheduleHours({ everyHours: 0, at: { minutes: 0, zone: 'UTC' } }) === 24,
+      'the longest gap between two days is what a backup may be late by: three days over a weekend, a week for one day, a day for every day'
+    )
     const unknown = readConfig(new Map([['backupTask:r', { ...task, at: { minutes: 180, zone: 'Not/AZone' } }]]), 'r', { encrypted: 'e', decrypted: 'd' })
     check(unknown.ready && unknown.problems.some((problem) => problem.includes('goes by UTC')), 'a zone it does not know it says so, and backs up all the same', unknown.problems)
   }
@@ -1036,6 +1058,44 @@ try {
     {
       const status = (await backups.ask(again.routeId))?.status
       check(status?.everyHours === 6 && status.ready && status.folders.decrypted === `decrypted/${annaCopy}`, 'and the backup server reads it under the new one, its folders as they were', status)
+    }
+
+    // A copy the guard holds, as the settings ask about it: what vanished, "not now", letting it follow.
+    {
+      for (let n = 0; n < 20; n += 1) await A3.vault.userCreate(`Held/${n}.md`, `held ${n}\n`)
+      check(
+        await eventually(() => A3.store?.noteState(A3.vault.file('Held/19.md') as never) === 'synced', 20_000),
+        'A writes twenty notes more'
+      )
+      check((await backups.backUpFresh(again.routeId, { pollMs: 200 })).ok && backups.heldCopy(again.routeId) === null, 'they are backed up, and the copy follows')
+      for (let n = 0; n < 20; n += 1) await A3.vault.trash(A3.vault.file(`Held/${n}.md`))
+      // However the deletions reach the backup server - at once, or over two runs - the copy ends up waiting.
+      let tries = 0
+      while (backups.heldCopy(again.routeId) === null && tries < 6) {
+        tries += 1
+        await delay(500)
+        await backups.backUpFresh(again.routeId, { pollMs: 200 })
+      }
+      const held = backups.heldCopy(again.routeId)
+      const notes = held?.run.trusted?.shrunk?.find((kind) => kind.what === 'notes')
+      check(
+        held !== null && notes !== undefined && notes.now < notes.before / 2 && existsSync(join(decryptedRoot, A3.username, folder, 'Held', '19.md')),
+        'A deletes them: the copy waits, and the device knows what vanished, in numbers',
+        held?.run.trusted
+      )
+      if (held) {
+        backups.dismissHold(held.key)
+        check(backups.holdDismissed(held.key) && !backups.holdDismissed(`${held.key} and another`), '"not now" is remembered for that hold, and only for it')
+        const following = backups.followCopy(again.routeId)
+        check(backups.following(again.routeId) && backups.heldCopy(again.routeId) === null, 'while the copy is let follow, nothing asks about it')
+        const followed = await following
+        check(
+          followed.ok && followed.run?.trusted?.held === undefined && (followed.run?.trusted?.deleted ?? 0) > 0 && !backups.following(again.routeId) && backups.heldCopy(again.routeId) === null,
+          'letting it follow is waited for to the end, and says what it removed',
+          followed
+        )
+        check(!existsSync(join(decryptedRoot, A3.username, folder, 'Held', '19.md')), 'and the copy has followed the vault')
+      }
     }
 
     // The task changed afterwards: how long its backups are kept, the copy's guard.
