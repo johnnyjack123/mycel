@@ -161,6 +161,8 @@ export class BackupService {
   private readonly listeners = new Set<(vaultId: string, report: RunReport) => void>()
   private readonly routeListeners = new Set<() => void>()
   private readonly listings = new Map<string, BackupListedEntry[]>()
+  /** Vaults let go whose routes are still answered, until the session that let them go answered. */
+  private readonly leaving = new Map<string, Pairing>()
 
   private constructor(private readonly options: ServiceOptions) {}
 
@@ -217,7 +219,8 @@ export class BackupService {
 
   /** Every paired vault's route and secret. */
   pairings(): Array<{ vaultId: string; pairing: Pairing }> {
-    return Array.from(this.vaults, ([vaultId, vault]) => ({ vaultId, pairing: vault.pairing }))
+    const answered = Array.from(this.vaults, ([vaultId, vault]) => ({ vaultId, pairing: vault.pairing }))
+    return [...answered, ...Array.from(this.leaving, ([vaultId, pairing]) => ({ vaultId, pairing }))]
   }
 
   async info(): Promise<BackupServerInfo> {
@@ -335,7 +338,12 @@ export class BackupService {
    * (`announceRoutes`), since the relay ends the session with its route.
    */
   async disconnect(vaultId: string, announce = true): Promise<void> {
+    const vault = this.vaults.get(vaultId)
     this.vaults.delete(vaultId)
+    // Its route stays among the pairings until announced: the routes are worked
+    // out again every tick, and one worked out in between dropped it - and with
+    // no route left, the relay connection - before the answer was out.
+    if (vault && !announce) this.leaving.set(vaultId, vault.pairing)
     await rm(vaultDir(this.options.dataDir, vaultId), { recursive: true, force: true })
     log.info(`vault ${vaultId} disconnected`)
     if (announce) this.routesChanged()
@@ -343,6 +351,7 @@ export class BackupService {
 
   /** The routes to answer changed, said by whoever held it back. */
   announceRoutes(): void {
+    this.leaving.clear()
     this.routesChanged()
   }
 

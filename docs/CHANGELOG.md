@@ -54,6 +54,12 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
     that worked, and asks over HTTP only for one that never opened. `test:rooms`: a
     backup server's and a device's connection pinged and kept, one that stops
     answering let go with its routes. The sync server needs the update too.
+  - And one CI found on the way: disconnecting a vault held its route back until
+    the answer was out (0.7.9), but the backup server works its routes out again
+    every tick, and a tick in between dropped the route - and, with no other left,
+    the relay connection - first, so the device heard "the other side went away".
+    The route now stays among the pairings until announced, and is announced even
+    when no answer got out.
 
 - **0.7.17** (2026-10-18) - one backup task per vault, and the backup server picks
   the paths (decided with the user after the first real test, `docs/PHASE6.md`, "One
