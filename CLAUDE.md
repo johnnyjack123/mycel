@@ -363,7 +363,9 @@ people: whoever runs it can read the vaults on it.
   answer (spending drops its route, and the relay ends the session with it). On a
   pairing's route a session reaches that vault and nothing else, and a vault
   paired with one account is never taken over by another. A password change
-  `rekey`s over the pairing; only a lost vault needs a new invitation.
+  `rekey`s over the pairing; only a lost vault needs a new invitation. The relay
+  pings every connection, as the vault socket always did (`heartbeat`): behind
+  nginx a backup server waiting quietly lost its connection every minute.
 - **One backup server per vault, one task** (0.7.17, `docs/PHASE6.md`, "One backup
   task per vault"). Connecting another backup server replaces it. The task lives in
   the vault's settings document (`backupServer:<routeId>`, `backupTask:<routeId>`),
@@ -393,7 +395,10 @@ people: whoever runs it can read the vaults on it.
   copy brought level: the vault at its top so it opens as a vault, trash and settings
   in its hidden `.obsidian-connect/`, never emptied, only its own files touched, held
   when more than its guard's share (50 % unless set) of the notes, or of the files,
-  vanished - counted apart.
+  vanished - counted apart, and against the most of the week's followed runs
+  (`guardReference`), not the last one: measured by the last, a loss split over two
+  runs went through. Only a confirmation, or following with the guard off, starts it
+  afresh; nothing is counted while the copy waits.
 
 ### Around the notes
 

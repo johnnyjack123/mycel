@@ -1428,6 +1428,35 @@ try {
     device.say({ t: 'open', route, ref: 5 })
     check(device.take().at(-1)?.error === 'the backup server is not connected', 'a backup server that went is no longer reachable')
     relay.close()
+
+    // Pinged, every connection: behind a reverse proxy, a backup server waiting for devices
+    // with nothing to say lost its connection every minute, and every route with it.
+    {
+      class PingedSocket extends FakeSocket {
+        pings = 0
+        answers = true
+        ping(): void {
+          this.pings += 1
+          if (this.answers) queueMicrotask(() => this.emit('pong'))
+        }
+      }
+      const pinging = new Relay({ pingMs: 20 })
+      const waiting = new PingedSocket()
+      pinging.attachBackup(waiting as never, '192.0.2.30')
+      waiting.say({ t: 'register', token: randomBytes(32).toString('base64') })
+      const asking = new PingedSocket()
+      pinging.attachDevice(asking as never, alice, '192.0.2.31')
+      await delay(90)
+      check(
+        waiting.pings >= 2 && asking.pings >= 2 && waiting.readyState === 1 && pinging.registered === 1,
+        "the relay pings a backup server's connection and a device's, and keeps them while they answer"
+      )
+      waiting.answers = false
+      await delay(90)
+      check(waiting.readyState === 3 && pinging.registered === 0 && asking.readyState === 1, 'one that stops answering is let go, and its routes with it')
+      pinging.close()
+      asking.close()
+    }
   }
   await hub.shutdown()
   await delay(10)

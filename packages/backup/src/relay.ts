@@ -174,7 +174,9 @@ export class RelayLink {
     }
     this.socket = socket
     this.lastError = null
+    let opened = false
     socket.addEventListener('open', () => {
+      opened = true
       this.explained = null
       this.changed({ connected: true, error: null })
       for (const token of this.wanted.values()) this.send({ t: 'register', token })
@@ -185,6 +187,12 @@ export class RelayLink {
       this.socket = null
       this.registered.clear()
       this.closeAll()
+      if (opened && !event.reason) {
+        // It worked, and then went: a sync server restarting, a reverse proxy
+        // closing a connection it took for idle - not a way that is refused.
+        this.retry(`the connection was closed (${event.code}) after it worked`)
+        return
+      }
       const why = event.reason ? `${event.reason} (${event.code})` : (this.lastError ?? `the connection closed (${event.code})`)
       // "Closed (1006)" alone helped nobody - wss:// on the sync server's own port looked exactly like that.
       const generic = !event.reason && !this.lastError

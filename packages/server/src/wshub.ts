@@ -37,7 +37,12 @@ function serializer(): (task: () => Promise<void>) => void {
   }
 }
 
-function heartbeat(ws: WebSocket, onDead: () => void): () => void {
+/**
+ * Pings a connection now and then, and ends it when the last ping went
+ * unanswered. Also what keeps it open behind a reverse proxy: nginx closes a
+ * WebSocket the server sent nothing on for a minute.
+ */
+export function heartbeat(ws: WebSocket, onDead: () => void, intervalMs = PING_INTERVAL_MS): () => void {
   let alive = true
   ws.on('pong', () => {
     alive = true
@@ -55,7 +60,7 @@ function heartbeat(ws: WebSocket, onDead: () => void): () => void {
     } catch {
       clearInterval(timer)
     }
-  }, PING_INTERVAL_MS)
+  }, intervalMs)
   timer.unref?.()
   return () => clearInterval(timer)
 }

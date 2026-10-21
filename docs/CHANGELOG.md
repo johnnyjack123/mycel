@@ -27,6 +27,34 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
   through rclone in the image, and checks that `rclone config` through `docker exec`
   leaves the configuration to user 1000.
 
+  Two bugs the user found the same day, fixed in 0.7.18 before it went out:
+  - **The guard let a large loss through in two steps.** The user deleted more than
+    half of a vault and backed up at once; the first attempt said the backup server
+    could not be reached, the second backed up - and the decrypted copy followed
+    the loss. The guard measured each run only against the last run the copy
+    followed: a loss that reached the backup server over two runs - deletions still
+    on their way during the first, or a run started just as its answer got lost -
+    passed in two halves, each below the limit. It now measures against the most
+    the vault had at the runs the copy followed in the week before the newest; only
+    *Follow anyway*, or following with the guard off, starts that afresh, and
+    nothing is counted while the copy waits. The deleted notes were not lost: they
+    are in the copy's hidden trash, in the repository and in the vault's trash.
+    `test:backup` 201: a third of the notes deleted and backed up, then as many
+    again - each step below half of the run before, together more than half - holds
+    the copy; checked by putting the bug back (measuring by the last run): exactly
+    the three new checks failed.
+  - **The relay connection went every minute behind a reverse proxy.** The vault
+    socket was always pinged by the server, the relay never: nginx closes a WebSocket
+    on which the server sent nothing for a minute, so a backup server waiting for
+    devices lost its connection - and every route with it - every minute, and a
+    device asking in that moment heard "the backup server is not connected". The
+    backup server called each such closing "the WebSocket on /relay was refused".
+    The server now pings every relay connection every 30 s and lets go of one that
+    stops answering; the backup server says "closed after it worked" for a connection
+    that worked, and asks over HTTP only for one that never opened. `test:rooms`: a
+    backup server's and a device's connection pinged and kept, one that stops
+    answering let go with its routes. The sync server needs the update too.
+
 - **0.7.17** (2026-10-18) - one backup task per vault, and the backup server picks
   the paths (decided with the user after the first real test, `docs/PHASE6.md`, "One
   backup task per vault"). The test had set up a decrypted copy on its own - a backup

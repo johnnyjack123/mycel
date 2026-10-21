@@ -754,3 +754,12 @@ older ones by its retention.
   belongs to user 1000.
 - *The password* is behind an eye next to the repository, as selectable text, hidden
   again when the settings close.
+- *Two bugs from the user's test, fixed before it went out.* The guard measured a run
+  against the last run the copy followed, so a loss arriving over two runs passed in
+  two halves; it now measures against the most of the followed runs in the week
+  before the newest (`guardReference`), started afresh only by a confirmation or by
+  following with the guard off, and counts nothing while the copy waits - so a
+  waiting copy never follows on its own once the week is over. And the relay never
+  pinged its connections, unlike the vault socket: behind nginx a quiet backup server
+  lost its connection every minute. The server pings every relay connection every
+  30 s now.

@@ -246,11 +246,16 @@ restoring elsewhere needs rclone with the same remote (`rclone config` there, or
 `rclone.conf`).
 
 **The decrypted copy waits** when more than half of the vault's notes, or more than
-half of its files, are gone since the copy last followed: the sync server may have
-lost data, and the copy must not follow that. Notes and files are counted apart, so a
-vault of many pictures that lost its notes is caught too; fewer than ten of either
-are not counted. The share is the copy's own setting - 10 to 90 %, or never. The
-restic backups go on as always. If you deleted them on purpose, *Follow anyway*.
+half of its files, are gone - measured against the most the vault had at the backups
+the copy followed in the week before: the sync server may have lost data, and the
+copy must not follow that. Measured against the last backup alone, a loss spread over
+two backups went through, each half below the limit (0.7.18). Notes and files are
+counted apart, so a vault of many pictures that lost its notes is caught too; fewer
+than ten of either are not counted. The share is the copy's own setting - 10 to 90 %,
+or never. Every backup is measured, those started by hand too. The restic backups go
+on as always. If you deleted them on purpose, *Follow anyway* - that, or setting the
+guard to never, starts the measuring afresh. Deleted notes stay in the copy's hidden
+trash (`.obsidian-connect/trash/`) as long as the vault's trash keeps them.
 
 ## What a backup holds
 

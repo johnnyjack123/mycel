@@ -98,9 +98,10 @@ considers 0.7 nearly done.
 **What the user does next:**
 
 1. Install 0.7.18 on the devices; `docker compose pull && docker compose up -d` on
-   the Pi. The sync server is unchanged since 0.7.15 apart from its version. The task
-   from 0.7.17 carries on; its schedule ("every 24 hours") stays until changed to a
-   time in the settings.
+   the Pi **and on the sync server's host** - the relay pings its connections from
+   0.7.18 on, without which the backup server's connection goes every minute behind
+   the proxy. The task from 0.7.17 carries on; its schedule ("every 24 hours") stays
+   until changed to a time in the settings.
 2. Check that a scheduled backup runs on its own - and that it waits while writing.
    Not tried yet: a cloud location (S3/B2, `rclone:`, `sftp:` with a mounted key),
    the RAM disk size.
@@ -285,11 +286,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
-At 0.7.18, run 2026-10-20 on `feat/backup-schedule` before its commit: `typecheck`
-and `build` pass; `test:merge` 164, `test:load` 14, `test:rooms` 284, `test:sync` 26,
-`test:recovery` 64, `test:account` 50, `test:rollback` 52, `test:backup` 187, and
-against a scratch server on 1235 `test:socket` 19 and `test:vault` 230 - all pass.
-rclone in the image and its wrapper run only in CI.
+At 0.7.18, run 2026-10-21 on `feat/backup-schedule` before the commit with the two
+fixes: `typecheck` and `build` pass; `test:merge` 164, `test:load` 14, `test:rooms`
+286, `test:sync` 26, `test:recovery` 64, `test:account` 50, `test:rollback` 52,
+`test:backup` 201, and against a scratch server on 1235 `test:socket` 19 and
+`test:vault` 230 - all pass. rclone in the image and its wrapper run only in CI
+(passed on the branch before the fixes).
 
 At 0.7.17, run 2026-10-18 on `feat/backup-task` before its commit: `typecheck` and
 `build` pass; `test:merge` 164, `test:load` 14, `test:rooms` 284, `test:sync` 26,
@@ -425,6 +427,16 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
   written), and whether the guard holds for runs started by hand (yes, for every run,
   and only for the copy). Asked for a time of day and for waiting while someone
   writes. Built as 0.7.18 on `feat/backup-schedule`.
+- Then the user found the guard letting a loss through: more than half of a vault
+  deleted, "Back up now" failed as not reachable, the second one went through and the
+  decrypted copy followed. Two bugs: the guard measured against the last followed run
+  only, so a loss over two runs passed in halves (reproduced in `test:backup`, now
+  measured against the week's most); and the relay had no ping, so behind the proxy
+  the backup server's connection went every minute (the "not reachable", and the log's
+  misleading "WebSocket on /relay was refused"). Both fixed in 0.7.18 before merging.
+  Asked the user for `docker compose logs … | grep "backup of"` around 20:46 to see
+  whether two runs went that close together, and how many notes the vault has (fewer
+  than ten are not counted).
 
 ### 2026-10-18
 - The 403 was the network, not the backup server: the container resolved the name
