@@ -121,8 +121,22 @@ interface DestinationState {
   pruneAt?: number
 }
 
+/** What the vault held at a run the trusted copy followed. */
+export interface Counted {
+  at: number
+  notes: number
+  /** Absent in a count from before files were counted. */
+  files?: number
+}
+
 interface JobState {
-  /** Live notes and files when the trusted copy last followed the vault. */
+  /**
+   * The counts at the runs the trusted copy followed, within a week before
+   * the newest - the guard measures by the most of them. Only a confirmation
+   * starts it afresh.
+   */
+  followed?: Counted[]
+  /** Before 0.7.18: the counts at the one run the copy last followed. */
   liveNotes?: number
   liveFiles?: number
   verifiedCacheAt?: number
@@ -130,6 +144,7 @@ interface JobState {
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+const COUNTS_KEPT = 500
 const TAG = 'obsidian-connect'
 
 async function readState(path: string): Promise<JobState> {
@@ -159,10 +174,32 @@ function filesDigest(files: readonly OutFile[]): string {
 }
 
 /**
+ * What the guard measures by: the most notes, and the most files, of the runs
+ * the copy followed within the week before the newest of them. Measured by
+ * the last run alone, a shrink split over two runs went through - deletions
+ * still on their way to the sync server during the first, or a cleanup with
+ * a scheduled run in its middle -, each half below the limit.
+ */
+export function guardReference(followed: readonly Counted[]): { notes?: number; files?: number } {
+  const newest = followed.at(-1)?.at
+  if (newest === undefined) return {}
+  const recent = followed.filter((entry) => entry.at >= newest - WEEK_MS)
+  const files = recent.flatMap((entry) => (entry.files === undefined ? [] : [entry.files]))
+  return { notes: Math.max(...recent.map((entry) => entry.notes)), files: files.length > 0 ? Math.max(...files) : undefined }
+}
+
+/** The counts once the copy followed at `now`: within the week before, or - confirmed - only these. */
+export function followedAt(followed: readonly Counted[], now: Counted, confirmed: boolean): Counted[] {
+  if (confirmed) return [now]
+  return [...followed.filter((entry) => entry.at >= now.at - WEEK_MS), now].slice(-COUNTS_KEPT)
+}
+
+/**
  * Why the trusted copy should wait, or null: more than `guard` percent of the
- * notes, or of the files, vanished since it last followed. Counted apart - a
- * vault of a thousand pictures losing all of its fifty notes is the case to
- * catch. A count below `floor` then is too small to tell anything.
+ * notes, or of the files, vanished against `before` (`guardReference`).
+ * Counted apart - a vault of a thousand pictures losing all of its fifty notes
+ * is the case to catch. A count below `floor` then is too small to tell
+ * anything.
  */
 export function vanished(
   before: { notes?: number; files?: number },
@@ -174,7 +211,7 @@ export function vanished(
   const lost: string[] = []
   const count = (was: number | undefined, is: number, what: string): void => {
     if (was === undefined || was < floor) return
-    if (is < was * (1 - guard / 100)) lost.push(`${is} ${what} (${was} when the copy last followed)`)
+    if (is < was * (1 - guard / 100)) lost.push(`${is} ${what} (${was} at most in the week before)`)
   }
   count(before.notes, now.notes, 'notes')
   count(before.files, now.files, 'files')
@@ -284,30 +321,35 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
   }
 
   const live = { notes: layout.liveNotes, files: layout.liveFiles }
+  const counted: Counted = { at: now(), ...live }
+  // A count kept by 0.7.17 or older goes on as the first of the list.
+  state.followed ??= state.liveNotes === undefined ? [] : [{ at: counted.at, notes: state.liveNotes, files: state.liveFiles }]
+  delete state.liveNotes
+  delete state.liveFiles
   if (job.config.trusted) {
-    const held = control.acceptShrink
-      ? null
-      : vanished({ notes: state.liveNotes, files: state.liveFiles }, live, job.config.trustedGuard ?? BACKUP_GUARD_DEFAULT, options.vanishFloor ?? 10)
+    const guard = job.config.trustedGuard ?? BACKUP_GUARD_DEFAULT
+    const held = control.acceptShrink ? null : vanished(guardReference(state.followed), live, guard, options.vanishFloor ?? 10)
+    // Following with the guard off takes whatever vanished, as a confirmation does.
+    const confirmed = control.acceptShrink === true || guard <= 0
     if (!report.destinations.some((destination) => destination.ok)) {
       // Never ahead of the repository: what the copy deletes is in a snapshot first.
       report.trusted = { ok: false, error: 'left as it was, since the repository did not take this backup' }
     } else if (held) {
+      // Nothing is counted while it waits: the counts it waits against stay, however long.
       report.trusted = { ok: true, held }
       log.warn(`backup of ${grant.vaultId}: trusted copy held, ${held}`)
     } else {
       try {
         const aligned = await alignTrusted(job.config.trusted, grant.vaultId, folder, layout.files, layout.incomplete, cache, keys)
         report.trusted = { ok: true, ...aligned }
-        state.liveNotes = live.notes
-        state.liveFiles = live.files
+        state.followed = followedAt(state.followed, counted, confirmed)
       } catch (error) {
         report.trusted = { ok: false, error: message(error) }
         if (!(error instanceof TrustedRefused)) log.error(`backup of ${grant.vaultId}: trusted copy failed`, error)
       }
     }
   } else {
-    state.liveNotes = live.notes
-    state.liveFiles = live.files
+    state.followed = followedAt(state.followed, counted, false)
   }
 
   report.ok = !report.error && report.destinations.every((destination) => destination.ok) && report.trusted?.ok !== false

@@ -357,6 +357,16 @@ jobs:
           docker run --rm --entrypoint restic obsidian-connect-backup:smoke version
           # restic reaches an sftp: repository through ssh.
           docker run --rm --entrypoint ssh obsidian-connect-backup:smoke -V
+          # And any cloud rclone knows through rclone: a repository made, backed up into
+          # and listed by restic through rclone - here rclone's local backend.
+          docker run --rm --entrypoint rclone obsidian-connect-backup:smoke version
+          docker run --rm --entrypoint sh obsidian-connect-backup:smoke -c '
+            set -eu
+            export RESTIC_PASSWORD=smoke RESTIC_REPOSITORY=rclone:/tmp/repo RESTIC_CACHE_DIR=/tmp/restic-cache
+            echo hello > /tmp/note.md
+            restic init
+            restic backup /tmp/note.md
+            restic ls latest | grep -q /tmp/note.md'
           docker volume create smoke-backup-data
           made=$(docker run --rm -v smoke-backup-data:/data obsidian-connect-backup:smoke obsidian-connect-backup invite smoke)
           echo "$made"
@@ -425,10 +435,12 @@ jobs:
             echo "::error::the backup server in the image did not register its invitation at the sync server"
             exit 1
           fi
-          owners=$(docker exec relay-backup stat -c '%u' /data /data/invites.json /encrypted /decrypted /proc/1 | sort -u)
+          # rclone's configuration made through docker exec - as root - is the backup server's user's too.
+          docker exec relay-backup rclone config touch
+          owners=$(docker exec relay-backup stat -c '%u' /data /data/invites.json /data/rclone/rclone.conf /encrypted /decrypted /proc/1 | sort -u)
           echo "owners: $owners"
           if [ "$owners" != "1000" ]; then
-            echo "::error::a folder, the invitation written through docker exec, or the backup server process is not user 1000's"
+            echo "::error::a folder, the invitation or rclone's configuration written through docker exec, or the backup server process is not user 1000's"
             exit 1
           fi
           docker rm -f relay-backup

@@ -130,16 +130,20 @@ export function serveSession(session: IncomingSession, deps: SessionDeps): void 
       return
     }
     try {
-      await reply({ id: message.id, r: await answer(message.m, message.p ?? {}) })
-    } catch (error) {
-      await reply({ id: message.id, e: error instanceof Error ? error.message : String(error) })
+      try {
+        await reply({ id: message.id, r: await answer(message.m, message.p ?? {}) })
+      } catch (error) {
+        await reply({ id: message.id, e: error instanceof Error ? error.message : String(error) })
+      }
+    } finally {
+      // Only after the answer: spending the invitation, or letting the vault go,
+      // drops a route, and the relay ends this session with it. And even when no
+      // answer got out: a route held back for it must not be answered for good.
+      if (spent && route.kind === 'invite') await deps.spend(route.inviteId)
+      const after = afterReply
+      afterReply = null
+      after?.()
     }
-    // Only after the answer: spending the invitation, or letting the vault go,
-    // drops a route, and the relay ends this session with it.
-    if (spent && route.kind === 'invite') await deps.spend(route.inviteId)
-    const after = afterReply
-    afterReply = null
-    after?.()
   }
 
   const answer = async (method: string, params: Record<string, unknown>): Promise<unknown> => {

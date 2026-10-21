@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { WebSocket } from 'ws'
 import type { RelayFrame } from '@obsidian-connect/shared'
+import { heartbeat } from './wshub.js'
 
 // Brings a device and a backup server together, so the backup server needs no
 // port of its own: both connect here, and frames of a session go back and
@@ -21,6 +22,8 @@ export interface RelayLimits {
   routesPerBackup: number
   /** How long a backup server's connection may stay without a route. */
   registerMs: number
+  /** How often every connection is pinged; one that does not answer by the next ping is let go. */
+  pingMs: number
 }
 
 const DEFAULT_LIMITS: RelayLimits = {
@@ -28,7 +31,8 @@ const DEFAULT_LIMITS: RelayLimits = {
   sessionsPerBackup: 64,
   backupsPerAddress: 16,
   routesPerBackup: 1024,
-  registerMs: 10_000
+  registerMs: 10_000,
+  pingMs: 30_000
 }
 
 interface Endpoint {
@@ -91,6 +95,9 @@ export class Relay {
       if (endpoint.routes.size === 0) ws.close(4400, 'register first')
     }, this.limits.registerMs)
     timer.unref?.()
+    // A backup server waits for devices for hours with nothing to say; behind a
+    // reverse proxy its connection went every minute, and with it every route.
+    const stopHeartbeat = heartbeat(ws, () => this.drop(endpoint), this.limits.pingMs)
     ws.on('message', (data) => {
       const frame = parse(data)
       if (!frame) return
@@ -100,6 +107,7 @@ export class Relay {
     })
     ws.on('close', () => {
       clearTimeout(timer)
+      stopHeartbeat()
       this.drop(endpoint)
     })
   }
@@ -107,13 +115,17 @@ export class Relay {
   /** A signed-in device's connection. */
   attachDevice(ws: WebSocket, account: string, address: string): void {
     const endpoint: Endpoint = { ws, account, address, routes: new Set(), sessions: new Set() }
+    const stopHeartbeat = heartbeat(ws, () => this.drop(endpoint), this.limits.pingMs)
     ws.on('message', (data) => {
       const frame = parse(data)
       if (!frame) return
       if (frame.t === 'open') this.open(endpoint, frame.route, frame.ref)
       else if (frame.t === 'data' || frame.t === 'close') this.fromDevice(endpoint, frame)
     })
-    ws.on('close', () => this.drop(endpoint))
+    ws.on('close', () => {
+      stopHeartbeat()
+      this.drop(endpoint)
+    })
   }
 
   private register(endpoint: Endpoint, token: unknown): void {

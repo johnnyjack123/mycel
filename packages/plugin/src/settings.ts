@@ -3,9 +3,9 @@ import { generatePassword } from './account/password'
 import type { ServerProbe } from './account/probe'
 import { PasswordReveal } from './account/reveal'
 import { busy, type BusyButton } from './busy'
-import type { BackupDestinationStatus, BackupRunStatus, BackupTaskSetting, BackupVaultStatus } from '@obsidian-connect/shared'
+import type { BackupAt, BackupDestinationStatus, BackupRunStatus, BackupTaskSetting, BackupVaultStatus } from '@obsidian-connect/shared'
 import { describeGuard, describeKeep, describeRepository } from './backup/BackupModals'
-import { NO_LONGER_HAS_VAULT, SCHEDULES, type Backups } from './backup/Backups'
+import { NO_LONGER_HAS_VAULT, defaultSchedule, deviceZone, type Backups } from './backup/Backups'
 import type ObsidianConnectPlugin from './main'
 import type { OpenCode } from './share/Contacts'
 import type { SharedSettings } from './sync/AccountSettings'
@@ -21,6 +21,7 @@ function describeBackupServer(error: string | null, status: BackupVaultStatus | 
   if (!status) return 'Asking the backup server…'
   const next = status.nextRunAt ? ` Next ${when(status.nextRunAt)}.` : ''
   if (status.running) return 'Backing up now…'
+  if (status.waitingUntil) return `A backup is due and waits until nobody writes in the vault - at the latest until ${when(status.waitingUntil)}.`
   const last = status.runs[0]
   if (!last) return `No backup yet.${next}`
   if (!last.ok) return `The last backup, ${when(last.startedAt)}, failed: ${last.error ?? 'see below'}.${next}`
@@ -36,6 +37,28 @@ function describeRepositoryState(task: BackupTaskSetting, outcome: BackupDestina
   if (!outcome) return `Encrypted with its own password. Filled by the next backup. ${keep}`
   if (!outcome.ok) return `Failed: ${outcome.error ?? 'unknown'}`
   return `Encrypted with its own password. Last backup ${outcome.checked === 'deep' ? 'read back in full' : 'checked'}. ${keep}`
+}
+
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+/** `HH:MM`, as a time field holds it. */
+function clockOf(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+}
+
+function minutesOf(text: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim())
+  if (!match) return null
+  const hours = Number(match[1])
+  const minutes = Number(match[2])
+  return hours < 24 && minutes < 60 ? hours * 60 + minutes : null
+}
+
+/** Which entry of the schedule's dropdown a task is. */
+function scheduleChoice(task: BackupTaskSetting): string {
+  if (task.at) return task.at.weekday === undefined ? 'daily' : 'weekly'
+  if (task.everyHours <= 0) return 'manual'
+  return task.everyHours === 1 || task.everyHours === 6 ? `every-${task.everyHours}` : 'custom'
 }
 
 function describeCopy(task: BackupTaskSetting, trusted: BackupRunStatus['trusted']): string {
@@ -118,6 +141,8 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private disconnecting: string | null = null
   /** Backup servers asked for their state since the tab opened: asked once, not on every redraw. */
   private readonly backupsAsked = new Set<string>()
+  /** Backup servers whose repository password is shown, until the tab closes. */
+  private readonly passwordsShown = new Set<string>()
   private busy = false
   /** Between Obsidian opening the tab and closing it: only then is there anything to bring up to date. */
   private shown = false
@@ -223,6 +248,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     this.removing = null
     this.disconnecting = null
     this.backupsAsked.clear()
+    this.passwordsShown.clear()
     this.forgetPasswords()
   }
 
@@ -847,21 +873,20 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
             .onClick(() => void this.run(() => this.plugin.openBackupTask(routeId), button))
         )
     } else {
-      new Setting(containerEl).setName('Backs up').addDropdown((dropdown) => {
-        const options = [...SCHEDULES]
-        if (!options.some((option) => option.hours === task.everyHours)) options.push({ hours: task.everyHours, label: `Every ${task.everyHours} hours` })
-        for (const option of options) dropdown.addOption(String(option.hours), option.label)
-        dropdown.setValue(String(task.everyHours)).onChange((value) => void this.run(() => backups.setSchedule(routeId, Number(value))))
-      })
+      this.scheduleRow(containerEl, backups, routeId, task)
       const repository = new Setting(containerEl)
         .setName(`Repository: ${describeRepository(task, status?.folders.encrypted ?? null)}`)
         .setDesc(describeRepositoryState(task, last?.destinations[0], status))
+      // Shown rather than copied: a clipboard history, or one synced across devices, would keep it.
+      const shown = this.passwordsShown.has(routeId)
       repository.addExtraButton((button) =>
         button
-          .setIcon('key')
-          .setTooltip('Copy the repository password')
+          .setIcon(shown ? 'eye-off' : 'eye')
+          .setTooltip(shown ? 'Hide the repository password' : 'Show the repository password')
           .onClick(() => {
-            void navigator.clipboard.writeText(task.password).then(() => new Notice('Repository password copied.'))
+            if (shown) this.passwordsShown.delete(routeId)
+            else this.passwordsShown.add(routeId)
+            this.display()
           })
       )
       repository.addExtraButton((button) =>
@@ -876,6 +901,12 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           .setTooltip('Remove: no more backups. The repository and the decrypted copy stay where they are.')
           .onClick(() => void this.run(() => backups.removeTask(routeId), button))
       )
+      if (shown) {
+        const row = new Setting(containerEl)
+          .setName('Repository password')
+          .setDesc('Write it down, or keep it in a password manager: without it nobody can read the repository, not even you.')
+        row.controlEl.createEl('code', { cls: 'connect-code', text: task.password })
+      }
       if (task.decrypted) {
         new Setting(containerEl)
           .setName(`Decrypted copy: on the backup server${status ? `, ${status.folders.decrypted}` : ''}`)
@@ -900,7 +931,56 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
         )
     }
     for (const problem of status?.problems ?? []) {
-      new Setting(containerEl).setName('Not carried out').setDesc(problem)
+      new Setting(containerEl).setName(status?.ready ? 'Note' : 'Not carried out').setDesc(problem)
+    }
+  }
+
+  /**
+   * When the backup server backs up on its own: every so many hours, or at a
+   * time of day - daily, or on one weekday - by this device's time zone. The
+   * time is taken once the field is left, not on every keystroke.
+   */
+  private scheduleRow(containerEl: HTMLElement, backups: Backups, routeId: string, task: BackupTaskSetting): void {
+    const choice = scheduleChoice(task)
+    const at = (patch: Partial<BackupAt>): BackupAt => ({ minutes: task.at?.minutes ?? defaultSchedule().at.minutes, zone: deviceZone(), ...patch })
+    const set = (everyHours: number, schedule?: BackupAt): void => void this.run(() => backups.setSchedule(routeId, everyHours, schedule))
+    const row = new Setting(containerEl).setName('Backs up')
+    if (task.at) {
+      const zone = deviceZone()
+      row.setDesc(task.at.zone === zone ? `By the clock here (${zone}).` : `By the clock of ${task.at.zone}, where it was set; changing the time takes this device's (${zone}).`)
+    }
+    row.addDropdown((dropdown) => {
+      dropdown.addOption('manual', 'Only when started here')
+      dropdown.addOption('every-1', 'Every hour')
+      dropdown.addOption('every-6', 'Every 6 hours')
+      dropdown.addOption('daily', 'Every day at')
+      dropdown.addOption('weekly', 'Every week on')
+      if (choice === 'custom') dropdown.addOption('custom', `Every ${task.everyHours} hours`)
+      dropdown.setValue(choice).onChange((value) => {
+        if (value === 'manual') set(0)
+        else if (value === 'every-1') set(1)
+        else if (value === 'every-6') set(6)
+        else if (value === 'daily') set(24, at({}))
+        else if (value === 'weekly') set(168, at({ weekday: task.at?.weekday ?? 0 }))
+      })
+    })
+    if (choice === 'weekly') {
+      row.addDropdown((dropdown) => {
+        WEEKDAY_NAMES.forEach((name, day) => dropdown.addOption(String(day), name))
+        dropdown.setValue(String(task.at?.weekday ?? 0)).onChange((value) => set(168, at({ weekday: Number(value) })))
+      })
+    }
+    if (task.at) {
+      const schedule = task.at
+      row.addText((text) => {
+        text.inputEl.type = 'time'
+        text.setValue(clockOf(schedule.minutes))
+        text.inputEl.addEventListener('change', () => {
+          const minutes = minutesOf(text.getValue())
+          if (minutes === null || minutes === schedule.minutes) return
+          set(choice === 'weekly' ? 168 : 24, at({ minutes, ...(schedule.weekday === undefined ? {} : { weekday: schedule.weekday }) }))
+        })
+      })
     }
   }
 

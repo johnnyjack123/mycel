@@ -54,7 +54,7 @@ with `docker login ghcr.io -u johnnyjack123` and a token that may read packages.
 
 | `.env` | In the container | What lies there |
 |---|---|---|
-| `SERVER_DATA` (`./backup-data`) | `/data` | Its invitations, the keys of the vaults connected to it, their encrypted cache. |
+| `SERVER_DATA` (`./backup-data`) | `/data` | Its invitations, the keys of the vaults connected to it, their encrypted cache, rclone's remotes. |
 | `ENCRYPTED_VAULTS` | `/encrypted` | The restic repositories of the vaults that keep theirs on the backup server: `<vault id>/`. |
 | `DECRYPTED_VAULTS` | `/decrypted` | The decrypted copies: `<account name>/<vault name>/`. |
 
@@ -115,9 +115,10 @@ PDFs and other files never do - they stream into restic one at a time. A vault o
 backup with "no space left"; give it more.
 
 **The data folder** holds the invitations, the keys and secret of every vault
-connected and an encrypted cache of them (so a backup fetches only what changed).
-Back it up only if you want to keep the connections; losing it means connecting the
-vaults again with new invitations, nothing more - the repositories are not in it. A
+connected, an encrypted cache of them (so a backup fetches only what changed) and
+rclone's remotes. Back it up only if you want to keep the connections; losing it means
+connecting the vaults again with new invitations, and setting rclone's remotes up
+again, nothing more - the repositories are not in it. A
 vault connected again finds its repository in its folder and carries on with it,
 given the password it had.
 
@@ -170,19 +171,34 @@ backup server for it. `obsidian-connect-backup status` on the backup server says
      under the vault's id - or *in a cloud*: a location restic reaches,
      `s3:s3.amazonaws.com/bucket/obsidian`, `b2:bucket:obsidian`,
      `rest:https://…`, `azure:…`, `gs:…`, `sftp:user@host:/backups/obsidian`, with the
-     credentials it needs (`AWS_ACCESS_KEY_ID`, …). For `sftp:` the backup server needs
-     an SSH key: mount it with a `known_hosts` at `/home/node/.ssh` (for `PUID` 1000).
+     credentials it needs (`AWS_ACCESS_KEY_ID`, …) - or `rclone:<remote>:<path>` for any
+     cloud rclone knows (see "A cloud through rclone" below). For `sftp:` the backup
+     server needs an SSH key: mount it with a `known_hosts` at `/home/node/.ssh` (for
+     `PUID` 1000).
    - **The repository password**: "Make one" makes a strong one. It is kept in your
-     account's settings, encrypted, so every device can show it - **write it down as
-     well**: without it nobody can read the repository.
+     account's settings, end-to-end encrypted, so every device can show it - the eye
+     next to the repository, rather than the clipboard, whose history may keep it.
+     **Write it down as well**: without it nobody can read the repository.
    - **How long backups are kept**: a preset, or numbers of your own - the last so
      many, and the newest of each of so many hours, days, weeks, months, years.
    - **Decrypted copy (trusted)**: also the newest version of everything, decrypted, in
      the backup server's folder for decrypted vaults - whether the repository lies
      there or in a cloud. It follows only once the repository took the backup, so
      what it deletes is in a snapshot first.
-3. **How often** (daily unless you choose otherwise), and **Back up now** whenever
-   you like.
+3. The first backup runs as soon as the task is saved. **When** after that: every
+   night at three unless you choose otherwise - every day or every week on one day at
+   a time of your choosing, or every hour, or every 6 hours, or only by hand -, and
+   **Back up now** whenever you like.
+
+**When it backs up.** A time of day goes by the clock of the device that set it - its
+time zone, summer time included -, not the container's, which runs in UTC. A backup
+that is due first waits for nobody to write in the vault: once its notes and files
+stayed as they were for five minutes, it runs - a device that is merely connected
+holds nothing up, and after an hour it runs whatever goes on. Taking a backup while
+someone writes would not harm it: the backup server reads the vault's encrypted log,
+not files half written, so at worst a note is caught mid-sentence and the next backup
+has the rest. *Back up now* and the backup before a rollback never wait. The settings
+say when a backup waits, and until when at the latest.
 
 The pencil changes the task afterwards: how long backups are kept, the credentials,
 the decrypted copy and when it waits. The repository's place and password stay - for
@@ -208,12 +224,38 @@ is gone) needs a new invitation; until then it looks like one that cannot be rea
 **Connecting the same vault again** with a new invitation replaces its connection;
 its task carries on.
 
+### A cloud through rclone
+
+The image has [rclone](https://rclone.org), through which restic reaches Google
+Drive, OneDrive, Dropbox, Nextcloud and WebDAV, pCloud, Mega and most others. Its
+operator sets a cloud up once, as a *remote*, on the backup server:
+
+```bash
+docker compose -f docker-compose.backup.yml exec obsidian-connect-backup rclone config
+```
+
+It asks for the kind of cloud and its credentials. For a cloud you sign in to in a
+browser it says so and prints a command (`rclone authorize …`) to run on a computer
+with a browser and rclone; its answer goes back into the prompt. The remotes lie in
+the data folder (`rclone/rclone.conf`): they survive an update, and rclone keeps the
+tokens it renews there. `rclone config` runs as the backup server's user, also
+through `docker compose exec`. Then, in the task: *In a cloud*, location
+`rclone:<remote>:<path>` - for a remote called `gdrive`, `rclone:gdrive:obsidian`.
+The cloud's credentials then lie on the backup server, not in the vault's settings;
+restoring elsewhere needs rclone with the same remote (`rclone config` there, or that
+`rclone.conf`).
+
 **The decrypted copy waits** when more than half of the vault's notes, or more than
-half of its files, are gone since the copy last followed: the sync server may have
-lost data, and the copy must not follow that. Notes and files are counted apart, so a
-vault of many pictures that lost its notes is caught too; fewer than ten of either
-are not counted. The share is the copy's own setting - 10 to 90 %, or never. The
-restic backups go on as always. If you deleted them on purpose, *Follow anyway*.
+half of its files, are gone - measured against the most the vault had at the backups
+the copy followed in the week before: the sync server may have lost data, and the
+copy must not follow that. Measured against the last backup alone, a loss spread over
+two backups went through, each half below the limit (0.7.18). Notes and files are
+counted apart, so a vault of many pictures that lost its notes is caught too; fewer
+than ten of either are not counted. The share is the copy's own setting - 10 to 90 %,
+or never. Every backup is measured, those started by hand too. The restic backups go
+on as always. If you deleted them on purpose, *Follow anyway* - that, or setting the
+guard to never, starts the measuring afresh. Deleted notes stay in the copy's hidden
+trash (`.obsidian-connect/trash/`) as long as the vault's trash keeps them.
 
 ## What a backup holds
 

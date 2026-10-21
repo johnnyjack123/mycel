@@ -17,8 +17,9 @@ import { check, delay, Device, eventually, failures, finish, useServer, VAULT } 
 
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
-const { runBackup, vanished } = await import('../../backup/src/run.js')
+const { followedAt, guardReference, runBackup, vanished } = await import('../../backup/src/run.js')
 const { readConfig } = await import('../../backup/src/config.js')
+const { atOf, nextAt } = await import('../../backup/src/schedule.js')
 const { Restic } = await import('../../backup/src/restic.js')
 const { silence } = await import('../../backup/src/log.js')
 const { safePath, vaultFolder, withSuffix } = await import('../../backup/src/layout.js')
@@ -164,7 +165,7 @@ function untar(archive: string, into: string): boolean {
   // The trusted copy's guard: notes and files counted apart, against a limit of the vault's own.
   {
     const before = { notes: 50, files: 1000 }
-    check(vanished(before, { notes: 24, files: 1000 }, 50, 10)?.includes('24 notes (50 when') === true, 'more than half the notes gone holds the copy')
+    check(vanished(before, { notes: 24, files: 1000 }, 50, 10)?.includes('24 notes (50 at most') === true, 'more than half the notes gone holds the copy')
     check(vanished(before, { notes: 0, files: 1000 }, 50, 10) !== null, 'also when the files, a thousand of them, are all still there')
     check(vanished(before, { notes: 50, files: 400 }, 50, 10)?.includes('400 files') === true, 'and so do more than half the files')
     check(vanished(before, { notes: 25, files: 500 }, 50, 10) === null, 'exactly half is not more than half')
@@ -173,6 +174,20 @@ function untar(archive: string, into: string): boolean {
     check(vanished(before, { notes: 0, files: 0 }, 0, 10) === null, 'a guard turned off never holds it')
     check(vanished({ notes: 9 }, { notes: 0, files: 0 }, 50, 10) === null, 'too few to tell anything are not counted')
     check(vanished({ notes: 50 }, { notes: 50, files: 0 }, 50, 10) === null, 'nor files counted before there was a count of them')
+
+    // Measured by the most within the week before the newest run it followed, not by that run alone.
+    const DAY = 24 * 60 * 60 * 1000
+    const runs = [
+      { at: 0, notes: 100, files: 40 },
+      { at: DAY, notes: 70, files: 40 }
+    ]
+    check(guardReference(runs).notes === 100 && guardReference(runs).files === 40, 'the reference is the most notes and files of the week')
+    check(vanished(guardReference(runs), { notes: 45, files: 40 }, 50, 10) !== null, 'so a shrink split over two runs is held as a whole')
+    check(guardReference([...runs, { at: 9 * DAY, notes: 70, files: 40 }]).notes === 70, 'counts older than a week before the newest fall out')
+    check(guardReference([{ at: 0, notes: 30 }]).files === undefined, 'files not counted yet are not compared')
+    const followed = followedAt(runs, { at: 2 * DAY, notes: 60, files: 40 }, false)
+    check(followed.length === 3 && followedAt(followed, { at: 3 * DAY, notes: 20, files: 40 }, true).length === 1, 'a confirmation starts the counts afresh')
+    check(followedAt(runs, { at: 8 * DAY + 1, notes: 70, files: 40 }, false).every((entry) => entry.at > DAY), 'and following a week later lets the older ones go')
 
     const config = (guard: unknown): number | undefined =>
       readConfig(new Map([['backupTask:r', { server: 'r', where: 'local', password: 'p', decrypted: true, guard, everyHours: 24, createdAt: 1 }]]), 'r', {
@@ -225,6 +240,42 @@ function untar(archive: string, into: string): boolean {
     const longer = new Map(read).set('backupTask:r', { ...task, keep: { last: 2, daily: 2 } })
     check(backupSettingsText(read, 'r') !== backupSettingsText(longer, 'r'), 'a retention changed reads differently')
     check(readConfig(read, 'r', { encrypted: 'e', decrypted: 'd' }).digest === sha(backupSettingsText(read, 'r')), 'and the backup server reports the hash of what it read')
+  }
+
+  // A backup at a time of day, by the clock of the device that set it.
+  {
+    const iso = (ms: number): string => new Date(ms).toISOString().slice(0, 16)
+    const at = (text: string): number => Date.parse(`${text}:00Z`)
+    check(iso(nextAt({ minutes: 180, zone: 'UTC' }, at('2026-10-18T10:00'))) === '2026-10-19T03:00', 'at three in UTC: the next night')
+    check(iso(nextAt({ minutes: 180, zone: 'UTC' }, at('2026-10-18T02:59'))) === '2026-10-18T03:00', 'still the same night just before')
+    check(iso(nextAt({ minutes: 180, zone: 'UTC' }, at('2026-10-18T03:00'))) === '2026-10-19T03:00', 'and the next one right at it')
+    check(iso(nextAt({ minutes: 180, zone: 'Europe/Berlin' }, at('2026-10-18T10:00'))) === '2026-10-19T01:00', 'at three in Berlin in summer time: one o\'clock UTC')
+    check(
+      iso(nextAt({ minutes: 180, zone: 'Europe/Berlin' }, at('2026-10-24T12:00'))) === '2026-10-25T02:00',
+      'the night the clocks go back: three by the new clock, two UTC'
+    )
+    check(
+      iso(nextAt({ minutes: 150, zone: 'Europe/Berlin' }, at('2026-03-28T12:00'))) === '2026-03-29T01:30',
+      'half past two, which the clocks skip when summer time begins: an hour later'
+    )
+    check(
+      iso(nextAt({ minutes: 180, weekday: 0, zone: 'Europe/Berlin' }, at('2026-10-19T00:00'))) === '2026-10-25T02:00',
+      'weekly on Sunday at three: the coming Sunday'
+    )
+    check(
+      iso(nextAt({ minutes: 1380, zone: 'America/New_York' }, at('2026-10-18T10:00'))) === '2026-10-19T03:00',
+      'at eleven in the evening in New York: three UTC the next day'
+    )
+    check(iso(nextAt({ minutes: 180, zone: 'Not/AZone' }, at('2026-10-18T10:00'))) === '2026-10-19T03:00', 'a zone not known counts as UTC')
+    check(
+      atOf({ minutes: 1440, zone: 'UTC' }) === null && atOf({ minutes: 60 }) === null && atOf({ minutes: 60, weekday: 9, zone: 'UTC' })?.weekday === undefined,
+      'a time out of range, or without a zone, is no schedule; a weekday out of range is every day'
+    )
+    const task = { server: 'r', where: 'local', password: 'p', everyHours: 0, decrypted: false, createdAt: 1 }
+    const weekly = readConfig(new Map([['backupTask:r', { ...task, at: { minutes: 180, weekday: 0, zone: 'Europe/Berlin' } }]]), 'r', { encrypted: 'e', decrypted: 'd' })
+    check(weekly.ready && weekly.at?.weekday === 0 && weekly.everyHours === 168 && weekly.problems.length === 0, 'the backup server reads a weekly time and counts it as a week', weekly)
+    const unknown = readConfig(new Map([['backupTask:r', { ...task, at: { minutes: 180, zone: 'Not/AZone' } }]]), 'r', { encrypted: 'e', decrypted: 'd' })
+    check(unknown.ready && unknown.problems.some((problem) => problem.includes('goes by UTC')), 'a zone it does not know it says so, and backs up all the same', unknown.problems)
   }
 }
 
@@ -456,6 +507,39 @@ try {
   )
   const confirmed = await runBackup(job(grant), options, { acceptShrink: true })
   check(confirmed.ok && !existsSync(join(trustedDir, 'Bulk', '15.md')) && confirmed.trusted?.held === undefined, 'once confirmed, it follows', confirmed.trusted)
+
+  // --- more than half the vault vanishing over two runs, each below the limit ------------------
+  // As the user had it: notes deleted, a backup started at once while the deletions were still
+  // on their way, then another. Measured by the run before alone, both halves went through.
+  {
+    for (let n = 0; n < 20; n += 1) await A1.vault.userCreate(`Step/${n}.md`, `step ${n}\n`)
+    check(await eventually(() => A2.vault.text('Step/19.md') === 'step 19\n', 15_000), 'A adds twenty notes')
+    const before = await runBackup(job(grant), options)
+    // The live notes, as the guard counts them - a run's own count has the trash and the settings in it.
+    const all = A1.vault.paths().length
+    check(before.ok && before.trusted?.held === undefined && existsSync(join(trustedDir, 'Step', '19.md')), 'they are in the trusted copy', { notes: all })
+    // A third of the notes go, then as many again - each step less than half of what the run before had.
+    const first = Math.floor(all / 3)
+    for (let n = 0; n < first; n += 1) await A1.vault.trash(A1.vault.file(`Step/${n}.md`))
+    check(await eventually(() => A2.vault.text(`Step/${first - 1}.md`) === undefined, 15_000), `A deletes ${first} of ${all} notes`)
+    const partly = await runBackup(job(grant), options)
+    const between = A1.vault.paths().length
+    check(partly.ok && partly.trusted?.held === undefined && !existsSync(join(trustedDir, 'Step', '0.md')), 'less than half gone: the copy follows', partly.trusted)
+    const second = Math.min(20 - first, Math.floor(between / 2) - 1)
+    for (let n = first; n < first + second; n += 1) await A1.vault.trash(A1.vault.file(`Step/${n}.md`))
+    check(await eventually(() => A2.vault.text(`Step/${first + second - 1}.md`) === undefined, 15_000), `and ${second} more - less than half of what the run before had`)
+    const rest = await runBackup(job(grant), options)
+    const left = A1.vault.paths().length
+    check(
+      left < all / 2 && left >= between / 2 && typeof rest.trusted?.held === 'string' && existsSync(join(trustedDir, 'Step', `${first}.md`)),
+      'but more than half of what the week had: the copy waits',
+      { all, between, left, trusted: rest.trusted }
+    )
+    const accepted = await runBackup(job(grant), options, { acceptShrink: true })
+    check(accepted.trusted?.held === undefined && !existsSync(join(trustedDir, 'Step', `${first}.md`)), 'confirmed, it follows')
+    const after = await runBackup(job(grant), options)
+    check(after.trusted?.held === undefined, 'and measures from there on')
+  }
 
   // --- most of the files vanishing, and a guard turned off ------------------------------------------
   for (let n = 0; n < 12; n += 1) await A1.vault.userCreateBinary(`Bulk/${n}.png`, bytes(`bulk picture ${n} `.repeat(50)))
@@ -827,16 +911,51 @@ try {
     check(backupServer.service.has(vaultId), 'the other vaults carry on')
   }
 
-  // The schedule.
+  // The schedule - waiting for a quiet vault before a run that is due.
   {
-    const before = (await paired.call<Status>('status')).runs.length
-    clock += 25 * 60 * 60 * 1000
+    const MINUTE = 60 * 1000
+    type Waiting = Status & { waitingUntil: number | null }
+    const status = (): Promise<Waiting> => paired.call<Waiting>('status')
+    const write = async (text: string): Promise<boolean> => {
+      if (A3.vault.text('Busy.md') === undefined) await A3.vault.userCreate('Busy.md', text)
+      else await A3.vault.userWrite('Busy.md', text)
+      return eventually(() => A3.docText('Busy.md') === text && A3.store?.noteState(A3.vault.file('Busy.md') as never) === 'synced', 15_000)
+    }
+    const before = (await status()).runs.length
+    clock += 25 * 60 * MINUTE
+    check(
+      await eventually(async () => (await status()).waitingUntil !== null, 15_000),
+      'a day later a run is due - and first waits for the vault to be quiet',
+      await status()
+    )
+    check(await write('someone is writing\n'), 'meanwhile someone writes in the vault')
+    clock += 5 * MINUTE + 1_000
+    await delay(1_500)
+    {
+      const now = await status()
+      check(now.runs.length === before && now.waitingUntil !== null && !now.running, 'so after five minutes the run still waits', now)
+    }
+    clock += 5 * MINUTE + 1_000
     check(
       await eventually(async () => {
-        const now = await paired.call<Status>('status')
-        return now.runs.length > before && !now.running
+        const now = await status()
+        return now.runs.length > before && !now.running && now.waitingUntil === null
       }, 120_000),
-      'a day later the schedule starts a run on its own'
+      'five quiet minutes later it runs'
+    )
+
+    // Someone writing all the time holds it off for an hour at most.
+    const later = (await status()).runs.length
+    clock += 25 * 60 * MINUTE
+    check(await eventually(async () => (await status()).waitingUntil !== null, 15_000), 'the next day it waits again')
+    check(await write('and writes on\n'), 'while someone writes')
+    clock += 61 * MINUTE
+    check(
+      await eventually(async () => {
+        const now = await status()
+        return now.runs.length > later && !now.running
+      }, 120_000),
+      'after an hour it runs whatever goes on in the vault'
     )
   }
 
@@ -870,7 +989,16 @@ try {
       otherPassword
     )
     const made = await backups.setTask(uiRoute, { where: 'local', password: 'relay password', decrypted: true })
-    check(!made.created && settings.backupTask(uiRoute)?.everyHours === 24, 'with its password the repository from before is taken up again; it backs up daily unless told otherwise')
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    check(
+      !made.created && settings.backupTask(uiRoute)?.at?.minutes === 180 && settings.backupTask(uiRoute)?.at?.zone === zone,
+      "with its password the repository from before is taken up again; it backs up every night at three, by this device's clock, unless told otherwise"
+    )
+    {
+      const next = backups.view(uiRoute)?.status?.nextRunAt ?? 0
+      const shown = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(next))
+      check(next > clock && shown === '03:00', `and the backup server's next run is at three by that clock (${zone})`, { next: new Date(next).toISOString(), shown })
+    }
     const outside = await refusal(backups.setTask(uiRoute, { where: 'cloud', location: '../escape', password: 'x', decrypted: false }))
     check(outside.includes('not a cloud location') && settings.backupTask(uiRoute)?.where === 'local', 'a path given as a cloud is refused before it is saved', outside)
     await backups.setSchedule(uiRoute, 6)

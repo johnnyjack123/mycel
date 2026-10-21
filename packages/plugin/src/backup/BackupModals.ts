@@ -257,7 +257,9 @@ export class BackupTaskModal extends Modal {
       if (this.where === 'cloud') {
         new Setting(contentEl)
           .setName('Location')
-          .setDesc('A location restic reaches: s3:…, b2:…, rest:…, azure:…, gs:…, swift:…, or sftp:… - which needs an SSH key on the backup server.')
+          .setDesc(
+            'A location restic reaches: s3:…, b2:…, rest:…, azure:…, gs:…, swift:…; rclone:<remote>:<path> for any cloud rclone knows - Google Drive, OneDrive, Dropbox, Nextcloud - once its operator set the remote up there (rclone config); or sftp:…, which needs an SSH key on the backup server.'
+          )
           .addText((text) =>
             text
               .setPlaceholder('s3:s3.amazonaws.com/bucket/obsidian')
@@ -427,7 +429,12 @@ export class BackupTaskModal extends Modal {
         if (keep) task.keep = keep
         if (guard !== undefined) task.guard = guard
         const made = await this.backups.setTask(this.routeId, task)
-        new Notice(made.created ? 'Obsidian Connect: the repository was made; the vault is backed up from now on.' : 'Obsidian Connect: the vault is backed up from now on.')
+        // The first backup at once: it shows whether everything works, and the vault need not wait for the night.
+        await this.backups.runNow(this.routeId).catch(() => undefined)
+        new Notice(
+          `Obsidian Connect: ${made.created ? 'the repository was made, and ' : ''}the first backup runs now; from then on every night at three - the settings change when.`,
+          10_000
+        )
       })
       this.close()
       this.done()

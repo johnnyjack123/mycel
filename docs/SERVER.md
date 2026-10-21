@@ -125,7 +125,10 @@ startup — fine on a laptop, never on a reachable server. `HOST` defaults to
 Put TLS in front of it (a reverse proxy) as soon as it leaves your own network:
 the notes are encrypted either way, but the access token is not. The proxy has to
 pass WebSocket upgrades on `/vault/…` (the devices) and `/relay` (backup servers,
-and devices talking to them). Let the proxy pass
+and devices talking to them). The server pings every connection on both every 30
+seconds, so a proxy's idle timeout (nginx's is a minute) closes none of them; before
+0.7.18 it did on `/relay`, and the backup server lost its connection every minute.
+Let the proxy pass
 request bodies of at least 8 MB - attachments travel in chunks of 4 MB, and nginx
 refuses anything over 1 MB unless told otherwise (`client_max_body_size 64m;`, which
 also covers large note snapshots).

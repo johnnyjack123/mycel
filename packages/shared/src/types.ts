@@ -363,8 +363,10 @@ export interface BackupTaskSetting {
   /** Credentials the cloud location needs, e.g. `AWS_ACCESS_KEY_ID`. */
   env?: Record<string, string>
   keep?: KeepPolicy
-  /** How often it backs the vault up on its own; 0: only when started by hand. */
+  /** How often it backs the vault up on its own, unless `at` says when; 0: only when started by hand. */
   everyHours: number
+  /** At a time of day instead: daily, or weekly on one day. */
+  at?: BackupAt
   /** Also the decrypted copy of the newest version, in the backup server's folder for decrypted vaults. */
   decrypted: boolean
   /**
@@ -374,6 +376,25 @@ export interface BackupTaskSetting {
    */
   guard?: number
   createdAt: number
+}
+
+/**
+ * A time the backup server backs a vault up at - in the time zone of the
+ * device that set it, since a container's clock runs in UTC.
+ */
+export interface BackupAt {
+  /** Minutes after midnight, 0 to 1439. */
+  minutes: number
+  /** 0 Sunday to 6 Saturday; absent: every day. */
+  weekday?: number
+  /** An IANA time zone, e.g. `Europe/Berlin`. */
+  zone: string
+}
+
+/** About how many hours lie between two backups a task asks for; 0 for none. */
+export function scheduleHours(task: Pick<BackupTaskSetting, 'everyHours' | 'at'>): number {
+  if (task.at) return task.at.weekday === undefined ? 24 : 168
+  return task.everyHours > 0 ? task.everyHours : 0
 }
 
 export const BACKUP_GUARD_DEFAULT = 50
@@ -483,6 +504,8 @@ export interface BackupVaultStatus {
   running: boolean
   /** When the schedule runs it next; null without one. */
   nextRunAt: number | null
+  /** A run that is due waits for nobody to write in the vault - at most until then; null when none waits. */
+  waitingUntil: number | null
   /** It found the vault's backup task in the settings and can carry it out. */
   ready: boolean
   /** Its folders for this vault, as its operator finds them: `encrypted/<vaultId>` and `decrypted/<name>/<vault>`. */

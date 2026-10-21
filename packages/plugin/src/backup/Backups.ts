@@ -1,14 +1,16 @@
-import type {
-  BackupConnected,
-  BackupDataEvent,
-  BackupGrant,
-  BackupListedEntry,
-  BackupSnapshotRef,
-  BackupServerInfo,
-  BackupServerSetting,
-  BackupTaskSetting,
-  BackupVaultStatus,
-  KeepPolicy
+import {
+  scheduleHours,
+  type BackupAt,
+  type BackupConnected,
+  type BackupDataEvent,
+  type BackupGrant,
+  type BackupListedEntry,
+  type BackupSnapshotRef,
+  type BackupServerInfo,
+  type BackupServerSetting,
+  type BackupTaskSetting,
+  type BackupVaultStatus,
+  type KeepPolicy
 } from '@obsidian-connect/shared'
 import { backupRouteKeys, fromBase64, randomBytes, sha256, toHex, utf8 } from '@obsidian-connect/shared/crypto'
 import { log } from '../log'
@@ -48,15 +50,19 @@ export interface BackupServerView {
   error: string | null
 }
 
-export const SCHEDULES: ReadonlyArray<{ hours: number; label: string }> = [
-  { hours: 0, label: 'Only when started here' },
-  { hours: 1, label: 'Every hour' },
-  { hours: 6, label: 'Every 6 hours' },
-  { hours: 24, label: 'Every day' },
-  { hours: 168, label: 'Every week' }
-]
+/** This device's time zone; a schedule at a time of day goes by it. */
+export function deviceZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  } catch {
+    return 'UTC'
+  }
+}
 
-export const DEFAULT_EVERY_HOURS = 24
+/** When a vault is backed up unless told otherwise: every night at three, this device's night. */
+export function defaultSchedule(): { everyHours: number; at: BackupAt } {
+  return { everyHours: 24, at: { minutes: 3 * 60, zone: deviceZone() } }
+}
 // Reading a backup back means restic going through a whole snapshot.
 const READ_TIMEOUT_MS = 30 * 60 * 1000
 export const DEFAULT_KEEP: KeepPolicy = { last: 3, daily: 7, weekly: 5, monthly: 12, yearly: 3 }
@@ -299,10 +305,12 @@ export class Backups {
   /**
    * Sets the vault's backup task up, once the backup server checked it: its
    * folders, the repository opening with the password - made where there is
-   * none yet.
+   * none yet. Without a schedule given, every night at three.
    */
   async setTask(routeId: string, task: Omit<BackupTaskSetting, 'server' | 'createdAt' | 'everyHours'> & { everyHours?: number }): Promise<{ created: boolean }> {
-    const full: BackupTaskSetting = { ...task, server: routeId, everyHours: task.everyHours ?? DEFAULT_EVERY_HOURS, createdAt: Date.now() }
+    const given = task.everyHours !== undefined || task.at !== undefined
+    const schedule = given ? { everyHours: task.everyHours ?? 0, ...(task.at ? { at: task.at } : {}) } : defaultSchedule()
+    const full: BackupTaskSetting = { ...task, ...schedule, server: routeId, createdAt: Date.now() }
     const checked = await this.check(routeId, full)
     this.settings.setBackupTask(routeId, full)
     await this.refreshServer(routeId)
@@ -316,7 +324,7 @@ export class Backups {
    * server first when the credentials change or the copy is turned on. A key
    * given as undefined is cleared.
    */
-  async updateTask(routeId: string, patch: Partial<Pick<BackupTaskSetting, 'keep' | 'env' | 'decrypted' | 'guard' | 'everyHours'>>): Promise<void> {
+  async updateTask(routeId: string, patch: Partial<Pick<BackupTaskSetting, 'keep' | 'env' | 'decrypted' | 'guard' | 'everyHours' | 'at'>>): Promise<void> {
     const current = this.settings.backupTask(routeId)
     if (!current) throw new Error('This vault has no backup task any more.')
     const next: BackupTaskSetting = { ...current }
@@ -335,8 +343,9 @@ export class Backups {
     await this.refreshServer(routeId)
   }
 
-  async setSchedule(routeId: string, everyHours: number): Promise<void> {
-    await this.updateTask(routeId, { everyHours })
+  /** Every so many hours (0: only by hand), or - with `at` - at a time of day. */
+  async setSchedule(routeId: string, everyHours: number, at?: BackupAt): Promise<void> {
+    await this.updateTask(routeId, { everyHours, at })
   }
 
   /**
@@ -473,7 +482,7 @@ export class Backups {
     for (const server of this.servers()) {
       const view = await this.ask(server.routeId)
       if (!view) continue
-      const every = (view.task?.everyHours ?? 0) > 0 ? (view.task?.everyHours as number) : 72
+      const every = (view.task ? scheduleHours(view.task) : 0) || 72
       const lastGood = this.deps.lastGood()[server.routeId] ?? server.addedAt
       const overdue = now - lastGood > 2 * every * HOUR_MS
       const last = view.status?.runs[0]

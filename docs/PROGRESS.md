@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-18 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - was built as 0.7.0 to 0.7.5 and merged into `main`. After it the user asked for more, decided on 2026-10-16 (`docs/PHASE6.md`, "After the first build"): 0.7.6 to 0.7.9, merged. 0.7.10 to 0.7.16 came from setting it up on the user's network. 0.7.17, after the first real test (2026-10-18): one backup task per vault, paths picked by the backup server, one backup server per vault - on `feat/backup-task`. Next: the user tries 0.7.17. 0.6.8 is the last version confirmed on the user's devices.**_
+_Last updated: 2026-10-20 · **Milestone 0.7 - a backup server of its own (`docs/PHASE6.md`, running it: `docs/BACKUP.md`) - was built as 0.7.0 to 0.7.5 and merged into `main`. After it the user asked for more, decided on 2026-10-16 (`docs/PHASE6.md`, "After the first build"): 0.7.6 to 0.7.9, merged. 0.7.10 to 0.7.16 came from setting it up on the user's network. 0.7.17 (2026-10-18): one backup task per vault, paths picked by the backup server, one backup server per vault - merged; backups by hand work on the user's Pi. 0.7.18 (2026-10-20): a time of day, waiting while someone writes, rclone, the password shown - on `feat/backup-schedule`. Next: the user checks the scheduled backup; then 0.8. 0.6.8 is the last version confirmed on the user's devices.**_
 
 ## Where we are
 
@@ -89,23 +89,25 @@ without anything to restore by hand.
 by the images. **0.7.17** (2026-10-18), after the first real test: one backup task per
 vault - always a restic repository, the decrypted copy beside it on request -, the
 paths picked by the backup server in three bind-mounted folders, one backup server per
-vault (`docs/PHASE6.md`, "One backup task per vault").
+vault (`docs/PHASE6.md`, "One backup task per vault"). The user set 0.7.17 up on the
+Pi and backs up by hand (2026-10-19). **0.7.18** (2026-10-20): a time of day, waiting
+while someone writes, rclone in the image, the password shown instead of copied
+(`docs/PHASE6.md`, "When it backs up, rclone, the password"). With it the user
+considers 0.7 nearly done.
 
-**What the user does next** (the backup server connected on the Pi on 2026-10-18):
+**What the user does next:**
 
-1. Install 0.7.17 on the devices. The sync server is unchanged since 0.7.15 apart
-   from its version.
-2. On the Pi: the new `docker-compose.backup.yml` and `docs/backup.env`
-   (`SERVER_DATA`, `ENCRYPTED_VAULTS`, `DECRYPTED_VAULTS`), keeping the user's
-   `extra_hosts`; start afresh - nothing of 0.7.16's settings carries over.
-   `obsidian-connect-backup invite <name>` in the container. Not tried yet: the RAM
-   disk size, an S3/B2 location, `sftp:` with a mounted key.
-3. In Obsidian: *Connect a backup server…* with the invitation, set up the task (the
-   form opens by itself), *Back up now*; then restore once with restic as
-   `docs/BACKUP.md` shows, and open the decrypted copy as a vault.
-4. Try a rollback on a test folder: *Roll this folder back…* in its menu, an hour
-   back; look at the list, roll back, then *Undo…*.
-
+1. Install 0.7.18 on the devices; `docker compose pull && docker compose up -d` on
+   the Pi **and on the sync server's host** - the relay pings its connections from
+   0.7.18 on, without which the backup server's connection goes every minute behind
+   the proxy. The task from 0.7.17 carries on; its schedule ("every 24 hours") stays
+   until changed to a time in the settings.
+2. Check that a scheduled backup runs on its own - and that it waits while writing.
+   Not tried yet: a cloud location (S3/B2, `rclone:`, `sftp:` with a mounted key),
+   the RAM disk size.
+3. Restore once with restic as `docs/BACKUP.md` shows, open the decrypted copy as a
+   vault, and try a rollback on a test folder (*Roll this folder back…*, then
+   *Undo…*).
 What only a device shows: the settings section and both dialogs, the notice, the
 WebSocket to `/relay` from Obsidian on desktop and on a phone, "Connect again…", the
 settings tabs, the rollback dialog (the date and time field, the lists) and the
@@ -284,6 +286,13 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 It takes about three minutes here.
 
+At 0.7.18, run 2026-10-21 on `feat/backup-schedule` before the commit with the two
+fixes: `typecheck` and `build` pass; `test:merge` 164, `test:load` 14, `test:rooms`
+286, `test:sync` 26, `test:recovery` 64, `test:account` 50, `test:rollback` 52,
+`test:backup` 201, and against a scratch server on 1235 `test:socket` 19 and
+`test:vault` 230 - all pass. rclone in the image and its wrapper run only in CI
+(passed on the branch before the fixes).
+
 At 0.7.17, run 2026-10-18 on `feat/backup-task` before its commit: `typecheck` and
 `build` pass; `test:merge` 164, `test:load` 14, `test:rooms` 284, `test:sync` 26,
 `test:recovery`, `test:account`, `test:rollback`, `test:backup` 168, and against a
@@ -409,6 +418,25 @@ Gotchas ("Never test on port 1234"). `test:socket` and `test:vault` default to
 ---
 
 ## Log
+
+### 2026-10-20
+- 0.7.17 runs on the Pi; backups by hand work. The user asked for rclone, for
+  whether the copyable password is a risk (it is end-to-end encrypted in the
+  settings; only the clipboard keeps it beyond that - now shown instead), whether a
+  backup while someone writes is a problem (no: the log is read, not files being
+  written), and whether the guard holds for runs started by hand (yes, for every run,
+  and only for the copy). Asked for a time of day and for waiting while someone
+  writes. Built as 0.7.18 on `feat/backup-schedule`.
+- Then the user found the guard letting a loss through: more than half of a vault
+  deleted, "Back up now" failed as not reachable, the second one went through and the
+  decrypted copy followed. Two bugs: the guard measured against the last followed run
+  only, so a loss over two runs passed in halves (reproduced in `test:backup`, now
+  measured against the week's most); and the relay had no ping, so behind the proxy
+  the backup server's connection went every minute (the "not reachable", and the log's
+  misleading "WebSocket on /relay was refused"). Both fixed in 0.7.18 before merging.
+  Asked the user for `docker compose logs … | grep "backup of"` around 20:46 to see
+  whether two runs went that close together, and how many notes the vault has (fewer
+  than ten are not counted).
 
 ### 2026-10-18
 - The 403 was the network, not the backup server: the container resolved the name

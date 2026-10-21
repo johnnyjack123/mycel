@@ -709,3 +709,57 @@ backup server's folders lie, the backup server names what goes into them.
   `/home/node/.ssh`); rclone is not in it, so `rclone:` locations are not offered.
 - `vaults` names the vault and the account and lists both folders; the plugin shows
   them next to the repository and the copy.
+
+## When it backs up, rclone, the password (0.7.18)
+
+Decided with the user on 2026-10-20, after the first backups on the Pi:
+
+- **rclone in the image**, so restic reaches every cloud rclone knows
+  (`rclone:<remote>:<path>`). The decrypted copy stays where the volume puts it.
+- **A time of day**: daily, or weekly on one day, at a time - besides every hour,
+  every 6 hours and only by hand.
+- **A due backup waits while someone writes** - not while a device is merely
+  connected -, and not for ever.
+- **The repository password is shown, not copied**: a clipboard history, or a
+  clipboard synced across devices, keeps what goes through it.
+
+Asked and answered on the way: a backup taken while someone writes cannot be broken -
+the backup server reads the encrypted log, not files being written, and a file is in
+the index only once it is whole (invariant 23) -, so waiting is about the moment, not
+about safety; and the guard over the decrypted copy holds for every run, scheduled or
+started by hand, and only for the copy - the repository takes every run and keeps the
+older ones by its retention.
+
+**As built (0.7.18).**
+
+- *The schedule* is `at` in the task - minutes after midnight, an optional weekday, and
+  the IANA time zone of the device that set it, since a container runs in UTC.
+  `schedule.ts` finds the next such moment after the last run started (a run started by
+  hand counts): a time the clocks skip when summer time begins comes an hour later, one
+  they show twice when it ends once. A zone the backup server does not know counts as
+  UTC and is said so. Without `at`, every `everyHours` as before. New tasks: every
+  night at three; the first backup runs as soon as the task is saved.
+- *Waiting* (`BackupService.stillBusy`): when a scheduled run is due, the backup server
+  notes its rooms' tags - which change with every frame - and looks again five minutes
+  later; changed, it waits five more, unchanged, it runs. After an hour from the first
+  look it runs whatever goes on, so a device writing all day - a plugin touching a note
+  every minute - holds nothing off for good. The status says until when at the latest
+  (`waitingUntil`). Runs asked for never wait.
+- *rclone* (1.75.1, pinned and checked like restic) lives behind a small wrapper that
+  drops to `PUID`:`PGID` when started as root: `rclone config` through `docker exec`
+  would otherwise write a configuration the backup server cannot read. Its remotes lie
+  in the data folder (`RCLONE_CONFIG=/data/rclone/rclone.conf`), so they survive an
+  update and rclone can write renewed tokens back. CI makes a repository through
+  rclone in the image, and checks that a configuration made through `docker exec`
+  belongs to user 1000.
+- *The password* is behind an eye next to the repository, as selectable text, hidden
+  again when the settings close.
+- *Two bugs from the user's test, fixed before it went out.* The guard measured a run
+  against the last run the copy followed, so a loss arriving over two runs passed in
+  two halves; it now measures against the most of the followed runs in the week
+  before the newest (`guardReference`), started afresh only by a confirmation or by
+  following with the guard off, and counts nothing while the copy waits - so a
+  waiting copy never follows on its own once the week is over. And the relay never
+  pinged its connections, unlike the vault socket: behind nginx a quiet backup server
+  lost its connection every minute. The server pings every relay connection every
+  30 s now.
