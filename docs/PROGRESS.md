@@ -95,9 +95,8 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing. Every branch is merged into `main` and still exists on the remote:
-`feat/accounts`, `feat/backup-api`, `feat/backup-rollback`, `feat/backup-task`,
-`feat/backup-schedule`, `feat/schedule-days` - deleting them is the user's call.
+Nothing. Only `main` exists: every earlier branch was merged and, checked to hold
+no commit `main` lacks, deleted with the user's consent on 2026-10-21.
 
 ## Decisions made (not visible in the code)
 
