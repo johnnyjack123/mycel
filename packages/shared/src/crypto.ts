@@ -190,6 +190,14 @@ export async function deriveFileId(vaultKey: Bytes, path: string, generation: nu
 }
 
 /**
+ * A shared folder's id, derived like a note's under a label of its own: never
+ * random, and the next generation once a folder's share ended (invariant 5).
+ */
+export async function deriveFolderId(vaultKey: Bytes, path: string, generation: number): Promise<string> {
+  return toHex((await hmac(vaultKey, `folder::${path}::${generation}`)).subarray(0, 16))
+}
+
+/**
  * A blob's name: keyed, so the server cannot tell whether a vault holds a file
  * it knows, yet the same content on every device of the vault - uploading it
  * twice changes nothing.
@@ -211,7 +219,30 @@ export const vaultKeys = {
    * is just counting up.
    */
   doc: (vaultKey: Bytes, docId: string, epoch: number): Promise<Bytes> =>
-    hkdf(vaultKey, `obsidian-connect doc:${docId}:${epoch}`)
+    hkdf(vaultKey, `obsidian-connect doc:${docId}:${epoch}`),
+  /** One key per shared folder and folder epoch; members get it sealed. */
+  folder: (vaultKey: Bytes, folderId: string, epoch: number): Promise<Bytes> =>
+    hkdf(vaultKey, `obsidian-connect fld:${folderId}:${epoch}`)
+}
+
+/**
+ * What one epoch's key of a shared folder opens. Whoever holds it reads every
+ * note in the folder - one added tomorrow included - without anyone sealing a
+ * key per note.
+ */
+export const folderKeys = {
+  /** The folder room's own key in that epoch. */
+  room: (folderKey: Bytes): Promise<Bytes> => hkdf(folderKey, 'obsidian-connect folder-room'),
+  /** A note's key for an epoch it spent in the folder while the folder was in this one. */
+  doc: (folderKey: Bytes, docId: string, epoch: number): Promise<Bytes> =>
+    hkdf(folderKey, `obsidian-connect doc:${docId}:${epoch}`),
+  /**
+   * The key ids of notes and files created in the folder are derived under
+   * (`deriveDocId`, `deriveFileId`, on the path relative to the folder): the same
+   * for everyone in it, and new with every epoch, so someone revoked cannot
+   * compute the ids still to come and claim their rooms first.
+   */
+  ids: (folderKey: Bytes): Promise<Bytes> => hkdf(folderKey, 'obsidian-connect folder-ids')
 }
 
 // --- symmetric ---------------------------------------------------------------------

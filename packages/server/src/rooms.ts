@@ -3,18 +3,30 @@ import { join } from 'node:path'
 import {
   CLOSE_SIGNED_OUT,
   docRoom,
+  folderRoom,
   isHexId,
   roomKind,
   roomSubject,
   type AttachBlobsRequest,
   type BackupRoom,
   type BlobRef,
+  type FolderEndRequest,
+  type FolderJoinRequest,
+  type FolderLeaveRequest,
+  type FolderNoteState,
+  type FolderRevokeRequest,
+  type FolderRoleRequest,
+  type FolderRotation,
+  type FolderShareRequest,
+  type FolderStateResponse,
   type ForkReason,
   type ForkResponse,
   type ForkSummary,
+  type IncomingFolder,
   type IncomingShare,
   type KeysResponse,
   type LogResponse,
+  type NoteRotation,
   type NotifyKind,
   type RevokeRequest,
   type RoleRequest,
@@ -22,12 +34,22 @@ import {
   type Notice,
   type ShareRequest,
   type ShareRole,
-  type SnapshotRequest
+  type SnapshotRequest,
+  type StartSnapshotRequest
 } from '@obsidian-connect/shared'
 import { isAccountId, type AccountStore } from './accounts.js'
 import type { ContactStore } from './contacts.js'
-import type { ForkStore } from './forks.js'
-import { RoomLog, loadAllMeta, roomDir, type Frame, type RoomMeta, type SnapshotInfo } from './log.js'
+import type { FolderKept, ForkStore } from './forks.js'
+import {
+  RoomLog,
+  loadAllMeta,
+  roomDir,
+  saveMetaOf,
+  type Frame,
+  type RoomFolder,
+  type RoomMeta,
+  type SnapshotInfo
+} from './log.js'
 
 // The server's side of an end-to-end encrypted vault: it keeps every room's
 // frames in order, decides who may read and write, and fans frames out. It
@@ -142,12 +164,31 @@ export class RoomHub {
 
   // --- rooms -------------------------------------------------------------------
 
+  /**
+   * A note's own members, and the members of the shared folder it is in; reached
+   * both ways, the higher role and the earlier start count.
+   */
   private access(meta: RoomMeta, account: string): Access | 'revoked' | null {
     if (meta.owner === account) return { owner: true, write: true, fromSeq: 0 }
     const member = meta.members[account]
-    if (member) return { owner: false, write: member.role === 'write', fromSeq: member.fromSeq }
+    const own: Access | null = member ? { owner: false, write: member.role === 'write', fromSeq: member.fromSeq } : null
+    const viaFolder = this.folderAccess(meta, account)
+    if (own && viaFolder && viaFolder !== 'revoked') {
+      return { owner: false, write: own.write || viaFolder.write, fromSeq: Math.min(own.fromSeq, viaFolder.fromSeq) }
+    }
+    if (own) return own
+    if (viaFolder) return viaFolder
     if (meta.revoked[account]) return 'revoked'
     return null
+  }
+
+  /** Access to a note through the shared folder it is in. */
+  private folderAccess(meta: RoomMeta, account: string): Access | 'revoked' | null {
+    if (!meta.folder) return null
+    const folder = this.metas.get(folderRoom(meta.folder.id))
+    const member = folder?.members[account]
+    if (member) return { owner: false, write: member.role === 'write', fromSeq: meta.folder.from?.[account] ?? meta.folder.since }
+    return folder?.revoked[account] ? 'revoked' : null
   }
 
   private async load(room: string): Promise<OpenRoom | null> {
@@ -178,11 +219,11 @@ export class RoomHub {
    * checks and the creation happen without an await in between, so two
    * devices subscribing at once cannot both create it.
    */
-  private claim(room: string, owner: string, vaultId: string): Promise<OpenRoom> {
+  private claim(room: string, owner: string, vaultId: string, folder?: RoomFolder): Promise<OpenRoom> {
     const open = this.rooms.get(room)
     if (open) return Promise.resolve(open)
     const pending = this.opening.get(room)
-    if (pending) return pending.then((result) => result ?? this.claim(room, owner, vaultId))
+    if (pending) return pending.then((result) => result ?? this.claim(room, owner, vaultId, folder))
     if (this.metas.has(room)) {
       return this.load(room).then((result) => result ?? Promise.reject(new HubError(500, 'the room vanished')))
     }
@@ -200,6 +241,7 @@ export class RoomHub {
         sealedKeys: {},
         snapshots: []
       }
+      if (folder) meta.folder = folder
       this.metas.set(room, meta)
       const log = await RoomLog.create(this.options.dataDir, meta)
       const created: OpenRoom = { log, subscribers: new Set(), idleTimer: null }
@@ -259,9 +301,11 @@ export class RoomHub {
   /**
    * `create`: a missing room is created, owned by the caller. A device asks
    * for that only for its own notes - after a server lost a note someone else
-   * owns, claiming it would take it from them.
+   * owns, claiming it would take it from them. With `folder`, a missing note
+   * is created in that shared folder instead, owned by the folder's owner, if
+   * the caller may write in it.
    */
-  async subscribe(client: RoomClient, room: string, afterSeq: number, create = true): Promise<void> {
+  async subscribe(client: RoomClient, room: string, afterSeq: number, create = true, folder?: string): Promise<void> {
     const kind = roomKind(room)
     const subject = roomSubject(room)
     if (!kind || !isHexId(subject)) {
@@ -270,7 +314,7 @@ export class RoomHub {
     }
     // The index and settings of a vault only ever travel over that vault's own
     // connection, which the upgrade already checked belongs to this account.
-    if (kind !== 'doc' && subject !== client.vaultId) {
+    if ((kind === 'idx' || kind === 'set') && subject !== client.vaultId) {
       client.sendDenied(room, 'not this vault')
       return
     }
@@ -287,7 +331,15 @@ export class RoomHub {
       client.sendDenied(room, 'missing')
       return
     }
-    const open = loaded ?? (await this.claim(room, client.account, client.vaultId))
+    let open = loaded
+    if (!open && folder !== undefined && kind === 'doc') {
+      open = await this.claimInFolder(client, room, folder)
+      if (!open) {
+        client.sendDenied(room, 'not a folder you may write in')
+        return
+      }
+    }
+    open ??= await this.claim(room, client.account, client.vaultId)
     const access = this.access(open.log.meta, client.account)
     if (access === 'revoked' || (!access && ended)) {
       client.sendRevoked(room, 'access was revoked')
@@ -318,6 +370,19 @@ export class RoomHub {
       open.idleTimer = null
       return
     }
+  }
+
+  /**
+   * A note created in a shared folder belongs to the folder's owner - as the
+   * text one writes into a shared note does - and lives in the owner's vault.
+   * Its first epoch is the folder's current one.
+   */
+  private claimInFolder(client: RoomClient, room: string, folderId: string): Promise<OpenRoom> | null {
+    const folder = isHexId(folderId) ? this.metas.get(folderRoom(folderId)) : undefined
+    if (!folder || this.gone.has(folder.owner)) return null
+    const access = this.access(folder, client.account)
+    if (!access || access === 'revoked' || !access.write) return null
+    return this.claim(room, folder.owner, folder.vaultId, { id: folderId, since: 0, epochs: { '0': folder.epoch } })
   }
 
   unsubscribe(client: RoomClient, room: string): void {
@@ -382,6 +447,35 @@ export class RoomHub {
     for (const subscriber of open.subscribers) subscriber.sendRekey(open.log.meta.room, open.log.meta.epoch)
   }
 
+  /**
+   * A note in a shared folder takes every new epoch's key from the folder's
+   * current one, or the folder's members could no longer read it; the device
+   * says which folder epoch it derived from, and a folder that moved meanwhile
+   * is a reason to try again.
+   */
+  private checkFolderEpoch(meta: RoomMeta, folderEpoch: number | undefined): void {
+    if (!meta.folder) return
+    const folder = this.metas.get(folderRoom(meta.folder.id))
+    if (folder && folderEpoch !== folder.epoch) throw new HubError(409, 'the folder moved to another epoch; try again')
+  }
+
+  /** The room moves to its next epoch - a note in a folder tied to the folder's current one. */
+  private moveEpoch(meta: RoomMeta, epoch: number): void {
+    meta.epoch = epoch
+    meta.epochSince = this.headOf(meta)
+    if (!meta.folder) return
+    const folder = this.metas.get(folderRoom(meta.folder.id))
+    if (folder) meta.folder.epochs[String(epoch)] = folder.epoch
+  }
+
+  private headOf(meta: RoomMeta): number {
+    const open = this.rooms.get(meta.room)
+    if (open) return open.log.headSeq
+    // A room moved without being open - which a folder's operations avoid by
+    // loading every note first - knows no more than its snapshots.
+    return meta.snapshots.reduce((max, snapshot) => Math.max(max, snapshot.uptoSeq), meta.compactedUpTo)
+  }
+
   async share(owner: string, request: ShareRequest): Promise<void> {
     const open = await this.owned(owner, request.docId)
     const meta = open.log.meta
@@ -406,11 +500,12 @@ export class RoomHub {
       for (const member of [account, ...Object.keys(meta.members).filter((name) => name !== account)]) {
         if (typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
       }
+      this.checkFolderEpoch(meta, rotation.folderEpoch)
       const snapshot = fromBase64(rotation.snapshot.data, 'the snapshot')
       // Before anything is awaited: from here on a push under the old epoch is
       // refused, so nothing lands after the snapshot that the recipient
       // could not decrypt.
-      meta.epoch = rotation.epoch
+      this.moveEpoch(meta, rotation.epoch)
       for (const [member, key] of Object.entries(rotation.keys)) {
         meta.sealedKeys[member] = { ...meta.sealedKeys[member], [String(rotation.epoch)]: key }
       }
@@ -440,12 +535,23 @@ export class RoomHub {
    */
   private keepForFork(open: OpenRoom, account: string, reason: ForkReason, now: number): () => Promise<void> {
     const meta = open.log.meta
-    const member = meta.members[account]
+    const folderMeta = meta.folder ? this.metas.get(folderRoom(meta.folder.id)) : undefined
+    const access = this.access(meta, account)
     // Never added to a vault, so no device has anything to carry on.
-    if (!member?.acceptedInto) return async () => undefined
+    const accepted = meta.members[account]?.acceptedInto ?? folderMeta?.members[account]?.acceptedInto
+    if (!accepted || !access || access === 'revoked') return async () => undefined
     const keys = { ...meta.sealedKeys[account] }
-    const readable = (epoch: number): boolean => typeof keys[String(epoch)] === 'string'
-    const part = this.readablePart(open, { owner: false, write: false, fromSeq: member.fromSeq })
+    // A note of a shared folder: the epochs it spent there open with the folder's keys.
+    const folder: FolderKept | undefined =
+      meta.folder && folderMeta?.members[account]
+        ? { id: meta.folder.id, keys: { ...folderMeta.sealedKeys[account] }, epochs: { ...meta.folder.epochs } }
+        : undefined
+    const readable = (epoch: number): boolean => {
+      if (typeof keys[String(epoch)] === 'string') return true
+      const folderEpoch = folder?.epochs[String(epoch)]
+      return folderEpoch !== undefined && typeof folder?.keys[String(folderEpoch)] === 'string'
+    }
+    const part = this.readablePart(open, { owner: false, write: false, fromSeq: access.fromSeq })
     const frames = part.frames.filter((frame) => readable(frame.epoch))
     const snapshot = part.snapshot && readable(part.snapshot.epoch) ? part.snapshot : null
     const epoch = meta.epoch
@@ -453,7 +559,7 @@ export class RoomHub {
     const summary: ForkSummary = { docId: roomSubject(meta.room), owner: meta.owner, reason, endedAt: now }
     return async () => {
       const log = await this.logResponse(open, { snapshot, frames }, epoch, headSeq)
-      await this.forks.put(account, summary, keys, log)
+      await this.forks.put(account, summary, keys, log, folder)
     }
   }
 
@@ -477,13 +583,16 @@ export class RoomHub {
     for (const member of remaining) {
       if (typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
     }
+    this.checkFolderEpoch(meta, rotation.folderEpoch)
 
     const now = Date.now()
-    const keep = this.keepForFork(open, account, 'revoked', now)
-    meta.epoch = rotation.epoch
+    // Still in the note's folder, the person keeps reading it there: nothing ends for them.
+    const stays = this.inFolder(meta, account)
+    const keep = stays ? async () => undefined : this.keepForFork(open, account, 'revoked', now)
+    this.moveEpoch(meta, rotation.epoch)
     delete meta.members[account]
     delete meta.sealedKeys[account]
-    meta.revoked[account] = now
+    if (!stays) meta.revoked[account] = now
     for (const member of remaining) {
       meta.sealedKeys[member] = { ...meta.sealedKeys[member], [String(rotation.epoch)]: rotation.keys[member] as string }
     }
@@ -493,14 +602,22 @@ export class RoomHub {
     await open.log.saveMeta()
 
     for (const subscriber of Array.from(open.subscribers)) {
-      if (subscriber.account === account) {
+      if (subscriber.account === account && !stays) {
         subscriber.sendRevoked(meta.room, 'access was revoked')
         open.subscribers.delete(subscriber)
       } else {
         subscriber.sendRekey(meta.room, meta.epoch)
       }
     }
-    this.notify(account, 'share-removed', { docId: roomSubject(meta.room), owner })
+    const docId = roomSubject(meta.room)
+    if (stays) this.notify(account, 'share-changed', { docId, owner })
+    else this.notify(account, 'share-removed', { docId, owner })
+  }
+
+  /** Whether someone reaches a note through its shared folder. */
+  private inFolder(meta: RoomMeta, account: string): boolean {
+    const viaFolder = this.folderAccess(meta, account)
+    return viaFolder !== null && viaFolder !== 'revoked'
   }
 
   /**
@@ -518,18 +635,21 @@ export class RoomHub {
       throw new HubError(404, 'not shared with you')
     }
     const meta = open.log.meta
-    const keep = this.keepForFork(open, account, 'detached', Date.now())
+    // In the note's folder too, it stays theirs there and nothing is forked.
+    const stays = this.inFolder(meta, account)
+    const keep = stays ? async () => undefined : this.keepForFork(open, account, 'detached', Date.now())
     delete meta.members[account]
-    delete meta.sealedKeys[account]
+    if (!stays) delete meta.sealedKeys[account]
     await this.keepSafely(keep, room, account)
     await open.log.saveMeta()
+    this.memberLeft(meta)
+    if (stays) return
     for (const subscriber of Array.from(open.subscribers)) {
       if (subscriber.account !== account) continue
       subscriber.sendRevoked(room, 'the share ended')
       open.subscribers.delete(subscriber)
     }
     this.notify(account, 'share-removed', { docId: subject, owner: meta.owner })
-    this.memberLeft(meta)
   }
 
   /**
@@ -566,10 +686,11 @@ export class RoomHub {
     if (meta.owner === account) throw new HubError(400, 'the owner cannot leave their own note')
     if (!meta.members[account]) return
     delete meta.members[account]
-    delete meta.sealedKeys[account]
+    const stays = this.inFolder(meta, account)
+    if (!stays) delete meta.sealedKeys[account]
     await open.log.saveMeta()
     for (const subscriber of Array.from(open.subscribers)) {
-      if (subscriber.account === account) open.subscribers.delete(subscriber)
+      if (subscriber.account === account && !stays) open.subscribers.delete(subscriber)
     }
     this.memberLeft(meta)
   }
@@ -599,7 +720,8 @@ export class RoomHub {
     const shares: IncomingShare[] = []
     for (const meta of this.metas.values()) {
       const member = meta.members[account]
-      if (!member || member.acceptedInto) continue
+      // Folders are offered on their own: a device that knows no folders would take one for a note.
+      if (!member || member.acceptedInto || roomKind(meta.room) !== 'doc') continue
       shares.push({
         docId: roomSubject(meta.room),
         owner: meta.owner,
@@ -625,6 +747,471 @@ export class RoomHub {
     }
   }
 
+  // --- shared folders --------------------------------------------------------------
+  // A folder is a room of its own, and its members reach every note in it
+  // (`folderAccess`). Moving the folder's epoch moves every note's along, each
+  // new note epoch tied to the folder epoch its key derives from. Every change
+  // happens before anything is awaited (invariant 16). `docs/PHASE7.md`.
+
+  private folderOf(folderId: unknown): RoomMeta {
+    const meta = typeof folderId === 'string' && isHexId(folderId) ? this.metas.get(folderRoom(folderId)) : undefined
+    if (!meta) throw new HubError(404, 'no such folder')
+    return meta
+  }
+
+  private async ownedFolder(owner: string, folderId: unknown): Promise<OpenRoom> {
+    const meta = this.folderOf(folderId)
+    if (meta.owner !== owner) throw new HubError(403, 'only the owner can do that')
+    return this.require(meta.room)
+  }
+
+  /** The notes in a folder, as the server knows them now. */
+  private notesIn(folderId: string): RoomMeta[] {
+    return Array.from(this.metas.values()).filter((meta) => meta.folder?.id === folderId && roomKind(meta.room) === 'doc')
+  }
+
+  /** Every note of the folder loaded: what an operation moves or keeps must be read, not guessed. */
+  private async loadNotes(folderId: string): Promise<OpenRoom[]> {
+    const opened = await Promise.all(this.notesIn(folderId).map((meta) => this.load(meta.room)))
+    return opened.filter((open): open is OpenRoom => open !== null)
+  }
+
+  /** Rooms loaded for one operation go again once nobody uses them. */
+  private release(opens: OpenRoom[]): void {
+    for (const open of opens) if (open.subscribers.size === 0) this.scheduleIdle(open.log.meta.room, open)
+  }
+
+  private saveMeta(meta: RoomMeta): Promise<void> {
+    const open = this.rooms.get(meta.room)
+    return open ? open.log.saveMeta() : saveMetaOf(this.options.dataDir, meta)
+  }
+
+  /** After access changed: whoever still has it moves to the new epoch, everyone else hears it ended. */
+  private refreshSubscribers(meta: RoomMeta, reason: string): void {
+    const open = this.rooms.get(meta.room)
+    if (!open) return
+    for (const subscriber of Array.from(open.subscribers)) {
+      const access = this.access(meta, subscriber.account)
+      if (!access || access === 'revoked') {
+        subscriber.sendRevoked(meta.room, reason)
+        open.subscribers.delete(subscriber)
+      } else {
+        subscriber.sendRekey(meta.room, meta.epoch)
+      }
+    }
+  }
+
+  /**
+   * Where someone joining now without history starts reading a room: a
+   * snapshot in its current epoch, taken since the epoch began. 0 for a room
+   * with nothing in it; null while there is none.
+   */
+  private startOf(meta: RoomMeta): number | null {
+    if (this.headOf(meta) === 0) return 0
+    const since = meta.epochSince ?? 0
+    const found = meta.snapshots
+      .filter((snapshot) => snapshot.epoch === meta.epoch && snapshot.uptoSeq >= since)
+      .reduce((max, snapshot) => Math.max(max, snapshot.uptoSeq), -1)
+    return found >= 0 ? found : null
+  }
+
+  /** The note's own members and their keys of its next epoch, checked before anything changes. */
+  private checkNoteRotations(notes: RoomMeta[], rotations: Record<string, NoteRotation> | undefined): void {
+    for (const meta of notes) {
+      const members = Object.keys(meta.members)
+      if (members.length === 0) continue
+      const docId = roomSubject(meta.room)
+      const rotation = rotations?.[docId]
+      if (!rotation || rotation.epoch !== meta.epoch + 1) throw new HubError(409, `${docId} moved to another epoch; try again`)
+      for (const member of members) {
+        if (typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key of ${docId} for ${member} is missing`)
+      }
+    }
+  }
+
+  /** A note to its next epoch, with its own members' keys. */
+  private moveNote(meta: RoomMeta, rotation: NoteRotation | undefined): void {
+    this.moveEpoch(meta, meta.epoch + 1)
+    for (const member of Object.keys(meta.members)) {
+      const key = rotation?.keys[member]
+      if (key) meta.sealedKeys[member] = { ...meta.sealedKeys[member], [String(meta.epoch)]: key }
+    }
+  }
+
+  private checkFolderRotation(folder: RoomMeta, notes: RoomMeta[], rotation: FolderRotation | undefined, leaving?: string): FolderRotation {
+    if (!rotation || rotation.epoch !== folder.epoch + 1) throw new HubError(409, 'the folder moved to another epoch; try again')
+    for (const member of Object.keys(folder.members)) {
+      if (member !== leaving && typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
+    }
+    this.checkNoteRotations(notes, rotation.notes)
+    return rotation
+  }
+
+  /** The folder to its next epoch, and every note in it along. */
+  private applyFolderRotation(folder: RoomMeta, notes: RoomMeta[], rotation: FolderRotation): void {
+    this.moveEpoch(folder, rotation.epoch)
+    for (const member of Object.keys(folder.members)) {
+      folder.sealedKeys[member] = { ...folder.sealedKeys[member], [String(rotation.epoch)]: rotation.keys[member] as string }
+    }
+    for (const meta of notes) this.moveNote(meta, rotation.notes?.[roomSubject(meta.room)])
+  }
+
+  /** Someone's membership of a folder ends; the notes they reach on their own stay theirs. */
+  private dropMember(folder: RoomMeta, notes: RoomMeta[], account: string, now: number): void {
+    delete folder.members[account]
+    delete folder.sealedKeys[account]
+    folder.revoked[account] = now
+    for (const meta of notes) {
+      if (meta.folder?.from) delete meta.folder.from[account]
+      if (!meta.members[account]) delete meta.sealedKeys[account]
+    }
+  }
+
+  /** What each leaving member could read of each note, taken before anything moves. */
+  private keepsFor(notes: RoomMeta[], accounts: string[], reason: ForkReason, now: number): Array<{ room: string; account: string; keep: () => Promise<void> }> {
+    const keeps: Array<{ room: string; account: string; keep: () => Promise<void> }> = []
+    for (const meta of notes) {
+      const open = this.rooms.get(meta.room)
+      if (!open) continue
+      for (const account of accounts) {
+        // A note they have on its own as well stays theirs.
+        if (meta.members[account]) continue
+        keeps.push({ room: meta.room, account, keep: this.keepForFork(open, account, reason, now) })
+      }
+    }
+    return keeps
+  }
+
+  private async finish(
+    rooms: RoomMeta[],
+    keeps: Array<{ room: string; account: string; keep: () => Promise<void> }>,
+    reason: string
+  ): Promise<void> {
+    // What leaving members could read goes to disk before their access goes.
+    for (const { room, account, keep } of keeps) await this.keepSafely(keep, room, account)
+    await Promise.all(rooms.map((meta) => this.saveMeta(meta)))
+    for (const meta of rooms) this.refreshSubscribers(meta, reason)
+  }
+
+  async folderState(account: string, folderId: unknown): Promise<FolderStateResponse> {
+    const open = await this.require(this.folderOf(folderId).room)
+    const meta = open.log.meta
+    const access = this.access(meta, account)
+    if (!access || access === 'revoked') throw new HubError(403, 'no access')
+    const id = roomSubject(meta.room)
+    const response: FolderStateResponse = {
+      folderId: id,
+      owner: meta.owner,
+      epoch: meta.epoch,
+      headSeq: open.log.headSeq,
+      start: this.startOf(meta),
+      members: Object.entries(meta.members)
+        .map(([name, member]) => ({ account: name, role: member.role, addedAt: member.addedAt }))
+        .sort((a, b) => a.addedAt - b.addedAt)
+    }
+    if (!access.owner) return response
+    const opens = await this.loadNotes(id)
+    response.notes = opens.map((note): FolderNoteState => {
+      const noteMeta = note.log.meta
+      return {
+        docId: roomSubject(noteMeta.room),
+        epoch: noteMeta.epoch,
+        headSeq: note.log.headSeq,
+        since: noteMeta.folder?.since ?? 0,
+        start: this.startOf(noteMeta),
+        members: Object.keys(noteMeta.members)
+      }
+    })
+    this.release(opens)
+    return response
+  }
+
+  /**
+   * Shares the folder with someone, or again with new access. With history
+   * they read every note from where it is in the folder; without, from a
+   * starting point in each room's current epoch, which the owner's device
+   * uploads after moving the folder to a new epoch (`rotateFolder`,
+   * `startSnapshot`) - the person is added only once every room has one.
+   */
+  async shareFolder(owner: string, request: FolderShareRequest): Promise<void> {
+    const folderOpen = await this.ownedFolder(owner, request.folderId)
+    const folder = folderOpen.log.meta
+    const id = roomSubject(folder.room)
+    const account = await this.recipient(request.account, owner)
+    if (!ROLES.includes(request.role)) throw new HubError(400, 'the role is read or write')
+    if (typeof request.title !== 'string') throw new HubError(400, 'the title is missing')
+    const opens = await this.loadNotes(id)
+    try {
+      const notes = this.notesIn(id)
+      const keys = request.keys ?? {}
+      const starts = new Map<string, number>()
+      if (request.withHistory) {
+        for (let epoch = 0; epoch <= folder.epoch; epoch += 1) {
+          if (typeof keys[String(epoch)] !== 'string') throw new HubError(400, `the key of epoch ${epoch} is missing`)
+        }
+        for (const meta of notes) {
+          if (meta.folder?.since !== 0) continue
+          // The epochs before the note joined the folder, under its owner's own keys.
+          const tied = Object.keys(meta.folder.epochs).map(Number)
+          const first = tied.length > 0 ? Math.min(...tied) : 0
+          const docId = roomSubject(meta.room)
+          for (let epoch = 0; epoch < first; epoch += 1) {
+            if (typeof request.noteKeys?.[docId]?.[String(epoch)] !== 'string') {
+              throw new HubError(400, `the key of ${docId} in epoch ${epoch} is missing`)
+            }
+          }
+        }
+      } else {
+        if (typeof keys[String(folder.epoch)] !== 'string') throw new HubError(400, `the key of epoch ${folder.epoch} is missing`)
+        for (const meta of [folder, ...notes]) {
+          const start = this.startOf(meta)
+          if (start === null) throw new HubError(409, `${meta.room} has no starting point in its current epoch yet`)
+          starts.set(meta.room, start)
+        }
+      }
+
+      const after = (room: string): number => {
+        const start = starts.get(room) ?? 0
+        return start === 0 ? 0 : start + 1
+      }
+      const existing = folder.members[account]
+      folder.sealedKeys[account] = { ...folder.sealedKeys[account], ...keys }
+      const fromSeq = request.withHistory ? 0 : after(folder.room)
+      folder.members[account] = {
+        role: request.role,
+        // Sharing again never takes back history already given.
+        fromSeq: Math.min(existing?.fromSeq ?? Number.MAX_SAFE_INTEGER, fromSeq),
+        addedAt: existing?.addedAt ?? Date.now(),
+        title: request.title,
+        acceptedInto: existing?.acceptedInto
+      }
+      delete folder.revoked[account]
+      for (const meta of notes) {
+        const place = meta.folder as RoomFolder
+        if (request.withHistory) {
+          if (place.from) delete place.from[account]
+          const sealed = request.noteKeys?.[roomSubject(meta.room)]
+          if (sealed) meta.sealedKeys[account] = { ...meta.sealedKeys[account], ...sealed }
+        } else if (!existing || place.from?.[account] !== undefined) {
+          place.from = { ...place.from, [account]: Math.min(place.from?.[account] ?? Number.MAX_SAFE_INTEGER, after(meta.room)) }
+        }
+      }
+      await Promise.all([folder, ...notes].map((meta) => this.saveMeta(meta)))
+      this.notify(account, existing ? 'folder-changed' : 'folder-added', { folderId: id, owner, role: request.role })
+    } finally {
+      this.release(opens)
+    }
+  }
+
+  /** The folder to its next epoch, every note in it along - before sharing it without history. */
+  async rotateFolder(owner: string, folderId: unknown, rotation: FolderRotation): Promise<void> {
+    const folderOpen = await this.ownedFolder(owner, folderId)
+    const folder = folderOpen.log.meta
+    const id = roomSubject(folder.room)
+    const opens = await this.loadNotes(id)
+    try {
+      const notes = this.notesIn(id)
+      this.applyFolderRotation(folder, notes, this.checkFolderRotation(folder, notes, rotation))
+      await this.finish([folder, ...notes], [], 'the folder moved to another epoch')
+    } finally {
+      this.release(opens)
+    }
+  }
+
+  /** A starting point in a room's current epoch, for someone joining its folder without history. */
+  async startSnapshot(owner: string, room: string, request: StartSnapshotRequest): Promise<void> {
+    const kind = roomKind(room)
+    if ((kind !== 'doc' && kind !== 'fld') || !isHexId(roomSubject(room))) throw new HubError(400, 'only notes and folders have starting points')
+    const open = await this.require(room)
+    const meta = open.log.meta
+    if (meta.owner !== owner) throw new HubError(403, 'only the owner can do that')
+    if (kind === 'doc' && !meta.folder) throw new HubError(400, 'the note is not in a shared folder')
+    if (request.epoch !== meta.epoch) throw new HubError(409, 'encrypt it under the current epoch')
+    const uptoSeq = request.uptoSeq
+    if (!Number.isInteger(uptoSeq) || uptoSeq < 1 || uptoSeq < (meta.epochSince ?? 0) || uptoSeq > open.log.headSeq) {
+      throw new HubError(409, 'the starting point does not fit the log; try again')
+    }
+    await open.log.addJoinSnapshot(uptoSeq, request.epoch, fromBase64(request.data, 'the snapshot'))
+  }
+
+  /**
+   * A note of the owner's joins the folder. Its next epoch is tied to the
+   * folder's, and while the folder is shared its history there starts at a
+   * snapshot taken at the head - nobody reads what it said before it joined.
+   */
+  async joinNote(owner: string, folderId: unknown, request: FolderJoinRequest): Promise<void> {
+    const folderOpen = await this.ownedFolder(owner, folderId)
+    const folder = folderOpen.log.meta
+    const id = roomSubject(folder.room)
+    const open = await this.owned(owner, request.docId)
+    const meta = open.log.meta
+    if (meta.folder) {
+      if (meta.folder.id === id) return
+      throw new HubError(409, 'the note is in another folder')
+    }
+    if (request.epoch !== meta.epoch + 1) throw new HubError(409, 'the note moved to another epoch; try again')
+    if (request.folderEpoch !== folder.epoch) throw new HubError(409, 'the folder moved to another epoch; try again')
+    for (const member of Object.keys(meta.members)) {
+      if (typeof request.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
+    }
+    const shared = Object.keys(folder.members).length > 0
+    const snapshot = request.snapshot
+    if (snapshot && snapshot.uptoSeq !== open.log.headSeq) throw new HubError(409, 'the note changed meanwhile; try again')
+    if (shared && !snapshot && open.log.headSeq > 0) throw new HubError(400, "the folder's members need a starting point")
+    const data = snapshot ? fromBase64(snapshot.data, 'the snapshot') : null
+
+    meta.folder = { id, since: shared && snapshot ? snapshot.uptoSeq + 1 : 0, epochs: {} }
+    this.moveEpoch(meta, request.epoch)
+    for (const member of Object.keys(meta.members)) {
+      meta.sealedKeys[member] = { ...meta.sealedKeys[member], [String(request.epoch)]: request.keys[member] as string }
+    }
+    this.refreshSubscribers(meta, 'the note joined a shared folder')
+    if (snapshot && data) await open.log.addJoinSnapshot(snapshot.uptoSeq, request.epoch, data)
+    await open.log.saveMeta()
+  }
+
+  /** The owner takes a note out of the folder. Everyone who had it only through the folder keeps it as a fork. */
+  async leaveNote(owner: string, folderId: unknown, request: FolderLeaveRequest): Promise<void> {
+    const folder = this.folderOf(folderId)
+    if (folder.owner !== owner) throw new HubError(403, 'only the owner can do that')
+    const id = roomSubject(folder.room)
+    const open = await this.owned(owner, request.docId)
+    const meta = open.log.meta
+    if (meta.folder?.id !== id) throw new HubError(404, 'the note is not in this folder')
+    const rotation = request.rotation
+    if (!rotation || rotation.epoch !== meta.epoch + 1) throw new HubError(409, 'the note moved to another epoch; try again')
+    for (const member of Object.keys(meta.members)) {
+      if (typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
+    }
+    const now = Date.now()
+    const leaving = Object.keys(folder.members).filter((account) => !meta.members[account])
+    const keeps = this.keepsFor([meta], leaving, 'revoked', now)
+    // Under the owner's own key again: the folder's members hold the folder's.
+    delete meta.folder
+    this.moveNote(meta, rotation)
+    await this.finish([meta], keeps, 'the note left the shared folder')
+    for (const account of leaving) this.notify(account, 'share-removed', { docId: roomSubject(meta.room), owner })
+  }
+
+  async revokeFolder(owner: string, folderId: unknown, request: FolderRevokeRequest): Promise<void> {
+    const folderOpen = await this.ownedFolder(owner, folderId)
+    const folder = folderOpen.log.meta
+    const id = roomSubject(folder.room)
+    const account = isAccountId(request.account) ? request.account : null
+    if (!account || !folder.members[account]) throw new HubError(404, 'not a member')
+    const opens = await this.loadNotes(id)
+    try {
+      const notes = this.notesIn(id)
+      if (!folder.members[account]) throw new HubError(404, 'not a member')
+      const rotation = this.checkFolderRotation(folder, notes, request.rotation, account)
+      const now = Date.now()
+      const keeps = this.keepsFor(notes, [account], 'revoked', now)
+      this.dropMember(folder, notes, account, now)
+      this.applyFolderRotation(folder, notes, rotation)
+      await this.finish([folder, ...notes], keeps, 'access was revoked')
+      this.notify(account, 'folder-removed', { folderId: id, owner })
+    } finally {
+      this.release(opens)
+    }
+  }
+
+  async setFolderRole(owner: string, folderId: unknown, request: FolderRoleRequest): Promise<void> {
+    const folderOpen = await this.ownedFolder(owner, folderId)
+    const folder = folderOpen.log.meta
+    const account = isAccountId(request.account) ? request.account : null
+    const member = account ? folder.members[account] : undefined
+    if (!account || !member) throw new HubError(404, 'not a member')
+    if (!ROLES.includes(request.role)) throw new HubError(400, 'the role is read or write')
+    member.role = request.role
+    await folderOpen.log.saveMeta()
+    this.notify(account, 'folder-changed', { folderId: roomSubject(folder.room), owner, role: request.role })
+  }
+
+  async acceptFolder(account: string, folderId: unknown, vaultId: unknown): Promise<void> {
+    const folder = this.folderOf(folderId)
+    const member = folder.members[account]
+    if (!member) throw new HubError(404, 'not shared with you')
+    if (typeof vaultId !== 'string' || !isHexId(vaultId)) throw new HubError(400, 'not a vault id')
+    member.acceptedInto = vaultId
+    await this.saveMeta(folder)
+  }
+
+  async incomingFolders(account: string): Promise<IncomingFolder[]> {
+    await this.ready
+    const folders: IncomingFolder[] = []
+    for (const meta of this.metas.values()) {
+      const member = meta.members[account]
+      if (!member || member.acceptedInto || roomKind(meta.room) !== 'fld') continue
+      folders.push({ folderId: roomSubject(meta.room), owner: meta.owner, role: member.role, title: member.title, addedAt: member.addedAt })
+    }
+    return folders.sort((a, b) => a.addedAt - b.addedAt)
+  }
+
+  /** A member keeps the whole folder as their own and leaves it; the server keeps what they read of each note. */
+  async detachFolder(account: string, folderId: unknown): Promise<void> {
+    const folder = this.folderOf(folderId)
+    const id = roomSubject(folder.room)
+    if (!folder.members[account]) {
+      // Ended already - by another device of theirs, or by the owner.
+      if (folder.revoked[account]) return
+      throw new HubError(404, 'not shared with you')
+    }
+    const opens = await this.loadNotes(id)
+    try {
+      if (!folder.members[account]) return
+      const notes = this.notesIn(id)
+      const now = Date.now()
+      const keeps = this.keepsFor(notes, [account], 'detached', now)
+      this.dropMember(folder, notes, account, now)
+      await this.finish([folder, ...notes], keeps, 'the share ended')
+      this.notify(account, 'folder-removed', { folderId: id, owner: folder.owner })
+      this.notify(folder.owner, 'folder-changed', { folderId: id, owner: folder.owner })
+    } finally {
+      this.release(opens)
+    }
+  }
+
+  /** A member leaves the folder - deleted it - and keeps nothing of it. */
+  async leaveFolder(account: string, folderId: unknown): Promise<void> {
+    const folder = this.folderOf(folderId)
+    if (folder.owner === account) throw new HubError(400, 'the owner cannot leave their own folder')
+    if (!folder.members[account]) return
+    const id = roomSubject(folder.room)
+    const notes = this.notesIn(id)
+    this.dropMember(folder, notes, account, Date.now())
+    await this.finish([folder, ...notes], [], 'the share ended')
+    this.notify(folder.owner, 'folder-changed', { folderId: id, owner: folder.owner })
+  }
+
+  /**
+   * The owner ends the folder's share for everyone, who each keep the folder
+   * as their own. Every note goes back under the owner's own key.
+   */
+  async endFolder(owner: string, folderId: unknown, request: FolderEndRequest): Promise<void> {
+    const folderOpen = await this.ownedFolder(owner, folderId)
+    const folder = folderOpen.log.meta
+    const id = roomSubject(folder.room)
+    const opens = await this.loadNotes(id)
+    try {
+      const notes = this.notesIn(id)
+      this.checkNoteRotations(notes, request.notes)
+      const now = Date.now()
+      const members = Object.keys(folder.members)
+      const keeps = this.keepsFor(notes, members, 'revoked', now)
+      for (const account of members) this.dropMember(folder, notes, account, now)
+      // Nobody gets the folder's next key: whatever is written into it from now on stays the owner's.
+      this.moveEpoch(folder, folder.epoch + 1)
+      for (const meta of notes) {
+        delete meta.folder
+        this.moveNote(meta, request.notes?.[roomSubject(meta.room)])
+      }
+      await this.finish([folder, ...notes], keeps, 'the share ended')
+      for (const account of members) this.notify(account, 'folder-removed', { folderId: id, owner })
+    } finally {
+      this.release(opens)
+    }
+  }
+
   // --- keys and log --------------------------------------------------------------
 
   private async readable(account: string, room: string): Promise<{ open: OpenRoom; access: Access }> {
@@ -642,7 +1229,8 @@ export class RoomHub {
    * note's owner detach.
    */
   async attachBlobs(account: string, room: string, request: AttachBlobsRequest): Promise<void> {
-    if (roomKind(room) !== 'doc') throw new HubError(400, 'only notes carry attachments')
+    const kind = roomKind(room)
+    if (kind !== 'doc' && kind !== 'fld') throw new HubError(400, 'only notes and shared folders carry attachments')
     const { open, access } = await this.readable(account, room)
     const toAttach = Array.isArray(request.attach) ? request.attach : []
     const toDetach = Array.isArray(request.detach) ? request.detach : []
@@ -693,7 +1281,9 @@ export class RoomHub {
   async keys(account: string, room: string): Promise<KeysResponse> {
     const { open, access } = await this.readable(account, room)
     const meta = open.log.meta
-    return { room, epoch: meta.epoch, keys: access.owner ? {} : { ...meta.sealedKeys[account] } }
+    const response: KeysResponse = { room, epoch: meta.epoch, keys: access.owner ? {} : { ...meta.sealedKeys[account] } }
+    if (meta.folder) response.folder = { id: meta.folder.id, epochs: { ...meta.folder.epochs } }
+    return response
   }
 
   /** What someone with `access` may read: a starting snapshot and the frames after it. */
@@ -760,7 +1350,9 @@ export class RoomHub {
   private belongsTo(meta: RoomMeta, account: string, vault: string): boolean {
     const kind = roomKind(meta.room)
     if (kind === 'idx' || kind === 'set') return meta.owner === account && roomSubject(meta.room) === vault
-    return (meta.owner === account && meta.vaultId === vault) || meta.members[account]?.acceptedInto === vault
+    if ((meta.owner === account && meta.vaultId === vault) || meta.members[account]?.acceptedInto === vault) return true
+    // A note of a folder someone shared into the vault.
+    return meta.folder !== undefined && this.metas.get(folderRoom(meta.folder.id))?.members[account]?.acceptedInto === vault
   }
 
   async inVault(account: string, vault: string, room: string): Promise<boolean> {
@@ -905,14 +1497,18 @@ export class RoomHub {
     // Its own devices learn they are signed out, instead of being told every
     // note of theirs was revoked.
     this.disconnect(account)
-    for (const meta of Array.from(this.metas.values())) {
+    // Notes before folders: a note's participants through its folder are
+    // found in the folder, which must still be there when the note closes.
+    const metas = Array.from(this.metas.values())
+    const folders = metas.filter((meta) => roomKind(meta.room) === 'fld')
+    for (const meta of [...metas.filter((other) => roomKind(other.room) !== 'fld'), ...folders]) {
       if (meta.owner === account) {
         await this.closeOwnerless(meta, now)
-      } else if (meta.members[account] || meta.sealedKeys[account]) {
-        const open = await this.load(meta.room)
+      } else if (meta.members[account] || meta.sealedKeys[account] || meta.folder?.from?.[account] !== undefined) {
         delete meta.members[account]
         delete meta.sealedKeys[account]
-        await open?.log.saveMeta()
+        if (meta.folder?.from) delete meta.folder.from[account]
+        await this.saveMeta(meta)
       }
     }
     await this.forks.ownerRemoved(account, now)
@@ -924,10 +1520,17 @@ export class RoomHub {
 
   /** A room whose owner's account was removed: its participants keep their part, then it goes. */
   private async closeOwnerless(meta: RoomMeta, now: number): Promise<void> {
+    const isFolder = roomKind(meta.room) === 'fld'
+    // A note's participants through its folder too; a folder's own room keeps
+    // nothing - its members fork the notes, which they have where they lie.
+    const folder = meta.folder ? this.metas.get(folderRoom(meta.folder.id)) : undefined
+    const participants = Array.from(new Set([...Object.keys(meta.members), ...Object.keys(folder?.members ?? {})]))
     const open = await this.load(meta.room)
     if (open) {
-      for (const member of Object.keys(meta.members)) {
-        await this.keepSafely(this.keepForFork(open, member, 'owner-removed', now), meta.room, member)
+      if (!isFolder) {
+        for (const member of participants) {
+          await this.keepSafely(this.keepForFork(open, member, 'owner-removed', now), meta.room, member)
+        }
       }
       for (const subscriber of open.subscribers) subscriber.sendRevoked(meta.room, "the owner's account was removed")
       open.subscribers.clear()
@@ -937,8 +1540,9 @@ export class RoomHub {
     this.rooms.delete(meta.room)
     this.metas.delete(meta.room)
     this.forgetAttachments(meta)
-    for (const member of Object.keys(meta.members)) {
-      this.notify(member, 'share-removed', { docId: roomSubject(meta.room), owner: meta.owner })
+    for (const member of participants) {
+      if (isFolder) this.notify(member, 'folder-removed', { folderId: roomSubject(meta.room), owner: meta.owner })
+      else this.notify(member, 'share-removed', { docId: roomSubject(meta.room), owner: meta.owner })
     }
   }
 

@@ -1,8 +1,9 @@
-// Version 4: a subscribe says whether the room may be created, and the server
-// knows accounts only by id - no names, no salts per name. Version 3: the
-// server stores an ordered log of encrypted frames and can no longer read a
-// document. Version 2 relayed plaintext Yjs sync messages.
-export const PROTOCOL_VERSION = 4
+// Version 5: shared folders - rooms of kind `fld`, and a subscribe may name the
+// folder a new note is created in. Version 4: a subscribe says whether the room
+// may be created, and the server knows accounts only by id - no names, no salts
+// per name. Version 3: the server stores an ordered log of encrypted frames and
+// can no longer read a document. Version 2 relayed plaintext Yjs sync messages.
+export const PROTOCOL_VERSION = 5
 export const DEFAULT_SERVER_PORT = 1234
 
 export type ShareRole = 'read' | 'write'
@@ -34,6 +35,16 @@ export const SHARED_BASES_FIELD = 'sharedBases'
 // and the note's sharing settings - for now only `attachments: boolean`.
 export const NOTE_ATTACHMENTS_FIELD = 'attachments'
 export const NOTE_SHARE_FIELD = 'share'
+// In the vault index document: folderId -> VaultFolder, the shared folders this
+// vault owns or holds. A map of its own, like the attachments.
+export const FOLDERS_FIELD = 'folders'
+// In a shared folder's own document, with paths relative to the folder:
+// docId -> FolderNote, fileId -> FolderFile, `${fileId}:${hash}` ->
+// AttachmentVersion, and the folder's settings (`name`, `linkedFiles`).
+export const FOLDER_NOTES_FIELD = 'notes'
+export const FOLDER_FILES_FIELD = 'files'
+export const FOLDER_VERSIONS_FIELD = 'versions'
+export const FOLDER_META_FIELD = 'meta'
 
 /**
  * Blobs are encrypted in chunks of this much plaintext, each with its own IV
@@ -69,13 +80,37 @@ export function settingsRoom(vaultId: string): string {
   return `set:${vaultId}`
 }
 
-export type RoomKind = 'doc' | 'idx' | 'set'
+/**
+ * A shared folder's structure: which notes and files are in it, where. Global
+ * like a note's room - everyone in the folder reaches it from their own vault.
+ */
+export function folderRoom(folderId: string): string {
+  return `fld:${folderId}`
+}
+
+export type RoomKind = 'doc' | 'idx' | 'set' | 'fld'
 
 export function roomKind(room: string): RoomKind | null {
   if (room.startsWith('doc:')) return 'doc'
   if (room.startsWith('idx:')) return 'idx'
   if (room.startsWith('set:')) return 'set'
+  if (room.startsWith('fld:')) return 'fld'
   return null
+}
+
+/**
+ * Whether a note's epochs are tied to its folder's in order: a later epoch of
+ * the note never to an earlier epoch of the folder. A server tying a new epoch
+ * to an old one would have everyone encrypt under a key someone revoked holds.
+ */
+export function tiesAscend(ties: Record<string, number>): boolean {
+  let last = -1
+  for (const epoch of Object.keys(ties).map(Number).sort((a, b) => a - b)) {
+    const folderEpoch = ties[String(epoch)]
+    if (typeof folderEpoch !== 'number' || !Number.isInteger(folderEpoch) || folderEpoch < last) return false
+    last = folderEpoch
+  }
+  return true
 }
 
 export function isDocRoom(room: string): boolean {
@@ -103,7 +138,9 @@ export const MUX = {
   // client -> server
   /**
    * room, varUint afterSeq, varUint create (1: a missing room is created and
-   * owned by the caller; 0: it is answered with `denied` "missing")
+   * owned by the caller; 0: it is answered with `denied` "missing"), and
+   * optionally varString folder: a missing note is created in that shared
+   * folder, owned by the folder's owner - if the caller may write in it.
    */
   subscribe: 1,
   /** room */
@@ -171,6 +208,8 @@ export const API = {
   accounts: '/accounts',
   contacts: '/contacts',
   shares: '/shares',
+  /** Shared folders: sharing, notes joining and leaving, revoking, ending. */
+  folders: '/folders',
   /** Shares that ended, kept for the participant until one of their devices forked. */
   forks: '/forks',
   keys: '/keys',

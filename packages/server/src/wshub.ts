@@ -167,7 +167,10 @@ export function setupVaultConnection(ws: WebSocket, account: string, vaultId: st
       switch (type) {
         case MUX.subscribe: {
           const afterSeq = decoding.readVarUint(decoder)
-          await hub.subscribe(connection, room, afterSeq, decoding.readVarUint(decoder) === 1)
+          const create = decoding.readVarUint(decoder) === 1
+          // A plugin before shared folders sends no folder.
+          const folder = decoding.hasContent(decoder) ? decoding.readVarString(decoder) : undefined
+          await hub.subscribe(connection, room, afterSeq, create, folder)
           return
         }
         case MUX.unsubscribe:

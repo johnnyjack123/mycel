@@ -29,9 +29,19 @@ import {
   type InboxResponse,
   type RedeemRequest,
   type DocRequest,
+  type FolderAcceptRequest,
+  type FolderEndRequest,
+  type FolderJoinRequest,
+  type FolderLeaveRequest,
+  type FolderRevokeRequest,
+  type FolderRoleRequest,
+  type FolderRotation,
+  type FolderShareRequest,
+  type FolderStateResponse,
   type ForkDoneRequest,
   type ForksResponse,
   type ImportRequest,
+  type IncomingFoldersResponse,
   type IncomingSharesResponse,
   type AccountBundle,
   type LoginRequest,
@@ -51,7 +61,8 @@ import {
   type RoleRequest,
   type SessionResponse,
   type ShareRequest,
-  type SnapshotRequest
+  type SnapshotRequest,
+  type StartSnapshotRequest
 } from '@obsidian-connect/shared'
 import { AccountError, isAccountId, sessionOf, type AccountStore, type StoredAccount } from './accounts.js'
 import type { TokenService, TokenSession } from './auth.js'
@@ -71,6 +82,10 @@ interface AccountParams {
 
 interface DocParams {
   docId: string
+}
+
+interface FolderParams {
+  folderId: string
 }
 
 /** Whose store, which vault: every blob route names both, so reading someone else's store later needs no new routes. */
@@ -598,6 +613,46 @@ export function createHttpApp(
     return { ok: true }
   })
 
+  // --- shared folders ----------------------------------------------------------------
+
+  app.post(API.folders, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    await hub.shareFolder(accountId, request.body as FolderShareRequest)
+    return { ok: true }
+  })
+
+  app.get(`${API.folders}/incoming`, async (request, reply): Promise<IncomingFoldersResponse | undefined> => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return { folders: await hub.incomingFolders(accountId) }
+  })
+
+  app.get<{ Params: FolderParams }>(`${API.folders}/:folderId`, async (request, reply): Promise<FolderStateResponse | undefined> => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return hub.folderState(accountId, request.params.folderId)
+  })
+
+  /** One route per thing done to a folder, each taking its own request. */
+  const folderAction = <T>(path: string, act: (accountId: string, folderId: string, body: T) => Promise<void>): void => {
+    app.post<{ Params: FolderParams }>(`${API.folders}/:folderId/${path}`, async (request, reply) => {
+      const accountId = await user(request, reply)
+      if (!accountId) return undefined
+      await act(accountId, request.params.folderId, (request.body ?? {}) as T)
+      return { ok: true }
+    })
+  }
+  folderAction<FolderRotation>('rotate', (account, folderId, body) => hub.rotateFolder(account, folderId, body))
+  folderAction<FolderJoinRequest>('notes/join', (account, folderId, body) => hub.joinNote(account, folderId, body))
+  folderAction<FolderLeaveRequest>('notes/leave', (account, folderId, body) => hub.leaveNote(account, folderId, body))
+  folderAction<FolderRevokeRequest>('revoke', (account, folderId, body) => hub.revokeFolder(account, folderId, body))
+  folderAction<FolderRoleRequest>('role', (account, folderId, body) => hub.setFolderRole(account, folderId, body))
+  folderAction<Partial<FolderAcceptRequest>>('accept', (account, folderId, body) => hub.acceptFolder(account, folderId, body.vaultId))
+  folderAction<unknown>('detach', (account, folderId) => hub.detachFolder(account, folderId))
+  folderAction<unknown>('leave', (account, folderId) => hub.leaveFolder(account, folderId))
+  folderAction<FolderEndRequest>('end', (account, folderId, body) => hub.endFolder(account, folderId, body))
+
   // --- shares that ended -----------------------------------------------------------
 
   app.get(API.forks, async (request, reply): Promise<ForksResponse | undefined> => {
@@ -653,6 +708,13 @@ export function createHttpApp(
     const accountId = await user(request, reply)
     if (!accountId) return undefined
     await hub.snapshot(accountId, request.params.room, request.body as SnapshotRequest)
+    return { ok: true }
+  })
+
+  app.post<{ Params: RoomParams }>(`${API.log}/:room/start`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    await hub.startSnapshot(accountId, request.params.room, request.body as StartSnapshotRequest)
     return { ok: true }
   })
 

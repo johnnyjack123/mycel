@@ -1302,6 +1302,347 @@ try {
     await app.close()
   }
 
+  // --- shared folders -----------------------------------------------------------------------
+  // A folder is a room of its own; its members reach every note in it, and
+  // its epoch moves every note's along (docs/PHASE7.md).
+  {
+    const register = async (): Promise<{ account: string; vault: string }> => {
+      const account = (await accounts.register(keyMaterial(), 'open')).accountId
+      return { account, vault: (await accounts.addVault(account, hexId(), b64(32), b64(48))).vaultId }
+    }
+    const { account: olga, vault: olgaVault } = await register()
+    const { account: pia, vault: piaVault } = await register()
+    const { account: quinn, vault: quinnVault } = await register()
+    const { account: rex, vault: rexVault } = await register()
+    const { account: sam, vault: samVault } = await register()
+    for (const other of [pia, quinn, rex]) await contacts.pair(olga, other)
+    const b = (value: string): string => Buffer.from(value).toString('base64')
+    let o1 = new Client(olga, olgaVault)
+    let p1 = new Client(pia, piaVault)
+    let q1 = new Client(quinn, quinnVault)
+    let r1 = new Client(rex, rexVault)
+    const s1 = new Client(sam, samVault)
+    for (const client of [o1, p1, q1, r1, s1]) hub.attach(client)
+    const kinds = (messages: Message[], room: string): string => messages.filter((m) => m.room === room).map((m) => m.type).join()
+
+    const folderId = hexId()
+    const fld = `fld:${folderId}`
+    await hub.subscribe(o1, fld, 0)
+    check(o1.take().at(-1)?.type === 'caughtUp', 'the owner creates a folder room by subscribing to it')
+    check(existsSync(join(dataDir, 'users', olga, olgaVault, 'folders', folderId, 'meta.json')), "it is kept in the owner's vault, under folders/")
+    await hub.push(o1, fld, 1, 0, bytes('folder index'))
+    o1.take()
+    await hub.subscribe(s1, fld, 0, false)
+    check(s1.take()[0]?.type === 'denied', 'nobody else reads it')
+
+    const n1 = hexId()
+    const room1 = `doc:${n1}`
+    await hub.subscribe(o1, room1, 0)
+    await hub.push(o1, room1, 1, 0, bytes('n1 before'))
+    o1.take()
+    check((await status(() => hub.joinNote(pia, folderId, { docId: n1, epoch: 1, folderEpoch: 0, keys: {} }))) === 403, 'only the owner puts a note into the folder')
+    check((await status(() => hub.joinNote(olga, folderId, { docId: n1, epoch: 0, folderEpoch: 0, keys: {} }))) === 409, 'a note joins in its next epoch')
+    await hub.joinNote(olga, folderId, { docId: n1, epoch: 1, folderEpoch: 0, keys: {} })
+    check(o1.take().some((m) => m.type === 'rekey' && m.room === room1 && m.epoch === 1), 'a note joining moves to a new epoch')
+    check((await hub.keys(olga, room1)).folder?.epochs['1'] === 0, "tied to the folder's epoch")
+    await hub.push(o1, room1, 2, 1, bytes('n1 in folder'))
+    o1.take()
+
+    // With history: the folder's keys, and the note's from before it joined.
+    check(
+      (await status(() => hub.shareFolder(olga, { folderId, account: sam, role: 'write', withHistory: true, title: 't', keys: { '0': 'x' } }))) === 403,
+      'a folder is shared with contacts only'
+    )
+    check(
+      (await status(() => hub.shareFolder(olga, { folderId, account: pia, role: 'write', withHistory: true, title: 't', keys: { '0': 'f0-pia' } }))) === 400,
+      "with history, the keys of a note's epochs from before it joined must come along"
+    )
+    await hub.shareFolder(olga, {
+      folderId,
+      account: pia,
+      role: 'write',
+      withHistory: true,
+      title: 'sealed name',
+      keys: { '0': 'f0-pia' },
+      noteKeys: { [n1]: { '0': 'n1e0-pia' } }
+    })
+    check(p1.take().some((m) => m.type === 'notify' && m.kind === 'folder-added'), 'the person is told')
+    check((await hub.incomingFolders(pia)).length === 1 && (await hub.incoming(pia)).length === 0, 'a folder waits to be accepted, apart from notes')
+    await hub.acceptFolder(pia, folderId, piaVault)
+    check((await hub.incomingFolders(pia)).length === 0, 'and is accepted')
+    await hub.subscribe(p1, room1, 0, false)
+    check(
+      p1.take().filter((m) => m.type === 'frame').map((m) => m.data).join() === 'n1 before,n1 in folder',
+      'a member reads a note of the folder, with its history'
+    )
+    const piaKeys = await hub.keys(pia, room1)
+    check(piaKeys.keys['0'] === 'n1e0-pia' && piaKeys.folder?.epochs['1'] === 0, 'and gets its keys: sealed, and tied to the folder')
+    check((await hub.keys(pia, fld)).keys['0'] === 'f0-pia', "the folder's key is sealed to them once")
+    await hub.subscribe(p1, fld, 0, false)
+    check(kinds(p1.take(), fld) === 'frame,caughtUp', 'they read the folder room')
+    await hub.push(p1, room1, 1, 1, bytes('pia writes'))
+    check(p1.take()[0]?.type === 'ack' && o1.take()[0]?.data === 'pia writes', 'a writer of the folder writes in its notes')
+
+    // A note a writer creates in the folder is the owner's.
+    const n2 = hexId()
+    const room2 = `doc:${n2}`
+    await hub.subscribe(q1, room2, 0, true, folderId)
+    check(q1.take()[0]?.reason === 'not a folder you may write in', 'nobody outside the folder creates a note in it')
+    await hub.subscribe(p1, room2, 0, true, folderId)
+    check(p1.take().at(-1)?.type === 'caughtUp', 'a writer creates one')
+    check(existsSync(join(dataDir, 'users', olga, olgaVault, 'notes', n2, 'meta.json')), "in the owner's vault")
+    check((await hub.members(pia, n2)).owner === olga, 'owned by the owner')
+    check((await hub.keys(olga, room2)).folder?.epochs['0'] === 0, "its first epoch tied to the folder's")
+    await hub.push(p1, room2, 1, 0, bytes('n2 by pia'))
+    p1.take()
+    await hub.subscribe(o1, room2, 0)
+    check(o1.take()[0]?.data === 'n2 by pia', 'the owner reads it')
+    const piaBackup = (await hub.backupRooms(pia, piaVault)).map((entry) => entry.room)
+    check([fld, room1, room2].every((room) => piaBackup.includes(room)), "the folder and its notes belong to the member's vault for backups", piaBackup)
+
+    // Without history: the folder moves to a new epoch, every room gets a
+    // starting point, and only then is the person added.
+    check(
+      (await status(() => hub.shareFolder(olga, { folderId, account: quinn, role: 'read', withHistory: false, title: 't', keys: { '0': 'f0-q' } }))) === 409,
+      'without history, nobody is added before every room has a starting point'
+    )
+    check((await status(() => hub.rotateFolder(olga, folderId, { epoch: 1, keys: {}, notes: {} }))) === 400, 'a rotation seals the next key for every member')
+    await hub.rotateFolder(olga, folderId, { epoch: 1, keys: { [pia]: 'f1-pia' }, notes: {} })
+    const moved = p1.take()
+    check(
+      [fld, room1, room2].every((room) => moved.some((m) => m.type === 'rekey' && m.room === room)),
+      'the folder moves every note along',
+      moved
+    )
+    check(
+      JSON.stringify((await hub.keys(olga, room1)).folder?.epochs) === '{"1":0,"2":1}' && JSON.stringify((await hub.keys(olga, room2)).folder?.epochs) === '{"0":0,"1":1}',
+      "each note's new epoch tied to the folder's new one"
+    )
+    await hub.push(p1, room1, 2, 1, bytes('old epoch'))
+    check(p1.take()[0]?.type === 'rekey', 'a push under the old epoch is refused')
+    check((await status(() => hub.startSnapshot(pia, room1, { epoch: 2, uptoSeq: 3, data: b('x') }))) === 403, 'only the owner sets starting points')
+    check((await status(() => hub.startSnapshot(olga, room1, { epoch: 1, uptoSeq: 3, data: b('x') }))) === 409, 'a starting point is in the current epoch')
+    await hub.startSnapshot(olga, fld, { epoch: 1, uptoSeq: 1, data: b('fld start') })
+    await hub.startSnapshot(olga, room1, { epoch: 2, uptoSeq: 3, data: b('n1 start') })
+    check(
+      (await status(() => hub.shareFolder(olga, { folderId, account: quinn, role: 'read', withHistory: false, title: 't', keys: { '1': 'f1-q' } }))) === 409,
+      'one room without a starting point is one too many'
+    )
+    await hub.startSnapshot(olga, room2, { epoch: 1, uptoSeq: 1, data: b('n2 start') })
+    check(
+      (await status(() => hub.shareFolder(olga, { folderId, account: quinn, role: 'read', withHistory: false, title: 't', keys: { '0': 'f0-q' } }))) === 400,
+      "without history, the person gets the folder's current key"
+    )
+    await hub.shareFolder(olga, { folderId, account: quinn, role: 'read', withHistory: false, title: 't', keys: { '1': 'f1-q' } })
+    await hub.acceptFolder(quinn, folderId, quinnVault)
+    q1.take()
+    await hub.subscribe(q1, room1, 0, false)
+    const quinnStart = q1.take()
+    check(
+      quinnStart[0]?.type === 'snapshot' && quinnStart[0].data === 'n1 start' && !quinnStart.some((m) => m.type === 'frame'),
+      'without history, a member starts at the snapshot and sees no earlier frame',
+      quinnStart
+    )
+    await hub.push(o1, room1, 3, 2, bytes('after quinn'))
+    o1.take()
+    check(q1.take()[0]?.data === 'after quinn', 'and reads what comes after')
+    await hub.push(q1, room1, 1, 2, bytes('quinn writes'))
+    check(q1.take()[0]?.reason === 'read-only', 'a reader of the folder cannot write')
+    await hub.subscribe(q1, `doc:${hexId()}`, 0, true, folderId)
+    check(q1.take()[0]?.type === 'denied', 'nor create a note in it')
+
+    // A note moved in while the folder is shared starts there at its joining.
+    const n3 = hexId()
+    const room3 = `doc:${n3}`
+    await hub.subscribe(o1, room3, 0)
+    await hub.push(o1, room3, 1, 0, bytes('n3 private'))
+    o1.take()
+    check((await status(() => hub.joinNote(olga, folderId, { docId: n3, epoch: 1, folderEpoch: 1, keys: {} }))) === 400, "a shared folder's members need a starting point")
+    check(
+      (await status(() => hub.joinNote(olga, folderId, { docId: n3, epoch: 1, folderEpoch: 0, keys: {}, snapshot: { uptoSeq: 1, data: b('x') } }))) === 409,
+      "and the folder's current epoch"
+    )
+    await hub.joinNote(olga, folderId, { docId: n3, epoch: 1, folderEpoch: 1, keys: {}, snapshot: { uptoSeq: 1, data: b('n3 joins') } })
+    p1.take()
+    await hub.subscribe(p1, room3, 0, false)
+    const piaN3 = p1.take()
+    check(piaN3[0]?.data === 'n3 joins' && !piaN3.some((m) => m.data === 'n3 private'), 'its history in the folder starts where it joined, with history or not', piaN3)
+
+    // A server restarted keeps folders, ties and who reaches what.
+    await hub.shutdown()
+    hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts, contacts, new ForkStore(dataDir))
+    o1 = new Client(olga, olgaVault)
+    p1 = new Client(pia, piaVault)
+    q1 = new Client(quinn, quinnVault)
+    r1 = new Client(rex, rexVault)
+    for (const client of [o1, p1, q1, r1]) hub.attach(client)
+    for (const room of [fld, room1, room2, room3]) {
+      await hub.subscribe(o1, room, 0)
+      await hub.subscribe(p1, room, 0, false)
+      await hub.subscribe(q1, room, 0, false)
+    }
+    check(
+      [p1, q1].every((client) => client.take().filter((m) => m.type === 'caughtUp').length === 4),
+      'after a restart, members still reach the folder and every note in it'
+    )
+    check(JSON.stringify((await hub.keys(quinn, room2)).folder?.epochs) === '{"0":0,"1":1}', 'and the ties are kept')
+    o1.take()
+
+    // A note shared on its own as well: someone else, and the same person.
+    await hub.share(olga, { docId: n1, account: rex, role: 'read', withHistory: true, keys: { '0': 'n1e0-rex', '1': 'n1e1-rex', '2': 'n1e2-rex' }, title: 't' })
+    await hub.accept(rex, n1, rexVault)
+    await hub.subscribe(r1, room1, 0, false)
+    r1.take()
+    check(
+      (await status(() => hub.revokeFolder(olga, folderId, { account: pia, rotation: { epoch: 2, keys: { [quinn]: 'f2-q' }, notes: {} } }))) === 409,
+      "a folder's epoch moving carries the next key of a note for its own members"
+    )
+    await hub.share(olga, { docId: n2, account: quinn, role: 'write', withHistory: true, keys: { '0': 'n2e0-q', '1': 'n2e1-q' }, title: 't' })
+    await hub.accept(quinn, n2, quinnVault)
+    await hub.push(q1, room2, 2, 1, bytes('quinn writes n2'))
+    check(q1.take().some((m) => m.type === 'ack'), 'reached both ways, the higher role counts')
+
+    // Revoking a member of the folder.
+    for (const client of [o1, p1, q1, r1]) client.take()
+    await hub.revokeFolder(olga, folderId, {
+      account: pia,
+      rotation: { epoch: 2, keys: { [quinn]: 'f2-q' }, notes: { [n1]: { epoch: 3, keys: { [rex]: 'n1e3-rex' } }, [n2]: { epoch: 2, keys: { [quinn]: 'n2e2-q' } } } }
+    })
+    const piaTold = p1.take()
+    check(
+      [fld, room1, room2, room3].every((room) => piaTold.some((m) => m.type === 'revoked' && m.room === room)) &&
+        piaTold.some((m) => m.type === 'notify' && m.kind === 'folder-removed'),
+      'the person revoked hears it in the folder and every note',
+      piaTold
+    )
+    check(q1.take().some((m) => m.type === 'rekey' && m.room === room1 && m.epoch === 3), 'everyone staying moves on')
+    check(r1.take().some((m) => m.type === 'rekey' && m.room === room1) && (await hub.keys(rex, room1)).keys['3'] === 'n1e3-rex', 'someone in one note on its own too')
+    await hub.subscribe(p1, room2, 0, false)
+    check(p1.take()[0]?.type === 'revoked', 'a later subscribe hears it ended')
+    await hub.subscribe(p1, `doc:${hexId()}`, 0, true, folderId)
+    check(p1.take()[0]?.type === 'denied', 'and nothing is created in the folder any more')
+    check((await status(() => hub.folderState(pia, folderId))) === 403, 'the folder is closed to them')
+    check(
+      (await hub.forksOf(pia)).filter((fork) => [n1, n2, n3].includes(fork.docId)).length === 3,
+      'they keep every note of it, the ones they created included'
+    )
+    const piaN2 = await hub.fork(pia, n2)
+    check(
+      piaN2.folder?.keys['0'] === 'f0-pia' && piaN2.folder.keys['1'] === 'f1-pia' && piaN2.folder.epochs['1'] === 1 &&
+        piaN2.log?.frames.map((frame) => text(Buffer.from(frame.data, 'base64'))).join() === 'n2 by pia,quinn writes n2',
+      "with what they could read, and the folder's keys to read it",
+      piaN2
+    )
+    check((await hub.fork(pia, n1)).log?.frames.length === 4, 'up to the moment they were revoked')
+
+    // Someone in a note on their own and through the folder stays when one way ends.
+    await hub.revoke(olga, { docId: n2, account: quinn, rotation: { epoch: 3, keys: {}, folderEpoch: 2 } })
+    const stayed = q1.take()
+    check(
+      !stayed.some((m) => m.type === 'revoked') && stayed.some((m) => m.kind === 'share-changed'),
+      'revoked from a note they also reach through its folder, nothing ends for them',
+      stayed
+    )
+    check((await status(() => hub.revoke(olga, { docId: n1, account: rex, rotation: { epoch: 4, keys: {} } }))) === 409, "a note's new epoch in a folder says which folder epoch it derived from")
+    await hub.push(q1, room2, 3, 3, bytes('still writing'))
+    check(q1.take()[0]?.reason === 'read-only', 'and the folder role is what is left')
+
+    // The owner takes a note out of the folder.
+    await hub.leaveNote(olga, folderId, { docId: n3, rotation: { epoch: 3, keys: {} } })
+    const outTold = q1.take()
+    check(
+      outTold.some((m) => m.type === 'revoked' && m.room === room3) && outTold.some((m) => m.kind === 'share-removed'),
+      'a note leaving the folder ends for its members',
+      outTold
+    )
+    check((await hub.keys(olga, room3)).folder === undefined, "it is the owner's own again")
+    check((await hub.fork(quinn, n3)).folder?.keys['2'] === 'f2-q', 'and the members keep it, with the keys to read it')
+
+    // A member keeps the whole folder as their own.
+    const state = await hub.folderState(olga, folderId)
+    check(
+      state.members.map((member) => member.account).join() === quinn && state.notes?.length === 2,
+      'the owner sees who has the folder and which notes it holds',
+      state
+    )
+    await hub.detachFolder(quinn, folderId)
+    check(q1.take().some((m) => m.type === 'revoked' && m.room === fld), 'a member making their own copy leaves the folder')
+    check((await hub.forksOf(quinn)).some((fork) => fork.docId === n1 && fork.reason === 'detached'), 'with what they read of each note')
+    check((await status(() => hub.detachFolder(quinn, folderId))) === 200, 'a second device detaching too is no error')
+
+    // The owner ends the share for everyone.
+    await hub.shareFolder(olga, {
+      folderId,
+      account: pia,
+      role: 'write',
+      withHistory: true,
+      title: 't',
+      keys: { '0': 'f0-pia', '1': 'f1-pia', '2': 'f2-pia' },
+      noteKeys: { [n1]: { '0': 'n1e0-pia' } }
+    })
+    await hub.acceptFolder(pia, folderId, piaVault)
+    await hub.subscribe(p1, room1, 0, false)
+    p1.take()
+    check(
+      (await status(() => hub.endFolder(olga, folderId, { notes: {} }))) === 409,
+      'ending moves every note to the owner alone, with the next key for its own members'
+    )
+    await hub.endFolder(olga, folderId, { notes: { [n1]: { epoch: 4, keys: { [rex]: 'n1e4-rex' } } } })
+    const ended = p1.take()
+    check(ended.some((m) => m.type === 'revoked' && m.room === room1) && ended.some((m) => m.kind === 'folder-removed'), 'every member hears it ended', ended)
+    check((await hub.keys(olga, room1)).folder === undefined && (await hub.keys(rex, room1)).keys['4'] === 'n1e4-rex', "its notes are the owner's own again, single shares go on")
+    check((await hub.folderState(olga, folderId)).members.length === 0, 'nobody is left in the folder')
+    check((await hub.forksOf(pia)).filter((fork) => fork.docId === n1).length === 1, 'and the member keeps it')
+
+    // A member who left keeps nothing; an owner removed ends everything.
+    const { account: tom, vault: tomVault } = await register()
+    const { account: uma, vault: umaVault } = await register()
+    await contacts.pair(tom, uma)
+    const t1 = new Client(tom, tomVault)
+    const u1 = new Client(uma, umaVault)
+    hub.attach(t1)
+    hub.attach(u1)
+    const tomFolder = hexId()
+    const tomNote = hexId()
+    await hub.subscribe(t1, `fld:${tomFolder}`, 0)
+    await hub.subscribe(t1, `doc:${tomNote}`, 0)
+    await hub.push(t1, `doc:${tomNote}`, 1, 0, bytes('tom writes'))
+    await hub.joinNote(tom, tomFolder, { docId: tomNote, epoch: 1, folderEpoch: 0, keys: {} })
+    await hub.shareFolder(tom, { folderId: tomFolder, account: uma, role: 'write', withHistory: true, title: 't', keys: { '0': 'k' }, noteKeys: { [tomNote]: { '0': 'n' } } })
+    await hub.acceptFolder(uma, tomFolder, umaVault)
+    await hub.subscribe(u1, `doc:${tomNote}`, 0, false)
+    u1.take()
+    await hub.leaveFolder(uma, tomFolder)
+    check((await hub.folderState(tom, tomFolder)).members.length === 0 && u1.take().some((m) => m.type === 'revoked'), 'a member leaving is gone from it')
+    check(!(await hub.forksOf(uma)).some((fork) => fork.docId === tomNote), 'and keeps nothing on the server')
+    await hub.shareFolder(tom, { folderId: tomFolder, account: uma, role: 'write', withHistory: true, title: 't', keys: { '0': 'k' }, noteKeys: { [tomNote]: { '0': 'n' } } })
+    await hub.acceptFolder(uma, tomFolder, umaVault)
+    await accounts.remove(tom)
+    await hub.sweep()
+    const umaTold = u1.take()
+    check(umaTold.some((m) => m.kind === 'folder-removed') && umaTold.some((m) => m.kind === 'share-removed'), "an owner removed ends their folder for its members", umaTold)
+    const umaKept = await hub.fork(uma, tomNote)
+    check(umaKept.reason === 'owner-removed' && umaKept.folder?.keys['0'] === 'k' && umaKept.log?.frames.length === 1, 'who keep its notes', umaKept)
+    for (const client of [o1, p1, q1, r1, s1, t1, u1]) hub.detach(client)
+
+    // The routes.
+    const tokens = new TokenService('rooms-selftest', 3_600)
+    const store = new BlobStore(dataDir, { maxFileBytes: BLOB_CHUNK_BYTES, quotaBytes: null, purgeGraceMs: 0 })
+    const app = createHttpApp(loadConfig({}), tokens, accounts, hub, contacts, store, { logger: false, paceMs: 0, maxFailures: 1_000 })
+    const as = async (account: string): Promise<Record<string, string>> => ({
+      authorization: `Bearer ${(await tokens.issue(account, sessionOf((await accounts.get(account)) as StoredAccount))).token}`
+    })
+    const incomingFolders = await app.inject({ method: 'GET', url: '/folders/incoming', headers: await as(pia) })
+    check(incomingFolders.statusCode === 200 && Array.isArray(incomingFolders.json().folders), 'incoming folders are listed', incomingFolders.body)
+    const folderState = await app.inject({ method: 'GET', url: `/folders/${folderId}`, headers: await as(olga) })
+    check(folderState.statusCode === 200 && folderState.json().owner === olga, "a folder's state is read by its owner", folderState.body)
+    const notYours = await app.inject({ method: 'POST', url: `/folders/${folderId}/revoke`, headers: await as(pia), payload: { account: quinn } })
+    check(notYours.statusCode === 403, 'and changed by nobody else', notYours.body)
+    const start = await app.inject({ method: 'POST', url: `/log/${room1}/start`, headers: await as(olga), payload: { epoch: 0, uptoSeq: 1, data: b('x') } })
+    check(start.statusCode === 400, 'a starting point is only for a note in a shared folder', start.body)
+    await app.close()
+  }
+
   // --- the relay between devices and backup servers ---------------------------------------
   {
     class FakeSocket extends EventEmitter {
