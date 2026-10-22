@@ -45,6 +45,15 @@
   color: var(--text-muted);
 }
 
+/* What sharing a folder means, said before anything is shared. */
+.connect-folder-warning {
+  margin: 0.5em 0 1em;
+  padding: 0.25em 0.9em;
+  border-left: 3px solid var(--text-warning);
+  background-color: var(--background-secondary);
+  border-radius: 4px;
+}
+
 .connect-history-row {
   display: flex;
   justify-content: space-between;

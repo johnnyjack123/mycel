@@ -1,17 +1,20 @@
 import { App, Modal, Notice, Setting } from 'obsidian'
-import type { IncomingShare } from '@obsidian-connect/shared'
+import type { IncomingFolder, IncomingShare } from '@obsidian-connect/shared'
 import { busy } from '../busy.js'
+import type { Folders } from './Folders.js'
 import type { Sharing } from './Sharing.js'
 import { log } from '../log.js'
 
-/** Notes other people shared with this account that no vault has taken in yet. */
+/** Notes and folders other people shared with this account that no vault has taken in yet. */
 export class IncomingModal extends Modal {
   private shares: IncomingShare[] = []
+  private folderShares: IncomingFolder[] = []
 
   constructor(
     app: App,
     private readonly sharing: Sharing,
-    private readonly vaultName: string
+    private readonly vaultName: string,
+    private readonly folders: Folders | null = null
   ) {
     super(app)
   }
@@ -21,6 +24,7 @@ export class IncomingModal extends Modal {
     this.contentEl.createEl('p', { text: 'Loading…' })
     try {
       this.shares = await this.sharing.incoming()
+      this.folderShares = (await this.folders?.incoming()) ?? []
     } catch (error) {
       log.error('listing incoming shares failed', error)
       this.contentEl.empty()
@@ -33,9 +37,20 @@ export class IncomingModal extends Modal {
   private render(): void {
     const { contentEl } = this
     contentEl.empty()
-    if (this.shares.length === 0) {
+    if (this.shares.length === 0 && this.folderShares.length === 0) {
       contentEl.createEl('p', { text: 'Nothing waiting.' })
       return
+    }
+    for (const folder of this.folderShares) {
+      new Setting(contentEl)
+        .setName(`A folder from ${this.sharing.nameOf(folder.owner)}`)
+        .setDesc(`${folder.role === 'read' ? 'To read' : 'To edit'} · ${new Date(folder.addedAt).toLocaleString()} · everything added to it later comes along`)
+        .addButton((button) =>
+          button
+            .setButtonText(`Add to "${this.vaultName}"`)
+            .setCta()
+            .onClick(() => void busy(button, () => this.acceptFolder(folder)))
+        )
     }
     for (const share of this.shares) {
       new Setting(contentEl)
@@ -57,6 +72,16 @@ export class IncomingModal extends Modal {
       this.render()
     } catch (error) {
       new Notice(`Adding the note failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private async acceptFolder(folder: IncomingFolder): Promise<void> {
+    try {
+      await this.folders?.accept(folder)
+      this.folderShares = this.folderShares.filter((candidate) => candidate.folderId !== folder.folderId)
+      this.render()
+    } catch (error) {
+      new Notice(`Adding the folder failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 

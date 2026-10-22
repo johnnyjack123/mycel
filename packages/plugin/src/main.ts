@@ -13,11 +13,13 @@ import {
 } from 'obsidian'
 import {
   docRoom,
+  roomKind,
   settingsRoom,
   userColor,
   type BackupTaskSetting,
   type CollabUser,
   type ContactNotice,
+  type FolderNotice,
   type Notice as ServerNotice,
   type NotifyKind,
   type ShareNotice
@@ -39,6 +41,9 @@ import { BackupModal } from './history/BackupModal'
 import { HistoryModal } from './history/HistoryModal'
 import { NoteHistory } from './history/NoteHistory'
 import { AccessModal } from './share/AccessModal'
+import { FolderMarks } from './share/FolderMarks'
+import { FolderAccessModal, MoveInModal, OutsideModal, ShareFolderModal } from './share/FolderModals'
+import { Folders, type FolderNews } from './share/Folders'
 import { IncomingModal } from './share/IncomingModal'
 import { ShareModal } from './share/ShareModal'
 import { linkedNotes } from './share/LinkedNotes'
@@ -83,6 +88,9 @@ const ATTACHMENT_SETTLE_MS = 2_000
 const ATTACHMENT_RESCAN_MS = 60_000
 // A version current for less than this keeps no content once the trash is emptied.
 const ATTACHMENT_MIN_VERSION_AGE_MS = 10 * 60 * 1000
+// The events of one move or delete in a shared folder are gathered this long
+// before it is weighed: Obsidian reports a folder moved as an event per file.
+const FOLDER_SETTLE_MS = 2_000
 // Shared notes' files are compared with their lists this often, besides on every change.
 const SHARED_FILES_EVERY_MS = 60_000
 // A link no list names yet waits this long before this device lists its own file for it.
@@ -227,6 +235,8 @@ export default class ObsidianConnectPlugin extends Plugin {
   private settingsStore: LocalStore | null = null
   private settingsCursor: LocalCursor | null = null
   private sharing: Sharing | null = null
+  private folders: Folders | null = null
+  private readonly folderMarks = new FolderMarks()
   private sharedFiles: SharedFiles | null = null
   private contacts: Contacts | null = null
   private compactor: Compactor | null = null
@@ -823,7 +833,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.index = new VaultIndex(vault.vaultId, (path, generation) => keys.docId(path, generation))
     const socket = new VaultSocket(this.settings.serverUrl, vault.vaultId, () => this.settings.token, {
       notify: (kind, payload) => this.onNotify(kind, payload),
-      revoked: (room) => void this.sharing?.onRevoked(room).then(() => this.editors.refresh()),
+      revoked: (room) =>
+        void (roomKind(room) === 'fld' ? this.folders?.onRevoked(room) : this.sharing?.onRevoked(room))?.then(() => this.editors.refresh()),
       denied: (room, reason) => log.error(`${room} was refused: ${reason}`),
       diverged: (room) => this.recovery?.diverged(room),
       signedOut: () => void this.checkSignedIn(socket)
@@ -855,7 +866,8 @@ export default class ObsidianConnectPlugin extends Plugin {
       this.storeOptions(),
       {
         indexCrypto: keys.indexCrypto(),
-        docCrypto: (docId, entry) => (entry?.owner ? keys.sharedDocCrypto(docId) : keys.ownDocCrypto(docId))
+        docCrypto: (docId, entry) => keys.noteCrypto(docId, { owned: !entry?.owner, folder: Boolean(entry?.folder) }),
+        roomFolder: (docId, entry) => this.folders?.roomFolder(docId, entry) ?? null
       },
       openIndexedDb,
       this.history
@@ -878,24 +890,59 @@ export default class ObsidianConnectPlugin extends Plugin {
       { accountId: unlocked.accountId, username: unlocked.username, publicKey: unlocked.publicKey, privateKey: unlocked.privateKey },
       accountSettings
     )
-    this.sharing = new Sharing(
+    const sharing = new Sharing(
       this.api,
       keys,
       store,
       {
         folder: () => this.shared().sharedFolder,
         syncTimeoutMs: this.settings.syncTimeoutMs,
-        autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1
+        autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1,
+        folderEpoch: (folderId) => folders.currentEpoch(folderId)
       },
       this.contacts
     )
+    this.sharing = sharing
+    // Before the vault is scanned: a note new in a shared folder takes its id from the folder.
+    const folders: Folders = new Folders(
+      this.app,
+      this.api,
+      keys,
+      store,
+      this.index,
+      socket,
+      openIndexedDb,
+      sharing,
+      {
+        shareFolder: () => this.shared().sharedFolder,
+        syncTimeoutMs: this.settings.syncTimeoutMs,
+        autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1,
+        settleMs: FOLDER_SETTLE_MS
+      },
+      {
+        moveIn: (question) => {
+          const modal = new MoveInModal(this.app, question)
+          modal.open()
+          return modal.answered
+        },
+        outside: (question) => {
+          const modal = new OutsideModal(this.app, question)
+          modal.open()
+          return modal.answered
+        }
+      },
+      (news) => this.showFolderNews(news)
+    )
+    this.folders = folders
+    const index = this.index
+    const unwatchFolders = index.onFoldersChange(() => this.renderFolderMarks())
     this.sharedFiles = new SharedFiles(this.app, store, this.attachments, this.api, keys, {
       folder: () => this.shared().sharedFolder,
       syncTimeoutMs: this.settings.syncTimeoutMs,
       claimDelayMs: SHARED_FILES_CLAIM_MS
     })
     this.compactor = new Compactor(this.api, keys, () => this.shared().historyRetentionDays)
-    this.trash = new Trash(this.api, store, () => this.shared().historyRetentionDays, this.attachments)
+    this.trash = new Trash(this.api, store, () => this.shared().historyRetentionDays, this.attachments, folders)
 
     // Editors bind as soon as the index is there, not after the whole vault
     // has been scanned: an open note is settled on its own, first.
@@ -932,6 +979,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       unwatchNotes()
       unwatchFiles()
       unwatchTransfers()
+      unwatchFolders()
     }
 
     socket.connect()
@@ -965,10 +1013,18 @@ export default class ObsidianConnectPlugin extends Plugin {
           if (this.store === store) void this.runStart()
         })
       } else {
+        this.folders?.start()
+        this.renderFolderMarks()
         // In the background: a first scan may have gigabytes to upload.
         void this.startAttachments()
         // Contacts first: a share may come from someone who became a contact while this device was away.
         await this.processContacts()
+        void this.folders?.checkIncoming().then(
+          (waiting) => {
+            if (waiting > 0) new Notice(`${waiting} folder(s) were shared with you. Run "Notes shared with me".`, 10_000)
+          },
+          (error: unknown) => log.warn('checking for shared folders failed', error)
+        )
         void this.sharing?.checkEnded().then(
           (forked) => {
             if (forked > 0) new Notice(`${forked} shared note(s) ended while this device was away. Your copies are kept as notes of your own.`, 10_000)
@@ -1068,7 +1124,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       api: this.api,
       vaultId: keys.vaultId,
       indexCrypto: keys.indexCrypto(),
-      docCrypto: (docId) => keys.ownDocCrypto(docId),
+      docCrypto: (docId) => keys.noteCrypto(docId, { owned: true, folder: true }),
       store,
       attachments: this.attachments?.isReady ? this.attachments : null,
       settings: accountSettings,
@@ -1130,6 +1186,9 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.unwatchSettings = null
     this.recovery?.stop()
     this.recovery = null
+    await this.folders?.stop()
+    this.folders = null
+    this.folderMarks.destroy()
     this.sharedFiles?.stop()
     this.sharedFiles = null
     // Before the notes: stopping those closes the state both write to.
@@ -1199,16 +1258,76 @@ export default class ObsidianConnectPlugin extends Plugin {
         } else if (file instanceof TFolder) {
           void this.store?.onDeleteFolder(file.path)
           void this.attachments?.onDeleteFolder(file.path)
+          this.folders?.onFolderDeleted(file.path)
         }
       })
     )
     this.registerEvent(
       this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
+        if (file instanceof TFolder) {
+          // A shared folder's place follows; its notes' own events come apart.
+          this.folders?.onFolderRenamed(oldPath, file.path)
+          this.renderFolderMarks()
+          return
+        }
         if (!(file instanceof TFile)) return
         void this.store?.onRename(file, oldPath)
         void this.attachments?.onRename(file, oldPath)
       })
     )
+  }
+
+  /** The explorer's mark on every shared folder: this vault's own, and the ones shared into it. */
+  private renderFolderMarks(): void {
+    const index = this.index
+    if (!index) {
+      this.folderMarks.destroy()
+      return
+    }
+    const live = index.liveFolders()
+    this.folderMarks.render(
+      live.filter(({ folder }) => !folder.owner).map(({ folder }) => folder.path),
+      live.filter(({ folder }) => folder.owner).map(({ folder }) => folder.path)
+    )
+  }
+
+  /** What shared folders have to say, as a notice; a delete for everyone offers to undo it. */
+  private showFolderNews(news: FolderNews): void {
+    const name = (path: string): string => path.slice(path.lastIndexOf('/') + 1).replace(/\.md$/, '')
+    const people = (names: string[]): string =>
+      names.length <= 1 ? (names[0] ?? 'nobody else') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+    switch (news.kind) {
+      case 'deleted': {
+        const what = news.names.length === 1 ? `"${news.names[0]}" was` : `${news.names.length} notes were`
+        const fragment = document.createDocumentFragment()
+        fragment.createSpan({ text: `${what} deleted for everyone in "${name(news.folderPath)}" (${people(news.people)}). ` })
+        let notice: Notice | null = null
+        fragment.createEl('button', { text: 'Undo' }).addEventListener('click', () => {
+          notice?.hide()
+          void news.undo().then(
+            () => new Notice(`${news.names.length === 1 ? `"${news.names[0]}" is` : 'They are'} back, for everyone.`),
+            (error: unknown) => new Notice(`Bringing it back failed: ${error instanceof Error ? error.message : String(error)}`)
+          )
+        })
+        notice = new Notice(fragment, 15_000)
+        return
+      }
+      case 'moved-out':
+        new Notice(`"${name(news.path)}" is no longer in its shared folder. ${people(news.people)} keep${news.people.length === 1 ? 's' : ''} their copy.`, 10_000)
+        return
+      case 'stays-yours':
+        new Notice(`You can only read "${name(news.folderPath)}": "${name(news.path)}" stays yours and does not go into the folder.`, 10_000)
+        return
+      case 'not-yours':
+        new Notice(`"${name(news.path)}" belongs to ${news.owner}; it stays out of your shared folder.`, 10_000)
+        return
+      case 'accepted':
+        new Notice(`${news.owner} shared the folder "${name(news.path)}" with you. It is in ${news.path}, and everything added to it comes along.`, 10_000)
+        return
+      case 'ended':
+        new Notice(`The share of the folder "${name(news.path)}" with ${news.owner} ended. Your copy is kept as notes of your own, with their history.`, 12_000)
+        return
+    }
   }
 
   private scheduleIndexApply(): void {
@@ -1316,6 +1435,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       if (!store?.ready) return []
       const folder = file.isRoot() ? null : file.path
       return [
+        ...(folder ? this.folderActions(folder) : []),
         { title: 'Deleted notes and files…', icon: 'trash-2', run: () => this.openTrash(folder) },
         { title: folder ? 'Roll this folder back…' : 'Roll the vault back…', icon: 'history', run: () => this.openRollback(folder ?? '') }
       ]
@@ -1329,12 +1449,20 @@ export default class ObsidianConnectPlugin extends Plugin {
     if (!docId) return []
     const entry = store.entry(docId)
     const actions: MenuAction[] = []
+    const inFolder = this.folders?.folderOf(docId) ?? null
+    if (inFolder) {
+      const path = inFolder.folder.path
+      actions.push({ title: 'Who has the folder', icon: 'users', run: () => this.openFolderAccess(path) })
+    }
     if (entry?.owner) {
-      actions.push({ title: 'Who has access', icon: 'users', run: () => this.openAccess(file) })
-      actions.push({ title: 'Make my own copy', icon: 'copy', run: () => this.detachActive(file) })
+      // A note of someone else's folder is the folder's: its copy is made for the whole folder.
+      if (!inFolder) {
+        actions.push({ title: 'Who has access', icon: 'users', run: () => this.openAccess(file) })
+        actions.push({ title: 'Make my own copy', icon: 'copy', run: () => this.detachActive(file) })
+      }
     } else {
       actions.push({ title: 'Share…', icon: 'share-2', run: () => this.openShare(file) })
-      if (entry?.shared) actions.push({ title: 'Who has access', icon: 'users', run: () => this.openAccess(file) })
+      if (entry?.shared && !inFolder) actions.push({ title: 'Who has access', icon: 'users', run: () => this.openAccess(file) })
     }
     actions.push({ title: 'Version history', icon: 'history', run: () => this.openHistory(file) })
     if (this.attachments?.isReady && this.settings.attachmentDownloadLimitMb >= 0) {
@@ -1351,6 +1479,37 @@ export default class ObsidianConnectPlugin extends Plugin {
       actions.push({ title: 'Compare versions', icon: 'git-compare', run: () => this.openReview(file) })
     }
     return actions
+  }
+
+  /** Sharing a folder, from its menu: its own, shared or not yet, or one shared into the vault. */
+  private folderActions(path: string): MenuAction[] {
+    const folders = this.folders
+    if (!folders) return []
+    const shared = folders.folderAt(path)
+    if (shared?.folder.owner) return [{ title: 'Who has the folder', icon: 'users', run: () => this.openFolderAccess(path) }]
+    // Inside someone else's folder, or inside one of this vault's shared ones: shared as part of that.
+    const around = folders.placeOf(`${path}/x`)
+    if (!shared && around) return []
+    const actions: MenuAction[] = [{ title: shared ? 'Share the folder again…' : 'Share the folder…', icon: 'share-2', run: () => this.openShareFolder(path) }]
+    if (shared) actions.push({ title: 'Who has the folder', icon: 'users', run: () => this.openFolderAccess(path) })
+    return actions
+  }
+
+  private openShareFolder(path: string): void {
+    if (!this.folders || !this.sharing || !this.store?.ready) {
+      new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
+      return
+    }
+    new ShareFolderModal(this.app, this.folders, this.sharing, path, this.contactList()).open()
+  }
+
+  private openFolderAccess(path: string): void {
+    const shared = this.folders?.folderAt(path)
+    if (!this.folders || !this.sharing || !shared) {
+      new Notice('This folder is not shared.')
+      return
+    }
+    new FolderAccessModal(this.app, this.folders, this.sharing, shared.folderId, path).open()
   }
 
   /** The two versions of a note that were merged, to choose from. */
@@ -1396,7 +1555,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       new Notice('Sign in to Obsidian Connect first.')
       return
     }
-    new IncomingModal(this.app, this.sharing, this.vault?.name ?? this.vaultName()).open()
+    new IncomingModal(this.app, this.sharing, this.vault?.name ?? this.vaultName(), this.folders).open()
   }
 
   private async detachActive(file?: TFile): Promise<void> {
@@ -1430,6 +1589,13 @@ export default class ObsidianConnectPlugin extends Plugin {
     }
     if (kind === 'account-changed') {
       void this.refreshAccount()
+      return
+    }
+    if (kind === 'folder-added' || kind === 'folder-changed' || kind === 'folder-removed') {
+      void this.folders?.onNotify(kind, payload as FolderNotice).then(() => {
+        this.editors.refresh()
+        this.renderFolderMarks()
+      })
       return
     }
     void this.sharing?.onNotify(kind, payload as ShareNotice).then(() => this.editors.refresh())
@@ -1484,6 +1650,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   async removeContact(accountId: string): Promise<void> {
     if (!this.contacts || !this.sharing) throw new Error('Sign in first.')
     await this.sharing.endWith(accountId)
+    await this.folders?.endWith(accountId)
     await this.contacts.remove(accountId)
     this.editors.refresh()
   }
@@ -1649,7 +1816,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     const store = this.store
     const keys = this.keys
     if (!note || !store || !keys) return
-    const crypto = store.entry(note.docId)?.owner ? keys.sharedDocCrypto(note.docId) : keys.ownDocCrypto(note.docId)
+    // Which epochs a shared folder's key opens is asked once: the history reads every one.
+    const crypto = keys.noteCrypto(note.docId, { owned: !store.entry(note.docId)?.owner, folder: true })
     const attachments = this.attachments
     new HistoryModal(this.app, {
       history: new NoteHistory(this.api, docRoom(note.docId), crypto),

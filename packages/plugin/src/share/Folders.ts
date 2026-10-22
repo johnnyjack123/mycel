@@ -129,6 +129,8 @@ export class Folders {
   /** Folders a folder-level event named, deleted or renamed, while their notes' events settle. */
   private readonly folderEvents: Array<{ kind: 'renamed'; from: string; to: string } | { kind: 'deleted'; path: string }> = []
   private readonly asking = new Set<string>()
+  /** Notes whose window was closed without an answer: not asked again until the next start. */
+  private readonly dismissed = new Set<string>()
   /** Folders whose pass waits until this device's own changes are weighed. */
   private readonly later = new Set<string>()
   /** Folders whose first pass since opening is still to come: the one that looks for what a crash left. */
@@ -445,7 +447,7 @@ export class Folders {
     // not a note moved in.
     const forks = new Set(this.index.deleted().flatMap(({ entry }) => (entry.forkedTo ? [entry.forkedTo] : [])))
     for (const { docId, entry } of this.index.live()) {
-      if (this.pending.has(docId) || this.asking.has(docId) || forks.has(docId)) continue
+      if (this.pending.has(docId) || this.asking.has(docId) || this.dismissed.has(docId) || forks.has(docId)) continue
       const there = inside(entry.path, mount) && this.placeOf(entry.path)?.folderId === folderId
       if (there && !entry.folder && !entry.owner && !fi.has(docId) && !this.store.isExcluded(entry.path)) {
         void this.askMoveIn(this.placeOf(entry.path) as FolderPlace, docId, null)
@@ -743,6 +745,8 @@ export class Folders {
       })
       const now = this.index.entry(docId)
       if (!now || now.deletedAt || now.path !== path || opened.index.has(docId)) return
+      // Closed without an answer: it stays here, unshared, until asked again after a restart.
+      if (answer === null) this.dismissed.add(docId)
       if (answer === 'share') {
         if (folder.owner) await this.copyIn(this.placeOf(path) as FolderPlace, docId)
         else await this.join(this.placeOf(path) as FolderPlace, docId)
@@ -773,6 +777,7 @@ export class Folders {
         moot: this.moot(outside)
       })
       if (!outside()) return
+      if (answer === null) this.dismissed.add(docId)
       if (answer === 'end') await this.moveOut(folderId, docId)
       else if (answer === 'back') {
         const rel = this.index.entry(docId)?.folderPath
@@ -909,16 +914,39 @@ export class Folders {
     await this.schedule(folderId)
   }
 
-  /** The notes this account let go of in folders it reads, for the trash. */
-  declinedNotes(): Array<{ folderId: string; docId: string; path: string; deletedAt: number }> {
+  /**
+   * Notes of someone else's folders that can be brought back, for the trash:
+   * the ones this account let go of as a reader, and - for a writer - the
+   * ones deleted for everyone, whose room the owner still keeps. The owner's
+   * own are in the trash already, as notes of the vault.
+   */
+  trashItems(since: number): Array<{ folderId: string; docId: string; path: string; deletedAt: number }> {
     const found: Array<{ folderId: string; docId: string; path: string; deletedAt: number }> = []
     for (const { docId, entry } of this.index.deleted()) {
       const folderId = entry.folder
-      if (folderId && this.isDeclined(folderId, docId) && !this.index.folder(folderId)?.endedAt) {
-        found.push({ folderId, docId, path: entry.path, deletedAt: entry.deletedAt as number })
-      }
+      const folder = folderId ? this.index.folder(folderId) : undefined
+      if (!folderId || !folder?.owner || folder.endedAt || folder.leftAt || entry.forkedTo || entry.purgedAt) continue
+      const deletedAt = entry.deletedAt as number
+      if (deletedAt < since) continue
+      const inFolder = this.open.get(folderId)?.index.note(docId)
+      const restorable = this.isDeclined(folderId, docId) || (this.mayWrite(folder) && inFolder?.deletedAt !== undefined && !inFolder.leftAt)
+      if (restorable) found.push({ folderId, docId, path: entry.path, deletedAt })
     }
     return found.sort((a, b) => b.deletedAt - a.deletedAt)
+  }
+
+  /** Brings a note of someone else's folder back from the trash - for everyone, when it was deleted for everyone. */
+  async restore(folderId: string, docId: string): Promise<void> {
+    if (this.isDeclined(folderId, docId)) {
+      await this.undecline(folderId, docId)
+      return
+    }
+    const opened = await this.ready(folderId)
+    const folder = this.index.folder(folderId)
+    const note = opened?.index.note(docId)
+    if (!opened || !folder || !note) throw new Error('The server is not reachable.')
+    opened.index.revive(docId, note.path, this.keys.accountId)
+    await this.schedule(folderId)
   }
 
   // --- sharing a folder ----------------------------------------------------------------

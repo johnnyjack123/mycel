@@ -501,7 +501,7 @@ export class Device {
       api: this.api,
       vaultId: keys.vaultId,
       indexCrypto: keys.indexCrypto(),
-      docCrypto: (docId) => keys.ownDocCrypto(docId),
+      docCrypto: (docId) => keys.noteCrypto(docId, { owned: true, folder: true }),
       store: this.store,
       attachments: this.attachments,
       settings: this.settings,

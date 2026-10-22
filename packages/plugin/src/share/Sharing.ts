@@ -76,6 +76,10 @@ export class Sharing {
     private readonly contacts: Contacts | null = null
   ) {}
 
+  get accountId(): string {
+    return this.keys.accountId
+  }
+
   /** What this account calls someone. */
   nameOf(account: string): string {
     return this.contacts?.name(account) ?? account.slice(0, 8)
