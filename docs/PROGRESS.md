@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-21 · **Milestone 0.7 (the backup server) is done: 0.7.0 to 0.7.19 built, merged into `main` (`13c12b3`, CI green, images published), and confirmed by the user on their devices and hosts. Next: milestone 0.8 - first its design document `docs/PHASE7.md`, written with the user.**_
+_Last updated: 2026-10-22 · **Milestone 0.7 (the backup server) is done and confirmed by the user. Milestone 0.8 is designed with the user and signed off (`docs/PHASE7.md`); building it on `feat/folder-share`.**_
 
 ## Where we are
 
@@ -39,24 +39,19 @@ folder, opening the decrypted copy as a vault.
 
 ## Next step
 
-**Milestone 0.8: sharing a folder, and the small fixes.** Nothing of it is designed
-yet. CLAUDE.md asks for the design document first, with the user (`docs/PHASE7.md`),
-and the user shapes the architecture: explain the mechanics concretely, then refine
-what they choose rather than replace it.
+**Milestone 0.8: sharing a folder, and the small fixes.** Designed with the user and
+signed off on 2026-10-22: `docs/PHASE7.md` - the decisions E0 to E8, the folder room,
+its keys and ids, the mirror between folder and vault index, every case, the server,
+the small fixes, the tests. Build it in the order its last section gives:
 
-1. Read how one note is shared today: `share/Sharing.ts` (share, revoke, fork on the
-   end of a share - invariant 20), `share/LinkedNotes.ts` (sharing what a note links
-   to, which is the nearest thing to a folder), `share/SharedFiles.ts`, the index
-   entries (`shared`, `owner`, `role`), the server's rooms and members
-   (`server/src/rooms.ts`, `server/src/http.ts`), and `docs/PHASE2.md`.
-2. Lay out for the user what "a folder, including what is added to it later" asks
-   for, concretely: who decides that a new note belongs to the share (the owner's
-   device, when it lands in the folder), how the other side learns of it, what
-   happens on a move into or out of the folder, a rename of the folder, a note
-   inside that is shared on its own as well, deleting, revoking one person, the
-   recipient's own notes put into the shared folder, attachments inside it.
-3. Write `docs/PHASE7.md` with the decisions, then the small fixes listed under
-   Roadmap below, then build on `feat/<name>` from `main`, as 0.8.0 onwards.
+1. `shared` (types, folder key, ties, ids) and the server (folder rooms, access through
+   the folder, the folder API, the sweep, backups), with `test:rooms` and `test:merge`.
+2. The plugin's keys and the folder document, the mirror; `test:vault`.
+3. Moving in and out, deleting, revoking, leaving, ending; the windows, dialogs, menus
+   and the explorer mark. Steps 1 to 3 are 0.8.0 on `feat/folder-share`, merged once
+   green so the server image the user needs gets built.
+4. Files in the folder and linked outside it (0.8.1); 5. the backup server (0.8.2);
+   6. the small fixes (0.8.3 onwards).
 
 ## Roadmap
 
@@ -95,8 +90,8 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing. Only `main` exists: every earlier branch was merged and, checked to hold
-no commit `main` lacks, deleted with the user's consent on 2026-10-21.
+`feat/folder-share`, started from `main` on 2026-10-22 for 0.8.0 (`docs/PHASE7.md`,
+order of work, steps 1 to 3).
 
 ## Decisions made (not visible in the code)
 
@@ -176,6 +171,13 @@ CLAUDE.md, Gotchas - `test:socket` and `test:vault` default to 1234, so always p
 ---
 
 ## Log
+
+### 2026-10-22
+- 0.8 designed with the user: how sharing a note works laid out, options per case,
+  the user chose (a folder room of its own; a window before an existing note joins;
+  deletes in the folder for everyone, with a notice; files inside the folder belong to
+  it, linked ones outside travel as a note's). `docs/PHASE7.md` written and signed off;
+  the small fixes investigated and specified in it.
 
 ### 2026-10-21
 - 0.7.18 merged (a time of day, waiting while someone writes, rclone, the password

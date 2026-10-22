@@ -26,8 +26,9 @@ The design of accounts, keys, sharing and the encrypted transport is specified i
 the server in **`docs/SERVER.md`**. Where the work stands and what is next:
 **`docs/PROGRESS.md`**; what each version changed and how its fixes were verified:
 **`docs/CHANGELOG.md`**. The backup server (0.7) is specified in **`docs/PHASE6.md`**,
-running it in **`docs/BACKUP.md`**.
-A new milestone gets its design document (`docs/PHASE7.md` for 0.8) written with the
+running it in **`docs/BACKUP.md`**; sharing a folder and the small fixes of 0.8 in
+**`docs/PHASE7.md`**.
+A new milestone gets its design document (`docs/PHASE8.md` for 0.9) written with the
 user before it is built.
 
 ## Non-negotiable invariants
