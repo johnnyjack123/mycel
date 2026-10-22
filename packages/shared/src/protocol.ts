@@ -99,16 +99,18 @@ export function roomKind(room: string): RoomKind | null {
 }
 
 /**
- * Whether a note's epochs are tied to its folder's in order: a later epoch of
- * the note never to an earlier epoch of the folder. A server tying a new epoch
- * to an old one would have everyone encrypt under a key someone revoked holds.
+ * Whether a note's epochs are tied to its folders' in order: a later epoch of
+ * the note never to an earlier epoch of the same folder. A server tying a new
+ * epoch to an old one would have everyone encrypt under a key someone revoked
+ * holds.
  */
-export function tiesAscend(ties: Record<string, number>): boolean {
-  let last = -1
+export function tiesAscend(ties: Record<string, { folder: string; epoch: number }>): boolean {
+  const last = new Map<string, number>()
   for (const epoch of Object.keys(ties).map(Number).sort((a, b) => a - b)) {
-    const folderEpoch = ties[String(epoch)]
-    if (typeof folderEpoch !== 'number' || !Number.isInteger(folderEpoch) || folderEpoch < last) return false
-    last = folderEpoch
+    const tie = ties[String(epoch)]
+    if (!tie || typeof tie.folder !== 'string' || !Number.isInteger(tie.epoch)) return false
+    if (tie.epoch < (last.get(tie.folder) ?? -1)) return false
+    last.set(tie.folder, tie.epoch)
   }
   return true
 }
@@ -155,11 +157,15 @@ export const MUX = {
   frame: 10,
   /** room, varUint uptoSeq, varUint epoch, varUint8Array ciphertext */
   snapshot: 11,
-  /** room, varUint headSeq, varUint epoch - everything readable has been sent */
+  /**
+   * room, varUint headSeq, varUint epoch - everything readable has been sent;
+   * for an epoch a note spends in a shared folder also varString folder,
+   * varUint folder epoch: what its key derives from
+   */
   caughtUp: 12,
   /** room, varUint ref, varUint seq */
   ack: 13,
-  /** room, varUint epoch - a push used an old epoch, or the epoch moved */
+  /** room, varUint epoch - a push used an old epoch, or the epoch moved; the folder tie as with caughtUp */
   rekey: 14,
   /** room, varString reason - access was taken away */
   revoked: 15,

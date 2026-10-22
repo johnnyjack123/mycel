@@ -1,7 +1,7 @@
 import type { WebSocket } from 'ws'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { MUX, type Notice, type NotifyKind } from '@obsidian-connect/shared'
+import { MUX, type FolderTie, type Notice, type NotifyKind } from '@obsidian-connect/shared'
 import type { Frame } from './log.js'
 import type { RoomClient, RoomHub } from './rooms.js'
 
@@ -65,6 +65,13 @@ export function heartbeat(ws: WebSocket, onDead: () => void, intervalMs = PING_I
   return () => clearInterval(timer)
 }
 
+/** Trailing, so a plugin before shared folders reads the message as it always did. */
+function writeTie(encoder: encoding.Encoder, tie: FolderTie | null): void {
+  if (!tie) return
+  encoding.writeVarString(encoder, tie.folder)
+  encoding.writeVarUint(encoder, tie.epoch)
+}
+
 class VaultConnection implements RoomClient {
   constructor(
     private readonly ws: WebSocket,
@@ -97,10 +104,11 @@ class VaultConnection implements RoomClient {
     })
   }
 
-  sendCaughtUp(room: string, headSeq: number, epoch: number): void {
+  sendCaughtUp(room: string, headSeq: number, epoch: number, tie: FolderTie | null): void {
     this.message(MUX.caughtUp, room, (encoder) => {
       encoding.writeVarUint(encoder, headSeq)
       encoding.writeVarUint(encoder, epoch)
+      writeTie(encoder, tie)
     })
   }
 
@@ -118,8 +126,11 @@ class VaultConnection implements RoomClient {
     })
   }
 
-  sendRekey(room: string, epoch: number): void {
-    this.message(MUX.rekey, room, (encoder) => encoding.writeVarUint(encoder, epoch))
+  sendRekey(room: string, epoch: number, tie: FolderTie | null): void {
+    this.message(MUX.rekey, room, (encoder) => {
+      encoding.writeVarUint(encoder, epoch)
+      writeTie(encoder, tie)
+    })
   }
 
   sendRevoked(room: string, reason: string): void {

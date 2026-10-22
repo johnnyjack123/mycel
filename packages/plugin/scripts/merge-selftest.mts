@@ -337,8 +337,15 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     'everyone in a folder derives the same id for a new note, and a later epoch another'
   )
   const { tiesAscend } = await import('@obsidian-connect/shared')
-  check(tiesAscend({ '1': 0, '2': 1, '3': 1, '5': 4 }) && tiesAscend({}), 'ties that never go back are taken')
-  check(!tiesAscend({ '1': 2, '2': 1 }) && !tiesAscend({ '1': 0.5 }), "a later note epoch tied to an earlier folder epoch is not")
+  const tie = (folder: string, epoch: number): { folder: string; epoch: number } => ({ folder, epoch })
+  check(
+    tiesAscend({ '1': tie('a', 0), '2': tie('a', 1), '3': tie('a', 1), '5': tie('b', 0), '6': tie('a', 4) }) && tiesAscend({}),
+    'ties that never go back within a folder are taken, moving between folders included'
+  )
+  check(
+    !tiesAscend({ '1': tie('a', 2), '2': tie('a', 1) }) && !tiesAscend({ '1': tie('a', 0.5) }),
+    'a later note epoch tied to an earlier epoch of the same folder is not'
+  )
 
   const frame = e2e.unpackFrame(e2e.packFrame(1_790_000_000_123, utf8('update')))
   check(frame.authorTs === 1_790_000_000_123 && fromUtf8(frame.update) === 'update', 'frames carry the author clock')

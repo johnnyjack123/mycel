@@ -19,6 +19,7 @@ import {
   type FolderRotation,
   type FolderShareRequest,
   type FolderStateResponse,
+  type FolderTie,
   type ForkReason,
   type ForkResponse,
   type ForkSummary,
@@ -62,10 +63,15 @@ export interface RoomClient {
   readonly vaultId: string
   sendFrame(room: string, frame: Frame): void
   sendSnapshot(room: string, uptoSeq: number, epoch: number, data: Uint8Array): void
-  sendCaughtUp(room: string, headSeq: number, epoch: number): void
+  /**
+   * `tie`, for an epoch a note spends in a shared folder: the folder epoch its
+   * key derives from. A device sending under that epoch must know it, or it
+   * would encrypt under the note's own key - which nobody in the folder holds.
+   */
+  sendCaughtUp(room: string, headSeq: number, epoch: number, tie: FolderTie | null): void
   sendAck(room: string, ref: number, seq: number): void
   sendAwareness(room: string, epoch: number, data: Uint8Array): void
-  sendRekey(room: string, epoch: number): void
+  sendRekey(room: string, epoch: number, tie: FolderTie | null): void
   sendRevoked(room: string, reason: string): void
   sendDenied(room: string, reason: string): void
   sendNotify(kind: NotifyKind, payload: Notice): void
@@ -219,11 +225,11 @@ export class RoomHub {
    * checks and the creation happen without an await in between, so two
    * devices subscribing at once cannot both create it.
    */
-  private claim(room: string, owner: string, vaultId: string, folder?: RoomFolder): Promise<OpenRoom> {
+  private claim(room: string, owner: string, vaultId: string, folder?: RoomFolder, ties?: Record<string, FolderTie>): Promise<OpenRoom> {
     const open = this.rooms.get(room)
     if (open) return Promise.resolve(open)
     const pending = this.opening.get(room)
-    if (pending) return pending.then((result) => result ?? this.claim(room, owner, vaultId, folder))
+    if (pending) return pending.then((result) => result ?? this.claim(room, owner, vaultId, folder, ties))
     if (this.metas.has(room)) {
       return this.load(room).then((result) => result ?? Promise.reject(new HubError(500, 'the room vanished')))
     }
@@ -242,6 +248,7 @@ export class RoomHub {
         snapshots: []
       }
       if (folder) meta.folder = folder
+      if (ties) meta.ties = ties
       this.metas.set(room, meta)
       const log = await RoomLog.create(this.options.dataDir, meta)
       const created: OpenRoom = { log, subscribers: new Set(), idleTimer: null }
@@ -364,7 +371,7 @@ export class RoomHub {
       if (snapshot && snapshotData) client.sendSnapshot(room, snapshot.uptoSeq, snapshot.epoch, snapshotData)
       const frames = snapshot ? open.log.frames.filter((frame) => frame.seq > after && frame.seq >= access.fromSeq) : fresh.frames
       for (const frame of frames) client.sendFrame(room, frame)
-      client.sendCaughtUp(room, open.log.headSeq, open.log.meta.epoch)
+      client.sendCaughtUp(room, open.log.headSeq, open.log.meta.epoch, this.tieOf(room, open.log.meta.epoch))
       open.subscribers.add(client)
       if (open.idleTimer) clearTimeout(open.idleTimer)
       open.idleTimer = null
@@ -382,7 +389,7 @@ export class RoomHub {
     if (!folder || this.gone.has(folder.owner)) return null
     const access = this.access(folder, client.account)
     if (!access || access === 'revoked' || !access.write) return null
-    return this.claim(room, folder.owner, folder.vaultId, { id: folderId, since: 0, epochs: { '0': folder.epoch } })
+    return this.claim(room, folder.owner, folder.vaultId, { id: folderId, since: 0 }, { '0': { folder: folderId, epoch: folder.epoch } })
   }
 
   unsubscribe(client: RoomClient, room: string): void {
@@ -408,7 +415,7 @@ export class RoomHub {
     }
     // Encrypted under an epoch the others may not hold any more, or not yet.
     if (epoch !== open.log.meta.epoch) {
-      client.sendRekey(room, open.log.meta.epoch)
+      client.sendRekey(room, open.log.meta.epoch, this.tieOf(room, open.log.meta.epoch))
       return
     }
     const frame = await open.log.append(epoch, data)
@@ -444,7 +451,8 @@ export class RoomHub {
   }
 
   private rekeyAll(open: OpenRoom): void {
-    for (const subscriber of open.subscribers) subscriber.sendRekey(open.log.meta.room, open.log.meta.epoch)
+    const { room, epoch } = open.log.meta
+    for (const subscriber of open.subscribers) subscriber.sendRekey(room, epoch, this.tieOf(room, epoch))
   }
 
   /**
@@ -465,7 +473,19 @@ export class RoomHub {
     meta.epochSince = this.headOf(meta)
     if (!meta.folder) return
     const folder = this.metas.get(folderRoom(meta.folder.id))
-    if (folder) meta.folder.epochs[String(epoch)] = folder.epoch
+    if (folder) meta.ties = { ...meta.ties, [String(epoch)]: { folder: meta.folder.id, epoch: folder.epoch } }
+  }
+
+  /** The folder epoch a note's epoch derives its key from, if it spent that epoch in a folder. */
+  tieOf(room: string, epoch: number): FolderTie | null {
+    return this.metas.get(room)?.ties?.[String(epoch)] ?? null
+  }
+
+  /** A note's epochs spent in one folder, each with the folder epoch it derives from. */
+  private tiesIn(meta: RoomMeta, folderId: string): Record<string, number> {
+    const epochs: Record<string, number> = {}
+    for (const [epoch, tie] of Object.entries(meta.ties ?? {})) if (tie.folder === folderId) epochs[epoch] = tie.epoch
+    return epochs
   }
 
   private headOf(meta: RoomMeta): number {
@@ -544,7 +564,7 @@ export class RoomHub {
     // A note of a shared folder: the epochs it spent there open with the folder's keys.
     const folder: FolderKept | undefined =
       meta.folder && folderMeta?.members[account]
-        ? { id: meta.folder.id, keys: { ...folderMeta.sealedKeys[account] }, epochs: { ...meta.folder.epochs } }
+        ? { id: meta.folder.id, keys: { ...folderMeta.sealedKeys[account] }, epochs: this.tiesIn(meta, meta.folder.id) }
         : undefined
     const readable = (epoch: number): boolean => {
       if (typeof keys[String(epoch)] === 'string') return true
@@ -606,7 +626,7 @@ export class RoomHub {
         subscriber.sendRevoked(meta.room, 'access was revoked')
         open.subscribers.delete(subscriber)
       } else {
-        subscriber.sendRekey(meta.room, meta.epoch)
+        subscriber.sendRekey(meta.room, meta.epoch, this.tieOf(meta.room, meta.epoch))
       }
     }
     const docId = roomSubject(meta.room)
@@ -796,7 +816,7 @@ export class RoomHub {
         subscriber.sendRevoked(meta.room, reason)
         open.subscribers.delete(subscriber)
       } else {
-        subscriber.sendRekey(meta.room, meta.epoch)
+        subscriber.sendRekey(meta.room, meta.epoch, this.tieOf(meta.room, meta.epoch))
       }
     }
   }
@@ -951,8 +971,8 @@ export class RoomHub {
         }
         for (const meta of notes) {
           if (meta.folder?.since !== 0) continue
-          // The epochs before the note joined the folder, under its owner's own keys.
-          const tied = Object.keys(meta.folder.epochs).map(Number)
+          // The epochs before the note joined the folder, under keys the folder's do not open.
+          const tied = Object.keys(this.tiesIn(meta, meta.folder.id)).map(Number)
           const first = tied.length > 0 ? Math.min(...tied) : 0
           const docId = roomSubject(meta.room)
           for (let epoch = 0; epoch < first; epoch += 1) {
@@ -1060,7 +1080,7 @@ export class RoomHub {
     if (shared && !snapshot && open.log.headSeq > 0) throw new HubError(400, "the folder's members need a starting point")
     const data = snapshot ? fromBase64(snapshot.data, 'the snapshot') : null
 
-    meta.folder = { id, since: shared && snapshot ? snapshot.uptoSeq + 1 : 0, epochs: {} }
+    meta.folder = { id, since: shared && snapshot ? snapshot.uptoSeq + 1 : 0 }
     this.moveEpoch(meta, request.epoch)
     for (const member of Object.keys(meta.members)) {
       meta.sealedKeys[member] = { ...meta.sealedKeys[member], [String(request.epoch)]: request.keys[member] as string }
@@ -1282,7 +1302,7 @@ export class RoomHub {
     const { open, access } = await this.readable(account, room)
     const meta = open.log.meta
     const response: KeysResponse = { room, epoch: meta.epoch, keys: access.owner ? {} : { ...meta.sealedKeys[account] } }
-    if (meta.folder) response.folder = { id: meta.folder.id, epochs: { ...meta.folder.epochs } }
+    if (meta.ties) response.ties = { ...meta.ties }
     return response
   }
 

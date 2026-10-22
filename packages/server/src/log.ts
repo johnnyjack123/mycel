@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { isHexId, roomKind, roomSubject, type ShareRole } from '@obsidian-connect/shared'
+import { isHexId, roomKind, roomSubject, type FolderTie, type ShareRole } from '@obsidian-connect/shared'
 
 // One room on disk: `meta.json` with who may do what, `log.bin` with the
 // frames, and `snap-<uptoSeq>.bin` for each snapshot still needed. The server
@@ -61,6 +61,12 @@ export interface RoomMeta {
   epochSince?: number
   /** A note in a shared folder: the folder's members reach it through the folder. */
   folder?: RoomFolder
+  /**
+   * The note's epochs spent in a shared folder, each with the folder and the
+   * folder epoch its key derives from. Kept after the note left the folder:
+   * its owner still reads those epochs.
+   */
+  ties?: Record<string, FolderTie>
 }
 
 /** A note's place in a shared folder, as the server keeps it. */
@@ -70,8 +76,6 @@ export interface RoomFolder {
   since: number
   /** Members who joined the folder without history start later: account -> their first seq. */
   from?: Record<string, number>
-  /** The note's epochs that belong to the folder, each with the folder epoch its key derives from. */
-  epochs: Record<string, number>
 }
 
 const HEADER_BYTES = 8 + 8 + 4 + 4

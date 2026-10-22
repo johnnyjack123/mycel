@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SignJWT } from 'jose'
-import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, CLOSE_SIGNED_OUT, type Notice, type NotifyKind } from '@obsidian-connect/shared'
+import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, CLOSE_SIGNED_OUT, type FolderTie, type Notice, type NotifyKind } from '@obsidian-connect/shared'
 import { AccountStore, sessionOf, type StoredAccount } from '../src/accounts.js'
 import { TokenService } from '../src/auth.js'
 import { BlobStore } from '../src/blobs.js'
@@ -59,6 +59,7 @@ interface Message {
   reason?: string
   kind?: string
   code?: number
+  tie?: string
 }
 
 class Client implements RoomClient {
@@ -75,8 +76,8 @@ class Client implements RoomClient {
   sendSnapshot(room: string, uptoSeq: number, epoch: number, data: Uint8Array): void {
     this.messages.push({ type: 'snapshot', room, uptoSeq, epoch, data: text(data) })
   }
-  sendCaughtUp(room: string, headSeq: number, epoch: number): void {
-    this.messages.push({ type: 'caughtUp', room, headSeq, epoch })
+  sendCaughtUp(room: string, headSeq: number, epoch: number, tie: FolderTie | null): void {
+    this.messages.push({ type: 'caughtUp', room, headSeq, epoch, tie: tie ? `${tie.folder}:${tie.epoch}` : undefined })
   }
   sendAck(room: string, ref: number, seq: number): void {
     this.messages.push({ type: 'ack', room, ref, seq })
@@ -84,8 +85,8 @@ class Client implements RoomClient {
   sendAwareness(room: string, epoch: number, data: Uint8Array): void {
     this.messages.push({ type: 'awareness', room, epoch, data: text(data) })
   }
-  sendRekey(room: string, epoch: number): void {
-    this.messages.push({ type: 'rekey', room, epoch })
+  sendRekey(room: string, epoch: number, tie: FolderTie | null): void {
+    this.messages.push({ type: 'rekey', room, epoch, tie: tie ? `${tie.folder}:${tie.epoch}` : undefined })
   }
   sendRevoked(room: string, reason: string): void {
     this.messages.push({ type: 'revoked', room, reason })
@@ -1324,6 +1325,11 @@ try {
     const s1 = new Client(sam, samVault)
     for (const client of [o1, p1, q1, r1, s1]) hub.attach(client)
     const kinds = (messages: Message[], room: string): string => messages.filter((m) => m.room === room).map((m) => m.type).join()
+    const tied = (keys: { ties?: Record<string, { epoch: number }> }): string =>
+      Object.entries(keys.ties ?? {})
+        .sort(([a], [b]) => Number(a) - Number(b))
+        .map(([epoch, tie]) => `${epoch}:${tie.epoch}`)
+        .join()
 
     const folderId = hexId()
     const fld = `fld:${folderId}`
@@ -1343,8 +1349,11 @@ try {
     check((await status(() => hub.joinNote(pia, folderId, { docId: n1, epoch: 1, folderEpoch: 0, keys: {} }))) === 403, 'only the owner puts a note into the folder')
     check((await status(() => hub.joinNote(olga, folderId, { docId: n1, epoch: 0, folderEpoch: 0, keys: {} }))) === 409, 'a note joins in its next epoch')
     await hub.joinNote(olga, folderId, { docId: n1, epoch: 1, folderEpoch: 0, keys: {} })
-    check(o1.take().some((m) => m.type === 'rekey' && m.room === room1 && m.epoch === 1), 'a note joining moves to a new epoch')
-    check((await hub.keys(olga, room1)).folder?.epochs['1'] === 0, "tied to the folder's epoch")
+    check(
+      o1.take().some((m) => m.type === 'rekey' && m.room === room1 && m.epoch === 1 && m.tie === `${folderId}:0`),
+      'a note joining moves to a new epoch, and its devices hear which folder epoch its key derives from'
+    )
+    check((await hub.keys(olga, room1)).ties?.['1']?.epoch === 0, "tied to the folder's epoch")
     await hub.push(o1, room1, 2, 1, bytes('n1 in folder'))
     o1.take()
 
@@ -1376,7 +1385,7 @@ try {
       'a member reads a note of the folder, with its history'
     )
     const piaKeys = await hub.keys(pia, room1)
-    check(piaKeys.keys['0'] === 'n1e0-pia' && piaKeys.folder?.epochs['1'] === 0, 'and gets its keys: sealed, and tied to the folder')
+    check(piaKeys.keys['0'] === 'n1e0-pia' && piaKeys.ties?.['1']?.epoch === 0, 'and gets its keys: sealed, and tied to the folder')
     check((await hub.keys(pia, fld)).keys['0'] === 'f0-pia', "the folder's key is sealed to them once")
     await hub.subscribe(p1, fld, 0, false)
     check(kinds(p1.take(), fld) === 'frame,caughtUp', 'they read the folder room')
@@ -1392,7 +1401,7 @@ try {
     check(p1.take().at(-1)?.type === 'caughtUp', 'a writer creates one')
     check(existsSync(join(dataDir, 'users', olga, olgaVault, 'notes', n2, 'meta.json')), "in the owner's vault")
     check((await hub.members(pia, n2)).owner === olga, 'owned by the owner')
-    check((await hub.keys(olga, room2)).folder?.epochs['0'] === 0, "its first epoch tied to the folder's")
+    check((await hub.keys(olga, room2)).ties?.['0']?.folder === folderId, "its first epoch tied to the folder's")
     await hub.push(p1, room2, 1, 0, bytes('n2 by pia'))
     p1.take()
     await hub.subscribe(o1, room2, 0)
@@ -1415,7 +1424,7 @@ try {
       moved
     )
     check(
-      JSON.stringify((await hub.keys(olga, room1)).folder?.epochs) === '{"1":0,"2":1}' && JSON.stringify((await hub.keys(olga, room2)).folder?.epochs) === '{"0":0,"1":1}',
+      tied(await hub.keys(olga, room1)) === '1:0,2:1' && tied(await hub.keys(olga, room2)) === '0:0,1:1',
       "each note's new epoch tied to the folder's new one"
     )
     await hub.push(p1, room1, 2, 1, bytes('old epoch'))
@@ -1485,7 +1494,7 @@ try {
       [p1, q1].every((client) => client.take().filter((m) => m.type === 'caughtUp').length === 4),
       'after a restart, members still reach the folder and every note in it'
     )
-    check(JSON.stringify((await hub.keys(quinn, room2)).folder?.epochs) === '{"0":0,"1":1}', 'and the ties are kept')
+    check(tied(await hub.keys(quinn, room2)) === '0:0,1:1', 'and the ties are kept')
     o1.take()
 
     // A note shared on its own as well: someone else, and the same person.
@@ -1555,7 +1564,7 @@ try {
       'a note leaving the folder ends for its members',
       outTold
     )
-    check((await hub.keys(olga, room3)).folder === undefined, "it is the owner's own again")
+    check((await hub.keys(olga, room3)).ties?.['3'] === undefined && tied(await hub.keys(olga, room3)) === '1:1,2:2', "it is the owner's own again, its folder epochs still known")
     check((await hub.fork(quinn, n3)).folder?.keys['2'] === 'f2-q', 'and the members keep it, with the keys to read it')
 
     // A member keeps the whole folder as their own.
@@ -1590,7 +1599,7 @@ try {
     await hub.endFolder(olga, folderId, { notes: { [n1]: { epoch: 4, keys: { [rex]: 'n1e4-rex' } } } })
     const ended = p1.take()
     check(ended.some((m) => m.type === 'revoked' && m.room === room1) && ended.some((m) => m.kind === 'folder-removed'), 'every member hears it ended', ended)
-    check((await hub.keys(olga, room1)).folder === undefined && (await hub.keys(rex, room1)).keys['4'] === 'n1e4-rex', "its notes are the owner's own again, single shares go on")
+    check((await hub.keys(olga, room1)).ties?.['4'] === undefined && (await hub.keys(rex, room1)).keys['4'] === 'n1e4-rex', "its notes are the owner's own again, single shares go on")
     check((await hub.folderState(olga, folderId)).members.length === 0, 'nobody is left in the folder')
     check((await hub.forksOf(pia)).filter((fork) => fork.docId === n1).length === 1, 'and the member keeps it')
 

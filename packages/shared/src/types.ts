@@ -1020,10 +1020,17 @@ export interface KeysResponse {
   /** epoch -> key sealed to the caller. Empty for rooms the caller owns. */
   keys: Record<string, string>
   /**
-   * For a note in a shared folder: the folder, and which of the note's epochs
-   * belong to which epoch of the folder - those keys come from the folder's.
+   * For a note that is or was in a shared folder: which of its epochs belong
+   * to which folder and folder epoch - those keys come from the folder's.
+   * Every epoch up to `epoch` not named here is the note's own.
    */
-  folder?: { id: string; epochs: Record<string, number> }
+  ties?: Record<string, FolderTie>
+}
+
+/** A note epoch spent in a shared folder: its key derives from that folder epoch's key. */
+export interface FolderTie {
+  folder: string
+  epoch: number
 }
 
 export interface LogFrame {
