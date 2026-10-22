@@ -165,6 +165,120 @@ try {
   await delay(1_200)
   check(O1.vault.text('Projects/Y/Sub/Deep.md') === 'deep\n' && P1.vault.text('Shared/X/Sub/Deep.md') === 'deep\n', "a reader's delete is theirs alone")
   check(!Q.vault.text('Shared/X/Sub/Deep.md'), 'and the note stays away for them')
+
+  // A delete the device never got to weigh - it stopped first - is undone, not
+  // taken for everyone: the note comes back.
+  await P1.vault.trash(P1.vault.file('Shared/X/AfterRename.md'))
+  await P1.shutdown()
+  check(await P1.boot(), "the writer's device starts again")
+  check(
+    await eventually(() => P1.vault.text('Shared/X/AfterRename.md') === 'still shared\n'),
+    'a delete never decided on comes back',
+    P1.vault.paths()
+  )
+  check(O1.vault.text('Projects/Y/AfterRename.md') === 'still shared\n', 'and never reached anyone')
+
+  // --- moving in and out ---------------------------------------------------------------------
+  // Every device of the owner asks; this one leaves the window open until the other answered.
+  O2.moveInAnswer = null
+  await O1.vault.rename(O1.vault.file('Projects/Other.md'), 'Projects/Y/Other.md')
+  check(
+    await eventually(() => P1.vault.text('Shared/X/Other.md') === 'other\n' && Q.vault.text('Shared/X/Other.md') === 'other\n'),
+    'an existing note the owner moves in is shared once they said so',
+    P1.vault.paths()
+  )
+  check(O1.askedMoveIn.includes('Projects/Y/Other.md'), 'and they were asked')
+  check(await eventually(() => O2.askedMoveIn.length === 0 || folderOf(O2, 'Projects/Y/Other.md') !== undefined), "the owner's other device follows")
+
+  O1.moveInAnswer = 'back'
+  await O1.vault.rename(O1.vault.file('Projects/Second.md'), 'Projects/Y/Second.md')
+  check(
+    await eventually(() => O1.vault.text('Projects/Second.md') === 'second\n' && !O1.vault.text('Projects/Y/Second.md')),
+    "a note moved in by mistake goes back where it was when they say so",
+    O1.vault.paths()
+  )
+  await delay(600)
+  check(!P1.vault.text('Shared/X/Second.md'), 'and nobody ever saw it')
+  O1.moveInAnswer = 'share'
+
+  await O1.vault.rename(O1.vault.file('Projects/Y/Sub/Plan.md'), 'Projects/Plan.md')
+  check(
+    await eventually(() => {
+      const docId = P1.index?.docIdForPath('Shared/X/Sub/Plan.md')
+      return docId !== undefined && !P1.index?.entry(docId)?.owner
+    }),
+    'a note the owner moves out stays with everyone else, as their own',
+    P1.vault.paths()
+  )
+  check(O1.folderNews.some((news) => news.kind === 'moved-out'), 'and the owner is told')
+  await O1.vault.userWrite('Projects/Plan.md', 'the owner alone\n')
+  await delay(800)
+  check(P1.vault.text('Shared/X/Sub/Plan.md') === 'plan\nfrom pia\n', 'what the owner writes after does not reach them', P1.vault.text('Shared/X/Sub/Plan.md'))
+
+  // A writer moving a note of their own in copies it into the folder: the owner's from then on.
+  await P1.vault.userCreate('Notes/PiaOwn.md', 'pia private\n')
+  check(await eventually(() => P2.vault.text('Notes/PiaOwn.md') === 'pia private\n'), "the writer's own note is on both their devices")
+  await P1.vault.rename(P1.vault.file('Notes/PiaOwn.md'), 'Shared/X/PiaOwn.md')
+  check(await eventually(() => O1.vault.text('Projects/Y/PiaOwn.md') === 'pia private\n'), 'a note a writer moves in is copied into the folder', O1.vault.paths())
+  {
+    const docId = P1.index?.docIdForPath('Shared/X/PiaOwn.md') as string
+    check(docId !== undefined && P1.index?.entry(docId)?.owner === O1.accountId, "and belongs to the folder's owner")
+  }
+  check(
+    await eventually(() => P2.vault.text('Shared/X/PiaOwn.md') === 'pia private\n' && !P2.vault.text('Notes/PiaOwn.md')),
+    "the writer's other device follows into the copy",
+    P2.vault.paths()
+  )
+
+  // --- a note shared on its own as well, and revoking ------------------------------------------
+  {
+    const renamedId = O1.index?.docIdForPath('Projects/Y/Renamed.md') as string
+    await O1.sharing?.share(renamedId, Q.accountId, 'read', true)
+    await delay(800)
+    check(Q.vault.text('Shared/X/Renamed.md') !== undefined && !Q.vault.text('Shared/Renamed.md'), 'a note shared on its own with someone who has it through the folder stays where it is')
+    const folderId = folderOf(O1, 'Projects/Y/Renamed.md') as string
+    await O1.folders?.revoke(folderId, Q.accountId)
+    check(
+      await eventually(() => {
+        const docId = Q.index?.docIdForPath('Shared/X/FromPia.md')
+        return docId !== undefined && !Q.index?.entry(docId)?.owner
+      }),
+      "revoked from the folder, the reader keeps its notes as their own",
+      Q.vault.paths()
+    )
+    check(Q.index?.entry(renamedId)?.owner === O1.accountId, 'except a note shared with them on its own, which stays shared')
+    await O1.vault.userWrite('Projects/Y/Renamed.md', 'still reaches quinn\n')
+    await O1.vault.userWrite('Projects/Y/FromPia.md', 'no longer reaches quinn\n')
+    check(await eventually(() => Q.vault.text('Shared/X/Renamed.md') === 'still reaches quinn\n'), 'that one goes on')
+    check(await eventually(() => P1.vault.text('Shared/X/FromPia.md') === 'no longer reaches quinn\n'), 'the others go on for everyone still in the folder')
+    check(Q.vault.text('Shared/X/FromPia.md') === 'from pia\n', 'but not for whoever was revoked', Q.vault.text('Shared/X/FromPia.md'))
+  }
+
+  // --- the folder moved without an event for itself, then deleted ---------------------------------
+  await O1.vault.renameFolder('Projects/Y', 'Archive/Z', { folderEvent: false })
+  await P1.vault.userCreate('Shared/X/AfterMove.md', 'after the move\n')
+  check(
+    await eventually(() => O1.vault.text('Archive/Z/AfterMove.md') === 'after the move\n'),
+    "a folder moved whose own event never came is found where its notes went - and stays shared",
+    O1.vault.paths()
+  )
+  check(P1.index?.entry(P1.index?.docIdForPath('Shared/X/FromPia.md') as string)?.owner === O1.accountId, 'nothing was taken for moving out')
+
+  await O1.vault.trashFolder('Archive/Z')
+  check(
+    await eventually(() => {
+      const docId = P1.index?.docIdForPath('Shared/X/FromPia.md')
+      return docId !== undefined && !P1.index?.entry(docId)?.owner && P1.vault.text('Shared/X/FromPia.md') !== undefined
+    }),
+    'the owner deleting the folder ends its share: everyone keeps it as their own',
+    P1.vault.paths()
+  )
+  check(
+    await eventually(() => P2.vault.text('Shared/X/PiaOwn.md') === 'pia private\n'),
+    "on every device of theirs",
+    P2.vault.paths()
+  )
+  check(await eventually(() => !O2.vault.text('Archive/Z/AfterMove.md')), "the owner's notes go to the trash on their devices")
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {

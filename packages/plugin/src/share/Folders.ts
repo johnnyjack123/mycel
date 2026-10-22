@@ -129,9 +129,15 @@ export class Folders {
   /** Folders a folder-level event named, deleted or renamed, while their notes' events settle. */
   private readonly folderEvents: Array<{ kind: 'renamed'; from: string; to: string } | { kind: 'deleted'; path: string }> = []
   private readonly asking = new Set<string>()
+  /** Folders whose pass waits until this device's own changes are weighed. */
+  private readonly later = new Set<string>()
+  /** Folders whose first pass since opening is still to come: the one that looks for what a crash left. */
+  private readonly fresh = new Set<string>()
   private readonly toldReader = new Set<string>()
   private readonly mootWaiters = new Set<() => void>()
   private settleTimer: ReturnType<typeof setTimeout> | null = null
+  /** When the changes being gathered began: a note placed in a folder after that is a newcomer. */
+  private batchStart = 0
   private deciding: Promise<void> = Promise.resolve()
   private unwatch: Array<() => void> = []
   private stopped = false
@@ -294,6 +300,7 @@ export class Folders {
     }
     const opened: OpenFolder = { index, local, cursor }
     this.open.set(folderId, opened)
+    this.fresh.add(folderId)
     this.socket.register(folderRoom(folderId), index.doc, {
       crypto: this.keys.folderRoomCrypto(folderId),
       cursor,
@@ -354,6 +361,13 @@ export class Folders {
    */
   private async reconcile(folderId: string): Promise<void> {
     if (this.stopped || !this.store.ready) return
+    // While this device's own moves and deletes settle, the folder may be
+    // between two places: a note coming in now would land at the old one and
+    // bring the folder back there.
+    if (this.settleTimer !== null || this.pending.size > 0 || this.folderEvents.length > 0) {
+      this.later.add(folderId)
+      return
+    }
     const opened = await this.ready(folderId)
     const folder = this.index.folder(folderId)
     if (!opened || !folder || folder.endedAt || folder.leftAt) return
@@ -400,7 +414,8 @@ export class Folders {
         this.index.setFolderOf(docId, { id: folderId, path: entry.path, owner: folder.owner, role: this.roleOf(known, folder) })
       }
     }
-    if (write) this.checkStrays(folderId, folder, fi)
+    const first = this.fresh.delete(folderId)
+    if (write) this.checkStrays(folderId, folder, fi, first)
   }
 
   private relOf(path: string, mount: string): string | null {
@@ -415,20 +430,28 @@ export class Folders {
   }
 
   /**
-   * Notes the folder and this vault disagree about with nobody deciding -
-   * after a crash between an event and its decision: asked about, never
-   * guessed.
+   * Notes the folder and this vault disagree about with nobody deciding:
+   * asked about, never guessed. A note of this account's own lying in the
+   * folder without being in it was moved in - on another device of the
+   * account, or before a crash. A note of the owner's that is in the folder
+   * but lies outside it can only be a crash between its move and the
+   * decision, so that is looked for once, when the folder opens: while
+   * another device of the owner moves the folder, its notes lie outside for
+   * a moment.
    */
-  private checkStrays(folderId: string, folder: VaultFolder, fi: FolderIndex): void {
+  private checkStrays(folderId: string, folder: VaultFolder, fi: FolderIndex, first: boolean): void {
     const mount = folder.path
+    // A note that carries on a former note of the folder - its share ended - is
+    // not a note moved in.
+    const forks = new Set(this.index.deleted().flatMap(({ entry }) => (entry.forkedTo ? [entry.forkedTo] : [])))
     for (const { docId, entry } of this.index.live()) {
-      if (this.pending.has(docId) || this.asking.has(docId)) continue
+      if (this.pending.has(docId) || this.asking.has(docId) || forks.has(docId)) continue
       const there = inside(entry.path, mount) && this.placeOf(entry.path)?.folderId === folderId
       if (there && !entry.folder && !entry.owner && !fi.has(docId) && !this.store.isExcluded(entry.path)) {
-        // A note of this account's own inside the folder that is not in it.
         void this.askMoveIn(this.placeOf(entry.path) as FolderPlace, docId, null)
-      } else if (!folder.owner && entry.folder === folderId && !there && fi.note(docId) && !fi.note(docId)?.leftAt && !fi.note(docId)?.deletedAt) {
-        void this.askOutside(folderId, folder, docId, entry.path)
+      } else if (first && !folder.owner && entry.folder === folderId && !there) {
+        const note = fi.note(docId)
+        if (note && !note.leftAt && !note.deletedAt) void this.askOutside(folderId, docId, entry.path)
       }
     }
   }
@@ -441,6 +464,7 @@ export class Folders {
       this.created(change)
       return
     }
+    if (this.pending.size === 0) this.batchStart = Date.now()
     const before = this.pending.get(change.docId)
     this.pending.set(
       change.docId,
@@ -464,10 +488,21 @@ export class Folders {
     this.scheduleDecide()
   }
 
+  /**
+   * A shared folder moved: its record follows, and so does any note of it
+   * that another device of the account placed at the old place meanwhile.
+   */
   private followFolderRename(from: string, to: string): void {
     for (const { folderId, folder } of this.index.liveFolders()) {
-      if (folder.path === from) this.index.setFolder(folderId, { ...folder, path: to, updatedAt: Date.now() })
-      else if (inside(folder.path, from)) this.index.setFolder(folderId, { ...folder, path: `${to}${folder.path.slice(from.length)}`, updatedAt: Date.now() })
+      if (folder.path !== from && !inside(folder.path, from)) continue
+      const old = folder.path
+      const now = `${to}${old.slice(from.length)}`
+      this.index.setFolder(folderId, { ...folder, path: now, updatedAt: Date.now() })
+      for (const { docId, entry } of this.index.live()) {
+        if (entry.folder === folderId && entry.folderPath !== undefined && entry.path === joinPath(old, entry.folderPath)) {
+          this.index.rename(docId, joinPath(now, entry.folderPath))
+        }
+      }
     }
   }
 
@@ -519,27 +554,43 @@ export class Folders {
         log.error('ending the share of a deleted folder failed', error)
       }
     }
+    if (this.settleTimer !== null || this.pending.size > 0) return
+    for (const folderId of Array.from(this.later)) {
+      this.later.delete(folderId)
+      void this.schedule(folderId)
+    }
   }
 
   /**
-   * A shared folder that is no longer where it was, but whose notes turn up
-   * together somewhere else, was moved or renamed - even when Obsidian's
-   * event for the folder itself never came.
+   * A shared folder whose notes all turned up together somewhere else, each
+   * at its place in the folder, was moved or renamed - even when Obsidian's
+   * event for the folder itself never came. What still lies at the old place
+   * may only be a newcomer another device of the account put there meanwhile;
+   * an old place left empty is a folder that stayed while its notes went.
    */
   private findMovedFolders(changes: LocalChange[]): void {
     for (const { folderId, folder } of this.index.liveFolders()) {
-      if (this.isFolder(folder.path)) continue
+      if (folder.owner) continue
+      const targets = new Set<string>()
       for (const change of changes) {
         if (change.kind !== 'renamed') continue
         const entry = this.index.entry(change.docId)
         if (entry?.folder !== folderId || entry.folderPath === undefined) continue
-        if (change.from !== joinPath(folder.path, entry.folderPath) || !change.to.endsWith(`/${entry.folderPath}`)) continue
-        const moved = change.to.slice(0, change.to.length - entry.folderPath.length - 1)
-        if (!this.isFolder(moved)) continue
-        log.info(`${folder.path}: the shared folder moved to ${moved}`)
-        this.followFolderRename(folder.path, moved)
-        break
+        if (change.from !== joinPath(folder.path, entry.folderPath) || !change.to.endsWith(`/${entry.folderPath}`)) {
+          targets.add('')
+          continue
+        }
+        targets.add(change.to.slice(0, change.to.length - entry.folderPath.length - 1))
       }
+      const moved = targets.size === 1 ? (Array.from(targets)[0] as string) : ''
+      if (!moved || !this.isFolder(moved)) continue
+      const stayed = this.index
+        .live()
+        .filter(({ entry }) => entry.folder === folderId && inside(entry.path, folder.path) && entry.updatedAt < this.batchStart)
+      const leftEmpty = this.isFolder(folder.path) && !this.app.vault.getFiles().some((file) => inside(file.path, folder.path))
+      if (stayed.length > 0 || leftEmpty) continue
+      log.info(`${folder.path}: the shared folder moved to ${moved}`)
+      this.followFolderRename(folder.path, moved)
     }
   }
 
@@ -580,7 +631,9 @@ export class Folders {
       if (to) await this.askMoveIn(to, change.docId, change.from)
       return
     }
-    if (to) await this.askMoveIn(to, change.docId, change.from)
+    // Into a folder from outside it; a note moved about inside one it is not
+    // in - one that carries on after its share ended - stays as it is.
+    if (to && this.placeOf(change.from)?.folderId !== to.folderId) await this.askMoveIn(to, change.docId, change.from)
   }
 
   private deleted(
@@ -701,22 +754,30 @@ export class Folders {
     }
   }
 
-  private async askOutside(folderId: string, folder: VaultFolder, docId: string, path: string): Promise<void> {
+  private async askOutside(folderId: string, docId: string, path: string): Promise<void> {
     if (this.asking.has(docId)) return
+    // Still outside the folder, wherever the folder is by now.
+    const outside = (): boolean => {
+      const entry = this.index.entry(docId)
+      const folder = this.index.folder(folderId)
+      return Boolean(entry && !entry.deletedAt && entry.path === path && entry.folder === folderId && folder && !inside(path, folder.path))
+    }
     this.asking.add(docId)
     try {
+      const folder = this.index.folder(folderId) as VaultFolder
       const answer = await this.prompts.outside({
         folderId,
         folderPath: folder.path,
         path,
         people: await this.peopleOf(folderId),
-        moot: this.moot(() => this.index.entry(docId)?.path === path && this.index.entry(docId)?.folder === folderId)
+        moot: this.moot(outside)
       })
-      if (this.index.entry(docId)?.path !== path) return
+      if (!outside()) return
       if (answer === 'end') await this.moveOut(folderId, docId)
       else if (answer === 'back') {
         const rel = this.index.entry(docId)?.folderPath
-        if (rel) await this.moveBack(path, joinPath(folder.path, rel))
+        const now = this.index.folder(folderId)
+        if (rel && now) await this.moveBack(path, joinPath(now.path, rel))
       }
     } finally {
       this.asking.delete(docId)
