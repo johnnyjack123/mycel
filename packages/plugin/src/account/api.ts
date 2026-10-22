@@ -21,10 +21,20 @@ import {
   type InboxResponse,
   type RedeemRequest,
   type CreateVaultRequest,
+  type FolderAcceptRequest,
+  type FolderEndRequest,
+  type FolderJoinRequest,
+  type FolderLeaveRequest,
+  type FolderRevokeRequest,
+  type FolderRoleRequest,
+  type FolderRotation,
+  type FolderShareRequest,
+  type FolderStateResponse,
   type ForkDoneRequest,
   type ForkResponse,
   type ForksResponse,
   type ImportRequest,
+  type IncomingFoldersResponse,
   type IncomingSharesResponse,
   type KeysResponse,
   type LoginRequest,
@@ -43,6 +53,7 @@ import {
   type ShareMembersResponse,
   type ShareRequest,
   type SnapshotRequest,
+  type StartSnapshotRequest,
   type TotpDisableRequest,
   type TotpEnableRequest,
   type TotpLoginRequest,
@@ -276,6 +287,67 @@ export class ConnectApi {
 
   accept(request: AcceptRequest): Promise<unknown> {
     return this.call('POST', `${API.shares}/accept`, request)
+  }
+
+  // --- shared folders --------------------------------------------------------------
+
+  shareFolder(request: FolderShareRequest): Promise<unknown> {
+    return this.call('POST', API.folders, request)
+  }
+
+  incomingFolders(): Promise<IncomingFoldersResponse> {
+    return this.call('GET', `${API.folders}/incoming`)
+  }
+
+  folderState(folderId: string): Promise<FolderStateResponse> {
+    return this.call('GET', `${API.folders}/${folderId}`)
+  }
+
+  private folderAction(folderId: string, action: string, body: unknown = {}): Promise<unknown> {
+    return this.call('POST', `${API.folders}/${folderId}/${action}`, body)
+  }
+
+  rotateFolder(folderId: string, rotation: FolderRotation): Promise<unknown> {
+    return this.folderAction(folderId, 'rotate', rotation)
+  }
+
+  joinFolderNote(folderId: string, request: FolderJoinRequest): Promise<unknown> {
+    return this.folderAction(folderId, 'notes/join', request)
+  }
+
+  leaveFolderNote(folderId: string, request: FolderLeaveRequest): Promise<unknown> {
+    return this.folderAction(folderId, 'notes/leave', request)
+  }
+
+  revokeFolder(folderId: string, request: FolderRevokeRequest): Promise<unknown> {
+    return this.folderAction(folderId, 'revoke', request)
+  }
+
+  setFolderRole(folderId: string, request: FolderRoleRequest): Promise<unknown> {
+    return this.folderAction(folderId, 'role', request)
+  }
+
+  acceptFolder(folderId: string, vaultId: string): Promise<unknown> {
+    const request: FolderAcceptRequest = { vaultId }
+    return this.folderAction(folderId, 'accept', request)
+  }
+
+  /** Leaves a folder keeping its notes as this account's own; the server holds what it read of each. */
+  detachFolder(folderId: string): Promise<unknown> {
+    return this.folderAction(folderId, 'detach')
+  }
+
+  leaveFolder(folderId: string): Promise<unknown> {
+    return this.folderAction(folderId, 'leave')
+  }
+
+  endFolder(folderId: string, request: FolderEndRequest): Promise<unknown> {
+    return this.folderAction(folderId, 'end', request)
+  }
+
+  /** A starting point in a room's current epoch, for someone joining its folder without history. */
+  startSnapshot(roomName: string, request: StartSnapshotRequest): Promise<unknown> {
+    return this.call('POST', `${API.log}/${room(roomName)}/start`, request)
   }
 
   keys(roomName: string): Promise<KeysResponse> {

@@ -247,6 +247,62 @@ export class FakeVault {
     this.emit('delete', file)
   }
 
+  /**
+   * A folder renamed or moved, everything in it along. Obsidian reports it as
+   * an event for the folder and one for each file, in an order nobody
+   * promised - `folderFirst` picks one, `folderEvent: false` leaves the
+   * folder's out.
+   */
+  async renameFolder(path: string, newPath: string, options: { folderFirst?: boolean; folderEvent?: boolean } = {}): Promise<void> {
+    const folder = this.entries.get(path)
+    if (!(folder instanceof TFolder)) throw new Error(`no folder at ${path}`)
+    if (this.entries.has(newPath)) throw new Error('Destination file already exists!')
+    this.ensureParents(`${newPath}/x`)
+    this.entries.delete(newPath)
+    const moved: Array<{ entry: TAbstractFile; oldPath: string }> = []
+    for (const [entryPath, entry] of Array.from(this.entries)) {
+      if (entryPath !== path && !entryPath.startsWith(`${path}/`)) continue
+      const target = `${newPath}${entryPath.slice(path.length)}`
+      this.entries.delete(entryPath)
+      const text = this.contents.get(entryPath)
+      const data = this.binaries.get(entryPath)
+      this.contents.delete(entryPath)
+      this.binaries.delete(entryPath)
+      entry.path = target
+      entry.name = target.split('/').pop() ?? target
+      this.entries.set(target, entry)
+      if (data) this.binaries.set(target, data)
+      else if (text !== undefined) this.contents.set(target, text)
+      moved.push({ entry, oldPath: entryPath })
+    }
+    const files = moved.filter(({ entry }) => entry instanceof TFile)
+    const folderEvent = options.folderEvent === false ? [] : moved.filter(({ entry }) => entry === folder)
+    for (const { entry, oldPath } of options.folderFirst ? [...folderEvent, ...files] : [...files, ...folderEvent]) {
+      this.emit('rename', entry, oldPath)
+    }
+  }
+
+  /** A folder deleted with everything in it; `filesReported: false`: Obsidian names only the folder. */
+  async trashFolder(path: string, options: { filesReported?: boolean } = {}): Promise<void> {
+    const folder = this.entries.get(path)
+    if (!(folder instanceof TFolder)) throw new Error(`no folder at ${path}`)
+    const gone: TAbstractFile[] = []
+    for (const [entryPath, entry] of Array.from(this.entries)) {
+      if (entryPath !== path && !entryPath.startsWith(`${path}/`)) continue
+      this.entries.delete(entryPath)
+      this.contents.delete(entryPath)
+      this.binaries.delete(entryPath)
+      gone.push(entry)
+    }
+    if (options.filesReported !== false) for (const entry of gone) if (entry instanceof TFile) this.emit('delete', entry)
+    this.emit('delete', folder)
+  }
+
+  /** Whether a folder is there. */
+  hasFolder(path: string): boolean {
+    return this.entries.get(path) instanceof TFolder
+  }
+
   // --- test side -------------------------------------------------------------
 
   text(path: string): string | undefined {

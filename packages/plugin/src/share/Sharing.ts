@@ -6,9 +6,11 @@ import {
   frameAad,
   roomSubject,
   snapshotAad,
+  type FolderTie,
   type ForkResponse,
   type IncomingShare,
   type NotifyKind,
+  type Rotation,
   type ShareMembersResponse,
   type ShareNotice,
   type ShareRole
@@ -42,6 +44,11 @@ export interface SharingOptions {
   syncTimeoutMs: number
   /** Accept incoming shares into this vault without asking - true when the account has one vault. */
   autoAccept: () => boolean
+  /**
+   * The current epoch of a shared folder of this vault's: a note in it takes
+   * the key of every new epoch from there.
+   */
+  folderEpoch?: (folderId: string) => Promise<number>
 }
 
 const STALE_RETRIES = 5
@@ -79,11 +86,22 @@ export class Sharing {
   }
 
   /**
+   * Where a note's next epoch takes its key from: the current epoch of its
+   * shared folder, or the note's own. The server refuses a rotation whose
+   * folder epoch moved meanwhile, and the caller tries again.
+   */
+  private async nextTie(docId: string): Promise<FolderTie | null> {
+    const folder = this.store.entry(docId)?.folder
+    if (!folder || !this.options.folderEpoch) return null
+    return { folder, epoch: await this.options.folderEpoch(folder) }
+  }
+
+  /**
    * The key pinned when the contact was made. Only someone who is a member
    * without being a contact - which sharing does not allow - falls back to
    * what the server says, so a rotation can still seal for everyone who stays.
    */
-  private async publicKey(account: string): Promise<Bytes> {
+  async publicKey(account: string): Promise<Bytes> {
     const pinned = this.contacts?.publicKey(account)
     if (pinned) return pinned
     log.warn(`${account} is not a contact; using the key the server has for them`)
@@ -179,28 +197,26 @@ export class Sharing {
           })
         } else {
           const epoch = members.epoch + 1
+          const tie = await this.nextTie(docId)
+          const next = { epoch, tie }
           const rotationKeys: Record<string, string> = {}
-          rotationKeys[account] = (await this.keys.sealEpochKeys(docId, [epoch], recipientKey))[String(epoch)] as string
+          rotationKeys[account] = (await this.keys.sealEpochKeys(docId, [epoch], recipientKey, next))[String(epoch)] as string
           for (const member of members.members) {
             if (member.account === account) continue
-            const sealed = await this.keys.sealEpochKeys(docId, [epoch], await this.publicKey(member.account))
+            const sealed = await this.keys.sealEpochKeys(docId, [epoch], await this.publicKey(member.account), next)
             rotationKeys[member.account] = sealed[String(epoch)] as string
           }
           // The note as far as the server's log goes. The server refuses it
           // when frames arrived meanwhile, and the loop tries again once they
           // are in.
-          const key = await aesKey(await this.keys.ownDocKey(docId, epoch))
+          const raw = await this.keys.noteKeyUnder(docId, epoch, tie)
+          if (!raw) throw new Error('The key of the shared folder is not here yet.')
+          const key = await aesKey(raw)
           const state = packFrame(Date.now(), Y.encodeStateAsUpdate(handle.doc))
           const snapshot = await encrypt(key, state, snapshotAad(room, epoch))
-          await this.api.share({
-            docId,
-            account,
-            role,
-            withHistory: false,
-            keys: {},
-            title,
-            rotation: { epoch, keys: rotationKeys, snapshot: { uptoSeq: handle.lastSeq, data: toBase64(snapshot) } }
-          })
+          const rotation: Rotation = { epoch, keys: rotationKeys, snapshot: { uptoSeq: handle.lastSeq, data: toBase64(snapshot) } }
+          if (tie) rotation.folderEpoch = tie.epoch
+          await this.api.share({ docId, account, role, withHistory: false, keys: {}, title, rotation })
         }
         break
       } catch (error) {
@@ -256,13 +272,16 @@ export class Sharing {
   async revoke(docId: string, account: string): Promise<void> {
     const members = await this.api.members(docId)
     const epoch = members.epoch + 1
+    const tie = await this.nextTie(docId)
     const keys: Record<string, string> = {}
     for (const member of members.members) {
       if (member.account === account) continue
-      const sealed = await this.keys.sealEpochKeys(docId, [epoch], await this.publicKey(member.account))
+      const sealed = await this.keys.sealEpochKeys(docId, [epoch], await this.publicKey(member.account), { epoch, tie })
       keys[member.account] = sealed[String(epoch)] as string
     }
-    await this.api.revoke({ docId, account, rotation: { epoch, keys } })
+    const rotation: Rotation = { epoch, keys }
+    if (tie) rotation.folderEpoch = tie.epoch
+    await this.api.revoke({ docId, account, rotation })
     log.info(`${this.store.entry(docId)?.path ?? docId}: access of ${account} revoked, now epoch ${epoch}`)
     // Nobody left to see a caret.
     if (Object.keys(keys).length === 0) this.store.share(docId, false)
@@ -487,7 +506,7 @@ export class Sharing {
   /** What the server kept, decrypted with the keys it kept alongside. */
   private async readKept(docId: string, kept: ForkResponse): Promise<HistoryEntry[]> {
     const room = docRoom(docId)
-    const crypto = this.keys.endedDocCrypto(docId, kept.keys)
+    const crypto = this.keys.endedDocCrypto(docId, kept.keys, kept.folder)
     const open = async (epoch: number, data: string, aad: string): Promise<HistoryEntry | null> => {
       try {
         const key = await crypto.key(epoch)

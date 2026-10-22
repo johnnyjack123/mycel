@@ -127,6 +127,8 @@ export interface DocHandleOptions {
   history?: HistoryStore | null
   /** This account owns the note, so the server may create it if it lost it. */
   owned?: boolean
+  /** A shared folder this account writes in: a missing note is created there, owned by the folder's owner. */
+  folder?: string | null
 }
 
 export class DocHandle {
@@ -179,7 +181,8 @@ export class DocHandle {
       awareness: this.sharedNow ? this.awareness : null,
       readOnly: this.readOnlyNow,
       history: history ? (entry) => history.add(this.room, entry) : null,
-      create: this.options.owned ?? true
+      create: (this.options.owned ?? true) || Boolean(this.options.folder),
+      folder: this.options.folder ?? null
     })
   }
 

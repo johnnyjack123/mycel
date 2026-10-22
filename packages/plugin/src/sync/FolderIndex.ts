@@ -1,0 +1,154 @@
+import * as Y from 'yjs'
+import { FOLDER_META_FIELD, FOLDER_NOTES_FIELD, type FolderNote } from '@obsidian-connect/shared'
+
+// A shared folder's own document: which notes are in it and where, relative to
+// the folder - the same for everyone in it, wherever each of them keeps the
+// folder. Like the vault index, identity is the document id and a delete is a
+// tombstone; a note its owner moved out is marked `leftAt`, so the others fork
+// it instead of deleting it.
+
+/** Origin of changes this device makes to a folder document. */
+export const FOLDER_ORIGIN = 'folder'
+
+/** The entry without its tombstone. */
+function live(entry: FolderNote): FolderNote {
+  const { deletedAt: _deletedAt, leftAt: _leftAt, ...rest } = entry
+  return rest
+}
+
+export class FolderIndex {
+  readonly doc = new Y.Doc()
+  private readonly notes: Y.Map<FolderNote>
+  private readonly meta: Y.Map<unknown>
+  private readonly byPath = new Map<string, string>()
+  private readonly listeners = new Set<(local: boolean) => void>()
+
+  constructor(readonly folderId: string) {
+    this.notes = this.doc.getMap<FolderNote>(FOLDER_NOTES_FIELD)
+    this.meta = this.doc.getMap<unknown>(FOLDER_META_FIELD)
+    const changed = (_event: unknown, transaction: Y.Transaction): void => {
+      this.rebuild()
+      for (const listener of this.listeners) listener(transaction.origin === FOLDER_ORIGIN)
+    }
+    this.notes.observe(changed)
+    this.meta.observe(changed)
+    this.rebuild()
+  }
+
+  /** `local`: the change was made on this device. */
+  onChange(listener: (local: boolean) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  private rebuild(): void {
+    this.byPath.clear()
+    // Sorted, so when two notes claim one path every device takes the same one.
+    for (const docId of Array.from(this.notes.keys()).sort()) {
+      const entry = this.notes.get(docId)
+      if (entry && !entry.deletedAt && !entry.leftAt && !this.byPath.has(entry.path)) this.byPath.set(entry.path, docId)
+    }
+  }
+
+  note(docId: string): FolderNote | undefined {
+    return this.notes.get(docId)
+  }
+
+  has(docId: string): boolean {
+    return this.notes.has(docId)
+  }
+
+  docIdForPath(path: string): string | undefined {
+    return this.byPath.get(path)
+  }
+
+  /** Every note in the folder now. */
+  live(): Array<{ docId: string; entry: FolderNote }> {
+    const found: Array<{ docId: string; entry: FolderNote }> = []
+    this.notes.forEach((entry, docId) => {
+      if (!entry.deletedAt && !entry.leftAt) found.push({ docId, entry })
+    })
+    return found
+  }
+
+  /** Every entry, deleted and left included. */
+  all(): Array<{ docId: string; entry: FolderNote }> {
+    const found: Array<{ docId: string; entry: FolderNote }> = []
+    this.notes.forEach((entry, docId) => found.push({ docId, entry }))
+    return found
+  }
+
+  /** Live notes sharing a path; the first of each, sorted, keeps it. */
+  duplicatePaths(): Array<{ path: string; docIds: string[] }> {
+    const byPath = new Map<string, string[]>()
+    for (const { docId, entry } of this.live()) byPath.set(entry.path, [...(byPath.get(entry.path) ?? []), docId])
+    return Array.from(byPath, ([path, docIds]) => ({ path, docIds: docIds.sort() })).filter(({ docIds }) => docIds.length > 1)
+  }
+
+  private set(docId: string, entry: FolderNote): void {
+    this.doc.transact(() => this.notes.set(docId, entry), FOLDER_ORIGIN)
+  }
+
+  /** A note comes into the folder - new, or moved in - or back, live. */
+  add(docId: string, path: string, by: string): void {
+    const current = this.notes.get(docId)
+    if (current && !current.deletedAt && !current.leftAt && current.path === path) return
+    this.set(docId, { path, updatedAt: Date.now(), by })
+  }
+
+  rename(docId: string, path: string, by: string): void {
+    const current = this.notes.get(docId)
+    if (!current || current.deletedAt || current.leftAt || current.path === path) return
+    this.set(docId, { ...live(current), path, updatedAt: Date.now(), by })
+  }
+
+  /** Deleted for everyone in the folder. */
+  markDeleted(docId: string, by: string): void {
+    const current = this.notes.get(docId)
+    if (!current || current.deletedAt || current.leftAt) return
+    this.set(docId, { ...current, deletedAt: Date.now(), updatedAt: Date.now(), by })
+  }
+
+  /** Its owner took it out of the folder: everyone else keeps it as their own. */
+  markLeft(docId: string, by: string): void {
+    const current = this.notes.get(docId)
+    if (!current || current.leftAt) return
+    this.set(docId, { ...current, leftAt: Date.now(), updatedAt: Date.now(), by })
+  }
+
+  revive(docId: string, path: string, by: string): void {
+    const current = this.notes.get(docId)
+    this.set(docId, { ...(current ? live(current) : {}), path, updatedAt: Date.now(), by })
+  }
+
+  /** The owner's name for the folder, shown to everyone in it; never a path. */
+  get name(): string {
+    const name = this.meta.get('name')
+    return typeof name === 'string' ? name : ''
+  }
+
+  setName(name: string): void {
+    if (this.name === name) return
+    this.doc.transact(() => this.meta.set('name', name), FOLDER_ORIGIN)
+  }
+
+  /** Whether the files the folder's notes link outside it travel along, as a shared note's do. */
+  get linkedFiles(): boolean {
+    return this.meta.get('linkedFiles') === true
+  }
+
+  setLinkedFiles(on: boolean): void {
+    if (this.linkedFiles === on) return
+    this.doc.transact(() => this.meta.set('linkedFiles', on), FOLDER_ORIGIN)
+  }
+
+  /** Nothing was ever written into it - here or on the server. */
+  get pristine(): boolean {
+    return this.doc.store.clients.size === 0
+  }
+
+  destroy(): void {
+    this.listeners.clear()
+    this.doc.destroy()
+  }
+}

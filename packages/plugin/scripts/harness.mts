@@ -46,6 +46,7 @@ const { Compactor } = await import('../src/sync/Compactor.js')
 const { Trash } = await import('../src/sync/Trash.js')
 const { EditorSync } = await import('../src/editor/EditorSync.js')
 const { Sharing } = await import('../src/share/Sharing.js')
+const { Folders } = await import('../src/share/Folders.js')
 const { SharedFiles } = await import('../src/share/SharedFiles.js')
 const { Contacts } = await import('../src/share/Contacts.js')
 const { openInviteSession, openPairingSession } = await import('../src/backup/BackupLink.js')
@@ -54,6 +55,7 @@ const { Rollback } = await import('../src/sync/Rollback.js')
 const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
 )
+const { TFolder: TFolderT } = await import('obsidian')
 
 type DocStoreT = InstanceType<typeof DocStore>
 type Unlocked = Awaited<ReturnType<InstanceType<typeof Session>['login']>>
@@ -158,6 +160,15 @@ export class Device {
   index: InstanceType<typeof VaultIndex> | null = null
   keys: InstanceType<typeof KeyRing> | null = null
   sharing: InstanceType<typeof Sharing> | null = null
+  folders: InstanceType<typeof Folders> | null = null
+  /** What the person answers when a note is moved into a shared folder; null leaves the window open. */
+  moveInAnswer: 'share' | 'back' | null = 'share'
+  /** Every time a window asked about moving a note into a shared folder, and where it was. */
+  readonly askedMoveIn: string[] = []
+  /** What the person answers when a note of theirs lies outside its shared folder after a crash. */
+  outsideAnswer: 'end' | 'back' | null = null
+  /** What this device said about shared folders, oldest first. */
+  readonly folderNews: Array<{ kind: string; undo?: () => Promise<void>; [key: string]: unknown }> = []
   compactor: InstanceType<typeof Compactor> | null = null
   trash: InstanceType<typeof Trash> | null = null
   settings: InstanceType<typeof AccountSettings> | null = null
@@ -224,9 +235,11 @@ export class Device {
         else if (kind === 'contact-removed') this.contacts?.forget((payload as { account: string }).account)
         // What main.ts's `refreshAccount` does.
         else if (kind === 'account-changed') void this.refreshAccount()
+        else if (kind.startsWith('folder-')) void this.folders?.onNotify(kind, payload as never).then(() => this.editors.refresh())
         else void this.sharing?.onNotify(kind, payload as never).then(() => this.editors.refresh())
       },
-      revoked: (room) => void this.sharing?.onRevoked(room).then(() => this.editors.refresh()),
+      revoked: (room) =>
+        void (room.startsWith('fld:') ? this.folders?.onRevoked(room) : this.sharing?.onRevoked(room))?.then(() => this.editors.refresh()),
       diverged: (room) => this.recovery?.diverged(room),
       // What main.ts's `checkSignedIn` does.
       signedOut: () =>
@@ -264,7 +277,8 @@ export class Device {
       },
       {
         indexCrypto: keys.indexCrypto(),
-        docCrypto: (docId, entry) => (entry?.owner ? keys.sharedDocCrypto(docId) : keys.ownDocCrypto(docId))
+        docCrypto: (docId, entry) => keys.noteCrypto(docId, { owned: !entry?.owner, folder: Boolean(entry?.folder) }),
+        roomFolder: (docId, entry) => this.folders?.roomFolder(docId, entry) ?? null
       },
       this.locals.open,
       this.locals.history
@@ -286,7 +300,43 @@ export class Device {
       settings
     )
     this.contacts = contacts
-    const sharing = new Sharing(this.api, keys, store, { folder: () => 'Shared', syncTimeoutMs: 4_000, autoAccept: () => true }, contacts)
+    const sharing: InstanceType<typeof Sharing> = new Sharing(
+      this.api,
+      keys,
+      store,
+      { folder: () => 'Shared', syncTimeoutMs: 4_000, autoAccept: () => true, folderEpoch: (id): Promise<number> => folders.currentEpoch(id) },
+      contacts
+    )
+    const folders: InstanceType<typeof Folders> = new Folders(
+      app as never,
+      this.api,
+      keys,
+      store,
+      index,
+      socket,
+      this.locals.open,
+      sharing,
+      { shareFolder: () => 'Shared', syncTimeoutMs: 4_000, autoAccept: () => true, settleMs: 300 },
+      {
+        moveIn: async (question) => {
+          this.askedMoveIn.push(question.path)
+          if (this.moveInAnswer === null) {
+            await question.moot
+            return null
+          }
+          return this.moveInAnswer
+        },
+        outside: async (question) => {
+          if (this.outsideAnswer === null) {
+            await question.moot
+            return null
+          }
+          return this.outsideAnswer
+        }
+      },
+      (news) => this.folderNews.push(news as never)
+    )
+    this.folders = folders
     const attachmentIndex = new AttachmentIndex(index.doc, (path, generation) => keys.fileId(path, generation))
     this.maxFileBytes = (await this.api.config()).maxFileBytes ?? 0
     const attachments = new AttachmentStore(app as never, attachmentIndex, state, new Blobs(this.api, keys), this.attachmentOptions())
@@ -343,10 +393,21 @@ export class Device {
         sharedFiles.noteChanged(file as never)
       }),
       vault.on('delete', (file) => {
-        void store.onDelete((file as { path: string }).path)
-        void attachments.onDelete((file as { path: string }).path)
+        const path = (file as { path: string }).path
+        if (file instanceof TFolderT) {
+          void store.onDeleteFolder(path)
+          void attachments.onDeleteFolder(path)
+          folders.onFolderDeleted(path)
+          return
+        }
+        void store.onDelete(path)
+        void attachments.onDelete(path)
       }),
       vault.on('rename', (file, oldPath) => {
+        if (file instanceof TFolderT) {
+          folders.onFolderRenamed(oldPath as string, (file as { path: string }).path)
+          return
+        }
         void store.onRename(file as never, oldPath as string)
         void attachments.onRename(file as never, oldPath as string)
       })
@@ -354,6 +415,7 @@ export class Device {
     socket.connect()
     started = await store.start()
     if (started) {
+      folders.start()
       await attachments.start()
       sharedFiles.start()
     }
@@ -361,6 +423,7 @@ export class Device {
       await contacts.processInbox()
       await sharing.checkEnded()
       await sharing.checkIncoming()
+      await folders.checkIncoming()
     }
     this.editors.refresh()
     return started
@@ -525,6 +588,8 @@ export class Device {
     this.refs = []
     this.recovery?.stop()
     this.recovery = null
+    await this.folders?.stop()
+    this.folders = null
     this.sharedFiles?.stop()
     this.sharedFiles = null
     const attachments = this.attachments

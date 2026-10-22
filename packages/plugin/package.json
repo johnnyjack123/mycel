@@ -13,6 +13,7 @@
     "test:sync": "tsx --tsconfig scripts/tsconfig.json scripts/binding-selftest.mts",
     "test:load": "node scripts/load-selftest.mjs",
     "test:vault": "tsx --tsconfig scripts/tsconfig.json scripts/vault-selftest.mts",
+    "test:folders": "tsx --tsconfig scripts/tsconfig.json scripts/folder-selftest.mts",
     "test:recovery": "tsx --tsconfig scripts/tsconfig.json scripts/recovery-selftest.mts",
     "test:account": "tsx --tsconfig scripts/tsconfig.json scripts/account-selftest.mts",
     "test:backup": "tsx --tsconfig scripts/tsconfig.json scripts/backup-selftest.mts",

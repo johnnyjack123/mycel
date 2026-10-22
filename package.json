@@ -22,6 +22,7 @@
     "test:sync": "npm run test:sync -w @obsidian-connect/plugin",
     "test:socket": "npm run test:socket -w @obsidian-connect/plugin",
     "test:vault": "npm run test:vault -w @obsidian-connect/plugin",
+    "test:folders": "npm run test:folders -w @obsidian-connect/plugin",
     "test:recovery": "npm run test:recovery -w @obsidian-connect/plugin",
     "test:account": "npm run test:account -w @obsidian-connect/plugin",
     "test:backup": "npm run test:backup -w @obsidian-connect/plugin",

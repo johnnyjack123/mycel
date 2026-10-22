@@ -38,7 +38,22 @@ export interface DocAccess {
   indexCrypto: RoomCrypto
   /** Derived for a note this vault owns, sealed for one someone else owns. */
   docCrypto(docId: string, entry: IndexEntry | undefined): RoomCrypto
+  /**
+   * The shared folder a note lies in that this account may write in: a note
+   * the server does not have yet is created there, owned by the folder's owner.
+   */
+  roomFolder?(docId: string, entry: IndexEntry | undefined): string | null
 }
+
+/**
+ * What the user did to a note on this device, from Obsidian's events - not
+ * what this device did to follow another one. A shared folder decides from
+ * these what reaches everyone in it.
+ */
+export type LocalChange =
+  | { kind: 'created'; docId: string; path: string }
+  | { kind: 'renamed'; docId: string; from: string; to: string }
+  | { kind: 'deleted'; docId: string; path: string }
 
 export type NoteSyncState = 'synced' | 'unsent' | 'waiting' | 'held' | 'untracked'
 
@@ -136,6 +151,7 @@ export class DocStore {
   private readonly aside = new Set<string>()
   private readonly readyListeners = new Set<() => void>()
   private readonly leaveListeners = new Set<(docId: string) => void>()
+  private readonly localListeners = new Set<(change: LocalChange) => void>()
   private readonly reviewListeners = new Set<(review: Omit<Review, 'id'>) => void>()
   /** Renames and deletes that happened before the index arrived. */
   private readonly early: Array<() => Promise<void>> = []
@@ -204,6 +220,15 @@ export class DocStore {
   }
 
   /** Fires when a note someone else owns is deleted here: that is leaving the share. */
+  onLocalChange(listener: (change: LocalChange) => void): () => void {
+    this.localListeners.add(listener)
+    return () => this.localListeners.delete(listener)
+  }
+
+  private told(change: LocalChange): void {
+    for (const listener of this.localListeners) listener(change)
+  }
+
   onLeave(listener: (docId: string) => void): () => void {
     this.leaveListeners.add(listener)
     return () => this.leaveListeners.delete(listener)
@@ -441,7 +466,8 @@ export class DocStore {
           readOnly: this.isReadOnly(docId),
           crypto: this.access.docCrypto(docId, this.index.entry(docId)),
           history: this.history,
-          owned: !this.index.entry(docId)?.owner
+          owned: !this.index.entry(docId)?.owner,
+          folder: this.access.roomFolder?.(docId, this.index.entry(docId)) ?? null
         },
         this.openLocal
       )
@@ -635,7 +661,12 @@ export class DocStore {
     if (!this.tracks(file) || this.aside.has(file.path)) return
     const path = file.path
     const known = this.index.docIdForPath(path)
-    const docId = known ?? (await this.index.ensure(path))
+    let created = false
+    const docId =
+      known ??
+      (await this.index.ensure(path, () => {
+        created = true
+      }))
     if (!known && (file.path !== path || !this.exists(file))) {
       // Deleted or renamed while its id was being derived. An entry left at
       // that path would be pulled straight back in as a note of its own.
@@ -643,6 +674,8 @@ export class DocStore {
       if (this.exists(file)) await this.syncFile(file)
       return
     }
+    // Before the note is loaded: a note new in a shared folder is the folder's from its first frame.
+    if (created) this.told({ kind: 'created', docId, path })
     await this.withLock(docId, () => this.reconcileFile(docId, file))
   }
 
@@ -906,9 +939,10 @@ export class DocStore {
     }
     // The identity is the document, not the path, so a rename is a rename -
     // not a delete plus a new note that has lost its history.
-    this.index.rename(docId, file.path)
+    const renamed = this.index.rename(docId, file.path)
     const known = this.state.get(docId)
     if (known) this.state.set(docId, { ...known, path: file.path })
+    if (renamed) this.told({ kind: 'renamed', docId, from: oldPath, to: file.path })
   }
 
   async onDelete(path: string): Promise<void> {
@@ -932,6 +966,7 @@ export class DocStore {
       this.index.markDeleted(docId)
       this.forget(docId)
     })
+    this.told({ kind: 'deleted', docId, path })
     log.info(`${path}: deleted here${foreign ? ', leaving its share' : ''}`)
     // Deleting a note someone else owns only removes it from this vault. The
     // document stays theirs; this account just leaves the share.
