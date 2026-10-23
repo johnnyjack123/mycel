@@ -8,6 +8,19 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.5** (2026-10-23) - the device that changes the password or turns two-factor
+  sign-in on is connected again at once (PHASE7, small fix 4). The hypothesis was
+  confirmed first with timestamps in `test:account`: from the server's `4401` close to
+  the socket's next connect took 1016 ms after a password change and 1011 ms after
+  turning 2FA on - the reconnect's backoff of a second, plus a `refresh` the device
+  asked although its own request had just brought the new token. A token known to hold
+  now reconnects at once with the backoff reset (`VaultSocket.reconnect`), and a close
+  within ten seconds of the device's own request moving the session generation is
+  taken for that request's, once, without asking (`Session.stillSignedIn`). A server
+  that could not be asked still means the backoff.
+  - Tests: `test:account` 52 (2 new: connected again within half a second after a
+    password change and after turning 2FA on - both failed at a second before the fix).
+
 - **0.8.4** (2026-10-23) - a note purged on one device is cleared on every device of
   the account (PHASE7, small fix 3). Only the purging device cleared its local copy -
   the note's database and its decrypted history; the others had dropped the note

@@ -464,6 +464,10 @@ From `docs/PROGRESS.md`, "Roadmap"; investigated on 2026-10-22 (line numbers as 
    Fix: a token just confirmed reconnects at once with the backoff reset, and the extra
    refresh is skipped when the device's own request succeeded. Test: `test:account`,
    connected again within half a second after turning 2FA on and after a password change.
+   **Built in 0.8.5.** Confirmed first: 1016 ms and 1011 ms from the close to the next
+   connect. Refined: the refresh is skipped once per own request, within ten seconds
+   of it - a second close is somebody else's -, and a server that could not be asked
+   keeps the backoff, so a failing refresh never turns into a loop.
 5. **A relay session survives signing the devices out.** `RoomHub.disconnect` closes
    vault sockets only (`rooms.ts:253`); the relay does not know a device's connection by
    account at all (`relay.ts:69`), and the token is checked only at the upgrade. Fix: the
