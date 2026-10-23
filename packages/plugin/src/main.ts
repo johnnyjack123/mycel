@@ -741,6 +741,8 @@ export default class ObsidianConnectPlugin extends Plugin {
   private async reconnectBackups(password: string): Promise<void> {
     const servers = this.backupServers.servers()
     if (servers.length === 0) return
+    // The server ended the sessions opened with the old token; new ones carry the new.
+    this.backupServers.closeSessions()
     const done = await this.backupServers.reconnectAll(password)
     if (done === servers.length) new Notice(`Obsidian Connect: your backup server(s) got new keys and back up as before.`)
     else new Notice(`Obsidian Connect: ${servers.length - done} backup server(s) could not be reached and need connecting again - see the settings.`, 0)

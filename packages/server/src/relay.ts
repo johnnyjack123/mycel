@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { WebSocket } from 'ws'
-import type { RelayFrame } from '@obsidian-connect/shared'
+import { CLOSE_SIGNED_OUT, type RelayFrame } from '@obsidian-connect/shared'
 import { heartbeat } from './wshub.js'
 
 // Brings a device and a backup server together, so the backup server needs no
@@ -67,6 +67,8 @@ export class Relay {
   /** Route -> the backup server answering it. */
   private readonly routes = new Map<string, Endpoint>()
   private readonly backups = new Set<Endpoint>()
+  /** Account -> its devices' connections, to close them when the account's devices are signed out. */
+  private readonly devices = new Map<string, Set<Endpoint>>()
   private readonly sessions = new Map<number, Session>()
   /** Session -> the route it was opened on. */
   private readonly sessionRoutes = new Map<number, string>()
@@ -115,6 +117,12 @@ export class Relay {
   /** A signed-in device's connection. */
   attachDevice(ws: WebSocket, account: string, address: string): void {
     const endpoint: Endpoint = { ws, account, address, routes: new Set(), sessions: new Set() }
+    let own = this.devices.get(account)
+    if (!own) {
+      own = new Set()
+      this.devices.set(account, own)
+    }
+    own.add(endpoint)
     const stopHeartbeat = heartbeat(ws, () => this.drop(endpoint), this.limits.pingMs)
     ws.on('message', (data) => {
       const frame = parse(data)
@@ -126,6 +134,16 @@ export class Relay {
       stopHeartbeat()
       this.drop(endpoint)
     })
+  }
+
+  /**
+   * The account's devices were signed out - a password change, a recovery,
+   * two-factor sign-in turned on, the account removed. The token is checked
+   * only when a connection opens, so one opened before would otherwise carry
+   * its sessions on; they end with it.
+   */
+  signOut(account: string): void {
+    for (const endpoint of Array.from(this.devices.get(account) ?? [])) endpoint.ws.close(CLOSE_SIGNED_OUT, 'signed out')
   }
 
   private register(endpoint: Endpoint, token: unknown): void {
@@ -219,11 +237,17 @@ export class Relay {
     }
     endpoint.routes.clear()
     this.backups.delete(endpoint)
+    if (endpoint.account !== null) {
+      const own = this.devices.get(endpoint.account)
+      own?.delete(endpoint)
+      if (own?.size === 0) this.devices.delete(endpoint.account)
+    }
   }
 
   close(): void {
     for (const endpoint of Array.from(this.backups)) endpoint.ws.terminate()
     this.backups.clear()
+    this.devices.clear()
     this.routes.clear()
     this.sessions.clear()
     this.sessionRoutes.clear()
