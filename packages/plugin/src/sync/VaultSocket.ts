@@ -249,9 +249,22 @@ export class VaultSocket {
     })
   }
 
-  /** Connects again after `signedOut`, once the token is known to hold. */
-  reconnect(): void {
-    this.scheduleReconnect()
+  /**
+   * Connects again after `signedOut`. With a token known to hold, at once: the
+   * close was no failure to back off from, and waiting the backoff left the
+   * device offline for a second after its own password change. Otherwise -
+   * the server could not be asked - after the backoff, as any retry.
+   */
+  reconnect(tokenHolds = true): void {
+    if (!tokenHolds) {
+      this.scheduleReconnect()
+      return
+    }
+    if (this.closed || this.ws) return
+    if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = null
+    this.retries = 0
+    this.connect()
   }
 
   private scheduleReconnect(): void {

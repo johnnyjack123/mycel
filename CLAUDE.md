@@ -252,7 +252,9 @@ someone's notes. Treat them as rules, not preferences.
   absent = 0), and only the current one is accepted. A password change moves it and
   the server closes the account's sockets with `4401`, also its own device's: the
   close arrives before the new token, so `Session.stillSignedIn` waits for the
-  device's own request (`Session.move`) before asking whether it is signed out.
+  device's own request (`Session.move`) before asking whether it is signed out - and
+  after its own request does not ask at all, once - and a token that holds reconnects
+  at once, without the backoff (0.8.5).
 - **The recovery code** is a second wrapping of private key and account secret,
   under a key from 128 random bits; the server finds the account by the hash of
   another key from them (`recoveries`). The code alone opens the account and sets

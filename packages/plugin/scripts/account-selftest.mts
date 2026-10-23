@@ -44,6 +44,23 @@ class Phone {
 }
 useServer(`ws://127.0.0.1:${server.port}`)
 
+/**
+ * Runs `act` and answers how long the device's socket, which the server closes
+ * meanwhile, took from being closed to being connected again, in milliseconds.
+ */
+async function reconnectTime(device: Device, act: () => Promise<unknown>): Promise<number> {
+  let closedAt = 0
+  let openedAt = 0
+  const off = device.socket?.onStatus((status) => {
+    if (status === 'disconnected' && closedAt === 0) closedAt = Date.now()
+    else if (status === 'connected' && closedAt !== 0 && openedAt === 0) openedAt = Date.now()
+  })
+  await act()
+  await eventually(() => openedAt !== 0, 10_000)
+  off?.()
+  return openedAt === 0 ? Number.POSITIVE_INFINITY : openedAt - closedAt
+}
+
 const run = Date.now().toString(36)
 const NEW_PASSWORD = 'a different horse, battery and staple'
 const A1 = new Device(`anna${run}`, true, { 'One.md': 'first\n', 'Two.md': 'second\n' })
@@ -55,12 +72,13 @@ try {
   check(await eventually(() => A2.vault.text('One.md') === 'first\n' && A2.vault.text('Two.md') === 'second\n'), 'A2 has both notes')
 
   // --- a password change signs out the other devices -----------------------------
-  await A1.changePassword(NEW_PASSWORD)
+  const afterPassword = await reconnectTime(A1, () => A1.changePassword(NEW_PASSWORD))
   check(await eventually(() => A2.signedOut === 1 && !A2.signedIn && A2.store === null), 'A1 changes the password, and A2 is signed out while it runs')
   check(
     await eventually(() => A1.socket?.connected === true) && A1.signedOut === 0 && A1.signedIn,
     'A1, whose socket the server closed as well, carries on with its new token'
   )
+  check(afterPassword < 500, 'and is connected again within half a second', { ms: afterPassword })
   await A1.vault.userWrite('One.md', 'first\nwritten after the change\n')
   const one = docRoom(A1.index?.docIdForPath('One.md') as string)
   check(await eventually(() => A1.socket?.isSettled(one) === true), 'and its edits still reach the server')
@@ -143,10 +161,12 @@ try {
   // --- two-factor sign-in ---------------------------------------------------------------
   const phone = new Phone()
   check(await A1.enableTotp(phone.secret, '000000').then(() => false, () => true), 'two-factor sign-in needs a code the app made')
-  await A1.enableTotp(phone.secret, await phone.code())
+  const code = await phone.code()
+  const afterTotp = await reconnectTime(A1, () => A1.enableTotp(phone.secret, code))
   check(A1.hasTotp === true, 'with one, A1 turns it on')
   check(await eventually(() => A3.signedOut === 1 && !A3.signedIn), 'and every other device is signed out', { a3: A3.signedOut })
   check(await eventually(() => A1.socket?.connected === true) && A1.signedOut === 1, 'A1 itself carries on')
+  check(afterTotp < 500, 'connected again within half a second', { ms: afterTotp })
 
   check(
     (await A3.boot().then(

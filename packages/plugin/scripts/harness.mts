@@ -248,7 +248,7 @@ export class Device {
         void this.session.stillSignedIn().then(async (still) => {
           if (this.socket !== socket) return
           if (still !== false) {
-            socket.reconnect()
+            socket.reconnect(still === true)
             return
           }
           this.signedOut += 1

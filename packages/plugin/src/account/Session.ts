@@ -77,6 +77,9 @@ const ACCOUNT_SECRET = 'account-secret'
 const RECOVERY_PRIVATE_KEY = 'recovery-private-key'
 const RECOVERY_ACCOUNT_SECRET = 'recovery-account-secret'
 const VAULT_KEY = 'vault'
+// A sign-out close this soon after the device's own request moved the session
+// generation was that request's: the token it brought holds.
+const OWN_MOVE_MS = 10_000
 
 /** A new account, or one recovered: signed in, and the recovery code to show once. */
 export interface Registered {
@@ -145,6 +148,8 @@ export class Session {
    * asked once the request is done.
    */
   private moving: Promise<unknown> = Promise.resolve()
+  /** When this device's own request last moved the session generation. */
+  private movedAt = 0
 
   constructor(
     private readonly api: ConnectApi,
@@ -556,7 +561,10 @@ export class Session {
 
   /** Runs a request that moves the session generation; see `moving`. */
   private move<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.moving.then(task)
+    const run = this.moving.then(task).then((result) => {
+      this.movedAt = Date.now()
+      return result
+    })
     this.moving = run.catch(() => undefined)
     return run
   }
@@ -568,6 +576,13 @@ export class Session {
    */
   async stillSignedIn(): Promise<boolean | null> {
     await this.moving
+    // This device's own request moved the generation a moment ago, and its
+    // answer brought the token that holds: nothing to ask. Once - a second
+    // close is someone else's doing and is asked about.
+    if (Date.now() - this.movedAt < OWN_MOVE_MS) {
+      this.movedAt = 0
+      return true
+    }
     try {
       const refreshed = await this.api.refresh()
       await this.onToken(refreshed.token, this.secrets.load(NAME))
