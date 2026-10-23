@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-23 · **0.8.0 - sharing a folder, notes - merged into `main` (`e9ca007`), CI green there, server and backup images published. Next: the user tries it on their devices (server first); then 0.8.1, the files in folders.**_
+_Last updated: 2026-10-23 · **0.8.1 - the files of shared folders - built on `feat/folder-files`, every suite green. Next: merge, CI; then 0.8.2 (the backup server's folder tests) and the small fixes. The user tests 0.8 as a whole at the end (server first).**_
 
 ## Where we are
 
@@ -48,16 +48,20 @@ moving in and out, deleting for everyone, revoking, leaving, ending; the dialogs
 move-in window, the delete notice with undo, the explorer mark, the trash; the backup
 server reading folder notes. What is next:
 
-1. 0.8.0 is merged (`e9ca007`) and CI on `main` is green, both images published. The
-   user installs it: **server first** (protocol 5), then every device. To try: sharing
-   a folder with a second account, a note added on each side, a rename and a delete
-   inside (the notice, *Undo*), moving a note in (the window) and out, the explorer
-   mark on desktop and phone, revoking.
-2. 0.8.1 on its own branch: files inside the folder (the folder document's `files`
-   map, `folderBases`, the rules of `SharedFiles`), linked files and notes outside it
-   from the share dialog (`linkedFiles`, `LinkedNotes`).
+1. 0.8.0 is merged (`e9ca007`) and CI on `main` is green, both images published.
+2. 0.8.1 is built on `feat/folder-files`: files inside the folder (the folder
+   document's `files` map, `folderBases`, `share/FolderFiles.ts`), files and notes
+   outside it from the share dialog; three races of 0.8.0 fixed on the way (CHANGELOG).
+   Next: merge into `main`, watch CI.
 3. 0.8.2: the backup server's tests for folders over time; 0.8.3 onwards the small
    fixes (PHASE7, "The small fixes").
+4. The user said on 2026-10-23 they cannot test right now and will test everything at
+   once: at the end of 0.8, give them one list - **server first** (protocol 5), then
+   every device. To try: sharing a folder with a second account, a note and a picture
+   added on each side, a rename and a delete inside (the notice, *Undo*), moving a
+   note and a file in (the window) and out, a picture changed on both sides (two
+   files), a file outside embedded by a folder note (`Shared/Attachments`), the
+   explorer mark on desktop and phone, revoking.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
@@ -101,9 +105,9 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing. `feat/folder-share` is merged into `main` (0.8.0) and holds nothing `main`
-lacks; it is still on the remote - deleting it is the user's call, as with the earlier
-branches.
+`feat/folder-files` (0.8.1): built, every suite green, to be merged. `feat/folder-share`
+is merged into `main` (0.8.0) and holds nothing `main` lacks; it is still on the
+remote - deleting it is the user's call, as with the earlier branches.
 
 ## Decisions made (not visible in the code)
 
@@ -165,6 +169,13 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
 
+At 0.8.1, run 2026-10-23 on `feat/folder-files`: `typecheck` and `build` pass;
+`test:merge` 171, `test:load` 14, `test:rooms` 362, `test:sync` 26, `test:recovery` 64,
+`test:account` 50, `test:rollback` 52, `test:backup` 214, and against a scratch server
+on 1235 `test:socket` 19, `test:vault` 230 and `test:folders` 88 (twice) - all pass.
+The scratch server once logged `EPERM` renaming a blob's `.json.tmp` while it was read:
+Windows only, as with `contacts.json` before; the Docker server runs on Linux.
+
 At 0.8.0, run 2026-10-23 on `feat/folder-share`: `typecheck` and `build` pass;
 `test:merge` 171, `test:load` 14, `test:rooms` 362, `test:sync` 26, `test:recovery` 64,
 `test:account` 50, `test:rollback` 52, `test:backup` 214, and against a scratch server
@@ -187,6 +198,10 @@ CLAUDE.md, Gotchas - `test:socket` and `test:vault` default to 1234, so always p
 ## Log
 
 ### 2026-10-23
+- 0.8.1 built on `feat/folder-files`: files in shared folders, the share dialog's
+  options for files and notes outside the folder; three races of 0.8.0 found by the
+  new checks and fixed (windows while sharing, a delete undone by another device of
+  the account, a file fetched twice).
 - 0.8.0 built on `feat/folder-share`: server (folder rooms, access, API, ties), plugin
   (keys, folder document, mirror, moves, deletes, revoking, ending, UI), backup server
   keys for folder notes. Two bugs found and fixed on the way (CLAUDE.md invariants 28,

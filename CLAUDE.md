@@ -211,7 +211,13 @@ someone's notes. Treat them as rules, not preferences.
     move was then read as every note moving out, and the owner's device ended
     the share of each. `Folders` waits `settleMs`, defers its own pass while
     changes are pending, and takes notes turning up together elsewhere for the
-    folder moving.
+    folder moving. The account's other devices see a delete in the vault index
+    before its decision reaches the folder: one of them brought a file back that
+    a writer's device was still deleting for everyone. Such a delete is left to
+    its device for `decideMs` (`Folders.undecided`) and only then taken for one
+    never decided on. And what lay in a folder when it was shared goes in with
+    the share (`sharedAt`): asked about as moved in, every device of the owner
+    opened a window per note and file while the share took them in.
 
 ## Architecture
 
@@ -354,6 +360,7 @@ and the server holds immutable blobs of its versions:
   device of an account decides the same. Deleting such a file declines it for
   the account (`declined`); the trash rejoins. The server lets a note's
   members read the blobs its list names and never purges those.
+- A shared folder's files are the folder's (0.8.1, "Shared folders" below).
 - Built: own devices (step 1), the trash and versions (step 2), shared notes'
   files and the notes they link to (step 3).
 
@@ -565,8 +572,19 @@ A folder shared with people, everything added to it later included (0.8, spec
   elsewhere. An existing note moved in is shared only after a window over
   everything (`MoveInModal`) - a participant's own is copied in as the owner's. The
   owner deleting the folder ends the share; a member deleting it leaves.
-- **Built in 0.8.0:** notes. Files inside a folder and linked outside it, and the
-  notes outside it the dialog offers once, are 0.8.1.
+- **Files** (0.8.1, `share/FolderFiles.ts`): every file inside the folder belongs to
+  it. The folder's document holds them in `files` (`fileId -> SharedAttachment` plus
+  `path`, `deletedAt`, `leftAt`), ids from the folder like a note's. Each vault copies
+  a file into its own store and keeps it as a file of its own, linked to the folder's
+  (`AttachmentEntry.folder`), with a base per file in the index (`folderBases`, the
+  vault's, so every device of the account decides the same). They follow the notes'
+  rules for where they lie and who decides, and a shared note's files' rules for
+  their content (invariants 23, 24). Both versions kept from someone who may write go
+  into the folder as two files: a conflict copy is announced as a file new here
+  (`AttachmentStore.created`), as one the user made is. Files outside the folder that
+  its notes link go along as a shared note's do when the folder says so
+  (`linkedFiles`, on in the dialog) and land in `<share folder>/Attachments`; the
+  dialog also offers, once, the notes outside it they link to.
 
 `test:folders` runs it all with an owner, a writer and a reader, devices of each.
 
