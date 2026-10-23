@@ -1,5 +1,5 @@
 import { Notice, TFile, getLinkpath, type App } from 'obsidian'
-import type { AttachmentEntry, AttachmentVersion, SharedAttachment } from '@obsidian-connect/shared'
+import type { AttachmentEntry, AttachmentVersion, BlobListResponse, SharedAttachment } from '@obsidian-connect/shared'
 import { contentHash, type Bytes } from '@obsidian-connect/shared/crypto'
 import { ApiError } from '../account/api.js'
 import type { AttachmentIndex, SharedBase } from './AttachmentIndex.js'
@@ -105,6 +105,8 @@ const STOP_DRAIN_MS = 2_000
 // 2 s after the last change; this leaves room for that.
 const STALE_SAVE_MS = 5_000
 const DAY_MS = 24 * 60 * 60 * 1000
+// Content no file names is let go of only after this long untouched, whatever the retention.
+const UNNAMED_MIN_DAYS = 7
 
 /** `stem (label)ext`, or `stem (label n)ext` from the second on. */
 function besides(path: string, label: string, n: number): string {
@@ -683,7 +685,7 @@ export class AttachmentStore {
 
   /** The index's version into a file that still has the base's content. */
   private async replace(fileId: string, file: TFile, entry: AttachmentEntry, read: Read): Promise<void> {
-    if (!(await this.blobs.has(read.hash))) await this.upload(read.data, read.hash)
+    if (!(await this.blobs.keep(read.hash))) await this.upload(read.data, read.hash)
     const data = await this.download(entry.hash)
     // Changed while this was downloading: that change gets its own turn.
     if (!(await this.stillHolds(file, read))) {
@@ -840,7 +842,7 @@ export class AttachmentStore {
       await this.reviveLocal(fileId, file, read)
       return
     }
-    if (!(await this.blobs.has(read.hash))) await this.upload(read.data, read.hash)
+    if (!(await this.blobs.keep(read.hash))) await this.upload(read.data, read.hash)
     if (!(await this.stillHolds(file, read))) {
       this.settle(file)
       return
@@ -1131,7 +1133,7 @@ export class AttachmentStore {
 
   /** Content in someone else's store, named by a shared note, copied into this vault's. */
   private async copyIn(source: SharedAttachment, room: string): Promise<void> {
-    if (await this.blobs.has(source.hash)) return
+    if (await this.blobs.keep(source.hash)) return
     const data = await this.transfer('downloads', () => this.blobs.downloadFrom(source, room))
     await this.upload(data, source.hash)
   }
@@ -1365,7 +1367,7 @@ export class AttachmentStore {
       if (file instanceof TFile) {
         const read = await this.read(file)
         if (!read) throw new Error(`${entry.path} is being written; try again in a moment`)
-        if (!(await this.blobs.has(read.hash))) await this.upload(read.data, read.hash)
+        if (!(await this.blobs.keep(read.hash))) await this.upload(read.data, read.hash)
         if (read.hash !== entry.hash) this.index.setContent(fileId, read.hash, read.data.length)
         if (!(await this.stillHolds(file, read))) throw new Error(`${entry.path} changed meanwhile; try again`)
       }
@@ -1484,6 +1486,36 @@ export class AttachmentStore {
     }
     const gone = Array.from(candidates).filter((hash) => !kept.has(hash)).length
     if (gone > 0) log.info(`attachments: let go of ${gone} content(s) nothing needs any more`)
+    return gone + (await this.letGoOfUnnamed(retentionDays, now))
+  }
+
+  /**
+   * Content in this vault's store that no file names: uploaded, and then a
+   * crash, a stop or a delete before its entry was written - the order
+   * invariant 23 demands leaves that behind - and uploads that never ended.
+   * Only what was untouched for longer than the retention, and never less than
+   * a week: another device may have uploaded it a moment ago and name it next,
+   * and reusing content touches it (`Blobs.keep`).
+   */
+  private async letGoOfUnnamed(retentionDays: number, now: number): Promise<number> {
+    let listing: BlobListResponse
+    try {
+      listing = await this.blobs.list()
+    } catch (error) {
+      // A server from before 0.8.2 lists nothing.
+      if (error instanceof ApiError && error.status === 404) return 0
+      throw error
+    }
+    const cutoff = now - Math.max(retentionDays, UNNAMED_MIN_DAYS) * DAY_MS
+    const old = [...listing.blobs, ...listing.uploads].filter((blob) => blob.touchedAt < cutoff)
+    if (old.length === 0) return 0
+    const named = new Set<string>()
+    for (const hash of this.index.namedHashes()) named.add(await this.blobs.idOf(hash))
+    const unnamed = old.map((blob) => blob.id).filter((id) => !named.has(id))
+    if (unnamed.length === 0) return 0
+    const kept = await this.blobs.purgeIds(unnamed)
+    const gone = unnamed.filter((id) => !kept.has(id)).length
+    if (gone > 0) log.info(`attachments: let go of ${gone} content(s) no file ever named`)
     return gone
   }
 }

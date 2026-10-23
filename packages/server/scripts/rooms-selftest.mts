@@ -490,6 +490,36 @@ try {
     }
     check(record.touchedAt > record.createdAt, 'uploading a blob it has restarts its grace', record)
 
+    // Content no device names: its owner lists the store to find it. Content a
+    // device finds there and names next is touched first; an upload under way
+    // is another device's file on its way in.
+    const listing = await careful.list(alice, vault)
+    check(
+      listing.blobs.some((blob) => blob.id === reused && blob.touchedAt === record.touchedAt && blob.size === tail.length),
+      'the store lists its blobs, each with its size and when it was last touched',
+      listing
+    )
+    await delay(20)
+    const touched = await careful.touch(alice, vault, [reused, hexId()])
+    const retouched = JSON.parse(readFileSync(join(dataDir, 'users', alice, vault, 'blobs', `${reused}.json`), 'utf8')) as { touchedAt: number }
+    check(touched.join() === reused && retouched.touchedAt > record.touchedAt, 'a touch starts the grace again and answers only the blobs that are there', touched)
+    const partial = hexId()
+    await careful.putChunk(alice, vault, partial, 0, 2, full(4))
+    check((await careful.list(alice, vault)).uploads.some((upload) => upload.id === partial), 'an upload under way is listed apart')
+    const early = await careful.purge(alice, vault, [partial])
+    check(early.kept.join() === partial && (await careful.info(alice, vault, partial))?.received === 1, 'an upload under way is kept when asked to go', early)
+    await careful.purge(alice, vault, [partial], Date.now() + 61_000)
+    check((await careful.info(alice, vault, partial)) === null, 'and dropped once its grace has passed')
+    const listed = await app.inject({ method: 'GET', url: `/blobs/${alice}/${vault}/list`, headers: await auth(alice) })
+    check(
+      listed.statusCode === 200 && (listed.json() as { blobs?: Array<{ id: string }> }).blobs?.some((blob) => blob.id === small) === true,
+      'over HTTP, the owner lists the store',
+      listed.body
+    )
+    check((await app.inject({ method: 'GET', url: `/blobs/${alice}/${vault}/list`, headers: await auth(bob) })).statusCode === 403, 'and nobody else')
+    const touchedHttp = await app.inject({ method: 'POST', url: `/blobs/${alice}/${vault}/touch`, headers: await auth(alice), payload: { ids: [small] } })
+    check((touchedHttp.json() as { touched?: string[] }).touched?.join() === small, 'and touches it', touchedHttp.body)
+
     // Signing out the other devices: a password change moves the account's
     // session generation, and every token from before stops working - one
     // that signed in with a stolen password included.

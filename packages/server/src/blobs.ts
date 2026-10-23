@@ -1,6 +1,6 @@
 import { mkdir, open, readFile, readdir, rename, rm, stat, truncate, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, blobChunkCount, isHexId, type BlobInfo } from '@obsidian-connect/shared'
+import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, blobChunkCount, isHexId, type BlobInfo, type BlobListResponse } from '@obsidian-connect/shared'
 
 // The encrypted contents of a vault's files. The server cannot read them: it
 // keeps them, says whether it has them, and lets go of them when their owner
@@ -250,6 +250,62 @@ export class BlobStore {
   }
 
   /**
+   * Every blob of the store and every upload under way, with when each was
+   * last touched - so its owner can find content no device names (a crash
+   * between upload and index entry), and leave alone what is being uploaded.
+   */
+  async list(account: string, vault: string): Promise<BlobListResponse> {
+    const dir = this.dir(account, vault)
+    const blobs: BlobListResponse['blobs'] = []
+    for (const name of await list(dir)) {
+      const id = name.slice(0, -'.json'.length)
+      if (!name.endsWith('.json') || !isHexId(id)) continue
+      const meta = await readJson<BlobMeta>(join(dir, name))
+      if (meta) blobs.push({ id, size: meta.size, touchedAt: meta.touchedAt ?? meta.createdAt })
+    }
+    const uploads: BlobListResponse['uploads'] = []
+    for (const name of await list(join(dir, UPLOADS))) {
+      const id = name.slice(0, -'.json'.length)
+      if (!name.endsWith('.json') || !isHexId(id)) continue
+      const touchedAt = await this.uploadTouched(join(dir, UPLOADS), id)
+      if (touchedAt !== null) uploads.push({ id, touchedAt })
+    }
+    return { blobs, uploads }
+  }
+
+  /** When an upload under way last took a chunk - its start, before the first. */
+  private async uploadTouched(uploads: string, id: string): Promise<number | null> {
+    const meta = await readJson<UploadMeta>(join(uploads, `${id}.json`))
+    if (!meta) return null
+    try {
+      return Math.max(meta.startedAt, (await stat(join(uploads, id))).mtimeMs)
+    } catch {
+      return meta.startedAt
+    }
+  }
+
+  /**
+   * Starts the grace of blobs again, as an upload of them would: a device that
+   * finds its content here names it next. Answers the ones that are there -
+   * one a purge took first has to be uploaded again before anything names it.
+   */
+  async touch(account: string, vault: string, ids: unknown, now = Date.now()): Promise<string[]> {
+    if (!Array.isArray(ids)) throw new BlobError(400, 'ids must be a list')
+    const touched: string[] = []
+    for (const value of ids) {
+      if (typeof value !== 'string' || !isHexId(value)) continue
+      const there = await this.serial(`${account}/${vault}/${value}`, async () => {
+        const meta = await this.meta(account, vault, value)
+        if (!meta) return false
+        await writeAtomic(join(this.dir(account, vault), `${value}.json`), JSON.stringify({ ...meta, touchedAt: now } satisfies BlobMeta))
+        return true
+      })
+      if (there) touched.push(value)
+    }
+    return touched
+  }
+
+  /**
    * Lets go of these blobs, except those uploaded within the grace period.
    * Answers which went and which were kept; any other was not there.
    */
@@ -263,7 +319,11 @@ export class BlobStore {
         const dir = this.dir(account, vault)
         const meta = await this.meta(account, vault, value)
         if (!meta) {
-          await this.dropUpload(join(dir, UPLOADS), value)
+          // An upload under way is another device's file on its way in.
+          const uploads = join(dir, UPLOADS)
+          const touchedAt = await this.uploadTouched(uploads, value)
+          if (touchedAt !== null && now - touchedAt < this.limits.purgeGraceMs) return 'kept'
+          await this.dropUpload(uploads, value)
           return 'absent'
         }
         if (now - (meta.touchedAt ?? meta.createdAt) < this.limits.purgeGraceMs) return 'kept'

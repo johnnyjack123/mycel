@@ -1130,6 +1130,19 @@ export interface BlobPurgeResponse {
   kept: string[]
 }
 
+/** Everything in one vault's store, for its owner to find what nothing names any more. */
+export interface BlobListResponse {
+  /** Complete blobs; `touchedAt`: their last upload, a touch included. */
+  blobs: Array<{ id: string; size: number; touchedAt: number }>
+  /** Uploads under way; `touchedAt`: their last chunk. */
+  uploads: Array<{ id: string; touchedAt: number }>
+}
+
+export interface BlobTouchResponse {
+  /** The complete blobs whose grace started again; any other is not there (any more). */
+  touched: string[]
+}
+
 export interface BlobUsageResponse {
   /** Ciphertext bytes the account keeps, over all its vaults. */
   bytes: number

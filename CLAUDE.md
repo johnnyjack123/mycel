@@ -353,7 +353,11 @@ and the server holds immutable blobs of its versions:
   pictures deleted since shown from the trash. The trash pass also cleans up:
   content no live entry, recent tombstone or lasting version names goes, and
   only what the server confirms gone leaves the index.
-  The server keeps a blob 10 minutes past its last upload whatever it is asked.
+  The server keeps a blob 10 minutes past its last upload whatever it is asked, and a
+  device that finds content there and names it touches it first (`Blobs.keep`) - a
+  purge that was first means uploading it again. Content no entry, version or shared
+  base names (a crash between upload and entry) goes once untouched for longer than the
+  retention, a week at least (`letGoOfUnnamed`, the store listed to its owner).
 - **Shared notes carry their files** (`share/SharedFiles.ts`), both ways, when
   the owner chose so (`share.attachments` in the note's document). The note's
   document holds a list `link -> { account, vault, blob, key, hash, prev }`;

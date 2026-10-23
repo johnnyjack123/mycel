@@ -443,6 +443,10 @@ From `docs/PROGRESS.md`, "Roadmap"; investigated on 2026-10-22 (line numbers as 
    synced this session, only those older than the retention (several days at least; a
    retention of 0 keeps everything). Shared notes' and folders' blobs stay protected
    on the server (`isAttached`). Invariant 23. Test: `test:recovery`.
+   **Built in 0.8.3.** Refined: a touch answers which blobs are there, so content a
+   purge took a moment before is uploaded again instead of named (`Blobs.keep`, used
+   wherever a device skips an upload because the server has the content); uploads
+   that never ended are let go of with the same age rule.
 3. **A purged note's local copy stays on the other devices.** Only the purging device
    clears it (`Trash.ts:59`, `DocStore.forgetDeleted`); the others had dropped the note
    without clearing it (`DocStore.ts:1047`) and never open its database again. Fix: the

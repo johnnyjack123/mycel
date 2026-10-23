@@ -12,6 +12,8 @@ import { check, delay, Device, eventually, finish, useServer, VAULT } from './ha
 const { docRoom } = await import('@obsidian-connect/shared')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
+const { Blobs } = await import('../src/sync/Blobs.js')
+const { contentHash } = await import('@obsidian-connect/shared/crypto')
 const { AccountStore } = await import('../../server/src/accounts.js')
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
@@ -263,6 +265,29 @@ try {
       'every file that lives is untouched'
     )
     check((await A1.attachments?.heal()) === 0, 'and the server still has all their content')
+  }
+
+  // --- content uploaded but never named ------------------------------------------------------
+  // A crash between an upload and its index entry leaves content no file names.
+  {
+    const DAY = 24 * 60 * 60 * 1000
+    const blobs = new Blobs(A1.api, A1.keys as never)
+    const unnamed = new TextEncoder().encode('uploaded, then the device crashed '.repeat(100))
+    const hash = await contentHash(unnamed)
+    const id = await blobs.idOf(hash)
+    await blobs.upload(unnamed, hash)
+    const there = (): boolean => blobsOnServer(empty, A1.accountId).includes(`${id}.json`)
+    check(there(), 'content is uploaded and then never named')
+    await A1.attachments?.cleanUp(30)
+    check(there(), 'while it is new it stays - another device may be about to name it')
+    await A1.attachments?.cleanUp(1, Date.now() + 6 * DAY)
+    check(there(), 'and for a week at least, however short the retention')
+    await A1.attachments?.cleanUp(30, Date.now() + 31 * DAY)
+    check(!there(), 'untouched past the retention, the server lets go of it')
+    check(samePhoto(A1.vault.bytes(PHOTO)) && (await A1.attachments?.heal()) === 0, 'and of nothing a file names')
+    check(!(await blobs.keep(hash)), 'content a purge took is not there to be named again')
+    await blobs.upload(unnamed, hash)
+    check(there() && (await blobs.keep(hash)), 'so it is uploaded again first')
   }
 
   // --- the admin removes the account of someone who shared a note -------------------------

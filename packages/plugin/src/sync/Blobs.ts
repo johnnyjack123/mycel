@@ -1,4 +1,4 @@
-import { blobChunkCount, type SharedAttachment } from '@obsidian-connect/shared'
+import { blobChunkCount, type BlobListResponse, type SharedAttachment } from '@obsidian-connect/shared'
 import {
   aesKey,
   blobChunk,
@@ -58,7 +58,11 @@ export class Blobs {
     const key = await this.keys.blobKey(blobId)
     for (let restart = 0; ; restart += 1) {
       const known = await this.info(blobId)
-      if (known?.complete) return
+      if (known?.complete) {
+        if ((await this.touch(blobId)) !== false) return
+        if (restart >= RESTARTS) throw new Error(`the server kept losing ${blobId} while it was uploaded`)
+        continue
+      }
       let index = known && known.count === count ? known.received : 0
       try {
         while (index < count) {
@@ -143,12 +147,48 @@ export class Blobs {
   async purge(hashes: string[]): Promise<Set<string>> {
     const byId = new Map<string, string>()
     for (const hash of new Set(hashes)) byId.set(await this.keys.blobId(hash), hash)
-    const ids = Array.from(byId.keys())
+    const kept = await this.purgeIds(Array.from(byId.keys()))
+    return new Set(Array.from(kept, (id) => byId.get(id) as string))
+  }
+
+  /** `purge` by the blobs' names, for content no hash of this vault's names any more. Answers the ids kept. */
+  async purgeIds(ids: string[]): Promise<Set<string>> {
     const kept = new Set<string>()
     for (let start = 0; start < ids.length; start += HAVE_BATCH) {
       const answer = await this.api.purgeBlobs(this.keys.accountId, this.keys.vaultId, ids.slice(start, start + HAVE_BATCH))
-      for (const id of answer.kept) kept.add(byId.get(id) as string)
+      for (const id of answer.kept) kept.add(id)
     }
     return kept
+  }
+
+  /** The name a content has in this vault's store. */
+  idOf(hash: string): Promise<string> {
+    return this.keys.blobId(hash)
+  }
+
+  /** Everything in this vault's store on the server, with when each was last touched. */
+  list(): Promise<BlobListResponse> {
+    return this.api.listBlobs(this.keys.accountId, this.keys.vaultId)
+  }
+
+  /**
+   * Whether the server has this content, for content about to be named: if so
+   * its grace starts again, so no device cleaning up deletes it under the new
+   * name. False when it is not there - a purge may have taken it a moment ago -
+   * and it has to be uploaded first.
+   */
+  async keep(hash: string): Promise<boolean> {
+    return (await this.touch(await this.keys.blobId(hash))) ?? this.has(hash)
+  }
+
+  /** Null from a server before 0.8.2, which has no such route and keeps content as it always did. */
+  private async touch(blobId: string): Promise<boolean | null> {
+    try {
+      const { touched } = await this.api.touchBlobs(this.keys.accountId, this.keys.vaultId, [blobId])
+      return touched.includes(blobId)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null
+      throw error
+    }
   }
 }
