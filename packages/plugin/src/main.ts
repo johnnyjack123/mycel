@@ -228,6 +228,8 @@ export default class ObsidianConnectPlugin extends Plugin {
   private socket: VaultSocket | null = null
   private index: VaultIndex | null = null
   private store: DocStore | null = null
+  /** What the stopped store knew of the texts its editors held, for the next store of the same vault. */
+  private carriedHeld: { vaultId: string; held: Map<string, Set<string>> } | null = null
   private attachmentIndex: AttachmentIndex | null = null
   private attachments: AttachmentStore | null = null
   /** What the server takes, from its config; 0 until it answered. */
@@ -876,6 +878,9 @@ export default class ObsidianConnectPlugin extends Plugin {
       this.history
     )
     this.store = store
+    store.watchEditors((path) => this.editors.shows(path))
+    if (this.carriedHeld?.vaultId === vault.vaultId) store.inheritHeld(this.carriedHeld.held)
+    this.carriedHeld = null
     const attachmentIndex = new AttachmentIndex(this.index.doc, (path, generation) => keys.fileId(path, generation))
     this.attachmentIndex = attachmentIndex
     this.attachments = new AttachmentStore(this.app, attachmentIndex, this.state, new Blobs(this.api, keys), this.attachmentOptions())
@@ -1205,6 +1210,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.attachmentIndex = null
     const store = this.store
     this.store = null
+    if (store && this.vault) this.carriedHeld = { vaultId: this.vault.vaultId, held: store.heldTexts() }
     await store?.stop()
     try {
       await this.settingsCursor?.flush()

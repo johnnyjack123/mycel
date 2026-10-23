@@ -425,6 +425,11 @@ From `docs/PROGRESS.md`, "Roadmap"; investigated on 2026-10-22 (line numbers as 
    left there is a duplication (invariant 4), never a loss. Test: `test:vault`, a
    device restarting with its views kept while two people type, every keystroke
    once, no backup, no review.
+   **Built in 0.8.2.** Refined: nothing writes the file of a note shown but not bound
+   (`writeToFile` skips it too), and the file is brought level once its editor closes.
+   Where both typed across the restart the binding's merge takes its backups - a
+   merge of two people's typing, as any (invariant 2); "no backup" holds where only
+   the other one typed.
 2. **Content uploaded but never named stays on the server.** A crash, stop, delete or
    rename between the upload and the index entry (`AttachmentStore.ts:539`, also
    `:578`, `:1050`, `:1331`) leaves a blob nothing names, and no route lists a vault's

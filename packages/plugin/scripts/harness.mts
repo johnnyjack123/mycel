@@ -187,6 +187,7 @@ export class Device {
   private refs: Array<{ name: string; listener: (...args: unknown[]) => void }> = []
   private indexTimer: ReturnType<typeof setTimeout> | null = null
   readonly views: ViewT[] = []
+  private carriedHeld: { vaultId: string; held: Map<string, Set<string>> } | null = null
 
   constructor(
     /** A recovery may choose another. */
@@ -352,6 +353,10 @@ export class Device {
     })
     this.sharedFiles = sharedFiles
     this.store = store
+    // As main.ts: the editors that outlived a restart, and what the store before knew of them.
+    store.watchEditors((path) => this.editors.shows(path))
+    if (this.carriedHeld?.vaultId === openVault.vaultId) store.inheritHeld(this.carriedHeld.held)
+    this.carriedHeld = null
     this.index = index
     this.socket = socket
     this.keys = keys
@@ -584,9 +589,14 @@ export class Device {
     return this.token ?? ''
   }
 
-  async shutdown(): Promise<void> {
+  /**
+   * `keepViews`: sync stops while Obsidian goes on showing its editors - a
+   * restart of sync, as signing out and in or a changed setting does - and
+   * whatever is typed meanwhile stays in them.
+   */
+  async shutdown(options: { keepViews?: boolean } = {}): Promise<void> {
     this.backupsController?.closeSessions()
-    for (const view of this.views.splice(0)) view.close()
+    if (!options.keepViews) for (const view of this.views.splice(0)) view.close()
     this.editors.unbindAll()
     if (this.indexTimer) clearTimeout(this.indexTimer)
     for (const ref of this.refs) this.vault.offref(ref)
@@ -603,6 +613,7 @@ export class Device {
     this.attachmentIndex?.destroy()
     const store = this.store
     this.store = null
+    if (store && this.keys) this.carriedHeld = { vaultId: this.keys.vaultId, held: store.heldTexts() }
     await store?.stop()
     await this.settingsCursor?.flush()
     this.settingsStore?.destroy()

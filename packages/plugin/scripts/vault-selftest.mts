@@ -554,6 +554,80 @@ try {
     B.close(bTyping)
   }
 
+  // Sync restarting under open editors - signing out and in, a changed setting -
+  // while someone types. The new store settled the note against what Obsidian
+  // had last saved and wrote the file; Obsidian reloaded the editor, and what
+  // was typed since that save was gone. And the saves of the editor bound
+  // before the restart looked like edits made here.
+  {
+    await A.vault.userCreate('Restart.md', 'start\n')
+    check(await eventually(() => B.vault.text('Restart.md') === 'start\n'), 'B has a note to restart under')
+    const aRestart = A.open('Restart.md', 300)
+    const bRestart = B.open('Restart.md', 700)
+    check(await eventually(() => A.editors.boundCount() === 2 && B.editors.boundCount() === 2), 'both editors bind it')
+    const backups = (): number => A.vault.adapter.backups().length + B.vault.adapter.backups().length
+    const reviews = (): number => A.reviews.length + B.reviews.length
+    const restartB = async (): Promise<void> => {
+      await B.shutdown({ keepViews: true })
+      check(await B.boot(), "B's sync starts again under its open editors")
+    }
+
+    // Only A types while B restarts: B's editor holds nothing new.
+    const backupsBefore = backups()
+    const reviewsBefore = reviews()
+    const fromA = 'abcdefghijklmnopqrst'
+    let restarted: Promise<void> | null = null
+    for (let i = 0; i < fromA.length; i += 1) {
+      aRestart.type(fromA[i] as string)
+      await delay(60)
+      if (i === 4) restarted = restartB()
+    }
+    await restarted
+    const first = `start\n${fromA}`
+    check(
+      await eventually(() => aRestart.text() === first && bRestart.text() === first && B.vault.text('Restart.md') === first),
+      'a restart of sync under an open editor misses nothing typed elsewhere',
+      { a: aRestart.text(), b: bRestart.text(), file: B.vault.text('Restart.md') }
+    )
+    check(backups() === backupsBefore && reviews() === reviewsBefore, 'and takes nothing of the editor for an edit: no backup, no review', {
+      backups: B.vault.adapter.backups(),
+      reviews: B.reviews.slice(reviewsBefore)
+    })
+
+    // Both type while B restarts: B's keystrokes in between reach only its editor.
+    const reviewsBoth = reviews()
+    const fromB = 'ABCDEFGHIJKLMNOPQRST'
+    const moreA = 'uvwxyz0123456789'
+    restarted = null
+    const aTypes = (async (): Promise<void> => {
+      for (const key of moreA) {
+        aRestart.type(key)
+        await delay(70)
+      }
+    })()
+    for (let i = 0; i < fromB.length; i += 1) {
+      bRestart.type(fromB[i] as string, i)
+      await delay(60)
+      if (i === 3) restarted = restartB()
+    }
+    await aTypes
+    await restarted
+    const both = `${fromB}start\n${fromA}${moreA}`
+    check(
+      await eventually(() => aRestart.text() === both && bRestart.text() === both, 15_000),
+      'what is typed while sync restarts stays, every keystroke once, on both devices',
+      { a: aRestart.text(), b: bRestart.text() }
+    )
+    check(
+      await eventually(() => A.vault.text('Restart.md') === both && B.vault.text('Restart.md') === both),
+      'and both files end up with it',
+      { a: A.vault.text('Restart.md'), b: B.vault.text('Restart.md') }
+    )
+    check(reviews() === reviewsBoth, 'merged without anything to review', B.reviews.slice(reviewsBoth))
+    A.close(aRestart)
+    B.close(bRestart)
+  }
+
   // A change with several parts in one transaction. Mapping its delta onto
   // the editor used to shift every later part by the length of the earlier
   // insertions. At the start of lines, so a misplaced second part still lands
