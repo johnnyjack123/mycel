@@ -624,7 +624,8 @@ go back for everyone. A moment before a snapshot's time is out of reach; a
 compaction stamps the newest change it folds in. Out of reach is filled from the
 newest backup at or before the moment (0.7.9, `backup/src/restore.ts`, read only
 over the pairing); with the index itself out of reach the whole plan comes from it,
-by path. The backup made first forgets nothing (`keepAll`), so the snapshot read
+by path. Only notes the server saw change since the moment are read (`GET /changed`,
+by the server's clock with an hour's margin; 0.8.8). The backup made first forgets nothing (`keepAll`), so the snapshot read
 next is still there.
 
 The retention is also the **trash** (`sync/Trash.ts`, "Deleted notes…"): a

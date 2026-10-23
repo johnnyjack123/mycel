@@ -8,6 +8,19 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.8** (2026-10-23) - planning a rollback reads only the notes that changed since
+  the moment (PHASE7, small fix 6). It read every note's log, since the server kept no
+  time of a room's last frame. The server now lists the rooms of a vault that took a
+  frame at or after a moment (`GET /changed`): the time is the loaded log's last frame,
+  or when `log.bin` was last written - never earlier than the truth, and nothing is
+  written per frame for it. Planning skips a note that stayed where it was and is not
+  listed, with an hour's margin, since the server's clock is not the authors' clock the
+  rollback goes by. A server before 0.8.8 lists nothing, and every note is read as
+  before.
+  - Tests: `test:rooms` 374 (2 new: listed after a compaction, and after a restart
+    before the log is loaded), `test:rollback` 53 (the same plan, reading fewer notes).
+  - With this the six small fixes of PHASE7 are done.
+
 - **0.8.7** (2026-10-23) - a note whose share ended while a device was away no longer
   keeps the words that device replaced meanwhile. `test:recovery`'s check "carries on
   in the same note, and what it wrote while away reaches P1" failed again (once on

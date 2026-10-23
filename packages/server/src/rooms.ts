@@ -1490,6 +1490,34 @@ export class RoomHub {
     return rooms
   }
 
+  /**
+   * The rooms of the vault that took a frame at or after `since`, by this
+   * server's clock: planning a rollback reads only their history. The time of
+   * a room's last frame is the loaded log's, or else when `log.bin` was last
+   * written - never earlier than the truth, which is all that matters: a room
+   * listed for nothing only costs a read; one left out would be planned wrong.
+   * No time is written per frame for it.
+   */
+  async changedSince(account: string, vault: string, since: number): Promise<string[]> {
+    await this.ready
+    const rooms: string[] = []
+    for (const meta of Array.from(this.metas.values())) {
+      if (roomKind(meta.room) !== 'doc' || !this.belongsTo(meta, account, vault)) continue
+      const loaded = this.rooms.get(meta.room)?.log.frames.at(-1)?.ts
+      let at = loaded ?? 0
+      if (loaded === undefined) {
+        try {
+          at = (await stat(join(roomDir(this.options.dataDir, meta), 'log.bin'))).mtimeMs
+        } catch (error) {
+          // No frames ever, or all folded into a snapshot that holds no change.
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        }
+      }
+      if (at >= since) rooms.push(meta.room)
+    }
+    return rooms
+  }
+
   // --- removed accounts ------------------------------------------------------------
 
   /**

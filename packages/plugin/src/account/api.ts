@@ -15,6 +15,7 @@ import {
   type BlobPurgeResponse,
   type BlobTouchResponse,
   type BlobUsageResponse,
+  type ChangedResponse,
   type CompactableResponse,
   type ContactCodeInfo,
   type ContactCodeRequest,
@@ -375,6 +376,11 @@ export class ConnectApi {
 
   compactable(vaultId: string, before: number): Promise<CompactableResponse> {
     return this.call('GET', `${API.compactable}?vaultId=${vaultId}&before=${Math.floor(before)}`)
+  }
+
+  /** The vault's notes that took a change since `since`, by the server's clock. */
+  changedRooms(vaultId: string, since: number): Promise<ChangedResponse> {
+    return this.call('GET', `${API.changed}?vaultId=${vaultId}&since=${Math.floor(since)}`)
   }
 
   // --- blobs ---------------------------------------------------------------------

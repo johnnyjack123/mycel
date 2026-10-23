@@ -175,6 +175,8 @@ export class Device {
   contacts: InstanceType<typeof Contacts> | null = null
   recovery: InstanceType<typeof Recovery> | null = null
   retentionDays = 30
+  /** How far a rollback trusts the server's clock; an hour unless a test says otherwise. */
+  rollbackClockMarginMs: number | undefined = undefined
   /** What the user answers when the server turns out to have other data. */
   recoveryAnswer: 'device' | 'server' | null = null
   /** How many times this device had to ask. */
@@ -519,7 +521,8 @@ export class Device {
       backups: this.backupsController,
       adapter: this.vault.adapter as never,
       root: 'plugin',
-      isExcluded: () => false
+      isExcluded: () => false,
+      clockMarginMs: this.rollbackClockMarginMs
     })
   }
 

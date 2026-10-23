@@ -149,6 +149,23 @@ try {
   check(file('Bilder/Move.png')?.move === true && file('Bilder/One.png')?.move === true, 'and moves back one that moved, and two that swapped')
   check(progress.length > 1 && progress.at(-1)?.[0] === progress.at(-1)?.[1], 'and says how far reading the history got')
   check(snapshot(A1).size === changed.size && sameVault(changed, snapshot(A1)).length === 0, 'planning changes nothing')
+  {
+    // The server lists the notes it saw change since the moment; the others stayed
+    // where they were and are not read. Same clock here, so no margin for it.
+    A1.rollbackClockMarginMs = 0
+    const listed: Array<[number, number]> = []
+    const lean = await A1.rollback.plan(T, '', (done, of) => listed.push([done, of]))
+    A1.rollbackClockMarginMs = undefined
+    const shape = (p: typeof plan): string =>
+      JSON.stringify({
+        notes: p.notes.map((entry) => [entry.docId, entry.pathThen, entry.pathNow, entry.trash, entry.revive, entry.move, entry.text, entry.textThen]),
+        files: p.files.map((entry) => [entry.fileId, entry.trash, entry.revive, entry.move, entry.content]),
+        outOfReach: p.outOfReach.length
+      })
+    const readAll = progress.at(-1)?.[1] ?? 0
+    const readLean = listed.at(-1)?.[1] ?? 0
+    check(shape(lean) === shape(plan) && readLean < readAll, 'the same plan, reading only the notes the server saw change since', { readAll, readLean })
+  }
 
   // --- the gate -------------------------------------------------------------------------------------
   const refused = await rollback.apply(plan, { backups: [{ label: 'NAS', ok: false, error: 'the disk is full' }] }).then(

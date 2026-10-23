@@ -22,6 +22,7 @@ import {
   type BlobUsageResponse,
   type AccountKeyResponse,
   type AuthConfigResponse,
+  type ChangedResponse,
   type CompactableResponse,
   type ContactCodeInfo,
   type ContactCodeRequest,
@@ -848,6 +849,15 @@ export function createHttpApp(
     const response: CompactableResponse = {
       rooms: await hub.compactable(accountId, request.query.vaultId ?? '', before)
     }
+    return response
+  })
+
+  app.get<{ Querystring: { vaultId?: string; since?: string } }>(API.changed, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    const since = Number(request.query.since)
+    if (!Number.isFinite(since)) return reply.code(400).send({ error: 'since is required' })
+    const response: ChangedResponse = { rooms: await hub.changedSince(accountId, request.query.vaultId ?? '', since) }
     return response
   })
 

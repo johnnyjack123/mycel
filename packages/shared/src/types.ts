@@ -1098,6 +1098,11 @@ export interface CompactableResponse {
   rooms: string[]
 }
 
+/** The rooms of a vault with a frame at or after a moment, by the server's clock - never fewer than truly changed. */
+export interface ChangedResponse {
+  rooms: string[]
+}
+
 // --- blobs -------------------------------------------------------------------------
 
 /**
