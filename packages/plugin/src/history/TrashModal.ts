@@ -40,7 +40,7 @@ export class TrashModal extends Modal {
       const when = `Deleted ${new Date(item.deletedAt).toLocaleString()}`
       new Setting(contentEl)
         .setName(item.path)
-        .setDesc(item.kind === 'file' ? `${when} · ${size(item.size)}` : when)
+        .setDesc(item.kind === 'file' ? `${when} · ${size(item.size)}` : item.kind === 'folder-note' ? `${when} · in a shared folder` : when)
         .addButton((button) =>
           button
             .setButtonText('Restore')

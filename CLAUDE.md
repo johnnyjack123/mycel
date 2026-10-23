@@ -193,6 +193,25 @@ someone's notes. Treat them as rules, not preferences.
     `AttachmentStore.followRenames` move one of the two to a free name first
     (`aside`), which neither the index, a rename event nor a scan may take for a
     note or file of its own. Rolling back renames closes such cycles often.
+28. **A note's key comes from one place, and an epoch spent in a shared folder
+    is the folder's.** Its key derives from that folder epoch's key
+    (`folderKeys.doc`), and the server keeps for good which epoch belongs to
+    which folder epoch (`ties`, also after the note left the folder - kept with
+    the membership, the owner lost the epochs the note had spent there). Every
+    reader of a note's log takes its key from `KeyRing.noteKey`/`noteCrypto`,
+    and the server says the tie of the current epoch in `caughtUp` and `rekey`
+    before anything is sent under it: a device that knew of a note joining a
+    folder only from the vault index encrypted under the note's own key, which
+    nobody in the folder holds.
+29. **What reaches everyone in a shared folder is decided on the device where it
+    happened, once its events settled - and nothing follows the folder
+    meanwhile.** Obsidian reports a folder moved or deleted as an event per
+    file, sometimes without one for the folder. A note another device placed at
+    the folder's old place during a move brought the folder back there, the
+    move was then read as every note moving out, and the owner's device ended
+    the share of each. `Folders` waits `settleMs`, defers its own pass while
+    changes are pending, and takes notes turning up together elsewhere for the
+    folder moving.
 
 ## Architecture
 
@@ -510,9 +529,46 @@ the name, which is not unique — is never drawn. There is no global
   deletes its folder.
 - **Deleting is asymmetric.** A participant deleting leaves the share. The owner
   deleting removes the note from the owner's vault only.
-- **No remote delete.** Participants already hold the content, and destroying
-  what they wrote after the share has unbounded downside. The share dialog says
-  that copies remain.
+- **No remote delete** - for a note shared on its own. Participants already hold
+  the content, and destroying what they wrote after the share has unbounded
+  downside. The share dialog says that copies remain. Inside a shared folder a
+  delete is for everyone (below).
+
+### Shared folders
+
+A folder shared with people, everything added to it later included (0.8, spec
+**`docs/PHASE7.md`**, the decisions E0 to E8 the user made).
+
+- **A room of its own,** `fld:<folderId>` (`folderId` derived like a docId under the
+  label `folder::`), owned by the folder's owner, with members like a note's. Its
+  document (`sync/FolderIndex.ts`) holds the folder's notes by docId with their path
+  relative to the folder, tombstones (`deletedAt`) and notes their owner took out
+  (`leftAt`). The server grants the folder's members every note whose meta names the
+  folder (`folder`), from `since` or their own start (`from`); reached both ways (a
+  note shared on its own too), the higher role counts.
+- **Keys:** one per folder epoch, derived from the owner's vault key, sealed to each
+  member once; every note epoch spent in the folder derives from it (invariant 28).
+  Revoking moves the folder's epoch and every note's along, before anything is
+  awaited, and keeps a fork per note for whoever leaves.
+- **New notes in a folder take their id from it** (`folderKeys.ids`, the path
+  relative to the folder), the same for everyone, and a writer's new note is created
+  on the server owned by the folder's owner (`subscribe` with a folder).
+- **The mirror** (`share/Folders.ts`) keeps the folder's document and the vault
+  index entries below the folder's place in step - the folder itself for its owner,
+  the accepted copy (`<share folder>/<name>`) for everyone else; entries carry
+  `folder` and `folderPath`, the vault index a map `folders`. A note follows renames
+  in the folder while it lies where the folder had it. Changes are decided where they
+  happened (invariant 29): inside, a writer's rename or delete is everyone's (a
+  delete with a notice that undoes it, restorable from the folder's trash); a reader's
+  delete declines the note for their account; the owner moving a note out ends its
+  share there (everyone keeps a fork); a member moving one out only places it
+  elsewhere. An existing note moved in is shared only after a window over
+  everything (`MoveInModal`) - a participant's own is copied in as the owner's. The
+  owner deleting the folder ends the share; a member deleting it leaves.
+- **Built in 0.8.0:** notes. Files inside a folder and linked outside it, and the
+  notes outside it the dialog offers once, are 0.8.1.
+
+`test:folders` runs it all with an owner, a writer and a reader, devices of each.
 
 ### History and retention
 
@@ -568,6 +624,7 @@ npm run test:backup    # the backup server's run with real devices and a real re
 # needs a server that lets tests create accounts:
 npm run test:socket    # the encrypted transport, two devices of one account
 npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing, attachments
+npm run test:folders   # a shared folder: its owner, a writer and a reader, devices of each
 ```
 
 The end-to-end tests share their devices through `scripts/harness.mts`.
@@ -682,9 +739,6 @@ is listed in `docs/PROGRESS.md`, "Roadmap". (Recovery codes and 2FA: built in
 **The operator's backup (later).** The data directory as it is - ciphertext only -
 pulled with a dedicated, revocable backup token rather than an account. Moved out of
 0.7 by the user on 2026-10-15.
-
-**Sharing a folder (0.8).** Share a whole folder with someone instead of note by
-note, including what is added to it later. Not designed yet.
 
 **Every note live (0.9).** A device holds at most `maxLoadedDocuments` notes open
 (500 by default, a setting under *This device*); the others get another device's

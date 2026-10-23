@@ -391,6 +391,20 @@ try {
   check(await eventually(() => B.docText('From Ben.md') === 'written by ben\n'), 'B has a note')
   await B.sharing?.share(B.index?.docIdForPath('From Ben.md') as string, A1.accountId, 'write', true)
   check(await eventually(() => A2.vault.text('Shared/From Ben.md') === 'written by ben\n', 15_000), "B's note is shared into A's vault")
+  // Shared folders: A's own, whose notes' keys come from its folder key, and
+  // one of B's in A's vault, whose folder key is sealed to A.
+  await A1.folders?.share('Projects', B.accountId, 'write', true)
+  await A1.vault.userCreate('Projects/In the folder.md', 'written in the folder\n')
+  await B.vault.userCreate('Ben Folder/Note.md', 'in bens folder\n')
+  check(await eventually(() => B.docText('Ben Folder/Note.md') === 'in bens folder\n'), 'B has a folder of its own')
+  await B.folders?.share('Ben Folder', A1.accountId, 'read', false)
+  check(
+    await eventually(() => A2.vault.text('Shared/Ben Folder/Note.md') === 'in bens folder\n' && A2.vault.text('Projects/In the folder.md') === 'written in the folder\n', 15_000),
+    "A shares a folder, and B's folder is shared into A's vault"
+  )
+  // Every device done following the folders, so the runs below see a vault at rest.
+  await delay(2_500)
+  for (const device of devices) await device.folders?.settled()
   check(
     await eventually(() => A2.vault.text('Welcome.md') === 'hello\n' && A2.vault.text(DEEP) === 'deep text\n' && same(A2.vault.bytes(LONG), longPhoto) && same(A2.vault.bytes('Board.canvas'), board), 15_000),
     'the server has the whole vault'

@@ -14,8 +14,12 @@ import { isHexId, type ForkResponse, type ForkSummary, type LogResponse } from '
 /** How long a share's history waits for its participant after the owner's account is gone. */
 export const OWNER_REMOVED_HOLD_MS = 90 * 24 * 60 * 60 * 1000
 
+/** A note of a shared folder: the folder keys the participant held, and which note epochs they open. */
+export type FolderKept = NonNullable<ForkResponse['folder']>
+
 interface ForkRecord extends ForkSummary {
   keys: Record<string, string>
+  folder?: FolderKept
   /** When the owner's account was removed; the history is held 90 days from then. */
   ownerRemovedAt?: number
   forkedAt?: number
@@ -101,9 +105,10 @@ export class ForkStore {
    * anew and ended anew - replaces the earlier one: its history reaches at
    * least as far.
    */
-  async put(account: string, summary: ForkSummary, keys: Record<string, string>, log: LogResponse): Promise<void> {
+  async put(account: string, summary: ForkSummary, keys: Record<string, string>, log: LogResponse, folder?: FolderKept): Promise<void> {
     await this.ready
     const record: ForkRecord = { ...summary, keys, held: true }
+    if (folder) record.folder = folder
     await this.queue(async () => {
       await mkdir(this.dir(account), { recursive: true })
       // The history first: a record saying it is held must never point at nothing.
@@ -140,6 +145,7 @@ export class ForkStore {
       log
     }
     if (record.forkedTo) response.forkedTo = record.forkedTo
+    if (record.held && record.folder) response.folder = record.folder
     return response
   }
 
@@ -173,6 +179,7 @@ export class ForkStore {
   private async drop(account: string, record: ForkRecord): Promise<void> {
     record.held = false
     record.keys = {}
+    delete record.folder
     await this.saveRecord(account, record)
     await unlink(this.logFile(account, record.docId)).catch(() => undefined)
   }

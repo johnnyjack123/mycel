@@ -47,7 +47,11 @@ export class Compactor {
       case 'set':
         return this.keys.settingsCrypto()
       case 'doc':
-        return this.keys.ownDocCrypto(roomSubject(room))
+        // Asked which epochs belong to a shared folder: compaction is rare, and
+        // a note of a folder must never be folded under its own key.
+        return this.keys.noteCrypto(roomSubject(room), { owned: true, folder: true })
+      case 'fld':
+        return this.keys.folderRoomCrypto(roomSubject(room))
       default:
         return null
     }

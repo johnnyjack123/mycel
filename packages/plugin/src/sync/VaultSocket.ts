@@ -7,7 +7,7 @@ import {
 } from 'y-protocols/awareness'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, type Notice, type NotifyKind } from '@obsidian-connect/shared'
+import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, type FolderTie, type Notice, type NotifyKind } from '@obsidian-connect/shared'
 import { bytes, decrypt, encrypt, packFrame, sha256, toHex, unpackFrame } from '@obsidian-connect/shared/crypto'
 import type { HistoryEntry } from './History.js'
 import { log } from '../log.js'
@@ -25,6 +25,14 @@ const SEND_DELAY_MS = 40
 /** Keys of one room, by epoch. Null: this device may not read that epoch. */
 export interface RoomCrypto {
   key(epoch: number): Promise<CryptoKey | null>
+  /**
+   * What the server said the epoch it is in belongs to: a shared folder's
+   * epoch, whose key the note's derives from, or none. Told before anything
+   * is sent under that epoch.
+   */
+  learn?(epoch: number, tie: FolderTie | null): void
+  /** A frame did not open with the key given: ask what the epochs belong to. True when that changed something. */
+  refresh?(): Promise<boolean>
 }
 
 /** Where a room's position in the log and its unacknowledged changes are kept. */
@@ -84,6 +92,8 @@ export interface RoomOptions {
   history?: ((entry: HistoryEntry) => void) | null
   /** Whether a room the server does not have is created. Only for rooms this account owns. */
   create?: boolean
+  /** A missing note is created in this shared folder, owned by the folder's owner. */
+  folder?: string | null
 }
 
 export interface SocketHandlers {
@@ -109,6 +119,13 @@ type Verification = 'none' | 'pending' | 'match' | 'mismatch'
 
 async function fingerprint(data: Uint8Array): Promise<string> {
   return toHex(await sha256(bytes(data))).slice(0, 32)
+}
+
+/** The folder epoch a `caughtUp` or `rekey` says the room's epoch belongs to; a server before shared folders says nothing. */
+function readTie(decoder: decoding.Decoder): FolderTie | null {
+  if (!decoding.hasContent(decoder)) return null
+  const folder = decoding.readVarString(decoder)
+  return { folder, epoch: decoding.readVarUint(decoder) }
 }
 
 interface Registration {
@@ -275,6 +292,8 @@ export class VaultSocket {
       encoding.writeVarString(encoder, registration.room)
       encoding.writeVarUint(encoder, registration.verify.state === 'pending' ? lastSeq - 1 : lastSeq)
       encoding.writeVarUint(encoder, registration.options.create === false ? 0 : 1)
+      const folder = registration.options.folder
+      if (folder && registration.options.create !== false) encoding.writeVarString(encoder, folder)
     })
   }
 
@@ -333,7 +352,9 @@ export class VaultSocket {
       case MUX.caughtUp: {
         decoding.readVarUint(decoder) // headSeq
         const epoch = decoding.readVarUint(decoder)
+        const tie = readTie(decoder)
         this.enqueue(registration, async () => {
+          registration.options.crypto.learn?.(epoch, tie)
           const cursor = registration.options.cursor
           const verify = registration.verify
           if (verify.state === 'pending' || verify.state === 'mismatch') {
@@ -395,7 +416,9 @@ export class VaultSocket {
       }
       case MUX.rekey: {
         const epoch = decoding.readVarUint(decoder)
+        const tie = readTie(decoder)
         this.enqueue(registration, async () => {
+          registration.options.crypto.learn?.(epoch, tie)
           registration.options.cursor.epoch = epoch
           registration.options.cursor.persist()
           // A push under the old epoch was refused and will never be
@@ -425,12 +448,22 @@ export class VaultSocket {
   }
 
   private async open(registration: Registration, epoch: number, data: Uint8Array, aad: string): Promise<Uint8Array | null> {
-    const key = await registration.options.crypto.key(epoch)
+    const crypto = registration.options.crypto
+    const key = await crypto.key(epoch)
     if (!key) {
       log.error(`no key for ${registration.room} epoch ${epoch}`)
       return null
     }
-    return decrypt(key, data, aad)
+    try {
+      return await decrypt(key, data, aad)
+    } catch (error) {
+      // The note spent that epoch in a shared folder this device has not heard
+      // of yet: its key is the folder's, not the note's own.
+      if (!crypto.refresh || !(await crypto.refresh())) throw error
+      const again = await crypto.key(epoch)
+      if (!again) return null
+      return decrypt(again, data, aad)
+    }
   }
 
   private async applyFrame(registration: Registration, seq: number, epoch: number, data: Uint8Array): Promise<void> {

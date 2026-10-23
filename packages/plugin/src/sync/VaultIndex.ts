@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { INDEX_FIELD, type IndexEntry, type ShareRole } from '@obsidian-connect/shared'
+import { DECLINED_FIELD, FOLDERS_FIELD, INDEX_FIELD, type IndexEntry, type ShareRole, type VaultFolder } from '@obsidian-connect/shared'
 
 // The index is the only thing that knows which file a document belongs to.
 // Keying rooms by path instead would turn every rename into a new, empty
@@ -37,18 +37,34 @@ function live(entry: IndexEntry): IndexEntry {
 /** How a path and a generation become a document id. */
 export type DeriveDocId = (path: string, generation: number) => Promise<string>
 
+/**
+ * Where a new note at some path takes its id from instead of the vault key: a
+ * shared folder, so everyone in it derives the same id for the same new note.
+ */
+export interface IdScheme {
+  derive(generation: number): Promise<string | null>
+  /** Ids the folder knows, deleted ones included: never handed out again. */
+  taken(docId: string): boolean
+}
+
 export interface AdoptOptions {
   shared?: boolean
   owner?: string
   role?: ShareRole
+  folder?: string
+  folderPath?: string
 }
 
 export class VaultIndex {
   readonly doc = new Y.Doc()
   private readonly files: Y.Map<IndexEntry>
+  private readonly folderMap: Y.Map<VaultFolder>
+  private readonly declinedMap: Y.Map<{ at: number }>
   private readonly byPath = new Map<string, string>()
   private readonly listeners = new Set<() => void>()
+  private readonly folderListeners = new Set<() => void>()
   private readonly derive: DeriveDocId
+  private scheme: (path: string) => IdScheme | null = () => null
 
   /**
    * `derive` defaults to hashing the vault id and path; with an account it is
@@ -57,11 +73,21 @@ export class VaultIndex {
   constructor(vaultId: string, derive?: DeriveDocId) {
     this.derive = derive ?? ((path, generation) => stableDocId(vaultId, path, generation))
     this.files = this.doc.getMap<IndexEntry>(INDEX_FIELD)
+    this.folderMap = this.doc.getMap<VaultFolder>(FOLDERS_FIELD)
+    this.declinedMap = this.doc.getMap<{ at: number }>(DECLINED_FIELD)
     this.files.observeDeep(() => {
       this.rebuild()
       for (const listener of this.listeners) listener()
     })
+    this.folderMap.observe(() => {
+      for (const listener of this.folderListeners) listener()
+    })
     this.rebuild()
+  }
+
+  /** Paths inside a shared folder this account may write in take their ids from the folder. */
+  setIdScheme(scheme: (path: string) => IdScheme | null): void {
+    this.scheme = scheme
   }
 
   onChange(listener: () => void): () => void {
@@ -117,7 +143,7 @@ export class VaultIndex {
    * text. The first unused generation is still derived, so devices adopting
    * the same file arrive at the same id.
    */
-  async ensure(path: string): Promise<string> {
+  async ensure(path: string, onCreated?: (docId: string) => void): Promise<string> {
     const existing = this.docIdForPath(path)
     if (existing) return existing
     const docId = await this.nextId(path)
@@ -127,11 +153,22 @@ export class VaultIndex {
     this.doc.transact(() => {
       this.files.set(docId, { path, updatedAt: Date.now() })
     }, 'local')
+    onCreated?.(docId)
     return docId
   }
 
   /** The id `ensure` would give a new document at this path, without registering it. */
   async nextId(path: string): Promise<string> {
+    const scheme = this.scheme(path)
+    if (scheme) {
+      // Without the folder's key - not handed over yet - the vault's own will do;
+      // the note still joins the folder, under an id nobody else derives.
+      let docId = await scheme.derive(0)
+      for (let generation = 1; docId && (this.files.has(docId) || scheme.taken(docId)); generation += 1) {
+        docId = await scheme.derive(generation)
+      }
+      if (docId) return docId
+    }
     let docId = await this.derive(path, 0)
     for (let generation = 1; this.files.has(docId); generation += 1) {
       docId = await this.derive(path, generation)
@@ -164,9 +201,83 @@ export class VaultIndex {
     if (options.shared) entry.shared = true
     if (options.owner) entry.owner = options.owner
     if (options.role) entry.role = options.role
+    if (options.folder) entry.folder = options.folder
+    if (options.folderPath !== undefined) entry.folderPath = options.folderPath
     this.doc.transact(() => {
       this.files.set(docId, entry)
     }, 'local')
+  }
+
+  /**
+   * A note's place in a shared folder - or none, `folder` null - with the
+   * sharing that follows from it: shared, and for someone else's folder whose
+   * it is and what this account may do.
+   */
+  setFolderOf(docId: string, folder: { id: string; path: string; owner?: string; role?: ShareRole } | null): void {
+    const entry = this.files.get(docId)
+    if (!entry || entry.deletedAt) return
+    const next: IndexEntry = { ...entry }
+    if (folder) {
+      next.folder = folder.id
+      next.folderPath = folder.path
+      next.shared = true
+      if (folder.owner) next.owner = folder.owner
+      if (folder.role) next.role = folder.role
+    } else {
+      delete next.folder
+      delete next.folderPath
+    }
+    if (JSON.stringify(next) === JSON.stringify(entry)) return
+    this.doc.transact(() => {
+      this.files.set(docId, { ...next, updatedAt: Date.now() })
+    }, 'local')
+  }
+
+  // --- shared folders -----------------------------------------------------------
+
+  onFoldersChange(listener: () => void): () => void {
+    this.folderListeners.add(listener)
+    return () => this.folderListeners.delete(listener)
+  }
+
+  folder(folderId: string): VaultFolder | undefined {
+    return this.folderMap.get(folderId)
+  }
+
+  /** Every shared folder of the vault whose share goes on: its own, and the ones shared into it. */
+  liveFolders(): Array<{ folderId: string; folder: VaultFolder }> {
+    const found: Array<{ folderId: string; folder: VaultFolder }> = []
+    this.folderMap.forEach((folder, folderId) => {
+      if (!folder.endedAt && !folder.leftAt) found.push({ folderId, folder })
+    })
+    return found
+  }
+
+  hasFolder(folderId: string): boolean {
+    return this.folderMap.has(folderId)
+  }
+
+  // What this account let go of in a shared folder it only reads: no device of
+  // it pulls that note again until it is restored. The same map the files of
+  // shared notes are declined in, under keys of their own.
+  isDeclined(key: string): boolean {
+    return this.declinedMap.has(key)
+  }
+
+  decline(key: string): void {
+    if (this.isDeclined(key)) return
+    this.doc.transact(() => this.declinedMap.set(key, { at: Date.now() }), 'local')
+  }
+
+  undecline(key: string): void {
+    if (!this.isDeclined(key)) return
+    this.doc.transact(() => this.declinedMap.delete(key), 'local')
+  }
+
+  setFolder(folderId: string, folder: VaultFolder): void {
+    const current = this.folderMap.get(folderId)
+    if (current && JSON.stringify(current) === JSON.stringify(folder)) return
+    this.doc.transact(() => this.folderMap.set(folderId, folder), 'local')
   }
 
   setRole(docId: string, role: ShareRole): void {
@@ -177,12 +288,14 @@ export class VaultIndex {
     }, 'local')
   }
 
-  rename(docId: string, path: string): void {
+  /** True when the path changed. */
+  rename(docId: string, path: string): boolean {
     const entry = this.files.get(docId)
-    if (!entry || entry.path === path) return
+    if (!entry || entry.path === path) return false
     this.doc.transact(() => {
       this.files.set(docId, live({ ...entry, path, updatedAt: Date.now() }))
     }, 'local')
+    return true
   }
 
   isShared(docId: string): boolean {
@@ -247,6 +360,7 @@ export class VaultIndex {
 
   destroy(): void {
     this.listeners.clear()
+    this.folderListeners.clear()
     this.doc.destroy()
   }
 }

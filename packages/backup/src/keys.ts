@@ -1,11 +1,12 @@
 import * as Y from 'yjs'
-import { frameAad, roomKind, roomSubject, snapshotAad, type BackupGrant } from '@obsidian-connect/shared'
+import { folderRoom, frameAad, roomKind, roomSubject, snapshotAad, type BackupGrant } from '@obsidian-connect/shared'
 import {
   aesKey,
   blobIdFor,
   decrypt,
   decryptBlobChunk,
   epochKeyContext,
+  folderKeys,
   fromBase64,
   importPrivateKey,
   unpackFrame,
@@ -61,14 +62,38 @@ export class VaultKeys {
       if (epoch !== 0 || subject !== this.grant.vaultId) return null
       return this.cached(cached.room, () => (kind === 'idx' ? vaultKeys.index(this.vaultKey) : vaultKeys.settings(this.vaultKey)))
     }
-    if (cached.owner === this.grant.accountId) {
+    const own = cached.owner === this.grant.accountId
+    // An epoch the note spent in a shared folder opens with the folder's key.
+    const tie = cached.ties?.[String(epoch)]
+    if (tie) {
+      const id = `${cached.room}#${epoch}#${tie.folder}.${tie.epoch}`
+      const existing = this.keys.get(id)
+      if (existing) return existing
+      const folderKey = own ? await vaultKeys.folder(this.vaultKey, tie.folder, tie.epoch) : await this.sealedFolderKey(cached, tie.folder, tie.epoch)
+      if (folderKey) return this.cached(id, () => folderKeys.doc(folderKey, subject, epoch))
+    }
+    if (own && kind === 'fld') {
+      return this.cached(`${cached.room}#${epoch}`, async () => folderKeys.room(await vaultKeys.folder(this.vaultKey, subject, epoch)))
+    }
+    if (own) {
       return this.cached(`${cached.room}#${epoch}`, () => vaultKeys.doc(this.vaultKey, subject, epoch))
     }
     const sealed = cached.sealed[String(epoch)]
     if (!sealed) return null
+    if (kind === 'fld') {
+      return this.cached(`${cached.room}#${epoch}`, async () =>
+        folderKeys.room(await unseal(this.privateKey, this.publicKey, sealed, epochKeyContext(cached.room, epoch)))
+      )
+    }
     return this.cached(`${cached.room}#${epoch}`, () =>
       unseal(this.privateKey, this.publicKey, sealed, epochKeyContext(cached.room, epoch))
     )
+  }
+
+  private async sealedFolderKey(cached: CachedRoom, folder: string, epoch: number): Promise<Bytes | null> {
+    const sealed = cached.folderKeys?.[folder]?.[String(epoch)]
+    if (!sealed) return null
+    return unseal(this.privateKey, this.publicKey, sealed, epochKeyContext(folderRoom(folder), epoch))
   }
 
   /**
@@ -86,7 +111,16 @@ export class VaultKeys {
         unreadable += 1
         return
       }
-      Y.applyUpdate(doc, unpackFrame(await decrypt(key, fromBase64(data), aad)).update)
+      let plaintext: Uint8Array
+      try {
+        plaintext = await decrypt(key, fromBase64(data), aad)
+      } catch {
+        // A key that does not fit is a frame this run cannot read - said as a
+        // problem of the note, never a run that fails for every other one.
+        unreadable += 1
+        return
+      }
+      Y.applyUpdate(doc, unpackFrame(plaintext).update)
       changedAt = Math.max(changedAt, ts)
     }
     if (cached.snapshot) {

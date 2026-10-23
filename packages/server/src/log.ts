@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { isHexId, roomKind, roomSubject, type ShareRole } from '@obsidian-connect/shared'
+import { isHexId, roomKind, roomSubject, type FolderTie, type ShareRole } from '@obsidian-connect/shared'
 
 // One room on disk: `meta.json` with who may do what, `log.bin` with the
 // frames, and `snap-<uptoSeq>.bin` for each snapshot still needed. The server
@@ -57,6 +57,25 @@ export interface RoomMeta {
    * may read the note may read these, and nobody may purge them meanwhile.
    */
   attachments?: string[]
+  /** The head when the current epoch began; every frame after it is in that epoch. */
+  epochSince?: number
+  /** A note in a shared folder: the folder's members reach it through the folder. */
+  folder?: RoomFolder
+  /**
+   * The note's epochs spent in a shared folder, each with the folder and the
+   * folder epoch its key derives from. Kept after the note left the folder:
+   * its owner still reads those epochs.
+   */
+  ties?: Record<string, FolderTie>
+}
+
+/** A note's place in a shared folder, as the server keeps it. */
+export interface RoomFolder {
+  id: string
+  /** Where the folder's members start reading the note: 0 when it was born in the folder or joined with its history. */
+  since: number
+  /** Members who joined the folder without history start later: account -> their first seq. */
+  from?: Record<string, number>
 }
 
 const HEADER_BYTES = 8 + 8 + 4 + 4
@@ -105,19 +124,39 @@ async function writeAtomic(path: string, data: string | Uint8Array): Promise<voi
 
 const USERS = 'users'
 const NOTES = 'notes'
+const FOLDERS = 'folders'
 
 /**
- * `users/<owner>/<vaultId>/{index,settings,notes/<docId>}`: everything an
- * account owns under one folder, so removing an account removes a folder and
- * a person can find their own data by the ids the plugin shows. A shared note
- * lives with its owner only; everyone else's index merely points at it.
+ * `users/<owner>/<vaultId>/{index,settings,notes/<docId>,folders/<folderId>}`:
+ * everything an account owns under one folder, so removing an account removes
+ * a folder and a person can find their own data by the ids the plugin shows. A
+ * shared note lives with its owner only; everyone else's index merely points
+ * at it.
  */
 export function roomDir(dataDir: string, meta: Pick<RoomMeta, 'room' | 'owner' | 'vaultId'>): string {
   const vault = join(dataDir, USERS, meta.owner, meta.vaultId)
   const kind = roomKind(meta.room)
   if (kind === 'idx') return join(vault, 'index')
   if (kind === 'set') return join(vault, 'settings')
+  if (kind === 'fld') return join(vault, FOLDERS, roomSubject(meta.room))
   return join(vault, NOTES, roomSubject(meta.room))
+}
+
+// One queue of writes per room directory, shared by an open room's log and by
+// metadata saved while the room is not open - a folder's epoch moves every
+// note in it, open or not - so two writes of one room never interleave.
+const writeQueues = new Map<string, Promise<unknown>>()
+
+function queueWrite<T>(dir: string, room: string, task: () => Promise<T>): Promise<T> {
+  const run = (writeQueues.get(dir) ?? Promise.resolve()).then(task)
+  const settled = run.catch((error) => {
+    console.error(`[obsidian-connect] writing ${room} failed`, error)
+  })
+  writeQueues.set(dir, settled)
+  void settled.then(() => {
+    if (writeQueues.get(dir) === settled) writeQueues.delete(dir)
+  })
+  return run
 }
 
 async function list(dir: string): Promise<string[]> {
@@ -145,14 +184,23 @@ export async function loadAllMeta(dataDir: string): Promise<RoomMeta[]> {
       await read(join(base, 'index'))
       await read(join(base, 'settings'))
       for (const docId of await list(join(base, NOTES))) await read(join(base, NOTES, docId))
+      for (const folderId of await list(join(base, FOLDERS))) await read(join(base, FOLDERS, folderId))
     }
   }
   return metas
 }
 
-export class RoomLog {
-  private writes: Promise<unknown> = Promise.resolve()
+/** Saves a room's metadata without opening its log. */
+export function saveMetaOf(dataDir: string, meta: RoomMeta): Promise<void> {
+  const dir = roomDir(dataDir, meta)
+  const json = JSON.stringify(meta, null, 2)
+  return queueWrite(dir, meta.room, async () => {
+    await mkdir(dir, { recursive: true })
+    await writeAtomic(join(dir, 'meta.json'), json)
+  })
+}
 
+export class RoomLog {
   private constructor(
     private readonly dir: string,
     readonly meta: RoomMeta,
@@ -181,11 +229,7 @@ export class RoomLog {
 
   /** Serialized, so appends and rewrites never interleave on disk. */
   private queue<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.writes.then(task)
-    this.writes = run.catch((error) => {
-      console.error(`[obsidian-connect] writing ${this.meta.room} failed`, error)
-    })
-    return run
+    return queueWrite(this.dir, this.meta.room, task)
   }
 
   saveMeta(): Promise<void> {
@@ -274,7 +318,7 @@ export class RoomLog {
   }
 
   flush(): Promise<unknown> {
-    return this.writes
+    return writeQueues.get(this.dir) ?? Promise.resolve()
   }
 
   /** Deletes the room from disk, once everything queued has been written. */

@@ -38,6 +38,44 @@ export interface IndexEntry {
    * the server let go of it, so it can no longer be restored.
    */
   purgedAt?: number
+  /** The shared folder the note is part of, owned by this account or someone else. */
+  folder?: string
+  /**
+   * The note's path relative to its folder as this vault last followed it.
+   * While the note's file lies at the folder's place plus this, it follows the
+   * folder's renames; moved elsewhere here, it stays where it was put.
+   */
+  folderPath?: string
+}
+
+/**
+ * A shared folder in a vault index: one of the vault's own, or one someone
+ * shared into it. The id is the identity, as a note's is; `path` is where the
+ * folder lies in this vault, which for someone else's is entirely this
+ * vault's business.
+ */
+export interface VaultFolder {
+  path: string
+  updatedAt: number
+  /** Whose folder it is, when it is someone else's. */
+  owner?: string
+  role?: ShareRole
+  /** The share ended - revoked, ended by its owner, detached: an ordinary folder now. */
+  endedAt?: number
+  /** This account left it; nothing of it is kept. */
+  leftAt?: number
+}
+
+/** A note in a shared folder's own document, its path relative to the folder. */
+export interface FolderNote {
+  path: string
+  updatedAt: number
+  /** Deleted for everyone in the folder. */
+  deletedAt?: number
+  /** Its owner moved it out of the folder: everyone else keeps it as their own. */
+  leftAt?: number
+  /** The account that made the last change to the entry. */
+  by?: string
 }
 
 /**
@@ -310,6 +348,8 @@ export interface BackupRoom {
   compactedUpTo: number
   /** Changes whenever the room's log does; nothing to read from it. */
   tag: string
+  /** A note's epochs spent in a shared folder: their keys derive from the folder's. */
+  ties?: Record<string, FolderTie>
 }
 
 export interface BackupRoomsResponse {
@@ -644,6 +684,11 @@ export interface Rotation {
   keys: Record<string, string>
   /** For a share without history: the note at the server's head, under the new epoch. */
   snapshot?: { uptoSeq: number; data: string }
+  /**
+   * A note in a shared folder: the folder's epoch the new key was derived
+   * from. Every new epoch of such a note belongs to the folder's current one.
+   */
+  folderEpoch?: number
 }
 
 export interface ShareRequest {
@@ -713,10 +758,26 @@ export interface AcceptRequest {
  * made or deleted - and the devices still signed in show it; its notice names
  * the account. Older plugins ignore kinds they do not know.
  */
-export type NotifyKind = 'share-added' | 'share-changed' | 'share-removed' | 'contact' | 'contact-removed' | 'account-changed'
+export type NotifyKind =
+  | 'share-added'
+  | 'share-changed'
+  | 'share-removed'
+  | 'contact'
+  | 'contact-removed'
+  | 'account-changed'
+  | 'folder-added'
+  | 'folder-changed'
+  | 'folder-removed'
 
 export interface ShareNotice {
   docId: string
+  owner: string
+  role?: ShareRole
+}
+
+/** For `folder-added`, `folder-changed` and `folder-removed`. */
+export interface FolderNotice {
+  folderId: string
   owner: string
   role?: ShareRole
 }
@@ -726,7 +787,143 @@ export interface ContactNotice {
   account: string
 }
 
-export type Notice = ShareNotice | ContactNotice
+export type Notice = ShareNotice | ContactNotice | FolderNotice
+
+// --- shared folders --------------------------------------------------------------
+// A folder is a room of its own (`fld:<folderId>`) whose members reach every
+// note in it; each folder epoch's key is sealed to each member once, and the
+// keys of the notes in it derive from it (`folderKeys`). `docs/PHASE7.md`.
+
+/**
+ * A note's own members, and the note's next epoch sealed for each of them: a
+ * folder's epoch moving moves the note's, and those people hold the note's key
+ * rather than the folder's.
+ */
+export interface NoteRotation {
+  /** The note's next epoch; refused when the note moved meanwhile. */
+  epoch: number
+  /** account -> the key of that epoch sealed to them. */
+  keys: Record<string, string>
+}
+
+/** The folder to its next epoch, and every note in it along. */
+export interface FolderRotation {
+  /** The folder's next epoch. */
+  epoch: number
+  /** account -> the folder key of that epoch sealed to them, for everyone who keeps access. */
+  keys: Record<string, string>
+  /** docId -> the note's next epoch for its own members; only notes that have any. */
+  notes: Record<string, NoteRotation>
+}
+
+export interface FolderShareRequest {
+  folderId: string
+  account: string
+  role: ShareRole
+  withHistory: boolean
+  /** The owner's name for the folder, sealed to the recipient. */
+  title: string
+  /**
+   * folder epoch -> the folder key sealed to the recipient: every epoch with
+   * history, the current one without. Without history every note must have a
+   * starting point in the current epoch first (`StartSnapshotRequest`).
+   */
+  keys: Record<string, string>
+  /**
+   * With history: docId -> note epoch -> key sealed to the recipient, for the
+   * epochs a note had before it joined the folder - whose history the folder's
+   * members read (a note that joined with its history).
+   */
+  noteKeys?: Record<string, Record<string, string>>
+}
+
+/** A note of the owner's into a folder. */
+export interface FolderJoinRequest {
+  docId: string
+  /** The note's next epoch, tied to the folder's current one. */
+  epoch: number
+  folderEpoch: number
+  /** The new epoch's key sealed to the note's own members. */
+  keys: Record<string, string>
+  /**
+   * The note at the server's head under the new epoch: where the folder's
+   * members start reading it. Required while the folder has members; without
+   * one the note joins with its whole history, for a folder shared next.
+   */
+  snapshot?: { uptoSeq: number; data: string }
+}
+
+/** A note of the folder back to its owner alone; the members keep theirs as forks. */
+export interface FolderLeaveRequest {
+  docId: string
+  rotation: NoteRotation
+}
+
+export interface FolderRevokeRequest {
+  account: string
+  rotation: FolderRotation
+}
+
+export interface FolderRoleRequest {
+  account: string
+  role: ShareRole
+}
+
+export interface FolderAcceptRequest {
+  vaultId: string
+}
+
+/** The share ends for everyone; each note to its next epoch, under the owner's vault key again. */
+export interface FolderEndRequest {
+  notes: Record<string, NoteRotation>
+}
+
+/**
+ * Where someone joining a folder without history starts reading a room of it:
+ * the room in its current epoch, at or after the epoch began.
+ */
+export interface StartSnapshotRequest {
+  epoch: number
+  uptoSeq: number
+  data: string
+}
+
+/** A note of the folder as its owner needs it for the next rotation or share. */
+export interface FolderNoteState {
+  docId: string
+  epoch: number
+  headSeq: number
+  /** Where the folder's members start reading it; 0 for the whole history. */
+  since: number
+  /** The latest starting point in the current epoch, if there is one. */
+  start: number | null
+  /** The note's own members. */
+  members: string[]
+}
+
+export interface FolderStateResponse {
+  folderId: string
+  owner: string
+  epoch: number
+  headSeq: number
+  start: number | null
+  members: ShareMember[]
+  /** For the owner only. */
+  notes?: FolderNoteState[]
+}
+
+export interface IncomingFolder {
+  folderId: string
+  owner: string
+  role: ShareRole
+  /** The owner's name for the folder, sealed to the recipient. */
+  title: string
+  addedAt: number
+}
+
+export interface IncomingFoldersResponse {
+  folders: IncomingFolder[]
+}
 
 // --- the end of a share ------------------------------------------------------------
 
@@ -755,6 +952,11 @@ export interface ForksResponse {
 export interface ForkResponse extends ForkSummary {
   /** epoch -> that epoch's key sealed to the participant. */
   keys: Record<string, string>
+  /**
+   * A note of a shared folder: the folder's keys the participant held, by
+   * folder epoch, and which of the note's epochs belong to which of those.
+   */
+  folder?: { id: string; keys: Record<string, string>; epochs: Record<string, number> }
   /** Null once forked, or when the owner's account has been gone for 90 days. */
   log: LogResponse | null
   /** The participant's own note the share carries on in, once a device has forked. */
@@ -819,6 +1021,18 @@ export interface KeysResponse {
   epoch: number
   /** epoch -> key sealed to the caller. Empty for rooms the caller owns. */
   keys: Record<string, string>
+  /**
+   * For a note that is or was in a shared folder: which of its epochs belong
+   * to which folder and folder epoch - those keys come from the folder's.
+   * Every epoch up to `epoch` not named here is the note's own.
+   */
+  ties?: Record<string, FolderTie>
+}
+
+/** A note epoch spent in a shared folder: its key derives from that folder epoch's key. */
+export interface FolderTie {
+  folder: string
+  epoch: number
 }
 
 export interface LogFrame {

@@ -1,6 +1,6 @@
 import { mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, type LogFrame, type LogSnapshot } from '@obsidian-connect/shared'
+import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, type FolderTie, type LogFrame, type LogSnapshot } from '@obsidian-connect/shared'
 
 // What the backup server keeps of a vault between runs: the ciphertext, as
 // the sync server has it. Without it every run would download every
@@ -22,6 +22,10 @@ export interface CachedRoom {
   frames: LogFrame[]
   /** Epoch -> that epoch's key sealed to the account, for notes others own. */
   sealed: Record<string, string>
+  /** The note's epochs spent in a shared folder: their keys derive from the folder's. */
+  ties?: Record<string, FolderTie>
+  /** For a folder someone else owns: folder id -> folder epoch -> its key sealed to the account. */
+  folderKeys?: Record<string, Record<string, string>>
   /**
    * The sync server no longer lists the room for this vault - a share that
    * ended, or a note purged. Kept as it was until the index stops naming it.

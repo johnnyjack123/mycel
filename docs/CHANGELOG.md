@@ -6,6 +6,45 @@ verified. `docs/PROGRESS.md` holds only the current state.
 "Checked by putting the bug back" means: the old behaviour was restored in the source,
 the suite run, the new checks seen failing (and nothing else), the fix restored.
 
+## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
+
+- **0.8.0** (2026-10-23) - a folder is shared with people, everything added to it later
+  included, as the user decided it (E0 to E8 in `docs/PHASE7.md`). The folder's menu
+  shares it - the dialog says first that whatever is added later goes along and that a
+  delete in the folder is a delete for everyone -, shows who has it, changes access,
+  removes someone and stops sharing; a member makes a copy of their own there. The
+  folder is a room of its own on the server, whose members reach every note in it;
+  one key per folder epoch, sealed to each member once, opens them all, so a note
+  added tomorrow needs nothing sealed. It lands in the share folder of everyone it is
+  shared with and is marked in the file explorer.
+  - Notes added by anyone who may write belong to the folder's owner and take their id
+    from the folder, the same for everyone. A reader's own note stays theirs.
+  - A rename or delete inside the folder by the owner or a writer is everyone's; a
+    delete says so in a notice that undoes it, and the folder's trash brings it back. A
+    reader deleting lets the note go for their account only. The owner moving a note
+    out ends its share there (everyone keeps a fork); a member moving one out only puts
+    it elsewhere. An existing note moved in is asked about in a window over everything
+    on every device of the account until one answers - a participant's own is copied in
+    as the owner's. Revoking someone, the owner deleting the folder and a member leaving
+    end the share; every note is forked, one shared on its own as well stays shared.
+  - Single shares of a note in a folder take each new key from the folder's epoch, and
+    the backup server reads folder notes with the folder's keys - a frame it cannot
+    open is now a problem of that note, never a failed run.
+  - Two bugs found on the way, both now invariants (28, 29): a note's folder epochs
+    were kept with its membership of the folder and lost when it left, so its owner
+    could no longer read them; and a note another device of the owner placed at a
+    folder's old place while the folder moved brought the folder back there, the move
+    then read as every note moving out - each share would have ended.
+    `test:folders` reproduced the second before its fix (two failures) and passes
+    since; the first is checked in `test:rooms` (the ties after leaving).
+  - Server: protocol 5 - the folder routes, a subscribe that creates a note in a
+    folder, the folder epoch in `caughtUp` and `rekey`, trailing so a 0.7 plugin reads
+    both as before. Every device needs 0.8, the server first.
+  - Tests: `test:rooms` 362 (72 new: access, joining and leaving, rotations, revoking
+    with forks, ending, the sweep, restart, the routes), `test:merge` 171 (the folder
+    keys, ids and ties), `test:folders` 63 (new), `test:backup` with an own and a
+    shared-in folder restored exactly.
+
 ## 0.7 - the backup server (from 2026-10-15, spec `docs/PHASE6.md`)
 
 - **0.7.19** (2026-10-21) - the schedule looks better (asked for by the user, the

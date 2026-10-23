@@ -12,17 +12,25 @@ import { log } from '../log.js'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-/** One thing in the trash: a note, or any other file of the vault. */
+/** One thing in the trash: a note, any other file of the vault, or a note of someone else's shared folder. */
 export type DeletedItem =
   | { kind: 'note'; id: string; path: string; deletedAt: number }
   | { kind: 'file'; id: string; path: string; deletedAt: number; size: number }
+  | { kind: 'folder-note'; id: string; path: string; deletedAt: number; folderId: string }
+
+/** The notes of shared folders someone else owns: `Folders`. */
+export interface FolderTrash {
+  trashItems(since: number): Array<{ folderId: string; docId: string; path: string; deletedAt: number }>
+  restore(folderId: string, docId: string): Promise<void>
+}
 
 export class Trash {
   constructor(
     private readonly api: ConnectApi,
     private readonly store: DocStore,
     private readonly retentionDays: () => number,
-    private readonly attachments: AttachmentStore | null = null
+    private readonly attachments: AttachmentStore | null = null,
+    private readonly folders: FolderTrash | null = null
   ) {}
 
   /** What can still be restored, newest first. With no retention limit, everything ever deleted. */
@@ -39,11 +47,23 @@ export class Trash {
       deletedAt: file.deletedAt,
       size: file.size
     }))
-    return [...notes, ...files].sort((a, b) => b.deletedAt - a.deletedAt)
+    const folderNotes: DeletedItem[] = (this.folders?.trashItems(since) ?? []).map((note) => ({
+      kind: 'folder-note',
+      id: note.docId,
+      path: note.path,
+      deletedAt: note.deletedAt,
+      folderId: note.folderId
+    }))
+    return [...notes, ...files, ...folderNotes].sort((a, b) => b.deletedAt - a.deletedAt)
   }
 
-  restore(item: DeletedItem): Promise<TFile | null> {
-    if (item.kind === 'file') return this.attachments?.restoreDeleted(item.id) ?? Promise.resolve(null)
+  async restore(item: DeletedItem): Promise<TFile | null> {
+    if (item.kind === 'file') return this.attachments?.restoreDeleted(item.id) ?? null
+    if (item.kind === 'folder-note') {
+      // Comes back through its folder; the file follows once the server answered.
+      await this.folders?.restore(item.folderId, item.id)
+      return null
+    }
     return this.store.restoreDeleted(item.id)
   }
 

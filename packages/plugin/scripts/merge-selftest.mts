@@ -308,6 +308,45 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     'every epoch of a note has its own key'
   )
 
+  // Shared folders: one key per folder epoch opens every note in it.
+  const folderId = await e2e.deriveFolderId(vaultKey, 'Projects/X', 0)
+  check(
+    /^[0-9a-f]{32}$/.test(folderId) &&
+      folderId === (await e2e.deriveFolderId(vaultKey, 'Projects/X', 0)) &&
+      folderId !== (await e2e.deriveFolderId(vaultKey, 'Projects/X', 1)) &&
+      folderId !== (await e2e.deriveDocId(vaultKey, 'Projects/X', 0)),
+    "a folder's id is derived like a note's, under a label of its own"
+  )
+  const f0 = await e2e.vaultKeys.folder(vaultKey, folderId, 0)
+  const f1 = await e2e.vaultKeys.folder(vaultKey, folderId, 1)
+  check(e2e.toHex(f0) !== e2e.toHex(f1), 'every folder epoch has its own key')
+  check(
+    e2e.toHex(await e2e.folderKeys.doc(f0, id, 3)) === e2e.toHex(await e2e.folderKeys.doc(f0, id, 3)) &&
+      e2e.toHex(await e2e.folderKeys.doc(f0, id, 3)) !== e2e.toHex(await e2e.folderKeys.doc(f1, id, 3)) &&
+      e2e.toHex(await e2e.folderKeys.doc(f0, id, 3)) !== e2e.toHex(await e2e.vaultKeys.doc(vaultKey, id, 3)),
+    "a note's key in the folder comes from the folder's key, not the vault's"
+  )
+  check(
+    e2e.toHex(await e2e.folderKeys.room(f0)) !== e2e.toHex(f0) && e2e.toHex(await e2e.folderKeys.ids(f0)) !== e2e.toHex(await e2e.folderKeys.room(f0)),
+    "the folder room and the ids take keys of their own from it"
+  )
+  const inFolder = await e2e.deriveDocId(await e2e.folderKeys.ids(f0), 'Plan.md', 0)
+  check(
+    inFolder === (await e2e.deriveDocId(await e2e.folderKeys.ids(await e2e.vaultKeys.folder(vaultKey, folderId, 0)), 'Plan.md', 0)) &&
+      inFolder !== (await e2e.deriveDocId(await e2e.folderKeys.ids(f1), 'Plan.md', 0)),
+    'everyone in a folder derives the same id for a new note, and a later epoch another'
+  )
+  const { tiesAscend } = await import('@obsidian-connect/shared')
+  const tie = (folder: string, epoch: number): { folder: string; epoch: number } => ({ folder, epoch })
+  check(
+    tiesAscend({ '1': tie('a', 0), '2': tie('a', 1), '3': tie('a', 1), '5': tie('b', 0), '6': tie('a', 4) }) && tiesAscend({}),
+    'ties that never go back within a folder are taken, moving between folders included'
+  )
+  check(
+    !tiesAscend({ '1': tie('a', 2), '2': tie('a', 1) }) && !tiesAscend({ '1': tie('a', 0.5) }),
+    'a later note epoch tied to an earlier epoch of the same folder is not'
+  )
+
   const frame = e2e.unpackFrame(e2e.packFrame(1_790_000_000_123, utf8('update')))
   check(frame.authorTs === 1_790_000_000_123 && fromUtf8(frame.update) === 'update', 'frames carry the author clock')
 
