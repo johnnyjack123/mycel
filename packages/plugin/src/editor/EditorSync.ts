@@ -45,6 +45,9 @@ export class EditorSync implements EditorSyncHost {
   detached(binding: EditorBinding): void {
     this.bindings.delete(binding)
     this.endRebind(binding)
+    // A note shown but never bound kept its file from being written.
+    const path = binding.shownNote?.path
+    if (path && !this.shows(path)) this.store()?.editorClosed(path)
   }
 
   /** Every editor binds if it can and rebinds if its session went stale. */
@@ -55,6 +58,12 @@ export class EditorSync implements EditorSyncHost {
   unbindAll(): void {
     for (const binding of this.bindings) binding.unbind()
     for (const binding of Array.from(this.rebinding.keys())) this.endRebind(binding)
+  }
+
+  /** Whether an editor shows the note at this path, bound or not. */
+  shows(path: string): boolean {
+    for (const binding of this.bindings) if (binding.isAlive && binding.shownNote?.path === path) return true
+    return false
   }
 
   boundCount(): number {

@@ -160,6 +160,7 @@ export class DocStore {
   private indexCursor: LocalCursor | null = null
   private indexReady = false
   private stopped = false
+  private shownInEditor: (path: string) => boolean = () => false
 
   constructor(
     private readonly app: App,
@@ -264,6 +265,44 @@ export class DocStore {
 
   isEditorOwned(docId: string): boolean {
     return this.editorOwned.has(docId)
+  }
+
+  /**
+   * Which notes an editor shows, bound or not. Such a note is Obsidian's to
+   * write even while no binding of this store holds it - after sync restarted
+   * under it, or when Obsidian showed it before the plugin started.
+   */
+  watchEditors(shown: (path: string) => boolean): void {
+    this.shownInEditor = shown
+  }
+
+  /** No editor shows the note at this path any more: what its file missed meanwhile is written now. */
+  editorClosed(path: string): void {
+    const docId = this.index.docIdForPath(path)
+    if (docId && this.handles.has(docId)) this.scheduleWrite(docId)
+  }
+
+  /** What `heldBefore` knows, for the store that takes over this vault after a restart of sync. */
+  heldTexts(): Map<string, Set<string>> {
+    return new Map(Array.from(this.held, ([docId, texts]) => [docId, new Set(texts)]))
+  }
+
+  /**
+   * The texts the previous store of this vault held. Without them the saves
+   * Obsidian made from an editor bound before the restart looked like edits
+   * made here (invariant 25).
+   */
+  inheritHeld(held: Map<string, Set<string>>): void {
+    for (const [docId, texts] of held) {
+      for (const print of texts) {
+        let own = this.held.get(docId)
+        if (!own) {
+          own = new Set()
+          this.held.set(docId, own)
+        }
+        own.add(print)
+      }
+    }
   }
 
   private hold(docId: string, text: string): void {
@@ -585,7 +624,9 @@ export class DocStore {
     if (this.stopped || this.editorOwned.has(docId)) return
     const handle = this.handles.get(docId)
     const file = this.fileFor(docId)
-    if (!handle || !file) return
+    // An editor shows it, not bound yet: its binding brings the document in
+    // (`settleShown`); written now, the reload would drop what is being typed.
+    if (!handle || !file || this.shownInEditor(file.path)) return
     const text = handle.text()
     try {
       const current = await this.app.vault.read(file)
@@ -708,6 +749,10 @@ export class DocStore {
       if (local === handle.text() || this.heldBefore(docId, local)) await this.recordAgreement(docId, file, local)
       return
     }
+    if (this.shownInEditor(file.path)) {
+      await this.settleShown(docId, file, handle)
+      return
+    }
 
     const remoteKnown = await handle.whenRemoteReady(this.options.syncTimeoutMs)
     const local = await this.app.vault.read(file)
@@ -744,6 +789,29 @@ export class DocStore {
     const base = this.heldBefore(docId, local) ? local : await this.state.baseText(docId)
     const outcome = reconcile({ base, local, remote, pristine: handle.pristine, markers: this.options.conflictMarkers })
     await this.applyOutcome(docId, file, handle, local, remote, base, outcome)
+  }
+
+  /**
+   * A note shown in an editor no binding of this store holds yet. What the
+   * user sees and types into is the buffer; the file lags it, and writing the
+   * file made Obsidian reload the editor and drop whatever was typed since its
+   * last save - when sync restarted under an open note. The binding merges
+   * buffer and document as it binds (`resolveEditorEdits`, backups first).
+   * Here the server's state is only made known, and an empty document seeded
+   * the way every device seeds it (invariant 18); the file is left alone.
+   */
+  private async settleShown(docId: string, file: TFile, handle: DocHandle): Promise<void> {
+    const remoteKnown = await handle.whenRemoteReady(this.options.syncTimeoutMs)
+    const local = await this.app.vault.read(file)
+    if (!remoteKnown && handle.text().length === 0) {
+      if (local.length > 0) log.warn(`server unreachable, leaving ${file.path} untouched`)
+      return
+    }
+    if (handle.pristine && handle.text().length === 0 && local.length > 0 && !this.isReadOnly(docId)) this.seedDocument(handle, local)
+    if (handle.text() === local) await this.recordAgreement(docId, file, local)
+    // Not an agreement of file and document - the base stays where they last
+    // agreed, which is what the binding merges against - but the note may be bound.
+    else this.agreed.add(docId)
   }
 
   private async applyOutcome(
