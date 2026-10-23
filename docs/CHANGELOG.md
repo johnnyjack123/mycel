@@ -8,6 +8,21 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.6** (2026-10-23) - signing the account's devices out ends their sessions with
+  backup servers too (PHASE7, small fix 5). The relay checked a device's token only
+  when its connection opened, and did not know a device's connection by its account, so
+  a session opened before a password change, a recovery, turning 2FA on or the account's
+  removal went on. The relay now keeps the devices' connections per account and closes
+  them with `4401` on the same hook that closes the vault sockets (`RoomHub.onDisconnect`,
+  `Relay.signOut`); a device that changed the password itself closes its sessions before
+  it reaches its backup servers again with the new token.
+  - Server only, and the device's order of closing; a 0.8.5 plugin opens new sessions
+    the same way after the close.
+  - Tests: `test:rooms` 372 (2 new, the relay with fake sockets), `test:backup` 228
+    (a session opened before a password change ends with it). Checked by putting the
+    bug back: without the hook in `server.ts`, `test:backup`'s new check fails, and
+    nothing else.
+
 - **0.8.5** (2026-10-23) - the device that changes the password or turns two-factor
   sign-in on is connected again at once (PHASE7, small fix 4). The hypothesis was
   confirmed first with timestamps in `test:account`: from the server's `4401` close to

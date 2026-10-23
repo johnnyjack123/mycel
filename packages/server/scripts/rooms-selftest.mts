@@ -1807,6 +1807,29 @@ try {
     again.close()
     device.say({ t: 'open', route, ref: 5 })
     check(device.take().at(-1)?.error === 'the backup server is not connected', 'a backup server that went is no longer reachable')
+
+    // The account's devices signed out - a password change, a recovery, 2FA, the
+    // account removed: the token is checked only when a connection opens.
+    {
+      const answering = socket()
+      relay.attachBackup(as(answering), '192.0.2.15')
+      const answeringToken = randomBytes(32)
+      answering.say({ t: 'register', token: answeringToken.toString('base64') })
+      answering.take()
+      const carols = socket()
+      relay.attachDevice(as(carols), carol, '192.0.2.40')
+      const bobs = socket()
+      relay.attachDevice(as(bobs), bob, '192.0.2.41')
+      carols.say({ t: 'open', route: routeOf(answeringToken), ref: 1 })
+      const carolSession = carols.take()[0]?.s as number
+      answering.take()
+      relay.signOut(carol)
+      check(
+        carols.closedWith?.code === CLOSE_SIGNED_OUT && answering.take().some((frame) => frame.t === 'close' && frame.s === carolSession),
+        "signing an account's devices out closes their relay connections, and the backup server hears their sessions end"
+      )
+      check(bobs.readyState === 1 && answering.readyState === 1, "and nobody else's")
+    }
     relay.close()
 
     // Pinged, every connection: behind a reverse proxy, a backup server waiting for devices

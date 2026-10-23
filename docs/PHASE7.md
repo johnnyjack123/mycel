@@ -475,6 +475,7 @@ From `docs/PROGRESS.md`, "Roadmap"; investigated on 2026-10-22 (line numbers as 
    hook the vault sockets close on (all four triggers: password, recovery, 2FA, a removed
    account); the device closes its sessions before reconnecting its backup servers
    (`main.ts:669`). Test: `test:rooms` (the relay with fake sockets) and `test:backup`.
+   **Built in 0.8.6**, as specified.
 6. **Planning a rollback reads every note's log.** The server keeps no time of a room's
    last frame (`log.ts:49` has only the oldest), so `Rollback.ts:317` loads a history
    per note. Fix: an owner route like `compactable` listing the rooms of a vault with a

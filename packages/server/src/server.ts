@@ -76,6 +76,7 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
   // pieces of 192 KiB - so a large one is a mistake or worse.
   const relayWss = new WebSocketServer({ noServer: true, maxPayload: RELAY_MAX_BYTES })
   const relay = new Relay()
+  hub.onDisconnect((account) => relay.signOut(account))
 
   async function handleRelay(url: URL, request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
     const address = request.socket.remoteAddress ?? ''

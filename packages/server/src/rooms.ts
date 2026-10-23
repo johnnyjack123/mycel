@@ -129,6 +129,7 @@ export class RoomHub {
   private readonly rooms = new Map<string, OpenRoom>()
   private readonly opening = new Map<string, Promise<OpenRoom | null>>()
   private readonly clients = new Set<RoomClient>()
+  private readonly disconnectListeners = new Set<(account: string) => void>()
   /** Accounts removed while connections of theirs may still be open; they create nothing any more. */
   private readonly gone = new Set<string>()
   /** `account/vault/blob` -> the rooms whose attachment lists name it. */
@@ -303,6 +304,13 @@ export class RoomHub {
     for (const client of Array.from(this.clients)) {
       if (client.account === account) client.close(CLOSE_SIGNED_OUT, 'signed out')
     }
+    for (const listener of this.disconnectListeners) listener(account)
+  }
+
+  /** Other connections an account holds - the relay's - closed on the same occasions. */
+  onDisconnect(listener: (account: string) => void): () => void {
+    this.disconnectListeners.add(listener)
+    return () => this.disconnectListeners.delete(listener)
   }
 
   /**

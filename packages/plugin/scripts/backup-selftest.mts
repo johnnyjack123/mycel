@@ -1118,7 +1118,12 @@ try {
 
     // A password change ends the key; the pairing stands, and the device that made it hands out a new key over it.
     const newPassword = 'a much newer password 4711'
+    // A session opened before: the relay checked its token only when it connected.
+    const before = await A3.openPairingSession(connectedHere.pairing)
     await A3.changePassword(newPassword)
+    check(await eventually(() => !before.open), 'a password change ends the relay sessions the devices held too')
+    // As main.ts does before it reaches the backup servers again: new sessions, with the new token.
+    backups.closeSessions()
     await backups.runNow(uiRoute)
     check(
       await eventually(async () => (await backups.ask(uiRoute))?.status?.runs[0]?.accessEnded === true, 120_000),
