@@ -392,7 +392,9 @@ people: whoever runs it can read the vaults on it.
   **pairing**. A session's key depends on the route's secret, which never travels:
   each end proves it knows it (`openSession`/`answerSession`/`finishSession`,
   `SessionCipher` in `shared/crypto`), so the relay can neither read nor pose as
-  either end. On an invitation's route a session can only `connect`: the device
+  either end. A device's relay connection is closed with `4401` whenever the vault
+  sockets of its account are (`RoomHub.onDisconnect`, `Relay.signOut`): its token was
+  checked only when it opened. On an invitation's route a session can only `connect`: the device
   hands over a **grant** - backup key, vault key, the account's key pair (shared
   notes are sealed to it) - and gets the vault's pairing secret back, kept in the
   vault's settings (`backupServer:<routeId>`); the invitation is spent, *after* the

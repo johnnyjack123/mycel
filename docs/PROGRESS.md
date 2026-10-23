@@ -57,8 +57,8 @@ server reading folder notes. What is next:
 4. The small fixes (PHASE7, "The small fixes"), one at a time, each with its test:
    1 (keystrokes lost when sync restarts) is 0.8.2, 2 (content never named) 0.8.3,
    3 (local copies of purged notes) 0.8.4, 4 (slow reconnect after 2FA, confirmed:
-   a second) 0.8.5 on `fix/2fa-reconnect`; next 5 (relay sessions on sign-out), 6 (the
-   rollback's last-change listing).
+   a second) 0.8.5, 5 (relay sessions on sign-out) 0.8.6 on `fix/relay-signout`; next 6
+   (the rollback's last-change listing).
 5. The user said on 2026-10-23 they cannot test right now and will test everything at
    once: at the end of 0.8, give them one list - **server first** (protocol 5), then
    every device. To try: sharing a folder with a second account, a note and a picture
@@ -87,10 +87,9 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
     it~~ - fixed in 0.8.4.
   - ~~After a device turns 2FA on, its own socket took seconds to connect again~~ -
     fixed in 0.8.5 (a second: the backoff).
-  - Left from 0.7: a device's relay connection is not closed when the account's
-    devices are signed out (it reaches only backup servers whose pairing it has);
-    planning a rollback reads one log per note, since the server keeps no last-change
-    time per room.
+  - Left from 0.7: ~~a device's relay connection is not closed when the account's
+    devices are signed out~~ - fixed in 0.8.6; planning a rollback reads one log per
+    note, since the server keeps no last-change time per room.
 - **0.9 - hardening and a security audit.** Durable writes on the sync server (asked
   for by the user, 2026-10-18): `fsync` the log before the ack and the atomic writes
   before their rename - a power cut on a Pi's SD card otherwise loses acknowledged
@@ -168,6 +167,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
+
+At 0.8.6, run 2026-10-23 on `fix/relay-signout`: `build` passes; `test:merge` 171,
+`test:load` 14, `test:rooms` 372, `test:sync` 26, `test:account` 52, `test:rollback` 52,
+`test:backup` 228, and on a scratch server started fresh from 0.8.6 `test:socket` 19,
+`test:vault` 241, `test:folders` 88 - all pass. `test:recovery` failed once (70 of 71:
+the known race in the fork on return, see Known issues) and passed twice after.
 
 At 0.8.5, run 2026-10-23 on `fix/2fa-reconnect`: `build` passes; `test:merge` 171,
 `test:load` 14, `test:rooms` 370, `test:sync` 26, `test:recovery` 71, `test:account` 52,
