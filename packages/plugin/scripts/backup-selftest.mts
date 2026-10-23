@@ -510,6 +510,74 @@ try {
     )
   }
 
+  // --- shared folders over time --------------------------------------------------------------
+  // What B writes into A's folder, a note B adds to its own folder later, a note A takes out
+  // of its folder and goes on writing, both shares ending: each change read with the key of
+  // its moment - a note's own, its folder's at one epoch or the next, or the fork's.
+  {
+    const backedUp = async (label: string, name: string): Promise<void> => {
+      await delay(1_000)
+      for (const device of devices) await device.folders?.settled()
+      const report = await runBackup(job(grant), options)
+      const unreadable = report.problems.filter((problem) => problem.includes('could not be decrypted'))
+      const restored = restore(report, destinations[0], name)
+      const { missing, differ } = sameFiles(restored, expectedVault(A1), `${folder}/`)
+      check(report.ok && unreadable.length === 0 && missing.length === 0 && differ.length === 0, label, { ok: report.ok, unreadable, missing, differ })
+      const copy = sameFiles(vaultInCopy(trustedDir), expectedVault(A1, ''), '')
+      check(copy.missing.length === 0 && copy.differ.length === 0, `${label} - and so does the trusted copy`, copy)
+    }
+
+    await B.vault.userWrite('Shared/Projects/In the folder.md', 'written in the folder\nand by ben\n')
+    await B.vault.userCreate('Shared/Projects/From Ben.md', 'ben wrote this in annas folder\n')
+    const benPicture = bytes('a picture ben put into the folder '.repeat(80))
+    await B.vault.userCreateBinary('Shared/Projects/ben.png', benPicture)
+    await B.vault.userCreate('Ben Folder/Later.md', 'added to bens folder later\n')
+    check(
+      await eventually(
+        () =>
+          A1.vault.text('Projects/In the folder.md') === 'written in the folder\nand by ben\n' &&
+          A1.vault.text('Projects/From Ben.md') === 'ben wrote this in annas folder\n' &&
+          same(A1.vault.bytes('Projects/ben.png'), benPicture) &&
+          A1.vault.text('Shared/Ben Folder/Later.md') === 'added to bens folder later\n',
+        20_000
+      ),
+      "B writes into A's folder, adds a note and a picture there, and a note to its own folder",
+      A1.vault.paths()
+    )
+    await backedUp("the backup holds what B added to A's folder and to its own - every change readable", 'restore-folders-1')
+
+    await A1.vault.rename(A1.vault.file('Projects/In the folder.md'), 'Moved out.md')
+    await delay(800)
+    await A1.vault.userWrite('Moved out.md', 'written in the folder\nand by ben\nand after it left\n')
+    check(await eventually(() => A2.vault.text('Moved out.md') === 'written in the folder\nand by ben\nand after it left\n'), 'A takes a note out of its folder and writes on')
+    await backedUp("a note taken out of the folder: its folder epochs and its own after them, all read", 'restore-folders-2')
+
+    const projects = A1.folders?.folderAt('Projects')
+    check(projects !== null && projects !== undefined, "A's folder is shared")
+    if (projects) await A1.folders?.revoke(projects.folderId, B.accountId)
+    await A1.vault.userWrite('Projects/From Ben.md', 'ben wrote this in annas folder\nanna, after ben left\n')
+    check(
+      await eventually(() => {
+        const docId = B.index?.docIdForPath('Shared/Projects/From Ben.md')
+        return docId !== undefined && !B.index?.entry(docId)?.owner && A2.vault.text('Projects/From Ben.md') === 'ben wrote this in annas folder\nanna, after ben left\n'
+      }, 20_000),
+      'A revokes B: B keeps the notes, A writes on under the next key'
+    )
+    await backedUp('after the revocation, the folder notes are read under the next key', 'restore-folders-3')
+
+    const bens = B.folders?.folderAt('Ben Folder')
+    if (bens) await B.folders?.revoke(bens.folderId, A1.accountId)
+    check(
+      await eventually(() => {
+        const docId = A1.index?.docIdForPath('Shared/Ben Folder/Later.md')
+        return docId !== undefined && !A1.index?.entry(docId)?.owner && A2.vault.text('Shared/Ben Folder/Later.md') === 'added to bens folder later\n'
+      }, 20_000),
+      "B ends its folder for A: A keeps its notes as its own",
+      A1.vault.paths()
+    )
+    await backedUp("B's folder, forked into A's vault, is backed up as A's own notes", 'restore-folders-4')
+  }
+
   // --- a stream that breaks off ------------------------------------------------------------
   {
     const repo = { repository: destinations[0].repository, password: destinations[0].password }

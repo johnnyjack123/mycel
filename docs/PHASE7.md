@@ -524,6 +524,13 @@ would have failed as soon as 0.8.0 ran: a frame under a key that does not fit th
 of the run. What stays for 0.8.2 is a backup server's own tests of members' folders over
 time, and anything the files of 0.8.1 need.
 
+Step 5 (2026-10-23) needed no code, only its tests: `test:backup` follows A's and B's
+folders over time - what B writes and adds to A's folder, a note added to B's folder
+later, a note A takes out and writes on, A revoking B, B ending its folder for A - and
+after each a run restores exactly A's vault, every change readable, the decrypted copy
+too. Nothing the user installs changed, so it took no version; the small fixes start
+at 0.8.2.
+
 Built in 0.8.1 (2026-10-23): step 4. Refined while building, without changing a
 decision:
 - Both versions of a file kept by someone who may write go into the folder as two

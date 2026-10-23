@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-23 · **0.8.1 - the files of shared folders - built on `feat/folder-files`, every suite green. Next: merge, CI; then 0.8.2 (the backup server's folder tests) and the small fixes. The user tests 0.8 as a whole at the end (server first).**_
+_Last updated: 2026-10-23 · **0.8.1 - the files of shared folders - merged into `main`; the backup server's folder tests written. Next: the small fixes, 0.8.2 onwards. The user tests 0.8 as a whole at the end (server first).**_
 
 ## Where we are
 
@@ -49,12 +49,12 @@ move-in window, the delete notice with undo, the explorer mark, the trash; the b
 server reading folder notes. What is next:
 
 1. 0.8.0 is merged (`e9ca007`) and CI on `main` is green, both images published.
-2. 0.8.1 is built on `feat/folder-files`: files inside the folder (the folder
-   document's `files` map, `folderBases`, `share/FolderFiles.ts`), files and notes
-   outside it from the share dialog; three races of 0.8.0 fixed on the way (CHANGELOG).
-   Next: merge into `main`, watch CI.
-3. 0.8.2: the backup server's tests for folders over time; 0.8.3 onwards the small
-   fixes (PHASE7, "The small fixes").
+2. 0.8.1 is merged (`3bc812c`): files inside the folder (the folder document's `files`
+   map, `folderBases`, `share/FolderFiles.ts`), files and notes outside it from the
+   share dialog; three races of 0.8.0 fixed on the way (CHANGELOG).
+3. The backup server's tests for folders over time: written (`test:backup` 227, 13
+   new), no code needed, so no version of their own. Next: the small fixes, 0.8.2
+   onwards (PHASE7, "The small fixes"), one at a time, each with its test.
 4. The user said on 2026-10-23 they cannot test right now and will test everything at
    once: at the end of 0.8, give them one list - **server first** (protocol 5), then
    every device. To try: sharing a folder with a second account, a note and a picture
@@ -105,9 +105,10 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-`feat/folder-files` (0.8.1): built, every suite green, to be merged. `feat/folder-share`
-is merged into `main` (0.8.0) and holds nothing `main` lacks; it is still on the
-remote - deleting it is the user's call, as with the earlier branches.
+`feat/backup-folders`: the backup tests for folders, to be merged. `feat/folder-files`
+(0.8.1) and `feat/folder-share` (0.8.0) are merged into `main` and hold nothing `main`
+lacks; they are still on the remote - deleting them is the user's call, as with the
+earlier branches.
 
 ## Decisions made (not visible in the code)
 
@@ -198,6 +199,7 @@ CLAUDE.md, Gotchas - `test:socket` and `test:vault` default to 1234, so always p
 ## Log
 
 ### 2026-10-23
+- `test:backup` follows shared folders over time (13 checks, all passed at once).
 - 0.8.1 built on `feat/folder-files`: files in shared folders, the share dialog's
   options for files and notes outside the folder; three races of 0.8.0 found by the
   new checks and fixed (windows while sharing, a delete undone by another device of
