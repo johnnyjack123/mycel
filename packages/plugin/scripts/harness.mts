@@ -231,7 +231,8 @@ export class Device {
     const index = new VaultIndex(openVault.vaultId, (path, generation) => keys.docId(path, generation))
     const socket = new VaultSocket(serverUrl, openVault.vaultId, () => this.token ?? '', {
       notify: (kind, payload) => {
-        if (kind === 'contact') void this.contacts?.processInbox()
+        // Caught, as main.ts's `processContacts` does: the next notice reads the inbox again.
+        if (kind === 'contact') void this.contacts?.processInbox().catch(() => undefined)
         else if (kind === 'contact-removed') this.contacts?.forget((payload as { account: string }).account)
         // What main.ts's `refreshAccount` does.
         else if (kind === 'account-changed') void this.refreshAccount()

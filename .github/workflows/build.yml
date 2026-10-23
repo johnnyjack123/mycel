@@ -118,6 +118,10 @@ jobs:
       - name: Vault sync self-test
         run: npm run test:vault -- ws://localhost:1234
 
+      # A shared folder: its owner, a writer and a reader, devices of each.
+      - name: Shared folder self-test
+        run: npm run test:folders -- ws://localhost:1234
+
       - name: Server log
         if: always()
         run: tail -n 50 server.log || true

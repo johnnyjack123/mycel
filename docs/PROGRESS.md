@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-22 · **Milestone 0.7 (the backup server) is done and confirmed by the user. Milestone 0.8 is designed with the user and signed off (`docs/PHASE7.md`); building it on `feat/folder-share`.**_
+_Last updated: 2026-10-23 · **0.8.0 - sharing a folder, notes - built on `feat/folder-share` (`docs/PHASE7.md`, steps 1 to 3, and the backup server's keys for folder notes), every suite green. Next: merge it, CI on `main` builds the server image, then the user tries it on their devices; then 0.8.1, the files.**_
 
 ## Where we are
 
@@ -39,19 +39,30 @@ folder, opening the decrypted copy as a vault.
 
 ## Next step
 
-**Milestone 0.8: sharing a folder, and the small fixes.** Designed with the user and
-signed off on 2026-10-22: `docs/PHASE7.md` - the decisions E0 to E8, the folder room,
-its keys and ids, the mirror between folder and vault index, every case, the server,
-the small fixes, the tests. Build it in the order its last section gives:
+**Milestone 0.8: sharing a folder, and the small fixes** (`docs/PHASE7.md`, signed off
+2026-10-22; the decisions E0 to E8, the order of work at its end).
 
-1. `shared` (types, folder key, ties, ids) and the server (folder rooms, access through
-   the folder, the folder API, the sweep, backups), with `test:rooms` and `test:merge`.
-2. The plugin's keys and the folder document, the mirror; `test:vault`.
-3. Moving in and out, deleting, revoking, leaving, ending; the windows, dialogs, menus
-   and the explorer mark. Steps 1 to 3 are 0.8.0 on `feat/folder-share`, merged once
-   green so the server image the user needs gets built.
-4. Files in the folder and linked outside it (0.8.1); 5. the backup server (0.8.2);
-   6. the small fixes (0.8.3 onwards).
+0.8.0 is built: the folder room and its keys, access through the folder, the folder
+API (server); the plugin's keys with folder ties, the folder document and its mirror,
+moving in and out, deleting for everyone, revoking, leaving, ending; the dialogs, the
+move-in window, the delete notice with undo, the explorer mark, the trash; the backup
+server reading folder notes. What is next:
+
+1. Merge `feat/folder-share` into `main` once CI is green there, watch CI on `main`
+   (server image), and hand 0.8.0 to the user: **server first** (protocol 5), then
+   every device. Ask them to try: sharing a folder with a second account, a note added
+   on each side, a rename and a delete inside (the notice, *Undo*), moving a note in
+   (the window) and out, the explorer mark on desktop and phone, revoking.
+2. 0.8.1 on its own branch: files inside the folder (the folder document's `files`
+   map, `folderBases`, the rules of `SharedFiles`), linked files and notes outside it
+   from the share dialog (`linkedFiles`, `LinkedNotes`).
+3. 0.8.2: the backup server's tests for folders over time; 0.8.3 onwards the small
+   fixes (PHASE7, "The small fixes").
+
+Open in 0.8.0, known: two notes created under one path in a folder at once on devices
+that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
+loss; PHASE7 planned a merge of such duplicates, not built). A note of the vault
+moved into a folder on a 0.7 device of the owner is asked about as moved in.
 
 ## Roadmap
 
@@ -90,8 +101,8 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-`feat/folder-share`, started from `main` on 2026-10-22 for 0.8.0 (`docs/PHASE7.md`,
-order of work, steps 1 to 3).
+`feat/folder-share`, started from `main` on 2026-10-22: 0.8.0 built and green, not yet
+merged.
 
 ## Decisions made (not visible in the code)
 
@@ -153,15 +164,17 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
 
-At 0.7.19, run 2026-10-21 on `feat/schedule-days` before its commit: `typecheck` and
-`build` pass; `test:merge` 164, `test:load` 14, `test:rooms` 286, `test:sync` 26,
-`test:recovery` 64, `test:account` 50, `test:rollback` 52, `test:backup` 212, and
-against a scratch server on 1235 `test:socket` 19 and `test:vault` 230 - all pass. CI
-green on the branch and on `main` after the merge (`13c12b3`): the tests, the `docker`
-job (server image) and `docker-backup` (the image with restic, rclone, ssh, its three
-bind-mounted folders taken over, an invitation answered at a real sync server); both
-images published as `latest`. The user installed 0.7.19 and confirmed it on
-2026-10-21.
+At 0.8.0, run 2026-10-23 on `feat/folder-share`: `typecheck` and `build` pass;
+`test:merge` 171, `test:load` 14, `test:rooms` 362, `test:sync` 26, `test:recovery` 64,
+`test:account` 50, `test:rollback` 52, `test:backup` 214, and against a scratch server
+on 1235 (started fresh from this code) `test:socket` 19, `test:vault` 230 and
+`test:folders` 63 - all pass. `test:folders` runs in CI after `test:vault` from now on.
+Once on Windows the scratch server failed to rename `contacts.json` (`EPERM`, a file
+held open); the harness now catches that as `main.ts` does, and the rerun passed - not a
+problem of the Docker server.
+
+At 0.7.19 the user installed and confirmed it on 2026-10-21 (CI green, both images
+published as `latest`).
 
 Earlier versions: what ran for each is in `docs/CHANGELOG.md` and in this file's git
 history. How to run the end-to-end suites without touching the user's server:
@@ -171,6 +184,12 @@ CLAUDE.md, Gotchas - `test:socket` and `test:vault` default to 1234, so always p
 ---
 
 ## Log
+
+### 2026-10-23
+- 0.8.0 built on `feat/folder-share`: server (folder rooms, access, API, ties), plugin
+  (keys, folder document, mirror, moves, deletes, revoking, ending, UI), backup server
+  keys for folder notes. Two bugs found and fixed on the way (CLAUDE.md invariants 28,
+  29). New suite `test:folders`.
 
 ### 2026-10-22
 - 0.8 designed with the user: how sharing a note works laid out, options per case,

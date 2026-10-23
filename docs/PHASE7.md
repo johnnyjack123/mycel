@@ -517,3 +517,9 @@ installs.
 Steps 1 to 3 are **0.8.0** on `feat/folder-share`, merged once green so that the server
 image the user needs is built; 4 and 5 are 0.8.1 and 0.8.2 on branches of their own; the
 small fixes 0.8.3 onwards.
+
+Taken into 0.8.0 while building (2026-10-23): the backup server reading folder notes
+with the folder's keys. Without it, the first backup of a vault with a shared folder
+would have failed as soon as 0.8.0 ran: a frame under a key that does not fit threw out
+of the run. What stays for 0.8.2 is a backup server's own tests of members' folders over
+time, and anything the files of 0.8.1 need.
