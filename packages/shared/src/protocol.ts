@@ -224,6 +224,8 @@ export const API = {
   keys: '/keys',
   log: '/log',
   compactable: '/compactable',
+  /** The rooms of a vault that took a frame since a moment: what planning a rollback must read. */
+  changed: '/changed',
   /** `/blobs/:account/:vaultId/...`: the encrypted contents of a vault's files. */
   blobs: '/blobs'
 } as const

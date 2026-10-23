@@ -8,6 +8,7 @@ import {
   type AttachmentEntry,
   type BackupListedEntry,
   type BackupSnapshotRef,
+  type ChangedResponse,
   type IndexEntry,
   type LogResponse
 } from '@obsidian-connect/shared'
@@ -164,7 +165,13 @@ export interface RollbackOutcome {
 }
 
 export interface RollbackDeps {
-  api: { log(room: string): Promise<LogResponse> }
+  /** `changedRooms`: left out, every note's history is read. */
+  api: { log(room: string): Promise<LogResponse>; changedRooms?(vaultId: string, since: number): Promise<ChangedResponse> }
+  /**
+   * How far the server's clock, by which it lists the notes that changed, may
+   * be from the authors' clocks the rollback goes by; an hour unless set.
+   */
+  clockMarginMs?: number
   vaultId: string
   indexCrypto: RoomCrypto
   docCrypto: (docId: string) => RoomCrypto
@@ -193,6 +200,9 @@ interface Unreached {
 
 // Notes read at once while planning; each is one request.
 const CONCURRENCY = 6
+// The server lists changed notes by its own clock, a rollback goes by the
+// authors'; a note is read unless the server saw no change for this much longer.
+const CLOCK_MARGIN_MS = 60 * 60 * 1000
 const COPY_DIR = 'rollbacks'
 
 function inFolder(path: string | null, folder: string): boolean {
@@ -292,8 +302,10 @@ export class Rollback {
       unreached.set(item.id, item)
     }
 
-    // Notes: trashed if they did not exist then; the others need their text then.
+    // Notes: trashed if they did not exist then; the others need their text then -
+    // unless they stayed where they were and the server saw no change of theirs since.
     const notesNow = new Map(store.allEntries().map(({ docId, entry }) => [docId, entry]))
+    const changed = await this.changedSince(to - (this.deps.clockMarginMs ?? CLOCK_MARGIN_MS))
     const toRead: NoteChange[] = []
     for (const docId of new Set([...notesThen.keys(), ...notesNow.keys()])) {
       const now = notesNow.get(docId)
@@ -310,6 +322,7 @@ export class Rollback {
       const change: NoteChange = { docId, pathNow, pathThen, shared: Boolean(now?.shared || old?.shared) }
       if (pathThen === null) plan.notes.push({ ...change, trash: true })
       else if (now?.purgedAt) outOfReach({ kind: 'note', id: docId, pathNow, pathThen, shared: change.shared }, 'it was deleted longer ago than the history keeps')
+      else if (changed && pathNow === pathThen && !changed.has(docRoom(docId))) continue
       else toRead.push(change)
     }
     let read = 0
@@ -388,6 +401,21 @@ export class Rollback {
       }
     }
     return { plan, unreached }
+  }
+
+  /**
+   * The notes the server saw a change of since `since`; null when it cannot
+   * say - a server before 0.8.8 -, and then every note is read.
+   */
+  private async changedSince(since: number): Promise<Set<string> | null> {
+    const { api, vaultId } = this.deps
+    if (!api.changedRooms) return null
+    try {
+      return new Set((await api.changedRooms(vaultId, since)).rooms)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null
+      throw error
+    }
   }
 
   /** The newest backup at or before `to` over the vault's backup servers; null without one. */

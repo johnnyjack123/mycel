@@ -982,10 +982,22 @@ try {
     'rooms with old frames are offered to their owner'
   )
   check((await hub.compactable(carol, carolVault.vaultId, Date.now() + 1_000)).length === 0, 'never to anyone else')
+  // What planning a rollback reads: the notes that took a frame since the moment.
+  const lastFrameAt = Date.now()
+  check(
+    (await hub.changedSince(alice, aliceVault.vaultId, lastFrameAt - 60_000)).includes(room) &&
+      !(await hub.changedSince(alice, aliceVault.vaultId, lastFrameAt + 1_000)).includes(room),
+    "a vault's notes that took a frame since a moment are listed - after a compaction too - and not those that took none"
+  )
 
   // --- restart ---------------------------------------------------------------------------
   await hub.shutdown()
   hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts, contacts, new ForkStore(dataDir))
+  check(
+    (await hub.changedSince(alice, aliceVault.vaultId, lastFrameAt - 60_000)).includes(room) &&
+      !(await hub.changedSince(alice, aliceVault.vaultId, Date.now() + 1_000)).includes(room),
+    'and after a restart, before the log is loaded, by when it was last written'
+  )
   const afterRestart = new Client(alice, aliceVault.vaultId)
   hub.attach(afterRestart)
   await hub.subscribe(afterRestart, room, 0)
