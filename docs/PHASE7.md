@@ -485,6 +485,8 @@ From `docs/PROGRESS.md`, "Roadmap"; investigated on 2026-10-22 (line numbers as 
    is not listed, with an hour's margin: the server's clock is not the author's clock the
    rollback goes by. Test: `test:rooms` (across a restart and a compaction), `test:rollback`
    (the same plan with fewer reads).
+   **Built in 0.8.8**, as specified; the listing counts the rooms the vault reaches
+   (`belongsTo`), so a note of a shared folder is never missed.
 
 ## Tests
 

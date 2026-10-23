@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-23 · **0.8.1 - the files of shared folders - merged into `main`; the backup server's folder tests written. Next: the small fixes, 0.8.2 onwards. The user tests 0.8 as a whole at the end (server first).**_
+_Last updated: 2026-10-23 · **0.8 is built: sharing a folder (0.8.0, 0.8.1), the backup server's folder tests, the six small fixes and the race in the fork on return (0.8.2 to 0.8.8). Next: the user tests 0.8 as a whole - server first -, then 0.9 (`docs/PHASE8.md` to be written with the user first).**_
 
 ## Where we are
 
@@ -57,16 +57,19 @@ server reading folder notes. What is next:
 4. The small fixes (PHASE7, "The small fixes"), one at a time, each with its test:
    1 (keystrokes lost when sync restarts) is 0.8.2, 2 (content never named) 0.8.3,
    3 (local copies of purged notes) 0.8.4, 4 (slow reconnect after 2FA, confirmed:
-   a second) 0.8.5, 5 (relay sessions on sign-out) 0.8.6, and the known race in the
-   fork on return 0.8.7 (`fix/fork-base`); next 6 (the rollback's last-change listing).
+   a second) 0.8.5, 5 (relay sessions on sign-out) 0.8.6, the known race in the fork
+   on return 0.8.7, 6 (the rollback's last-change listing) 0.8.8. With that, 0.8 is
+   built.
 5. The user said on 2026-10-23 they cannot test right now and will test everything at
-   once: at the end of 0.8, give them one list - **server first** (protocol 5), then
-   every device. To try: sharing a folder with a second account, a note and a picture
-   added on each side, a rename and a delete inside (the notice, *Undo*), moving a
-   note and a file in (the window) and out, a picture changed on both sides (two
-   files), a file outside embedded by a folder note (`Shared/Attachments`), the
-   explorer mark on desktop and phone, revoking. And typing into an open note while
-   signing out and in again (0.8.2): nothing typed is lost.
+   once; the list went to them with 0.8.8 - **server first** (protocol 5, the new
+   routes), then every device. To try: sharing a folder with a second account, a note
+   and a picture added on each side, a rename and a delete inside (the notice, *Undo*),
+   moving a note and a file in (the window) and out, a picture changed on both sides
+   (two files), a file outside embedded by a folder note (`Shared/Attachments`), the
+   explorer mark on desktop and phone, revoking; typing into an open note while signing
+   out and in again (0.8.2); turning 2FA on or changing the password - this device is
+   back at once (0.8.5); a rollback's plan on a large vault (0.8.8). Their findings come
+   first, then 0.9's design document.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
@@ -88,8 +91,8 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
   - ~~After a device turns 2FA on, its own socket took seconds to connect again~~ -
     fixed in 0.8.5 (a second: the backoff).
   - Left from 0.7: ~~a device's relay connection is not closed when the account's
-    devices are signed out~~ - fixed in 0.8.6; planning a rollback reads one log per
-    note, since the server keeps no last-change time per room.
+    devices are signed out~~ - fixed in 0.8.6; ~~planning a rollback reads one log per
+    note~~ - fixed in 0.8.8.
 - **0.9 - hardening and a security audit.** Durable writes on the sync server (asked
   for by the user, 2026-10-18): `fsync` the log before the ack and the atomic writes
   before their rename - a power cut on a Pi's SD card otherwise loses acknowledged
@@ -109,10 +112,12 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-`fix/restart-keystrokes` (0.8.2): built, to be merged. `feat/backup-folders`,
-`feat/folder-files` (0.8.1) and `feat/folder-share` (0.8.0) are merged into `main` and
-hold nothing `main` lacks; they are still on the remote - deleting them is the user's
-call, as with the earlier branches.
+Nothing once `fix/rollback-listing` (0.8.8) is merged. Every branch of 0.8
+(`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
+`fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
+`fix/fork-base`, `fix/rollback-listing`) is merged into `main` and holds nothing `main`
+lacks; they are still on the remote - deleting them is the user's call, as with the
+earlier branches.
 
 ## Decisions made (not visible in the code)
 
@@ -167,6 +172,11 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
+
+At 0.8.8, run 2026-10-23 on `fix/rollback-listing`: `build` passes; `test:merge` 171,
+`test:load` 14, `test:rooms` 374, `test:sync` 26, `test:recovery` 71, `test:account` 52,
+`test:rollback` 53, `test:backup` 228, and on a scratch server started fresh from 0.8.8
+`test:socket` 19, `test:vault` 241, `test:folders` 88 - all pass.
 
 At 0.8.7, run 2026-10-23 on `fix/fork-base`: `build` passes; `test:merge` 171,
 `test:load` 14, `test:rooms` 372, `test:sync` 26, `test:recovery` 71 (and five runs in a
@@ -229,6 +239,10 @@ CLAUDE.md, Gotchas - `test:socket` and `test:vault` default to 1234, so always p
 ## Log
 
 ### 2026-10-23
+- The six small fixes of PHASE7, each with its test and a version (0.8.2 to 0.8.6,
+  0.8.8), and the race in the fork on return that `test:recovery` showed again (0.8.7).
+  Three of them checked by putting the bug back (1, 3, 5); the 2FA reconnect measured
+  first (a second, the backoff), its new checks failing before the fix.
 - `test:backup` follows shared folders over time (13 checks, all passed at once).
 - 0.8.1 built on `feat/folder-files`: files in shared folders, the share dialog's
   options for files and notes outside the folder; three races of 0.8.0 found by the
