@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { BackupRoom, LogResponse } from '@obsidian-connect/shared'
+import { folderRoom, roomKind, type BackupRoom, type FolderTie, type LogResponse } from '@obsidian-connect/shared'
 import { lastFrame, type Cache, type CachedBlob, type CachedRoom } from './cache.js'
 import type { VaultKeys } from './keys.js'
 import { SyncError, type SyncClient } from './sync.js'
@@ -34,7 +34,13 @@ export async function pool<T>(items: readonly T[], limit: number, task: (item: T
   await Promise.all(workers)
 }
 
-function fromLog(entry: BackupRoom, log: LogResponse, sealed: Record<string, string>): CachedRoom {
+interface RoomKeys {
+  sealed: Record<string, string>
+  ties?: Record<string, FolderTie>
+  folderKeys?: Record<string, Record<string, string>>
+}
+
+function fromLog(entry: BackupRoom, log: LogResponse, keys: RoomKeys): CachedRoom {
   return {
     room: entry.room,
     owner: entry.owner,
@@ -43,8 +49,13 @@ function fromLog(entry: BackupRoom, log: LogResponse, sealed: Record<string, str
     headSeq: log.headSeq,
     snapshot: log.snapshot,
     frames: log.frames,
-    sealed
+    ...keys
   }
+}
+
+/** Whether what the cache knows of the room's folder epochs is what the sync server says. */
+function sameTies(cached: CachedRoom, entry: BackupRoom): boolean {
+  return JSON.stringify(cached.ties ?? {}) === JSON.stringify(entry.ties ?? {})
 }
 
 /**
@@ -53,13 +64,15 @@ function fromLog(entry: BackupRoom, log: LogResponse, sealed: Record<string, str
  * stops listing, or refuses, is kept from the cache and marked held.
  */
 export async function fetchRooms(client: SyncClient, cache: Cache, accountId: string, verifyAll: boolean): Promise<RoomsFetched> {
-  const listed = (await client.rooms()).rooms
+  // A shared folder's own room says where its notes are; the vault index says
+  // that for this vault, and the folder's keys are asked for with its notes.
+  const listed = (await client.rooms()).rooms.filter((entry) => roomKind(entry.room) !== 'fld')
   const result: RoomsFetched = { listed: listed.length, fetched: 0, diverged: [], held: [] }
   const seen = new Set(listed.map((entry) => entry.room))
 
   await pool(listed, PARALLEL, async (entry) => {
     const cached = await cache.room(entry.room)
-    if (cached && !cached.held && cached.tag === entry.tag && !verifyAll) return
+    if (cached && !cached.held && cached.tag === entry.tag && sameTies(cached, entry) && !verifyAll) return
     try {
       const next = await fetchRoom(client, entry, cached, accountId, result)
       await cache.saveRoom(next)
@@ -93,6 +106,23 @@ async function fetchRoom(
 ): Promise<CachedRoom> {
   let sealed = cached?.sealed ?? {}
   if (entry.owner !== accountId) sealed = { ...sealed, ...(await client.keys(entry.room)).keys }
+  const keys: RoomKeys = { sealed }
+  if (entry.ties) {
+    keys.ties = entry.ties
+    // Someone else's folder: its keys arrive sealed to the account, from the folder's room.
+    if (entry.owner !== accountId) {
+      const folderKeys: Record<string, Record<string, string>> = { ...cached?.folderKeys }
+      for (const folder of new Set(Object.values(entry.ties).map((tie) => tie.folder))) {
+        try {
+          folderKeys[folder] = { ...folderKeys[folder], ...(await client.keys(folderRoom(folder))).keys }
+        } catch (error) {
+          // Left the folder, and the note stayed on its own: its own sealed keys go on.
+          if (!(error instanceof SyncError) || (error.status !== 403 && error.status !== 410 && error.status !== 404)) throw error
+        }
+      }
+      keys.folderKeys = folderKeys
+    }
+  }
 
   const last = cached ? lastFrame(cached) : null
   if (cached && last) {
@@ -105,7 +135,7 @@ async function fetchRoom(
         epoch: partial.epoch,
         headSeq: partial.headSeq,
         frames: [...cached.frames, ...partial.frames.slice(1)],
-        sealed,
+        ...keys,
         held: false
       }
     }
@@ -113,11 +143,11 @@ async function fetchRoom(
     // followed. Without it, the frame was compacted - the whole log came back.
     if (partial.from !== undefined) {
       result.diverged.push(entry.room)
-      return fromLog(entry, await client.log(entry.room), sealed)
+      return fromLog(entry, await client.log(entry.room), keys)
     }
-    return fromLog(entry, partial, sealed)
+    return fromLog(entry, partial, keys)
   }
-  return fromLog(entry, await client.log(entry.room), sealed)
+  return fromLog(entry, await client.log(entry.room), keys)
 }
 
 /** A chunk that does not decrypt: changed on the sync server's disk, or not this blob's. */

@@ -1398,13 +1398,15 @@ export class RoomHub {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
       const snapshotHead = meta.snapshots.reduce((max, snapshot) => Math.max(max, snapshot.uptoSeq), 0)
-      rooms.push({
+      const entry: BackupRoom = {
         room: meta.room,
         owner: meta.owner,
         epoch: meta.epoch,
         compactedUpTo: meta.compactedUpTo,
         tag: `${meta.epoch}.${meta.compactedUpTo}.${snapshotHead}.${bytes}`
-      })
+      }
+      if (meta.ties) entry.ties = { ...meta.ties }
+      rooms.push(entry)
     }
     return rooms
   }

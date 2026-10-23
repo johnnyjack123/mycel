@@ -348,6 +348,8 @@ export interface BackupRoom {
   compactedUpTo: number
   /** Changes whenever the room's log does; nothing to read from it. */
   tag: string
+  /** A note's epochs spent in a shared folder: their keys derive from the folder's. */
+  ties?: Record<string, FolderTie>
 }
 
 export interface BackupRoomsResponse {
