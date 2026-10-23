@@ -1442,6 +1442,31 @@ export class DocStore {
       await this.history.clear(docRoom(docId))
       this.index.markPurged(docId)
     })
+    this.state.markCleared(docId)
+  }
+
+  /**
+   * Clears what this device still holds of notes another device of the
+   * account purged: their database and their history. The purging device
+   * clears its own copy; the others had dropped the note without clearing it
+   * and would never open its database again. Once per note - remembered, so
+   * no database is opened, and so made, again. Its text was backed up when its
+   * file went to the trash (invariant 2). Returns how many were cleared.
+   */
+  async clearPurged(): Promise<number> {
+    if (!this.ready) return 0
+    let cleared = 0
+    for (const { docId, entry } of this.index.deleted()) {
+      if (!entry.purgedAt || this.state.isCleared(docId) || this.handles.has(docId)) continue
+      await this.withLock(docId, async () => {
+        await this.localState(docId, true)
+        await this.history.clear(docRoom(docId))
+      })
+      this.state.markCleared(docId)
+      cleared += 1
+    }
+    if (cleared > 0) log.info(`cleared the local copies of ${cleared} note(s) purged on another device`)
+    return cleared
   }
 
   /** Rolls the live document back to `text`; it travels like any other edit. */

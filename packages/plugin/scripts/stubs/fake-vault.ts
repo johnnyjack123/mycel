@@ -439,8 +439,16 @@ export class MemoryLocalStores {
   private readonly meta = new Map<string, Map<string, string>>()
   /** The device's own history of changes, which outlives restarts like IndexedDB. */
   readonly history = memoryHistory()
+  /** How often each database was opened. */
+  readonly opened = new Map<string, number>()
+
+  /** Whether a database of this name holds anything. */
+  has(name: string): boolean {
+    return this.saved.has(name)
+  }
 
   readonly open: OpenLocalStore = (name: string, doc: Y.Doc): LocalStore => {
+    this.opened.set(name, (this.opened.get(name) ?? 0) + 1)
     const stored = this.saved.get(name)
     if (stored) Y.applyUpdate(doc, stored, 'local-store')
     const save = (): void => {
