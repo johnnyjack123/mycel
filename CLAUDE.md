@@ -628,8 +628,10 @@ restoring revives its index entry and pulls it from its document, next to a
 note that took its name meanwhile. After that the owner's device asks the
 server to delete the room (`POST /log/:room/purge`), which it refuses while the
 note is still shared, and marks the tombstone `purgedAt`. A retention of 0 keeps
-everything, deleted notes included. Local copies of a purged note are cleared
-only on the device that purged it; the others keep their IndexedDB copy.
+everything, deleted notes included. The purging device clears its local copy of the
+note at once; every other device clears its own in its next trash pass
+(`DocStore.clearPurged`), once - `StateStore` remembers it, so the database is never
+opened, and so made, again.
 
 ## Testing
 

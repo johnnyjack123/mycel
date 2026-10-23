@@ -8,6 +8,19 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.4** (2026-10-23) - a note purged on one device is cleared on every device of
+  the account (PHASE7, small fix 3). Only the purging device cleared its local copy -
+  the note's database and its decrypted history; the others had dropped the note
+  without clearing it and never opened its database again, so they kept it for good.
+  The trash pass, which runs on every device, now clears the copy of every purged
+  tombstone that is not loaded (`DocStore.clearPurged`), once: `StateStore` remembers
+  it (`cleared.json`), so no database is opened - and so made - again. The text was
+  backed up when the file went to the trash (invariant 2).
+  - Checked by putting the bug back: with the trash pass not clearing, the two new
+    checks fail (the other device still holds the database and history), and nothing
+    else.
+  - Tests: `test:vault` 241 (2 new).
+
 - **0.8.3** (2026-10-23) - content uploaded but never named no longer stays on the
   server for good (PHASE7, small fix 2). A crash, stop or delete between an upload and
   its index entry - the order invariant 23 demands - left a blob nothing names, and
