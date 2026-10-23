@@ -2,6 +2,7 @@ import * as Y from 'yjs'
 import {
   ATTACHMENTS_FIELD,
   DECLINED_FIELD,
+  FOLDER_BASES_FIELD,
   SHARED_BASES_FIELD,
   VERSIONS_FIELD,
   type AttachmentEntry,
@@ -39,6 +40,7 @@ export class AttachmentIndex {
   private readonly versionMap: Y.Map<AttachmentVersion>
   private readonly declinedMap: Y.Map<{ at: number }>
   private readonly sharedMap: Y.Map<SharedBase>
+  private readonly folderMap: Y.Map<SharedBase>
   private readonly byPath = new Map<string, string>()
   private readonly listeners = new Set<() => void>()
 
@@ -50,6 +52,7 @@ export class AttachmentIndex {
     this.versionMap = doc.getMap<AttachmentVersion>(VERSIONS_FIELD)
     this.declinedMap = doc.getMap<{ at: number }>(DECLINED_FIELD)
     this.sharedMap = doc.getMap<SharedBase>(SHARED_BASES_FIELD)
+    this.folderMap = doc.getMap<SharedBase>(FOLDER_BASES_FIELD)
     this.files.observe(() => {
       this.rebuild()
       for (const listener of this.listeners) listener()
@@ -123,7 +126,7 @@ export class AttachmentIndex {
    * already has keeps its entry - the caller decides what that means - and
    * its id is returned.
    */
-  async add(path: string, hash: string, size: number, via?: AttachmentEntry['via']): Promise<string> {
+  async add(path: string, hash: string, size: number, via?: AttachmentEntry['via'], folder?: AttachmentEntry['folder']): Promise<string> {
     const existing = this.idForPath(path)
     if (existing) return existing
     const fileId = await this.nextId(path)
@@ -131,8 +134,48 @@ export class AttachmentIndex {
     if (raced) return raced
     const entry: AttachmentEntry = { path, hash, size, updatedAt: Date.now() }
     if (via) entry.via = via
+    if (folder) entry.folder = folder
     this.doc.transact(() => this.files.set(fileId, entry), 'local')
     return fileId
+  }
+
+  // --- files of shared folders -------------------------------------------------------
+
+  /** The file of this vault that is a shared folder's file - live or deleted. */
+  linked(folderId: string, file: string): { fileId: string; entry: AttachmentEntry } | undefined {
+    let found: { fileId: string; entry: AttachmentEntry } | undefined
+    this.files.forEach((entry, fileId) => {
+      if (entry.folder?.id !== folderId || entry.folder.file !== file) return
+      // A live one before a tombstone.
+      if (!found || (found.entry.deletedAt && !entry.deletedAt)) found = { fileId, entry }
+    })
+    return found
+  }
+
+  /** Makes a file of this vault a shared folder's file, or - null - an ordinary one again. */
+  setFolderLink(fileId: string, folder: AttachmentEntry['folder'] | null): void {
+    const entry = this.files.get(fileId)
+    if (!entry) return
+    if (folder ? entry.folder?.id === folder.id && entry.folder.file === folder.file : !entry.folder) return
+    const next: AttachmentEntry = { ...entry }
+    if (folder) next.folder = folder
+    else delete next.folder
+    this.doc.transact(() => this.files.set(fileId, next), 'local')
+  }
+
+  /** What this vault last agreed with a shared folder's file: its content, and its path relative to the folder. */
+  folderBase(folderId: string, file: string): SharedBase | undefined {
+    return this.folderMap.get(`${folderId}:${file}`)
+  }
+
+  setFolderBase(folderId: string, file: string, base: SharedBase | null): void {
+    const key = `${folderId}:${file}`
+    const current = this.folderMap.get(key)
+    if (base ? current?.hash === base.hash && current.path === base.path && current.prev === base.prev : !current) return
+    this.doc.transact(() => {
+      if (base) this.folderMap.set(key, base)
+      else this.folderMap.delete(key)
+    }, 'local')
   }
 
   /** The live file that came in through this note for this link. */
@@ -213,10 +256,12 @@ export class AttachmentIndex {
     return this.files.get(fileId)?.prev === hash || this.versionMap.has(`${fileId}:${hash}`)
   }
 
-  rename(fileId: string, path: string): void {
+  /** True when the path changed. */
+  rename(fileId: string, path: string): boolean {
     const entry = this.files.get(fileId)
-    if (!entry || entry.path === path) return
+    if (!entry || entry.path === path) return false
     this.doc.transact(() => this.files.set(fileId, { ...entry, path, updatedAt: Date.now() }), 'local')
+    return true
   }
 
   markDeleted(fileId: string): void {

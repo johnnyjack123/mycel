@@ -28,6 +28,15 @@ export interface SharedFilesOptions {
    * with a file of the same name must not get there first.
    */
   claimDelayMs: number
+  /**
+   * Notes of shared folders: whether their files outside the folder go along
+   * is the folder's choice, and a link to a file of the folder travels with the
+   * folder - it must not come in twice.
+   */
+  folders?: {
+    linkedFilesOf(docId: string): boolean | null
+    linksIntoFolder(docId: string, ref: string, target: string | null): boolean
+  }
 }
 
 /** What naming this vault's blobs in a list takes; the key ring in the plugin. */
@@ -205,8 +214,16 @@ export class SharedFiles {
     // Unknown is not empty (invariant 1): nothing is done against a list the
     // server has not sent.
     if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs)) || handle.pristine) return
-    if (!attachmentsShared(handle.doc)) return
+    const byFolder = this.options.folders?.linkedFilesOf(docId) ?? null
+    if (byFolder === false || (byFolder === null && !attachmentsShared(handle.doc))) return
     const isOwner = !entry.owner
+    const refs = this.refsOf(file)
+    if (byFolder !== null) {
+      for (const ref of Array.from(refs)) {
+        const target = this.app.metadataCache.getFirstLinkpathDest(ref, file.path)
+        if (this.options.folders?.linksIntoFolder(docId, ref, target?.path ?? null)) refs.delete(ref)
+      }
+    }
     const note: Note = {
       docId,
       file,
@@ -215,12 +232,12 @@ export class SharedFiles {
       room: docRoom(docId),
       isOwner,
       canWrite: isOwner || entry.role === 'write',
-      refs: this.refsOf(file)
+      refs
     }
     // Links first, then what the list holds beyond them - so a renamed link
     // finds the file that came in under its old name before that one goes.
-    const refs = [...note.refs, ...Array.from(note.list.keys()).filter((ref) => !note.refs.has(ref))]
-    for (const ref of refs) {
+    const order = [...note.refs, ...Array.from(note.list.keys()).filter((ref) => !note.refs.has(ref))]
+    for (const ref of order) {
       if (this.stopped) return
       try {
         await this.syncRef(note, ref)

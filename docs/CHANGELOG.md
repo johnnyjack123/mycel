@@ -8,6 +8,50 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.1** (2026-10-23) - the files of a shared folder (E8): every file inside it
+  belongs to it, lies at the same place for everyone and follows the rules of the
+  notes - a writer's new file, rename, new version and delete are everyone's (the
+  delete in the same notice with Undo), a reader's stay theirs, an existing file
+  moved in is asked about in the same window as a note. Each vault copies a file into
+  its own store and keeps it as a file of its own, linked to the folder's; versions
+  follow the rules of a shared note's files (invariants 23, 24): a base per file, the
+  version each entry replaced, both kept when both sides changed - and the second
+  version goes into the folder too when it was made by someone who may write, so
+  everyone keeps both. Content in the store of someone who left is taken over by the
+  owner's.
+  - The share dialog asks about files outside the folder that its notes embed or link
+    (on by default, the folder's choice for everyone, as a shared note's): they land
+    in each share folder's `Attachments`. And it offers to share, once, the notes
+    outside the folder its notes link to, as the note's dialog does - inside the folder
+    nothing is listed, that goes along anyway.
+  - A conflict copy the plugin makes is now announced as a file new on this device,
+    as one the user made is - otherwise it never reached a shared folder.
+  - A file deleted for everyone and brought back from one's own trash comes back for
+    everyone (from someone who may write; a reader keeps it as their own) - the
+    folder's next pass deleted it again at once.
+  - Three bugs of 0.8.0 that files made visible, all three fixed for notes too:
+    - Sharing a folder asked about every note and file already in it as moved in -
+      on the sharing device and the owner's others -, while the share was taking them
+      in: on a device a window per note. What lay in the folder when it was shared
+      (`VaultFolder.sharedAt`) is never asked about now.
+    - Another device of the account brought a note or file back that a writer's device
+      was still deleting for everyone: it saw the delete in the vault index before the
+      folder's decision. A delete there is left to its device for `decideMs` (30 s)
+      before it counts as never decided on.
+    - A file published from one device arrived on the account's other device before its
+      link in the vault index, which then fetched it a second time (`pic 2.png`). The
+      link goes first now, and a file of the vault's own with that content at that place
+      is taken for the folder's.
+    Each made `test:folders` fail in one of the runs before its fix - the first showed
+    as a file published twice, the window answered by the harness. Its own check ("no
+    window for what the folder held") came with the fix and was checked by putting the
+    bug back: it alone failed, the owner's device asking about `Plan.md`, `Sub/Deep.md`
+    and `pic.png`. The other two are races and were not put back.
+  - Tests: `test:folders` 88 (25 new: a file reaching every device, a writer's new
+    file, the owner's version, a reader's version staying, both sides changed with the
+    writer away, rename, delete with Undo, a reader's delete, a file moved in, deleted
+    and brought back from the trash, a file outside embedded by a folder note, no window
+    for what the folder held when shared).
 - **0.8.0** (2026-10-23) - a folder is shared with people, everything added to it later
   included, as the user decided it (E0 to E8 in `docs/PHASE7.md`). The folder's menu
   shares it - the dialog says first that whatever is added later goes along and that a

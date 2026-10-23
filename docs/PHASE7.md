@@ -523,3 +523,21 @@ with the folder's keys. Without it, the first backup of a vault with a shared fo
 would have failed as soon as 0.8.0 ran: a frame under a key that does not fit threw out
 of the run. What stays for 0.8.2 is a backup server's own tests of members' folders over
 time, and anything the files of 0.8.1 need.
+
+Built in 0.8.1 (2026-10-23): step 4. Refined while building, without changing a
+decision:
+- Both versions of a file kept by someone who may write go into the folder as two
+  files, so everyone keeps both - not only the account where the two met. A reader's
+  second version stays theirs.
+- Files outside the folder that its notes link: off unless the folder says so
+  (`linkedFiles`); the dialog has it on by default, as the note's dialog has.
+- The files need nothing of the backup server: every vault copies a folder's files into
+  its own store, so a backup reads them as files of its own.
+- A file deleted for everyone and brought back from someone's own trash comes back for
+  everyone when they may write - as the folder's trash does for a note.
+- What lay in a folder when it was shared goes in with the share and is never asked
+  about as moved in (`sharedAt`); before, every device of the owner asked about each
+  note while the share took it in.
+- A delete another device of the account made in a folder is left to that device for
+  half a minute before it counts as never decided on (the crash case of invariant 29):
+  its decision travels a moment behind the delete itself.

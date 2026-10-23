@@ -3,6 +3,7 @@ import type { FolderStateResponse, ShareRole } from '@obsidian-connect/shared'
 import { busy } from '../busy.js'
 import type { Contact } from '../sync/AccountSettings.js'
 import type { Folders, MoveInQuestion, OutsideQuestion } from './Folders.js'
+import type { LinkedNote } from './LinkedNotes.js'
 import type { Sharing } from './Sharing.js'
 import { log } from '../log.js'
 
@@ -28,6 +29,8 @@ export class ShareFolderModal extends Modal {
   private person = ''
   private role: ShareRole = 'write'
   private withHistory = false
+  private linkedFiles: boolean
+  private withLinked = false
   private state: FolderStateResponse | null = null
   private roleChosen = false
 
@@ -36,9 +39,12 @@ export class ShareFolderModal extends Modal {
     private readonly folders: Folders,
     private readonly sharing: Sharing,
     private readonly path: string,
-    private readonly contacts: Contact[]
+    private readonly contacts: Contact[],
+    /** The notes outside the folder its notes link to, following their links. */
+    private readonly linked: LinkedNote[] = []
   ) {
     super(app)
+    this.linkedFiles = folders.linkedFilesAt(path) ?? true
   }
 
   async onOpen(): Promise<void> {
@@ -110,9 +116,21 @@ export class ShareFolderModal extends Modal {
         })
       )
 
+    new Setting(contentEl)
+      .setName('Files outside the folder that its notes embed or link')
+      .setDesc(
+        "On: they go along too, and so do those linked later; they land in each share folder's Attachments. Files inside the folder always go along. Applies to everyone the folder is shared with."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.linkedFiles).onChange((value) => {
+          this.linkedFiles = value
+        })
+      )
+    this.renderLinked(contentEl)
+
     const warning = contentEl.createDiv({ cls: 'connect-folder-warning' })
     warning.createEl('p', {
-      text: `Everything in this folder is shared with them - ${notes(preview.notes)} now - and everything added to it later, by you or by anyone who may edit it, goes along by itself.`
+      text: `Everything in this folder is shared with them - ${notes(preview.notes)} now, and its files - and everything added to it later, by you or by anyone who may edit it, goes along by itself.`
     })
     warning.createEl('p', {
       text: 'A note deleted in the folder is deleted for everyone in it. It stays in the folder\'s deleted notes for as long as the history is kept, and can be brought back from there.'
@@ -136,19 +154,57 @@ export class ShareFolderModal extends Modal {
     )
   }
 
+  /** Only when its notes link to notes outside it; those that cannot go along are listed with the reason. */
+  private renderLinked(contentEl: HTMLElement): void {
+    if (this.linked.length === 0) return
+    const shareable = this.linked.filter((note) => note.docId).length
+    const setting = new Setting(contentEl).setName('Also share the notes outside the folder that its notes link to')
+    if (shareable === 0) {
+      setting.setDesc(`Its notes link to ${notes(this.linked.length)} outside it, none of which can be shared:`)
+    } else {
+      setting
+        .setDesc(
+          `The ${notes(shareable)} outside the folder its notes link to go along - now, once, with the same access and history; notes linked later do not. They land in the share folder at the path of their link.`
+        )
+        .addToggle((toggle) =>
+          toggle.setValue(this.withLinked).onChange((value) => {
+            this.withLinked = value
+          })
+        )
+    }
+    const list = contentEl.createEl('ul', { cls: 'connect-linked-notes' })
+    for (const note of this.linked) {
+      const item = list.createEl('li', { text: note.path })
+      if (note.reason) item.createSpan({ cls: 'connect-linked-reason', text: ` - ${note.reason}` })
+    }
+  }
+
   private async submit(status: HTMLElement): Promise<void> {
     if (!this.person) return
     const name = this.sharing.nameOf(this.person)
     const had = this.state?.members.find((member) => member.account === this.person)
     try {
       status.setText('Sharing…')
-      await this.folders.share(this.path, this.person, this.role, this.withHistory, (done, total) => {
-        status.setText(`Preparing the notes: ${done} of ${total}…`)
-      })
+      await this.folders.share(
+        this.path,
+        this.person,
+        this.role,
+        this.withHistory,
+        (done, total) => {
+          status.setText(`Preparing the notes: ${done} of ${total}…`)
+        },
+        this.linkedFiles
+      )
+      let alongside = ''
+      if (this.withLinked) {
+        status.setText('Sharing the notes it links to…')
+        const outcome = await this.sharing.shareLinked(this.linked, this.person, this.role, this.withHistory, this.linkedFiles)
+        alongside = ` ${notes(outcome.shared)} it links to went along${outcome.failed > 0 ? `; ${notes(outcome.failed)} could not be shared, see the log` : ''}.`
+      }
       new Notice(
         had
-          ? `${name} can ${this.role === 'read' ? 'only read' : 'edit'} the folder ${baseName(this.path)} now.`
-          : `The folder ${baseName(this.path)} is shared with ${name}. Everything added to it later goes along.`
+          ? `${name} can ${this.role === 'read' ? 'only read' : 'edit'} the folder ${baseName(this.path)} now.${alongside}`
+          : `The folder ${baseName(this.path)} is shared with ${name}. Everything added to it later goes along.${alongside}`
       )
       this.close()
     } catch (error) {

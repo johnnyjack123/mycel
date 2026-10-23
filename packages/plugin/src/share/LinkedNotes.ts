@@ -41,16 +41,42 @@ export function linkedNotes(
   root: TFile,
   nameOf: (account: string) => string
 ): LinkedNote[] {
+  return reached(metadataCache, store, [root], nameOf, () => false)
+}
+
+/**
+ * Every note outside a folder that its notes reach through links. A note
+ * inside goes along with the folder anyway, and its links are followed as
+ * the roots' are.
+ */
+export function linkedOutside(
+  metadataCache: MetadataCache,
+  store: DocStore,
+  notes: TFile[],
+  folder: string,
+  nameOf: (account: string) => string
+): LinkedNote[] {
+  const prefix = `${folder}/`
+  return reached(metadataCache, store, notes, nameOf, (path) => path.startsWith(prefix))
+}
+
+function reached(
+  metadataCache: MetadataCache,
+  store: DocStore,
+  roots: TFile[],
+  nameOf: (account: string) => string,
+  inside: (path: string) => boolean
+): LinkedNote[] {
   const found: LinkedNote[] = []
-  const seen = new Set([root.path])
-  const queue: TFile[] = [root]
+  const seen = new Set(roots.map((root) => root.path))
+  const queue: TFile[] = [...roots]
   for (let note = queue.shift(); note; note = queue.shift()) {
     const cache = metadataCache.getFileCache(note)
     for (const link of [...(cache?.links ?? []), ...(cache?.embeds ?? []), ...(cache?.frontmatterLinks ?? [])]) {
       const linkpath = decoded(getLinkpath(link.link))
       if (!linkpath) continue
       const target = metadataCache.getFirstLinkpathDest(linkpath, note.path)
-      if (!target || target.extension !== 'md' || seen.has(target.path)) continue
+      if (!target || target.extension !== 'md' || seen.has(target.path) || inside(target.path)) continue
       seen.add(target.path)
       const linked = describe(store, target, landingTitle(linkpath) || target.basename, nameOf)
       found.push(linked)

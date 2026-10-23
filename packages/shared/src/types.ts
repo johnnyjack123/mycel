@@ -57,6 +57,11 @@ export interface IndexEntry {
 export interface VaultFolder {
   path: string
   updatedAt: number
+  /**
+   * When this account shared its folder: whatever lay in it then goes in with
+   * the share, and is never asked about as moved in. Absent before 0.8.1.
+   */
+  sharedAt?: number
   /** Whose folder it is, when it is someone else's. */
   owner?: string
   role?: ShareRole
@@ -101,6 +106,22 @@ export interface AttachmentEntry {
   purgedAt?: number
   /** It came in through a shared note, for this link. */
   via?: { docId: string; ref: string }
+  /** It is a file of a shared folder: which folder, and its id in the folder's document. */
+  folder?: { id: string; file: string }
+}
+
+/**
+ * A file in a shared folder's own document: where it lies in the folder, and
+ * where its content lies - in the store of whoever put this version there,
+ * with the key to read it, readable to everyone in the folder only.
+ */
+export interface FolderFile extends SharedAttachment {
+  /** Relative to the folder. */
+  path: string
+  /** Deleted for everyone in the folder. */
+  deletedAt?: number
+  /** Its owner took it out of the folder; everyone keeps what they have. */
+  leftAt?: number
 }
 
 /**

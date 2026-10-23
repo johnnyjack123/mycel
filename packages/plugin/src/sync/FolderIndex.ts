@@ -1,11 +1,12 @@
 import * as Y from 'yjs'
-import { FOLDER_META_FIELD, FOLDER_NOTES_FIELD, type FolderNote } from '@obsidian-connect/shared'
+import { FOLDER_FILES_FIELD, FOLDER_META_FIELD, FOLDER_NOTES_FIELD, type FolderFile, type FolderNote } from '@obsidian-connect/shared'
 
-// A shared folder's own document: which notes are in it and where, relative to
-// the folder - the same for everyone in it, wherever each of them keeps the
-// folder. Like the vault index, identity is the document id and a delete is a
+// A shared folder's own document: which notes and files are in it and where,
+// relative to the folder - the same for everyone in it, wherever each of them
+// keeps the folder. Like the vault index, identity is the id and a delete is a
 // tombstone; a note its owner moved out is marked `leftAt`, so the others fork
-// it instead of deleting it.
+// it instead of deleting it. A file's entry names its content as well, and the
+// version it replaced (`prev`, invariant 24).
 
 /** Origin of changes this device makes to a folder document. */
 export const FOLDER_ORIGIN = 'folder'
@@ -19,20 +20,78 @@ function live(entry: FolderNote): FolderNote {
 export class FolderIndex {
   readonly doc = new Y.Doc()
   private readonly notes: Y.Map<FolderNote>
+  private readonly files: Y.Map<FolderFile>
   private readonly meta: Y.Map<unknown>
   private readonly byPath = new Map<string, string>()
   private readonly listeners = new Set<(local: boolean) => void>()
 
   constructor(readonly folderId: string) {
     this.notes = this.doc.getMap<FolderNote>(FOLDER_NOTES_FIELD)
+    this.files = this.doc.getMap<FolderFile>(FOLDER_FILES_FIELD)
     this.meta = this.doc.getMap<unknown>(FOLDER_META_FIELD)
     const changed = (_event: unknown, transaction: Y.Transaction): void => {
       this.rebuild()
       for (const listener of this.listeners) listener(transaction.origin === FOLDER_ORIGIN)
     }
     this.notes.observe(changed)
+    this.files.observe(changed)
     this.meta.observe(changed)
     this.rebuild()
+  }
+
+  // --- files ---------------------------------------------------------------------
+
+  file(fileId: string): FolderFile | undefined {
+    return this.files.get(fileId)
+  }
+
+  hasFile(fileId: string): boolean {
+    return this.files.has(fileId)
+  }
+
+  /** Every file entry, deleted and left included. */
+  allFiles(): Array<{ fileId: string; entry: FolderFile }> {
+    const found: Array<{ fileId: string; entry: FolderFile }> = []
+    this.files.forEach((entry, fileId) => found.push({ fileId, entry }))
+    return found
+  }
+
+  /** The live file at a path relative to the folder; of two, the first sorted. */
+  fileIdForPath(path: string): string | undefined {
+    return Array.from(this.files.entries())
+      .filter(([, entry]) => entry.path === path && !entry.deletedAt && !entry.leftAt)
+      .map(([fileId]) => fileId)
+      .sort()[0]
+  }
+
+  /** A file's new version, or the file coming into the folder - or back, live. */
+  setFile(fileId: string, entry: FolderFile): void {
+    const { deletedAt: _deletedAt, leftAt: _leftAt, ...live } = entry
+    this.doc.transact(() => this.files.set(fileId, live), FOLDER_ORIGIN)
+  }
+
+  renameFile(fileId: string, path: string, by: string): void {
+    const current = this.files.get(fileId)
+    if (!current || current.deletedAt || current.leftAt || current.path === path) return
+    this.doc.transact(() => this.files.set(fileId, { ...current, path, updatedAt: Date.now(), by }), FOLDER_ORIGIN)
+  }
+
+  markFileDeleted(fileId: string, by: string): void {
+    const current = this.files.get(fileId)
+    if (!current || current.deletedAt || current.leftAt) return
+    this.doc.transact(() => this.files.set(fileId, { ...current, deletedAt: Date.now(), updatedAt: Date.now(), by }), FOLDER_ORIGIN)
+  }
+
+  markFileLeft(fileId: string, by: string): void {
+    const current = this.files.get(fileId)
+    if (!current || current.leftAt) return
+    this.doc.transact(() => this.files.set(fileId, { ...current, leftAt: Date.now(), updatedAt: Date.now(), by }), FOLDER_ORIGIN)
+  }
+
+  reviveFile(fileId: string, path: string, by: string): void {
+    const current = this.files.get(fileId)
+    if (!current) return
+    this.setFile(fileId, { ...current, path, updatedAt: Date.now(), by })
   }
 
   /** `local`: the change was made on this device. */
