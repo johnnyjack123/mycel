@@ -634,7 +634,7 @@ export class DocStore {
         await this.recordAgreement(docId, file, text)
         return
       }
-      const base = await this.state.baseText(docId)
+      const base = await this.baseFor(docId)
       // A plain overwrite is only safe for a note that agreed with its
       // document this session, and whose file has not changed since. Anything
       // else - a document whose state was never confirmed, a file edit not yet
@@ -664,7 +664,26 @@ export class DocStore {
   }
 
   baseText(docId: string): Promise<string | null> {
-    return this.state.baseText(docId)
+    return this.baseFor(docId)
+  }
+
+  /**
+   * The last text file and note agreed on. A note that carries on one whose
+   * share ended starts from that one's: the device that forked moves the base
+   * along (`forkInto`), but on another device of the account the new note can
+   * be reconciled first - the index change arrived between the remote deletes
+   * and the scan -, and without a base its file was merged as a union, the
+   * words changed meanwhile kept twice.
+   */
+  private async baseFor(docId: string): Promise<string | null> {
+    const own = await this.state.baseText(docId)
+    if (own !== null) return own
+    for (const { docId: earlier, entry } of this.index.deleted()) {
+      if (entry.forkedTo !== docId || !this.state.get(earlier)) continue
+      const inherited = await this.state.baseText(earlier)
+      if (inherited !== null) return inherited
+    }
+    return null
   }
 
   private applyToDocument(handle: DocHandle, target: string): void {
@@ -786,7 +805,7 @@ export class DocStore {
     // A file Obsidian saved from an editor that has since let go: the
     // document went on from that text, so that is where file and document
     // last agreed - whatever base was recorded before.
-    const base = this.heldBefore(docId, local) ? local : await this.state.baseText(docId)
+    const base = this.heldBefore(docId, local) ? local : await this.baseFor(docId)
     const outcome = reconcile({ base, local, remote, pristine: handle.pristine, markers: this.options.conflictMarkers })
     await this.applyOutcome(docId, file, handle, local, remote, base, outcome)
   }
@@ -901,7 +920,7 @@ export class DocStore {
     const file = this.fileFor(docId)
     const path = file?.path ?? this.index.pathFor(docId) ?? docId
     if (this.heldBefore(docId, local)) return remote
-    const base = released ?? (await this.state.baseText(docId))
+    const base = released ?? (await this.baseFor(docId))
     if (this.isReadOnly(docId)) {
       if (local !== base) await this.backups.write(path, 'local', local)
       return remote
