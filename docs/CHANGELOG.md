@@ -8,6 +8,21 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.7** (2026-10-23) - a note whose share ended while a device was away no longer
+  keeps the words that device replaced meanwhile. `test:recovery`'s check "carries on
+  in the same note, and what it wrote while away reaches P1" failed again (once on
+  2026-10-16, now once more), and its log said why: the device came back, and the
+  index change of the fork - the old note's tombstone and the new note, one change -
+  arrived after it had applied the remote deletes but before its scan reached the
+  file. The scan reconciled the file against the new note, which had no base on this
+  device - the device that forked moves the base along, this one had not yet -, so
+  replaced text was merged as a union. A note without a base now takes the base of the
+  note it carries on (`DocStore.baseFor`, the tombstone's `forkedTo`), wherever a base
+  is read: the scan, the write-back and the binding's merge.
+  - A race: not reproduced on demand, and not put back. Before the fix it failed now
+    and then - twice since 2026-10-16, over many runs -, so five passing runs with it
+    show little; the log line `merge (no common base, union)` is the sign to look for.
+
 - **0.8.6** (2026-10-23) - signing the account's devices out ends their sessions with
   backup servers too (PHASE7, small fix 5). The relay checked a device's token only
   when its connection opened, and did not know a device's connection by its account, so

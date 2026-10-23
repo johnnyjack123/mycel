@@ -57,8 +57,8 @@ server reading folder notes. What is next:
 4. The small fixes (PHASE7, "The small fixes"), one at a time, each with its test:
    1 (keystrokes lost when sync restarts) is 0.8.2, 2 (content never named) 0.8.3,
    3 (local copies of purged notes) 0.8.4, 4 (slow reconnect after 2FA, confirmed:
-   a second) 0.8.5, 5 (relay sessions on sign-out) 0.8.6 on `fix/relay-signout`; next 6
-   (the rollback's last-change listing).
+   a second) 0.8.5, 5 (relay sessions on sign-out) 0.8.6, and the known race in the
+   fork on return 0.8.7 (`fix/fork-base`); next 6 (the rollback's last-change listing).
 5. The user said on 2026-10-23 they cannot test right now and will test everything at
    once: at the end of 0.8, give them one list - **server first** (protocol 5), then
    every device. To try: sharing a folder with a second account, a note and a picture
@@ -151,9 +151,9 @@ call, as with the earlier branches.
   note's key, not signed per author (both 0.9).
 - The plugin id contains "obsidian", which the community directory refuses (0.9).
 - `test:recovery`'s check "carries on in the same note, and what it wrote while away
-  reaches P1" failed once on 2026-10-16 and passed since. If it fails again, look at
-  "deleted on another device, moved to the trash here" just before - perhaps a race
-  in the fork on return (0.8).
+  reaches P1" failed on 2026-10-16 and 2026-10-23: a race in the fork on return, fixed
+  in 0.8.7 (CHANGELOG). If it fails again, its log shows `merge (no common base,
+  union)` for `Shared/Shared.md` - then the base did not move along some other way.
 - The development machine is short of memory (often 1.6 GB free of 15.6 GB): a
   `test:backup` run takes four to ten minutes, and twice died at its start (restic,
   then Node out of memory); rerun before suspecting the code.
@@ -167,6 +167,11 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
+
+At 0.8.7, run 2026-10-23 on `fix/fork-base`: `build` passes; `test:merge` 171,
+`test:load` 14, `test:rooms` 372, `test:sync` 26, `test:recovery` 71 (and five runs in a
+row before), `test:account` 52, `test:rollback` 52, `test:backup` 228, and on a scratch
+server of 0.8.6 `test:socket` 19, `test:vault` 241, `test:folders` 88 - all pass.
 
 At 0.8.6, run 2026-10-23 on `fix/relay-signout`: `build` passes; `test:merge` 171,
 `test:load` 14, `test:rooms` 372, `test:sync` 26, `test:account` 52, `test:rollback` 52,

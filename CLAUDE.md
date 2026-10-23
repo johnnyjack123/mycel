@@ -540,7 +540,8 @@ the name, which is not unique — is never drawn. There is no global
   what it holds of the old note into it as Yjs state. The new note was built
   from the same changes, so that adds only what is missing and duplicates
   nothing. The base text moves along, so a file edited offline merges three
-  ways.
+  ways - and a device that reconciles the new note before it has folded the old
+  one in takes the old one's base (`DocStore.baseFor`).
 - **Removing an account** (`user remove`) only marks it (invariant 21). The
   running server's sweep (`RoomHub.sweep`, on start and every few minutes)
   ends its shares as above, ends its memberships, forgets its contacts and
