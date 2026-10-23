@@ -91,6 +91,30 @@ export class AttachmentIndex {
     return result
   }
 
+  /**
+   * Every content the index names anywhere: files live or deleted and what
+   * each replaced, versions, and the bases of shared notes' and shared
+   * folders' files. Content none of them names is no file's.
+   */
+  namedHashes(): Set<string> {
+    const named = new Set<string>()
+    this.files.forEach((entry) => {
+      if (entry.purgedAt) return
+      named.add(entry.hash)
+      if (entry.prev) named.add(entry.prev)
+    })
+    this.versionMap.forEach((version) => {
+      if (!version.purgedAt) named.add(version.hash)
+    })
+    for (const bases of [this.sharedMap, this.folderMap]) {
+      bases.forEach((base) => {
+        named.add(base.hash)
+        if (base.prev) named.add(base.prev)
+      })
+    }
+    return named
+  }
+
   deleted(): Array<{ fileId: string; entry: AttachmentEntry }> {
     const result: Array<{ fileId: string; entry: AttachmentEntry }> = []
     this.files.forEach((entry, fileId) => {

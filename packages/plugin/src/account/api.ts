@@ -11,7 +11,9 @@ import {
   type BlobHaveResponse,
   type BlobIdsRequest,
   type BlobInfo,
+  type BlobListResponse,
   type BlobPurgeResponse,
+  type BlobTouchResponse,
   type BlobUsageResponse,
   type CompactableResponse,
   type ContactCodeInfo,
@@ -410,6 +412,16 @@ export class ConnectApi {
   purgeBlobs(account: string, vaultId: string, ids: string[]): Promise<BlobPurgeResponse> {
     const request: BlobIdsRequest = { ids }
     return this.call('POST', this.blobPath(account, vaultId, 'purge'), request)
+  }
+
+  touchBlobs(account: string, vaultId: string, ids: string[]): Promise<BlobTouchResponse> {
+    const request: BlobIdsRequest = { ids }
+    return this.call('POST', this.blobPath(account, vaultId, 'touch'), request)
+  }
+
+  /** Everything in one of this account's stores. */
+  listBlobs(account: string, vaultId: string): Promise<BlobListResponse> {
+    return this.call('GET', this.blobPath(account, vaultId, 'list'))
   }
 
   /** What the account stores in attachments, over all its vaults. */

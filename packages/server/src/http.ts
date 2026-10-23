@@ -16,7 +16,9 @@ import {
   type BlobHaveResponse,
   type BlobIdsRequest,
   type BlobInfo,
+  type BlobListResponse,
   type BlobPurgeResponse,
+  type BlobTouchResponse,
   type BlobUsageResponse,
   type AccountKeyResponse,
   type AuthConfigResponse,
@@ -817,6 +819,18 @@ export function createHttpApp(
     if (!(await ownStore(request, reply))) return undefined
     const body = (request.body ?? {}) as Partial<BlobIdsRequest>
     return blobs.purge(request.params.account, request.params.vaultId, body.ids)
+  })
+
+  app.post<{ Params: StoreParams }>(`${API.blobs}/:account/:vaultId/touch`, async (request, reply): Promise<BlobTouchResponse | undefined> => {
+    if (!(await ownStore(request, reply))) return undefined
+    const body = (request.body ?? {}) as Partial<BlobIdsRequest>
+    return { touched: await blobs.touch(request.params.account, request.params.vaultId, body.ids) }
+  })
+
+  // The store's owner only: which content it holds is its own business.
+  app.get<{ Params: StoreParams }>(`${API.blobs}/:account/:vaultId/list`, async (request, reply): Promise<BlobListResponse | undefined> => {
+    if (!(await ownStore(request, reply))) return undefined
+    return blobs.list(request.params.account, request.params.vaultId)
   })
 
   app.get<{ Params: { account: string } }>(`${API.blobs}/:account/usage`, async (request, reply): Promise<BlobUsageResponse | undefined> => {
