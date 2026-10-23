@@ -455,6 +455,7 @@ From `docs/PROGRESS.md`, "Roadmap"; investigated on 2026-10-22 (line numbers as 
    opened - and so created - again. The text was backed up when the file was trashed
    (invariant 2). Test: `test:vault`, after a purge B holds neither the note's database
    nor its history.
+   **Built in 0.8.4**, as specified.
 4. **A device's own socket comes back slowly after turning 2FA on** - a hypothesis to
    confirm with timestamps first. The server closes the account's sockets with `4401`;
    `Session.stillSignedIn` waits for the device's own request and then refreshes once

@@ -73,6 +73,12 @@ export class Trash {
    * asks again next time. Returns how many notes and contents went.
    */
   async purge(now = Date.now()): Promise<number> {
+    // On every device, whoever purged: what this one still holds of purged notes.
+    try {
+      await this.store.clearPurged()
+    } catch (error) {
+      log.warn('clearing the local copies of purged notes failed', error)
+    }
     const days = this.retentionDays()
     if (days <= 0) return 0
     let purged = 0

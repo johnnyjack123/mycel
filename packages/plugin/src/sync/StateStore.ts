@@ -23,6 +23,7 @@ export interface AttachmentState extends FileState {
 
 const STATE_FILE = 'state.json'
 const ATTACHMENTS_FILE = 'attachments.json'
+const CLEARED_FILE = 'cleared.json'
 const BASE_DIR = 'base'
 const SAVE_DEBOUNCE_MS = 1_000
 
@@ -31,6 +32,8 @@ export class StateStore {
   private readonly attachments = new Map<string, AttachmentState>()
   /** path -> fileId, for the scan's question which file this device knows a path as. */
   private readonly attachmentPaths = new Map<string, string>()
+  /** Purged notes whose local copy this device has cleared - never opened, and so made, again. */
+  private readonly cleared = new Set<string>()
   private saveTimer: number | null = null
   private writes: Promise<void> = Promise.resolve()
   private closed = false
@@ -71,6 +74,25 @@ export class StateStore {
       }
     }
     for (const [fileId, state] of this.attachments) this.attachmentPaths.set(state.path, fileId)
+    const cleared = this.path(CLEARED_FILE)
+    if (await this.adapter.exists(cleared)) {
+      try {
+        const ids = JSON.parse(await this.adapter.read(cleared)) as unknown
+        if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string') this.cleared.add(id)
+      } catch (error) {
+        log.error(`the local state file ${CLEARED_FILE} is unreadable, starting fresh`, error)
+      }
+    }
+  }
+
+  isCleared(docId: string): boolean {
+    return this.cleared.has(docId)
+  }
+
+  markCleared(docId: string): void {
+    if (this.cleared.has(docId)) return
+    this.cleared.add(docId)
+    this.scheduleSave()
   }
 
   attachment(fileId: string): AttachmentState | undefined {
@@ -147,6 +169,7 @@ export class StateStore {
         await this.ensureDir(this.root)
         await this.adapter.write(this.path(STATE_FILE), JSON.stringify(Object.fromEntries(this.entries)))
         await this.adapter.write(this.path(ATTACHMENTS_FILE), JSON.stringify(Object.fromEntries(this.attachments)))
+        await this.adapter.write(this.path(CLEARED_FILE), JSON.stringify(Array.from(this.cleared)))
       })
       .catch((error) => {
         log.error('writing the local state failed', error)

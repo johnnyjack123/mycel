@@ -795,6 +795,20 @@ try {
       'the server has let go of the note'
     )
     check(await eventually(() => !trashed(B).includes('Doomed.md')), 'and no device offers it any more', trashed(B))
+    // The device that purged cleared its own copy; the others hold theirs until their trash pass.
+    {
+      const database = `obsidian-connect/${B.keys?.vaultId}/${doomedId}`
+      const heldThere = B.locals.has(database) && (await B.locals.history.entries(docRoom(doomedId))).length > 0
+      await B.trash?.purge()
+      check(
+        heldThere && !B.locals.has(database) && (await B.locals.history.entries(docRoom(doomedId))).length === 0,
+        "another device's trash pass clears its copy of the purged note - its database and its history",
+        { heldThere }
+      )
+      const opened = B.locals.opened.get(database)
+      await B.trash?.purge()
+      check(B.locals.opened.get(database) === opened && !B.locals.has(database), 'once: its database is never opened again')
+    }
     check(
       A.vault.text('Gone (restored).md') === 'content of a note that was deleted\n' && A.vault.text('Gone.md') === 'a new note\n',
       'while the notes that live are untouched'
