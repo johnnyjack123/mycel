@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-23 · **0.8.0 - sharing a folder, notes - built on `feat/folder-share` (`docs/PHASE7.md`, steps 1 to 3, and the backup server's keys for folder notes), every suite green. Next: merge it, CI on `main` builds the server image, then the user tries it on their devices; then 0.8.1, the files.**_
+_Last updated: 2026-10-23 · **0.8.0 - sharing a folder, notes - merged into `main` (`e9ca007`), CI green there, server and backup images published. Next: the user tries it on their devices (server first); then 0.8.1, the files in folders.**_
 
 ## Where we are
 
@@ -48,11 +48,11 @@ moving in and out, deleting for everyone, revoking, leaving, ending; the dialogs
 move-in window, the delete notice with undo, the explorer mark, the trash; the backup
 server reading folder notes. What is next:
 
-1. Merge `feat/folder-share` into `main` once CI is green there, watch CI on `main`
-   (server image), and hand 0.8.0 to the user: **server first** (protocol 5), then
-   every device. Ask them to try: sharing a folder with a second account, a note added
-   on each side, a rename and a delete inside (the notice, *Undo*), moving a note in
-   (the window) and out, the explorer mark on desktop and phone, revoking.
+1. 0.8.0 is merged (`e9ca007`) and CI on `main` is green, both images published. The
+   user installs it: **server first** (protocol 5), then every device. To try: sharing
+   a folder with a second account, a note added on each side, a rename and a delete
+   inside (the notice, *Undo*), moving a note in (the window) and out, the explorer
+   mark on desktop and phone, revoking.
 2. 0.8.1 on its own branch: files inside the folder (the folder document's `files`
    map, `folderBases`, the rules of `SharedFiles`), linked files and notes outside it
    from the share dialog (`linkedFiles`, `LinkedNotes`).
@@ -101,8 +101,9 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-`feat/folder-share`, started from `main` on 2026-10-22: 0.8.0 built and green, not yet
-merged.
+Nothing. `feat/folder-share` is merged into `main` (0.8.0) and holds nothing `main`
+lacks; it is still on the remote - deleting it is the user's call, as with the earlier
+branches.
 
 ## Decisions made (not visible in the code)
 
