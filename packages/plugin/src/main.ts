@@ -663,7 +663,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     const still = await this.session.stillSignedIn()
     if (this.socket !== socket) return
     if (still !== false) {
-      socket.reconnect()
+      socket.reconnect(still === true)
       return
     }
     log.info('signed out by the server: the password was changed or the account recovered elsewhere')
