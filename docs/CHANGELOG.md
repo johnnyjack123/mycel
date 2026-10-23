@@ -8,6 +8,26 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.3** (2026-10-23) - content uploaded but never named no longer stays on the
+  server for good (PHASE7, small fix 2). A crash, stop or delete between an upload and
+  its index entry - the order invariant 23 demands - left a blob nothing names, and
+  nothing could find it. The server lists a store to its owner (`GET
+  /blobs/:account/:vault/list`: complete blobs with their size and last touch, uploads
+  under way with their last chunk), and the trash pass lets go of what no entry,
+  tombstone, version or shared base names and was untouched for longer than the
+  retention - a week at least; a retention of 0 still keeps everything. Two hazards
+  next to it, fixed too: content a device found on the server was named without
+  touching it, so a device cleaning up could delete it under the new name - now every
+  reuse touches it (`POST .../touch`, `Blobs.keep`) and uploads it again if a purge was
+  first; and a purge dropped an upload still under way, with no grace - now it keeps
+  one whose last chunk is recent.
+  - Server: the two routes; a 0.8.2 plugin never calls them, a 0.8.3 plugin against an
+    older server treats them as absent (no listing, reuse as before).
+  - Tests: `test:rooms` 370 (8 new: the listing, a touch, an upload under way kept and
+    then dropped, the routes for the owner only), `test:recovery` 71 (7 new: unnamed
+    content kept while new and for a week, gone past the retention, nothing a file
+    names touched, content a purge took uploaded again before it is named).
+
 - **0.8.2** (2026-10-23) - typing into an open note while sync restarts (signing out
   and in, a changed setting) no longer loses keystrokes (PHASE7, small fix 1). The new
   store settled the note against what Obsidian had last saved and wrote the file;

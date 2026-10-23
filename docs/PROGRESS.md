@@ -55,10 +55,10 @@ server reading folder notes. What is next:
 3. The backup server's tests for folders over time: merged (`test:backup` 227, 13
    new), no code needed, so no version of their own.
 4. The small fixes (PHASE7, "The small fixes"), one at a time, each with its test:
-   1 (keystrokes lost when sync restarts) is 0.8.2 on `fix/restart-keystrokes`; next
-   2 (orphan blobs), 3 (local copies of purged notes), 4 (slow reconnect after 2FA -
-   confirm the hypothesis first), 5 (relay sessions on sign-out), 6 (the rollback's
-   last-change listing).
+   1 (keystrokes lost when sync restarts) is 0.8.2, 2 (content never named) 0.8.3 on
+   `fix/orphan-blobs`; next 3 (local copies of purged notes), 4 (slow reconnect after
+   2FA - confirm the hypothesis first), 5 (relay sessions on sign-out), 6 (the
+   rollback's last-change listing).
 5. The user said on 2026-10-23 they cannot test right now and will test everything at
    once: at the end of 0.8, give them one list - **server first** (protocol 5), then
    every device. To try: sharing a folder with a second account, a note and a picture
@@ -81,8 +81,8 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
   has to be in before 0.9:
   - ~~Typing into an open note while sync itself restarts can lose the keystrokes of
     that moment~~ - fixed in 0.8.2.
-  - Content uploaded but never named in the index (a crash between the two) is never
-    cleaned up from the server.
+  - ~~Content uploaded but never named in the index is never cleaned up from the
+    server~~ - fixed in 0.8.3.
   - Local copies of a purged note stay in IndexedDB on the devices that did not purge
     it.
   - To investigate: after a device turns 2FA on, its own socket took seconds to
@@ -145,7 +145,6 @@ call, as with the earlier branches.
 - **Only on a device** (untestable headless): menus, modals, the settings tab, the
   status bar marks, the header lock, `requestUrl` with binary bodies on mobile, binary
   file events, `file-open` fetching, memory with large files on a phone.
-- Content uploaded but never named in the index is never cleaned up (0.8).
 - Local copies of a purged note stay in IndexedDB on the other devices (0.8).
 - Notes beyond `maxLoadedDocuments` (500) get no live updates until opened or the next
   start (0.9). Raising the setting is the workaround: about 6 to 32 KB per loaded note
@@ -170,6 +169,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
+
+At 0.8.3, run 2026-10-23 on `fix/orphan-blobs`: `build` passes; `test:merge` 171,
+`test:load` 14, `test:rooms` 370, `test:sync` 26, `test:recovery` 71, `test:account` 50,
+`test:rollback` 52, `test:backup` 227; `test:socket` 19, `test:vault` 239 and
+`test:folders` 88 against a scratch server of 0.8.2 (no touch route: the fallback) and
+again against one started fresh from 0.8.3 - all pass.
 
 At 0.8.2, run 2026-10-23 on `fix/restart-keystrokes`: `build` passes; `test:merge` 171,
 `test:load` 14, `test:rooms` 362, `test:sync` 26, `test:recovery` 64, `test:account` 50,
