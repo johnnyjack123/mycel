@@ -52,16 +52,21 @@ server reading folder notes. What is next:
 2. 0.8.1 is merged (`3bc812c`): files inside the folder (the folder document's `files`
    map, `folderBases`, `share/FolderFiles.ts`), files and notes outside it from the
    share dialog; three races of 0.8.0 fixed on the way (CHANGELOG).
-3. The backup server's tests for folders over time: written (`test:backup` 227, 13
-   new), no code needed, so no version of their own. Next: the small fixes, 0.8.2
-   onwards (PHASE7, "The small fixes"), one at a time, each with its test.
-4. The user said on 2026-10-23 they cannot test right now and will test everything at
+3. The backup server's tests for folders over time: merged (`test:backup` 227, 13
+   new), no code needed, so no version of their own.
+4. The small fixes (PHASE7, "The small fixes"), one at a time, each with its test:
+   1 (keystrokes lost when sync restarts) is 0.8.2 on `fix/restart-keystrokes`; next
+   2 (orphan blobs), 3 (local copies of purged notes), 4 (slow reconnect after 2FA -
+   confirm the hypothesis first), 5 (relay sessions on sign-out), 6 (the rollback's
+   last-change listing).
+5. The user said on 2026-10-23 they cannot test right now and will test everything at
    once: at the end of 0.8, give them one list - **server first** (protocol 5), then
    every device. To try: sharing a folder with a second account, a note and a picture
    added on each side, a rename and a delete inside (the notice, *Undo*), moving a
    note and a file in (the window) and out, a picture changed on both sides (two
    files), a file outside embedded by a folder note (`Shared/Attachments`), the
-   explorer mark on desktop and phone, revoking.
+   explorer mark on desktop and phone, revoking. And typing into an open note while
+   signing out and in again (0.8.2): nothing typed is lost.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
@@ -74,8 +79,8 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 - **0.8 - sharing a folder, and the small fixes.** Besides the folder, every fix that
   has to be in before 0.9:
-  - Typing into an open note while sync itself restarts (signing out and in, the
-    plugin reloaded) can lose the keystrokes of that moment (see Known issues).
+  - ~~Typing into an open note while sync itself restarts can lose the keystrokes of
+    that moment~~ - fixed in 0.8.2.
   - Content uploaded but never named in the index (a crash between the two) is never
     cleaned up from the server.
   - Local copies of a purged note stay in IndexedDB on the devices that did not purge
@@ -105,10 +110,10 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-`feat/backup-folders`: the backup tests for folders, to be merged. `feat/folder-files`
-(0.8.1) and `feat/folder-share` (0.8.0) are merged into `main` and hold nothing `main`
-lacks; they are still on the remote - deleting them is the user's call, as with the
-earlier branches.
+`fix/restart-keystrokes` (0.8.2): built, to be merged. `feat/backup-folders`,
+`feat/folder-files` (0.8.1) and `feat/folder-share` (0.8.0) are merged into `main` and
+hold nothing `main` lacks; they are still on the remote - deleting them is the user's
+call, as with the earlier branches.
 
 ## Decisions made (not visible in the code)
 
@@ -140,10 +145,6 @@ earlier branches.
 - **Only on a device** (untestable headless): menus, modals, the settings tab, the
   status bar marks, the header lock, `requestUrl` with binary bodies on mobile, binary
   file events, `file-open` fetching, memory with large files on a phone.
-- Typing into an open note while sync itself restarts can lose the keystrokes of that
-  moment (0.8): the new store settles the note by writing its file, and Obsidian
-  reloads the editor. `EditorSync.rebinding` keeps the file Obsidian's only while the
-  same store binds again; a new store has to settle against the server first.
 - Content uploaded but never named in the index is never cleaned up (0.8).
 - Local copies of a purged note stay in IndexedDB on the other devices (0.8).
 - Notes beyond `maxLoadedDocuments` (500) get no live updates until opened or the next
@@ -169,6 +170,11 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
+
+At 0.8.2, run 2026-10-23 on `fix/restart-keystrokes`: `build` passes; `test:merge` 171,
+`test:load` 14, `test:rooms` 362, `test:sync` 26, `test:recovery` 64, `test:account` 50,
+`test:rollback` 52, `test:backup` 227, and on a scratch server on 1235 `test:socket` 19,
+`test:vault` 239, `test:folders` 88 - all pass.
 
 At 0.8.1, run 2026-10-23 on `feat/folder-files`: `typecheck` and `build` pass;
 `test:merge` 171, `test:load` 14, `test:rooms` 362, `test:sync` 26, `test:recovery` 64,

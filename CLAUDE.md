@@ -72,7 +72,10 @@ someone's notes. Treat them as rules, not preferences.
    saw "both sides changed this line" on every save and kept both — the text
    duplicated itself, travelled to the other device and came back. This was the
    escalation that filled a note with `t`s. `reconcileFile` only records
-   agreement for an owned note.
+   agreement for an owned note - and for a note an editor shows that no binding
+   holds yet (sync restarted under it) it writes nothing at all (`settleShown`):
+   the reload that followed dropped what was typed since the last save. The
+   binding merges buffer and document as it binds.
 9. **A change whose result already equals the document is not an edit.**
    `applyLocalChanges` returns early in that case. Obsidian replaces the whole
    buffer on reload even when the text is identical, and taken literally that

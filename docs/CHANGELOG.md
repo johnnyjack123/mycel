@@ -8,6 +8,26 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.2** (2026-10-23) - typing into an open note while sync restarts (signing out
+  and in, a changed setting) no longer loses keystrokes (PHASE7, small fix 1). The new
+  store settled the note against what Obsidian had last saved and wrote the file;
+  Obsidian reloaded the editor, and whatever was typed since that save was gone. A note
+  an editor shows is now Obsidian's to write even while no binding holds it
+  (`DocStore.watchEditors`, `settleShown`): the store makes the server's state known
+  and seeds an empty document as every device does, and leaves buffer and document to
+  the binding, which merges them against what both said when it let go (`released`,
+  backups first). Nothing writes such a file meanwhile; once its editor closes, the file
+  is brought level. The texts the stopped store's editors held pass to the next store
+  of the same vault (invariant 25).
+  - Checked by putting the bug back: `test:vault`'s new restart with both people typing
+    failed (`ABCDsFGHIJ…tart` - B's keystrokes and A's text mixed), and passes with the
+    fix. The check for a restart where only the other person types passes either way:
+    the held texts passed on are not shown to matter by a test.
+  - Tests: `test:vault` 239 (9 new); the harness restarts sync with its views kept
+    (`shutdown({ keepViews })`).
+  - The backup server's tests for shared folders over time came before it, without a
+    version (`test:backup` 227).
+
 - **0.8.1** (2026-10-23) - the files of a shared folder (E8): every file inside it
   belongs to it, lies at the same place for everyone and follows the rules of the
   notes - a writer's new file, rename, new version and delete are everyone's (the
