@@ -46,7 +46,7 @@ import { FolderAccessModal, MoveInModal, OutsideModal, ShareFolderModal } from '
 import { Folders, type FolderNews } from './share/Folders'
 import { IncomingModal } from './share/IncomingModal'
 import { ShareModal } from './share/ShareModal'
-import { linkedNotes } from './share/LinkedNotes'
+import { linkedNotes, linkedOutside } from './share/LinkedNotes'
 import { Contacts, type OpenCode } from './share/Contacts'
 import { Sharing } from './share/Sharing'
 import { SharedFiles } from './share/SharedFiles'
@@ -91,6 +91,9 @@ const ATTACHMENT_MIN_VERSION_AGE_MS = 10 * 60 * 1000
 // The events of one move or delete in a shared folder are gathered this long
 // before it is weighed: Obsidian reports a folder moved as an event per file.
 const FOLDER_SETTLE_MS = 2_000
+// A delete another device of the account made in a shared folder is left to it
+// this long - its decision travels a moment behind the delete itself.
+const FOLDER_DECIDE_MS = 30_000
 // Shared notes' files are compared with their lists this often, besides on every change.
 const SHARED_FILES_EVERY_MS = 60_000
 // A link no list names yet waits this long before this device lists its own file for it.
@@ -917,7 +920,8 @@ export default class ObsidianConnectPlugin extends Plugin {
         shareFolder: () => this.shared().sharedFolder,
         syncTimeoutMs: this.settings.syncTimeoutMs,
         autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1,
-        settleMs: FOLDER_SETTLE_MS
+        settleMs: FOLDER_SETTLE_MS,
+        decideMs: FOLDER_DECIDE_MS
       },
       {
         moveIn: (question) => {
@@ -931,7 +935,8 @@ export default class ObsidianConnectPlugin extends Plugin {
           return modal.answered
         }
       },
-      (news) => this.showFolderNews(news)
+      (news) => this.showFolderNews(news),
+      this.attachments
     )
     this.folders = folders
     const index = this.index
@@ -939,7 +944,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.sharedFiles = new SharedFiles(this.app, store, this.attachments, this.api, keys, {
       folder: () => this.shared().sharedFolder,
       syncTimeoutMs: this.settings.syncTimeoutMs,
-      claimDelayMs: SHARED_FILES_CLAIM_MS
+      claimDelayMs: SHARED_FILES_CLAIM_MS,
+      folders
     })
     this.compactor = new Compactor(this.api, keys, () => this.shared().historyRetentionDays)
     this.trash = new Trash(this.api, store, () => this.shared().historyRetentionDays, this.attachments, folders)
@@ -1344,6 +1350,8 @@ export default class ObsidianConnectPlugin extends Plugin {
       void this.attachments?.applyRemoteChanges()
       // A share may have started, and the files of shared notes may have moved.
       this.sharedFiles?.scheduleAll()
+      // A file of a shared folder may have a new version here.
+      this.folders?.scheduleAll()
     }, 500)
   }
 
@@ -1500,7 +1508,10 @@ export default class ObsidianConnectPlugin extends Plugin {
       new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
       return
     }
-    new ShareFolderModal(this.app, this.folders, this.sharing, path, this.contactList()).open()
+    const sharing = this.sharing
+    const inside = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(`${path}/`))
+    const linked = linkedOutside(this.app.metadataCache, this.store, inside, path, (account) => sharing.nameOf(account))
+    new ShareFolderModal(this.app, this.folders, sharing, path, this.contactList(), linked).open()
   }
 
   private openFolderAccess(path: string): void {

@@ -301,6 +301,11 @@ export class Device {
       settings
     )
     this.contacts = contacts
+    const attachmentIndex = new AttachmentIndex(index.doc, (path, generation) => keys.fileId(path, generation))
+    this.maxFileBytes = (await this.api.config()).maxFileBytes ?? 0
+    const attachments = new AttachmentStore(app as never, attachmentIndex, state, new Blobs(this.api, keys), this.attachmentOptions())
+    this.attachments = attachments
+    this.attachmentIndex = attachmentIndex
     const sharing: InstanceType<typeof Sharing> = new Sharing(
       this.api,
       keys,
@@ -317,7 +322,7 @@ export class Device {
       socket,
       this.locals.open,
       sharing,
-      { shareFolder: () => 'Shared', syncTimeoutMs: 4_000, autoAccept: () => true, settleMs: 300 },
+      { shareFolder: () => 'Shared', syncTimeoutMs: 4_000, autoAccept: () => true, settleMs: 300, decideMs: 2_000 },
       {
         moveIn: async (question) => {
           this.askedMoveIn.push(question.path)
@@ -335,18 +340,15 @@ export class Device {
           return this.outsideAnswer
         }
       },
-      (news) => this.folderNews.push(news as never)
+      (news) => this.folderNews.push(news as never),
+      attachments
     )
     this.folders = folders
-    const attachmentIndex = new AttachmentIndex(index.doc, (path, generation) => keys.fileId(path, generation))
-    this.maxFileBytes = (await this.api.config()).maxFileBytes ?? 0
-    const attachments = new AttachmentStore(app as never, attachmentIndex, state, new Blobs(this.api, keys), this.attachmentOptions())
-    this.attachments = attachments
-    this.attachmentIndex = attachmentIndex
     const sharedFiles = new SharedFiles(app as never, store, attachments, this.api, keys, {
       folder: () => 'Shared',
       syncTimeoutMs: 4_000,
-      claimDelayMs: 300
+      claimDelayMs: 300,
+      folders
     })
     this.sharedFiles = sharedFiles
     this.store = store
@@ -355,7 +357,7 @@ export class Device {
     this.keys = keys
     this.sharing = sharing
     this.compactor = new Compactor(this.api, keys, () => this.retentionDays)
-    this.trash = new Trash(this.api, store, () => this.retentionDays, attachments)
+    this.trash = new Trash(this.api, store, () => this.retentionDays, attachments, folders)
 
     // What main.ts wires up.
     store.onReady(() => this.editors.refresh())
@@ -372,6 +374,8 @@ export class Device {
     }
     index.onChange(applyIndex)
     attachmentIndex.onChange(applyIndex)
+    // A file of a shared folder with a new version here: it goes out from the folder's pass.
+    attachmentIndex.onChange(() => folders.scheduleAll())
     let started = false
     socket.onStatus((status) => {
       if (status === 'connected' && started) {

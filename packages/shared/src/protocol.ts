@@ -31,6 +31,9 @@ export const VERSIONS_FIELD = 'versions'
 export const DECLINED_FIELD = 'declined'
 // `${docId}:${ref}` -> { hash, path }: what this vault last agreed with a shared note's list.
 export const SHARED_BASES_FIELD = 'sharedBases'
+// `${folderId}:${fileId}` -> { hash, path, prev? }: what this vault last agreed with a
+// shared folder's file - its content, and its path relative to the folder.
+export const FOLDER_BASES_FIELD = 'folderBases'
 // In a shared note's own document, next to its text: link -> SharedAttachment,
 // and the note's sharing settings - for now only `attachments: boolean`.
 export const NOTE_ATTACHMENTS_FIELD = 'attachments'

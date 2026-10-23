@@ -21,8 +21,10 @@ import { aesKey, deriveDocId, encrypt, packFrame, toBase64 } from '@obsidian-con
 import { ApiError, type ConnectApi } from '../account/api.js'
 import type { KeyRing } from '../account/KeyRing.js'
 import { LocalCursor, type LocalStore, type OpenLocalStore } from '../sync/DocHandle.js'
+import type { AttachmentStore, LocalFileChange } from '../sync/AttachmentStore.js'
 import type { DocStore, LocalChange } from '../sync/DocStore.js'
 import { FolderIndex } from '../sync/FolderIndex.js'
+import { FolderFiles } from './FolderFiles.js'
 import type { IdScheme, VaultIndex } from '../sync/VaultIndex.js'
 import type { VaultSocket } from '../sync/VaultSocket.js'
 import type { Sharing } from './Sharing.js'
@@ -48,6 +50,12 @@ export interface FoldersOptions {
   autoAccept: () => boolean
   /** How long the events of one move or delete are gathered before it is weighed. */
   settleMs: number
+  /**
+   * How long another device of the account may take to weigh a delete it
+   * made: a delete in the vault index the folder does not know of is undone
+   * only once it is older than that.
+   */
+  decideMs: number
 }
 
 /** An existing note moved into a shared folder: it goes into the share only once someone said so. */
@@ -93,6 +101,14 @@ interface OpenFolder {
   cursor: LocalCursor
 }
 
+/** What one weighing deleted for everyone in a folder: said in one notice that can undo it. */
+interface DeletedBatch {
+  folderId: string
+  names: string[]
+  docIds: Array<{ docId: string; path: string }>
+  files: Array<{ file: string; path: string }>
+}
+
 /** A path inside a shared folder of this vault: which folder, and where in it. */
 export interface FolderPlace {
   folderId: string
@@ -126,6 +142,10 @@ export class Folders {
   private readonly opening = new Map<string, Promise<OpenFolder | null>>()
   private readonly work = new Map<string, Promise<void>>()
   private readonly pending = new Map<string, LocalChange>()
+  private readonly pendingFiles = new Map<string, LocalFileChange>()
+  /** Who is in each of this vault's folders, as the server said lately: whose stores the folder's files may lie in. */
+  private readonly memberCache = new Map<string, { at: number; accounts: Set<string> }>()
+  private readonly files: FolderFiles | null = null
   /** Folders a folder-level event named, deleted or renamed, while their notes' events settle. */
   private readonly folderEvents: Array<{ kind: 'renamed'; from: string; to: string } | { kind: 'deleted'; path: string }> = []
   private readonly asking = new Set<string>()
@@ -138,6 +158,9 @@ export class Folders {
   private readonly toldReader = new Set<string>()
   private readonly mootWaiters = new Set<() => void>()
   private settleTimer: ReturnType<typeof setTimeout> | null = null
+  private allTimer: ReturnType<typeof setTimeout> | null = null
+  /** Folders whose pass comes back once a delete another device made had time to be weighed. */
+  private readonly rechecks = new Map<string, ReturnType<typeof setTimeout>>()
   /** When the changes being gathered began: a note placed in a folder after that is a newcomer. */
   private batchStart = 0
   private deciding: Promise<void> = Promise.resolve()
@@ -156,7 +179,8 @@ export class Folders {
     private readonly sharing: Sharing,
     private readonly options: FoldersOptions,
     private readonly prompts: FolderPrompts,
-    private readonly news: (news: FolderNews) => void
+    private readonly news: (news: FolderNews) => void,
+    private readonly attachments: AttachmentStore | null = null
   ) {
     // Before the vault is scanned: a note new in a shared folder takes its id
     // from the folder, and the keys of this vault's folders are derived.
@@ -166,6 +190,86 @@ export class Folders {
     })
     index.setIdScheme((path) => this.idScheme(path))
     this.unwatch.push(store.onLocalChange((change) => this.onLocal(change)))
+    if (attachments) {
+      this.files = new FolderFiles(
+        attachments,
+        api,
+        keys,
+        (path) => this.taken(path) || attachments.fileAt(path) !== null,
+        (folderId, file) => this.index.isDeclined(this.fileDeclinedKey(folderId, file)),
+        (folderId) => this.folderEpoch(folderId)
+      )
+      this.unwatch.push(attachments.onLocalFileChange((change) => this.onLocalFile(change)))
+      this.unwatch.push(
+        attachments.onLocalChange((change) => {
+          const link = change.entry.folder
+          if (change.kind !== 'restored' || !link) return
+          void this.restoredFile(link).catch((error: unknown) => log.warn('bringing a file back into its shared folder failed', error))
+        })
+      )
+    }
+  }
+
+  /**
+   * A file of a shared folder brought back from this vault's trash. One a
+   * reader let go of follows the folder again. One deleted for everyone comes
+   * back for everyone from someone who may write - the folder's pass would
+   * otherwise delete it again at once - and stays a reader's own.
+   */
+  private async restoredFile(link: { id: string; file: string }): Promise<void> {
+    this.index.undecline(this.fileDeclinedKey(link.id, link.file))
+    const opened = await this.opened(link.id)
+    const folder = this.index.folder(link.id)
+    const listed = opened?.index.file(link.file)
+    const local = this.attachments?.linked(link.id, link.file)
+    if (opened && folder && listed?.deletedAt && local && !local.entry.deletedAt) {
+      if (this.mayWrite(folder)) {
+        const place = this.placeOf(local.entry.path)
+        opened.index.reviveFile(link.file, place?.folderId === link.id ? place.rel : listed.path, this.keys.accountId)
+        log.info(`${local.entry.path}: brought back for everyone in its shared folder`)
+      } else {
+        this.attachments?.setFolderLink(local.fileId, null)
+        this.attachments?.setFolderBase(link.id, link.file, null)
+      }
+    }
+    await this.schedule(link.id)
+  }
+
+  /** Every folder's pass, after this vault's files changed: their new versions go out from there. */
+  scheduleAll(): void {
+    if (this.allTimer) clearTimeout(this.allTimer)
+    this.allTimer = setTimeout(() => {
+      this.allTimer = null
+      for (const folderId of this.open.keys()) void this.schedule(folderId)
+    }, 300)
+  }
+
+  /**
+   * Whether the files a note of a shared folder links outside the folder go
+   * along, as a shared note's do: the folder's choice. Null for a note in no
+   * shared folder.
+   */
+  linkedFilesOf(docId: string): boolean | null {
+    const folderId = this.index.entry(docId)?.folder
+    const fi = folderId ? this.open.get(folderId)?.index : undefined
+    return fi ? fi.linkedFiles : null
+  }
+
+  /** The folder's choice about files linked outside it, for the share dialog; null for a folder not shared yet. */
+  linkedFilesAt(path: string): boolean | null {
+    const shared = this.folderAt(path)
+    const fi = shared ? this.open.get(shared.folderId)?.index : undefined
+    return fi ? fi.linkedFiles : null
+  }
+
+  /** Whether a link of a note in a shared folder is to a file of that folder - which travels with the folder already. */
+  linksIntoFolder(docId: string, ref: string, target: string | null): boolean {
+    const folderId = this.index.entry(docId)?.folder
+    const folder = folderId ? this.index.folder(folderId) : undefined
+    const fi = folderId ? this.open.get(folderId)?.index : undefined
+    if (!folderId || !folder || !fi) return false
+    if (target && inside(target, folder.path)) return true
+    return fi.allFiles().some(({ entry }) => !entry.deletedAt && !entry.leftAt && (entry.path === ref || entry.path.endsWith(`/${ref}`) || baseName(entry.path) === ref))
   }
 
   /** Opens every shared folder of the vault, once the vault index is there. */
@@ -180,6 +284,9 @@ export class Folders {
   async stop(): Promise<void> {
     this.stopped = true
     if (this.settleTimer) clearTimeout(this.settleTimer)
+    if (this.allTimer) clearTimeout(this.allTimer)
+    for (const timer of this.rechecks.values()) clearTimeout(timer)
+    this.rechecks.clear()
     for (const unwatch of this.unwatch.splice(0)) unwatch()
     this.wakeMoot(true)
     for (const folderId of Array.from(this.open.keys())) await this.close(folderId)
@@ -366,7 +473,7 @@ export class Folders {
     // While this device's own moves and deletes settle, the folder may be
     // between two places: a note coming in now would land at the old one and
     // bring the folder back there.
-    if (this.settleTimer !== null || this.pending.size > 0 || this.folderEvents.length > 0) {
+    if (this.settleTimer !== null || this.pending.size > 0 || this.pendingFiles.size > 0 || this.folderEvents.length > 0) {
       this.later.add(folderId)
       return
     }
@@ -406,6 +513,7 @@ export class Folders {
       if (known.forkedTo || known.purgedAt) continue
       if (known.deletedAt) {
         // Restored in the folder - or a delete here that was never decided on.
+        if (this.undecided(folderId, known.deletedAt)) continue
         this.index.revive(docId, this.freePlace(target))
         this.index.setFolderOf(docId, { id: folderId, path: entry.path, owner: folder.owner, role: folder.role })
         continue
@@ -416,8 +524,55 @@ export class Folders {
         this.index.setFolderOf(docId, { id: folderId, path: entry.path, owner: folder.owner, role: this.roleOf(known, folder) })
       }
     }
+    if (this.files) {
+      const waits = {
+        pending: (fileId: string): boolean => this.pendingFiles.has(fileId),
+        undecided: (deletedAt: number): boolean => this.undecided(folderId, deletedAt)
+      }
+      await this.files.reconcile(folderId, folder, fi, waits, await this.membersOf(folderId, folder))
+    }
     const first = this.fresh.delete(folderId)
     if (write) this.checkStrays(folderId, folder, fi, first)
+  }
+
+  /**
+   * A delete in the vault index that the folder does not know of: the device
+   * it was made on may still be weighing it (invariant 29) - this one would
+   * otherwise bring the note back before that one says it is gone for
+   * everyone. Undone only once it had time; the folder's pass comes back then.
+   */
+  private undecided(folderId: string, deletedAt: number): boolean {
+    const wait = deletedAt + this.options.decideMs - Date.now()
+    if (wait <= 0) return false
+    if (!this.rechecks.has(folderId)) {
+      this.rechecks.set(
+        folderId,
+        setTimeout(() => {
+          this.rechecks.delete(folderId)
+          void this.schedule(folderId)
+        }, wait + 50)
+      )
+    }
+    return true
+  }
+
+  /** Who is in one of this vault's folders - asked of the server at most once a minute; null for someone else's folder. */
+  private async membersOf(folderId: string, folder: VaultFolder): Promise<Set<string> | null> {
+    if (folder.owner) return null
+    const cached = this.memberCache.get(folderId)
+    if (cached && Date.now() - cached.at < 60_000) return cached.accounts
+    try {
+      const state = await this.api.folderState(folderId)
+      const accounts = new Set(state.members.map((member) => member.account))
+      this.memberCache.set(folderId, { at: Date.now(), accounts })
+      return accounts
+    } catch {
+      return null
+    }
+  }
+
+  private fileDeclinedKey(folderId: string, file: string): string {
+    return `folderfile:${folderId}:${file}`
   }
 
   private relOf(path: string, mount: string): string | null {
@@ -446,8 +601,11 @@ export class Folders {
     // A note that carries on a former note of the folder - its share ended - is
     // not a note moved in.
     const forks = new Set(this.index.deleted().flatMap(({ entry }) => (entry.forkedTo ? [entry.forkedTo] : [])))
+    // What lay in the folder when it was shared goes in with the share, which
+    // may still be at it here or on another device: never a note moved in.
+    const before = (updatedAt: number): boolean => folder.sharedAt !== undefined && updatedAt <= folder.sharedAt
     for (const { docId, entry } of this.index.live()) {
-      if (this.pending.has(docId) || this.asking.has(docId) || this.dismissed.has(docId) || forks.has(docId)) continue
+      if (this.pending.has(docId) || this.asking.has(docId) || this.dismissed.has(docId) || forks.has(docId) || before(entry.updatedAt)) continue
       const there = inside(entry.path, mount) && this.placeOf(entry.path)?.folderId === folderId
       if (there && !entry.folder && !entry.owner && !fi.has(docId) && !this.store.isExcluded(entry.path)) {
         void this.askMoveIn(this.placeOf(entry.path) as FolderPlace, docId, null)
@@ -455,6 +613,17 @@ export class Folders {
         const note = fi.note(docId)
         if (note && !note.leftAt && !note.deletedAt) void this.askOutside(folderId, docId, entry.path)
       }
+    }
+    // A file is published from the device it was created on, a moment after
+    // the vault index names it: another device of the account takes one lying
+    // in the folder without being in it for moved in only when it starts.
+    if (!first || !this.attachments?.isReady) return
+    for (const { fileId, entry } of this.attachments.liveFiles()) {
+      const key = `file:${fileId}`
+      if (entry.folder || entry.via || before(entry.updatedAt) || this.pendingFiles.has(fileId) || this.asking.has(key) || this.dismissed.has(key)) continue
+      const place = this.placeOf(entry.path)
+      if (place?.folderId !== folderId || this.attachments.isExcluded(entry.path)) continue
+      void this.askMoveInFile(place, fileId, null)
     }
   }
 
@@ -473,6 +642,37 @@ export class Folders {
       before?.kind === 'renamed' && change.kind === 'renamed' ? { ...change, from: before.from } : change
     )
     this.scheduleDecide()
+  }
+
+  private onLocalFile(change: LocalFileChange): void {
+    if (this.stopped) return
+    if (change.kind === 'created') {
+      void this.createdFile(change).catch((error: unknown) => log.error(`${change.path}: sharing it in its folder failed`, error))
+      return
+    }
+    if (this.pending.size === 0 && this.pendingFiles.size === 0) this.batchStart = Date.now()
+    const before = this.pendingFiles.get(change.fileId)
+    this.pendingFiles.set(
+      change.fileId,
+      before?.kind === 'renamed' && change.kind === 'renamed' ? { ...change, from: before.from } : change
+    )
+    this.scheduleDecide()
+  }
+
+  /** A file new on this device: in a folder this account writes in, it goes into the folder at once. */
+  private async createdFile(change: Extract<LocalFileChange, { kind: 'created' }>): Promise<void> {
+    const place = this.placeOf(change.path)
+    if (!place || !this.files) return
+    const { folderId, folder } = place
+    if (!this.mayWrite(folder)) {
+      if (!this.toldReader.has(folderId)) {
+        this.toldReader.add(folderId)
+        this.news({ kind: 'stays-yours', folderPath: folder.path, path: change.path })
+      }
+      return
+    }
+    const opened = await this.ready(folderId)
+    if (opened) await this.files.publish(folderId, opened.index, change.fileId, place.rel)
   }
 
   /** Obsidian renamed a folder: a shared folder's place follows at once. */
@@ -505,7 +705,31 @@ export class Folders {
           this.index.rename(docId, joinPath(now, entry.folderPath))
         }
       }
+      for (const { fileId, entry } of this.attachments?.liveFiles() ?? []) {
+        const rel = entry.folder?.id === folderId ? this.attachments?.folderBase(folderId, entry.folder.file)?.path : undefined
+        if (rel !== undefined && entry.path === joinPath(old, rel)) this.attachments?.renameFromFolder(fileId, joinPath(now, rel))
+      }
     }
+  }
+
+  /**
+   * Where each note or file of a shared folder went in these renames, with its
+   * path in the folder - what a folder moving as a whole is told from.
+   */
+  private folderMoves(changes: LocalChange[], fileChanges: LocalFileChange[]): Array<{ folderId: string; rel: string; from: string; to: string }> {
+    const moves: Array<{ folderId: string; rel: string; from: string; to: string }> = []
+    for (const change of changes) {
+      if (change.kind !== 'renamed') continue
+      const entry = this.index.entry(change.docId)
+      if (entry?.folder && entry.folderPath !== undefined) moves.push({ folderId: entry.folder, rel: entry.folderPath, from: change.from, to: change.to })
+    }
+    for (const change of fileChanges) {
+      if (change.kind !== 'renamed') continue
+      const link = this.attachments?.entryOf(change.fileId)?.folder
+      const rel = link ? this.attachments?.folderBase(link.id, link.file)?.path : undefined
+      if (link && rel !== undefined) moves.push({ folderId: link.id, rel, from: change.from, to: change.to })
+    }
+    return moves
   }
 
   private scheduleDecide(): void {
@@ -535,11 +759,13 @@ export class Folders {
   private async decide(): Promise<void> {
     const changes = Array.from(this.pending.values())
     this.pending.clear()
+    const fileChanges = Array.from(this.pendingFiles.values())
+    this.pendingFiles.clear()
     const folderEvents = this.folderEvents.splice(0)
     if (this.stopped) return
-    this.findMovedFolders(changes)
-    const gone = this.goneFolders(changes, folderEvents)
-    const deleted = new Map<string, { folderId: string; names: string[]; docIds: Array<{ docId: string; path: string }> }>()
+    this.findMovedFolders(this.folderMoves(changes, fileChanges))
+    const gone = this.goneFolders(changes, fileChanges, folderEvents)
+    const deleted = new Map<string, DeletedBatch>()
     for (const change of changes) {
       try {
         if (change.kind === 'renamed') await this.renamed(change)
@@ -548,7 +774,15 @@ export class Folders {
         log.error(`${change.kind === 'renamed' ? change.to : change.path}: changing it in its shared folder failed`, error)
       }
     }
-    for (const { folderId, names, docIds } of deleted.values()) await this.announceDeleted(folderId, names, docIds)
+    for (const change of fileChanges) {
+      try {
+        if (change.kind === 'renamed') await this.renamedFile(change)
+        else if (change.kind === 'deleted') this.deletedFile(change, gone, deleted)
+      } catch (error) {
+        log.error(`${change.kind === 'renamed' ? change.to : change.path}: changing it in its shared folder failed`, error)
+      }
+    }
+    for (const batch of deleted.values()) await this.announceDeleted(batch)
     for (const folderId of gone) {
       try {
         await this.folderGone(folderId)
@@ -556,7 +790,7 @@ export class Folders {
         log.error('ending the share of a deleted folder failed', error)
       }
     }
-    if (this.settleTimer !== null || this.pending.size > 0) return
+    if (this.settleTimer !== null || this.pending.size > 0 || this.pendingFiles.size > 0) return
     for (const folderId of Array.from(this.later)) {
       this.later.delete(folderId)
       void this.schedule(folderId)
@@ -570,40 +804,46 @@ export class Folders {
    * may only be a newcomer another device of the account put there meanwhile;
    * an old place left empty is a folder that stayed while its notes went.
    */
-  private findMovedFolders(changes: LocalChange[]): void {
+  private findMovedFolders(moves: Array<{ folderId: string; rel: string; from: string; to: string }>): void {
     for (const { folderId, folder } of this.index.liveFolders()) {
       if (folder.owner) continue
       const targets = new Set<string>()
-      for (const change of changes) {
-        if (change.kind !== 'renamed') continue
-        const entry = this.index.entry(change.docId)
-        if (entry?.folder !== folderId || entry.folderPath === undefined) continue
-        if (change.from !== joinPath(folder.path, entry.folderPath) || !change.to.endsWith(`/${entry.folderPath}`)) {
+      for (const move of moves) {
+        if (move.folderId !== folderId) continue
+        if (move.from !== joinPath(folder.path, move.rel) || !move.to.endsWith(`/${move.rel}`)) {
           targets.add('')
           continue
         }
-        targets.add(change.to.slice(0, change.to.length - entry.folderPath.length - 1))
+        targets.add(move.to.slice(0, move.to.length - move.rel.length - 1))
       }
       const moved = targets.size === 1 ? (Array.from(targets)[0] as string) : ''
       if (!moved || !this.isFolder(moved)) continue
-      const stayed = this.index
+      const notesStayed = this.index
         .live()
-        .filter(({ entry }) => entry.folder === folderId && inside(entry.path, folder.path) && entry.updatedAt < this.batchStart)
+        .some(({ entry }) => entry.folder === folderId && inside(entry.path, folder.path) && entry.updatedAt < this.batchStart)
+      const filesStayed = (this.attachments?.liveFiles() ?? []).some(
+        ({ entry }) => entry.folder?.id === folderId && inside(entry.path, folder.path) && entry.updatedAt < this.batchStart
+      )
       const leftEmpty = this.isFolder(folder.path) && !this.app.vault.getFiles().some((file) => inside(file.path, folder.path))
-      if (stayed.length > 0 || leftEmpty) continue
+      if (notesStayed || filesStayed || leftEmpty) continue
       log.info(`${folder.path}: the shared folder moved to ${moved}`)
       this.followFolderRename(folder.path, moved)
     }
   }
 
-  /** Shared folders deleted as a whole: their notes' deletes are the folder's, not each its own. */
-  private goneFolders(changes: LocalChange[], events: Array<{ kind: 'renamed'; from: string; to: string } | { kind: 'deleted'; path: string }>): Set<string> {
+  /** Shared folders deleted as a whole: their notes' and files' deletes are the folder's, not each its own. */
+  private goneFolders(
+    changes: LocalChange[],
+    fileChanges: LocalFileChange[],
+    events: Array<{ kind: 'renamed'; from: string; to: string } | { kind: 'deleted'; path: string }>
+  ): Set<string> {
     const gone = new Set<string>()
     for (const { folderId, folder } of this.index.liveFolders()) {
       if (this.isFolder(folder.path)) continue
       const named = events.some((event) => event.kind === 'deleted' && (event.path === folder.path || inside(folder.path, event.path)))
       const notesWent = changes.some((change) => change.kind === 'deleted' && this.index.entry(change.docId)?.folder === folderId)
-      if (named || notesWent) gone.add(folderId)
+      const filesWent = fileChanges.some((change) => change.kind === 'deleted' && this.attachments?.entryOf(change.fileId)?.folder?.id === folderId)
+      if (named || notesWent || filesWent) gone.add(folderId)
     }
     return gone
   }
@@ -638,11 +878,7 @@ export class Folders {
     if (to && this.placeOf(change.from)?.folderId !== to.folderId) await this.askMoveIn(to, change.docId, change.from)
   }
 
-  private deleted(
-    change: Extract<LocalChange, { kind: 'deleted' }>,
-    gone: Set<string>,
-    deleted: Map<string, { folderId: string; names: string[]; docIds: Array<{ docId: string; path: string }> }>
-  ): void {
+  private deleted(change: Extract<LocalChange, { kind: 'deleted' }>, gone: Set<string>, deleted: Map<string, DeletedBatch>): void {
     const entry = this.index.entry(change.docId)
     const folderId = entry?.folder
     if (!entry || !folderId || gone.has(folderId)) return
@@ -656,14 +892,22 @@ export class Folders {
       return
     }
     opened.index.markDeleted(change.docId, this.keys.accountId)
-    const batch = deleted.get(folderId) ?? { folderId, names: [], docIds: [] }
+    const batch = this.batchOf(deleted, folderId)
     batch.names.push(baseName(change.path).replace(/\.md$/, ''))
     batch.docIds.push({ docId: change.docId, path: change.path })
-    deleted.set(folderId, batch)
     log.info(`${change.path}: deleted for everyone in its shared folder`)
   }
 
-  private async announceDeleted(folderId: string, names: string[], docIds: Array<{ docId: string; path: string }>): Promise<void> {
+  private batchOf(deleted: Map<string, DeletedBatch>, folderId: string): DeletedBatch {
+    let batch = deleted.get(folderId)
+    if (!batch) {
+      batch = { folderId, names: [], docIds: [], files: [] }
+      deleted.set(folderId, batch)
+    }
+    return batch
+  }
+
+  private async announceDeleted({ folderId, names, docIds, files }: DeletedBatch): Promise<void> {
     const folder = this.index.folder(folderId)
     if (!folder) return
     this.news({
@@ -677,9 +921,97 @@ export class Folders {
         for (const { docId, path } of docIds) {
           opened?.index.revive(docId, this.relOf(path, mount) ?? baseName(path), this.keys.accountId)
         }
+        for (const { file, path } of files) {
+          opened?.index.reviveFile(file, this.relOf(path, mount) ?? baseName(path), this.keys.accountId)
+        }
         await this.schedule(folderId)
       }
     })
+  }
+
+  // --- files -------------------------------------------------------------------------
+  // The same decisions as for notes; what a file does in the folder is
+  // `FolderFiles`'.
+
+  private async renamedFile(change: Extract<LocalFileChange, { kind: 'renamed' }>): Promise<void> {
+    const entry = this.attachments?.entryOf(change.fileId)
+    if (!entry || entry.deletedAt || entry.path !== change.to || !this.files) return
+    const to = this.placeOf(change.to)
+    const link = entry.folder
+    if (link) {
+      const folder = this.index.folder(link.id)
+      const opened = await this.opened(link.id)
+      if (!folder || folder.endedAt || folder.leftAt || !opened) return
+      if (to?.folderId === link.id) {
+        if (this.mayWrite(folder)) this.files.renamedWithin(link.id, opened.index, change.fileId, to.rel)
+        return
+      }
+      // Out of its folder: the owner takes it out for everyone, anyone else only puts it elsewhere.
+      if (folder.owner || !this.isFolder(folder.path)) return
+      this.files.movedOut(link.id, opened.index, change.fileId)
+      log.info(`${change.to}: left its shared folder`)
+      if (to) await this.askMoveInFile(to, change.fileId, change.from)
+      return
+    }
+    if (to && this.placeOf(change.from)?.folderId !== to.folderId) await this.askMoveInFile(to, change.fileId, change.from)
+  }
+
+  private deletedFile(change: Extract<LocalFileChange, { kind: 'deleted' }>, gone: Set<string>, deleted: Map<string, DeletedBatch>): void {
+    const link = this.attachments?.entryOf(change.fileId)?.folder
+    if (!link || gone.has(link.id) || !this.files) return
+    const folder = this.index.folder(link.id)
+    const opened = this.open.get(link.id)
+    if (!folder || folder.endedAt || folder.leftAt || !opened) return
+    if (!this.mayWrite(folder)) {
+      this.index.decline(this.fileDeclinedKey(link.id, link.file))
+      log.info(`${change.path}: deleted here, so this account lets go of it in its shared folder`)
+      return
+    }
+    const file = this.files.deleted(link.id, opened.index, change.fileId)
+    if (!file) return
+    const batch = this.batchOf(deleted, link.id)
+    batch.names.push(baseName(change.path))
+    batch.files.push({ file, path: change.path })
+    log.info(`${change.path}: deleted for everyone in its shared folder`)
+  }
+
+  /** An existing file moved into a shared folder: shared only once asked, as a note is. */
+  private async askMoveInFile(place: FolderPlace, fileId: string, from: string | null): Promise<void> {
+    const key = `file:${fileId}`
+    const entry = this.attachments?.entryOf(fileId)
+    if (!entry || entry.deletedAt || this.asking.has(key) || !this.files) return
+    const { folderId, folder } = place
+    if (!this.mayWrite(folder)) {
+      if (!this.toldReader.has(folderId)) {
+        this.toldReader.add(folderId)
+        this.news({ kind: 'stays-yours', folderPath: folder.path, path: entry.path })
+      }
+      return
+    }
+    const opened = await this.ready(folderId)
+    if (!opened) return
+    this.asking.add(key)
+    try {
+      const path = entry.path
+      const stands = (): boolean => {
+        const now = this.attachments?.entryOf(fileId)
+        return Boolean(now && !now.deletedAt && now.path === path && !now.folder)
+      }
+      const answer = await this.prompts.moveIn({
+        folderId,
+        folderPath: folder.path,
+        path,
+        people: await this.peopleOf(folderId),
+        copy: false,
+        moot: this.moot(stands)
+      })
+      if (!stands()) return
+      if (answer === null) this.dismissed.add(key)
+      if (answer === 'share') await this.files.publish(folderId, opened.index, fileId, place.rel)
+      else if (answer === 'back') await this.moveBack(path, from)
+    } finally {
+      this.asking.delete(key)
+    }
   }
 
   // --- moving in and out -----------------------------------------------------------
@@ -969,7 +1301,8 @@ export class Folders {
       generation += 1
       folderId = await this.keys.folderId(path, generation)
     }
-    this.index.setFolder(folderId, { path, updatedAt: Date.now() })
+    const now = Date.now()
+    this.index.setFolder(folderId, { path, updatedAt: now, sharedAt: now })
     const opened = await this.ready(folderId)
     if (!opened) throw new Error('The server is not reachable.')
     opened.index.setName(baseName(path))
@@ -1012,13 +1345,16 @@ export class Folders {
     account: string,
     role: ShareRole,
     withHistory: boolean,
-    progress: (done: number, total: number) => void = () => undefined
+    progress: (done: number, total: number) => void = () => undefined,
+    /** Whether the files its notes link outside it go along, as a shared note's do; unchanged when left out. */
+    linkedFiles?: boolean
   ): Promise<void> {
     const recipientKey = await this.sharing.publicKey(account)
     const folderId = await this.ownFolder(path)
     const opened = await this.ready(folderId)
     if (!opened) throw new Error('The server is not reachable.')
-    // Every note of the folder in it first.
+    if (linkedFiles !== undefined) opened.index.setLinkedFiles(linkedFiles)
+    // Every note and file of the folder in it first.
     const joining = this.notesToJoin(folderId, path, opened.index)
     let done = 0
     const total = joining.length
@@ -1026,6 +1362,11 @@ export class Folders {
       await this.join({ folderId, folder: this.index.folder(folderId) as VaultFolder, mount: path, rel }, docId)
       done += 1
       progress(done, total)
+    }
+    if (this.files && this.attachments) {
+      const attachments = this.attachments
+      const published = await this.files.publishAll(folderId, opened.index, path, (file) => attachments.isExcluded(file))
+      if (published > 0) log.info(`${path}: ${published} file(s) went into the shared folder`)
     }
     const title = await this.keys.sealTitle(folderId, opened.index.name || baseName(path), recipientKey)
     if (withHistory) {

@@ -70,6 +70,15 @@ export interface FileVersion {
 
 export type AttachmentSyncState = 'synced' | 'unsent' | 'waiting' | 'local' | 'untracked'
 
+/**
+ * What the user did to a file on this device, from Obsidian's events: what a
+ * shared folder decides from, as it does for notes (`LocalChange`).
+ */
+export type LocalFileChange =
+  | { kind: 'created'; fileId: string; path: string }
+  | { kind: 'renamed'; fileId: string; from: string; to: string }
+  | { kind: 'deleted'; fileId: string; path: string }
+
 export interface Transfers {
   uploads: number
   downloads: number
@@ -164,6 +173,7 @@ export class AttachmentStore {
   private readonly tooLarge = new Set<string>()
   private readonly listeners = new Set<() => void>()
   private readonly localListeners = new Set<(change: { kind: 'deleted' | 'restored'; entry: AttachmentEntry }) => void>()
+  private readonly fileListeners = new Set<(change: LocalFileChange) => void>()
   /** Renames and deletes that happened before the index arrived. */
   private readonly early: Array<() => Promise<void>> = []
   private readonly transfers: Transfers = { uploads: 0, downloads: 0 }
@@ -540,6 +550,7 @@ export class AttachmentStore {
     entry = this.index.entry(fileId)
     if (this.stopped || !this.exists(file) || file.path !== path) return
     if (!entry) {
+      const known = this.index.idForPath(path)
       const id = await this.index.add(path, hash, data.length)
       if (id !== fileId && this.index.entry(id)?.hash !== hash) {
         // Another device registered this path meanwhile, with other content.
@@ -548,6 +559,7 @@ export class AttachmentStore {
       }
       this.agree(id, path, read.stat, hash)
       log.info(`${path}: new attachment, ${data.length} bytes`)
+      if (!known) this.created(id, path)
       return
     }
     if (entry.deletedAt) {
@@ -583,6 +595,11 @@ export class AttachmentStore {
     new Notice(`${file.name} was deleted on another device but changed here, so it was kept.`, 10_000)
   }
 
+  /** A file new in this vault, made on this device - by the user, or as the second of two versions kept. */
+  private created(fileId: string, path: string): void {
+    for (const listener of this.fileListeners) listener({ kind: 'created', fileId, path })
+  }
+
   private freeConflictPath(path: string, when: Date): string {
     let candidate = conflictName(path, when, 1)
     for (let n = 2; this.app.vault.getAbstractFileByPath(candidate) || this.index.idForPath(candidate); n += 1) {
@@ -616,6 +633,7 @@ export class AttachmentStore {
     const copy = await this.app.vault.createBinary(copyPath, buffer(read.data))
     const copyId = await this.index.add(copyPath, read.hash, read.data.length)
     this.agree(copyId, copyPath, { mtime: copy.stat.mtime, size: read.data.length }, read.hash)
+    this.created(copyId, copyPath)
     // Saved in the moment the copy took: that save is a change of its own,
     // and gets a copy of its own rather than being overwritten.
     if (!(await this.stillHolds(file, read))) {
@@ -655,6 +673,7 @@ export class AttachmentStore {
     this.index.setContent(fileId, read.hash, read.data.length)
     this.agree(fileId, file.path, read.stat, read.hash)
     this.written.delete(fileId)
+    this.created(copyId, copyPath)
     log.error(`${file.path}: two versions kept - saved by its open view over another device's version, which is ${copyPath}`)
     new Notice(
       `${file.name} was saved here just as another device's version arrived. Both are kept: the other version is ${nameOf(copyPath)}.`,
@@ -695,9 +714,10 @@ export class AttachmentStore {
       this.settle(file)
       return
     }
-    this.index.rename(fileId, file.path)
+    const renamed = this.index.rename(fileId, file.path)
     const known = this.state.attachment(fileId)
     if (known) this.state.setAttachment(fileId, { ...known, path: file.path })
+    if (renamed) for (const listener of this.fileListeners) listener({ kind: 'renamed', fileId, from: oldPath, to: file.path })
   }
 
   async onDelete(path: string): Promise<void> {
@@ -718,6 +738,7 @@ export class AttachmentStore {
     })
     log.info(`${path}: attachment deleted here`)
     if (entry) for (const listener of this.localListeners) listener({ kind: 'deleted', entry })
+    for (const listener of this.fileListeners) listener({ kind: 'deleted', fileId, path })
   }
 
   /** Obsidian may report only the folder; whatever lay in it is deleted too. */
@@ -1043,6 +1064,71 @@ export class AttachmentStore {
     return () => this.localListeners.delete(listener)
   }
 
+  /** Fires for every file the user creates, renames or deletes here. */
+  onLocalFileChange(listener: (change: LocalFileChange) => void): () => void {
+    this.fileListeners.add(listener)
+    return () => this.fileListeners.delete(listener)
+  }
+
+  // --- files of shared folders --------------------------------------------------------
+  // A shared folder's files are files of this vault like any other, copied into
+  // its own store; the link says which file of which folder each one is.
+
+  /** This vault's file for a shared folder's file. */
+  linked(folderId: string, file: string): { fileId: string; entry: AttachmentEntry } | null {
+    return this.index.linked(folderId, file) ?? null
+  }
+
+  setFolderLink(fileId: string, folder: AttachmentEntry['folder'] | null): void {
+    this.index.setFolderLink(fileId, folder)
+  }
+
+  folderBase(folderId: string, file: string): SharedBase | undefined {
+    return this.index.folderBase(folderId, file)
+  }
+
+  setFolderBase(folderId: string, file: string, base: SharedBase | null): void {
+    this.index.setFolderBase(folderId, file, base)
+  }
+
+  /** Every live file of this vault. */
+  liveFiles(): Array<{ fileId: string; entry: AttachmentEntry }> {
+    return this.index.live()
+  }
+
+  /** A shared folder's file deleted for everyone: deleted here as a delete from another device is (`applyDelete`). */
+  deleteFromFolder(fileId: string): void {
+    this.index.markDeleted(fileId)
+  }
+
+  /** A shared folder's file renamed there: the index moves it, and the file follows (`followRenames`). */
+  renameFromFolder(fileId: string, path: string): void {
+    this.index.rename(fileId, path)
+  }
+
+  /** A shared folder's file brought back for everyone: back here too, the file pulled again. */
+  reviveFromFolder(fileId: string, path: string): void {
+    const entry = this.index.entry(fileId)
+    if (!entry?.deletedAt) return
+    this.index.revive(fileId, path, entry.hash, entry.size)
+  }
+
+  /**
+   * A shared folder's file, new here: copied into this vault's store, then
+   * named at `path` with its link to the folder. Null if the path was taken
+   * meanwhile.
+   */
+  async deliverFromFolder(path: string, source: SharedAttachment, room: string, link: NonNullable<AttachmentEntry['folder']>): Promise<string | null> {
+    if (!this.isReady) return null
+    return this.guarded(await this.index.nextId(path), source.size, async () => {
+      if (this.index.idForPath(path) || this.app.vault.getAbstractFileByPath(path)) return null
+      await this.copyIn(source, room)
+      const fileId = await this.index.add(path, source.hash, source.size, undefined, link)
+      log.info(`${path}: came in through a shared folder, ${source.size} bytes`)
+      return fileId
+    })
+  }
+
   /** Content in someone else's store, named by a shared note, copied into this vault's. */
   private async copyIn(source: SharedAttachment, room: string): Promise<void> {
     if (await this.blobs.has(source.hash)) return
@@ -1100,8 +1186,9 @@ export class AttachmentStore {
       if (!current || current.deletedAt || current.hash === source.hash) return null
       await this.copyIn(source, room)
       const copyPath = this.freeConflictPath(current.path, new Date())
-      await this.index.add(copyPath, current.hash, current.size)
+      const copyId = await this.index.add(copyPath, current.hash, current.size)
       this.index.setContent(fileId, source.hash, source.size)
+      this.created(copyId, copyPath)
       log.error(`${current.path}: two versions kept - changed here and in a shared note; this vault's version is ${copyPath}`)
       return copyPath
     })

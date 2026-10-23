@@ -18,6 +18,13 @@ const pia = `pia${run}`
 const quinn = `quinn${run}`
 console.log(`server=${serverUrl} accounts=${olga},${pia},${quinn}`)
 
+const binary = (seed: number, length = 3_000): Uint8Array => new Uint8Array(length).map((_byte, index) => (index * seed + 11) & 255)
+const same = (a: Uint8Array | undefined, b: Uint8Array | undefined): boolean =>
+  a !== undefined && b !== undefined && a.length === b.length && a.every((byte, index) => byte === b[index])
+/** Where a device holds these bytes, below a folder. */
+const holding = (device: Device, folder: string, data: Uint8Array): string | undefined =>
+  device.vault.attachmentPaths().find((path) => path.startsWith(`${folder}/`) && same(device.vault.bytes(path), data))
+
 async function befriend(a: Device, b: Device): Promise<void> {
   const code = await (a.contacts as NonNullable<typeof a.contacts>).createCode()
   await b.contacts?.redeem(code)
@@ -28,7 +35,9 @@ const O1 = new Device(olga, true, {
   'Projects/X/Plan.md': 'a draft nobody else should see\n',
   'Projects/X/Sub/Deep.md': 'deep\n',
   'Projects/Other.md': 'other\n',
-  'Projects/Second.md': 'second\n'
+  'Projects/Second.md': 'second\n',
+  'Projects/X/pic.png': binary(3),
+  'Projects/photo.png': binary(4)
 })
 const O2 = new Device(olga, false)
 const P1 = new Device(pia, true)
@@ -45,12 +54,16 @@ try {
   for (const device of devices) check(await device.boot(), `${device.username}'s device starts`)
   await befriend(O1, P1)
   await befriend(O1, Q)
-  check(await eventually(() => O2.vault.text('Projects/X/Plan.md') !== undefined), "the owner's second device has the vault")
+  check(
+    await eventually(() => O2.vault.text('Projects/X/Plan.md') !== undefined && same(O2.vault.bytes('Projects/X/pic.png'), binary(3)), 15_000),
+    "the owner's second device has the vault"
+  )
 
   // --- sharing a folder ------------------------------------------------------------
   await O1.vault.userWrite('Projects/X/Plan.md', 'plan\n')
   check(await eventually(() => O1.docText('Projects/X/Plan.md') === 'plan\n'), 'the owner writes the plan')
-  await O1.folders?.share('Projects/X', P1.accountId, 'write', true)
+  // Files its notes link outside it go along, as the share dialog has it by default.
+  await O1.folders?.share('Projects/X', P1.accountId, 'write', true, undefined, true)
   check(
     await eventually(() => P1.vault.text('Shared/X/Plan.md') === 'plan\n' && P1.vault.text('Shared/X/Sub/Deep.md') === 'deep\n'),
     'the folder lands in the share folder of the one it is shared with, subfolders included',
@@ -81,6 +94,11 @@ try {
     const texts = history.versions().map((version) => history.textAt(version.seq))
     check(texts.length > 0 && texts.every((text) => !text.includes('draft')), 'without history, nothing from before', texts)
   }
+  check(
+    O1.askedMoveIn.length === 0 && O2.askedMoveIn.length === 0,
+    'what lay in the folder when it was shared is never asked about as moved in, on any device of the owner',
+    { o1: O1.askedMoveIn, o2: O2.askedMoveIn }
+  )
 
   // --- new notes -------------------------------------------------------------------
   await O2.vault.userCreate('Projects/X/New.md', 'from the owner\n')
@@ -125,6 +143,130 @@ try {
   )
   check(await eventually(() => Q.vault.text('Shared/X/Sub/Plan.md') !== undefined && !Q.vault.text('Shared/X/Plan.md')), "and the reader's", Q.vault.paths())
 
+  // --- files in the folder --------------------------------------------------------------
+  check(
+    await eventually(
+      () => [P1, P2, Q].every((device) => same(device.vault.bytes('Shared/X/pic.png'), binary(3))),
+      15_000
+    ),
+    'a file in the folder reaches everyone in it, on every device',
+    { pia: P1.vault.attachmentPaths(), quinn: Q.vault.attachmentPaths() }
+  )
+
+  await P1.vault.userCreateBinary('Shared/X/Sub/fromPia.png', binary(7))
+  check(
+    await eventually(
+      () =>
+        same(O1.vault.bytes('Projects/X/Sub/fromPia.png'), binary(7)) &&
+        same(O2.vault.bytes('Projects/X/Sub/fromPia.png'), binary(7)) &&
+        same(Q.vault.bytes('Shared/X/Sub/fromPia.png'), binary(7)),
+      15_000
+    ),
+    'a file a writer adds reaches the owner and everyone else',
+    O1.vault.attachmentPaths()
+  )
+
+  await O1.vault.userWriteBinary('Projects/X/pic.png', binary(9))
+  check(
+    await eventually(() => [P1, P2, Q].every((device) => same(device.vault.bytes('Shared/X/pic.png'), binary(9))), 15_000),
+    "the owner's new version of a file reaches everyone"
+  )
+  await Q.vault.userWriteBinary('Shared/X/pic.png', binary(10))
+  await delay(1_200)
+  check(same(O1.vault.bytes('Projects/X/pic.png'), binary(9)) && same(P1.vault.bytes('Shared/X/pic.png'), binary(9)), "a reader's version does not")
+
+  // Changed by the owner while the writer, away, changed it too: both versions stay, for everyone.
+  await P1.shutdown()
+  await O1.vault.userWriteBinary('Projects/X/pic.png', binary(11))
+  check(await eventually(() => same(P2.vault.bytes('Shared/X/pic.png'), binary(11)), 15_000), "the writer's other device takes the owner's version")
+  P1.vault.offlineWriteBinary('Shared/X/pic.png', binary(12))
+  check(await P1.boot(), "the writer's device comes back with a version of its own")
+  check(
+    await eventually(
+      () =>
+        same(P1.vault.bytes('Shared/X/pic.png'), binary(11)) &&
+        holding(P1, 'Shared/X', binary(12)) !== undefined &&
+        same(O1.vault.bytes('Projects/X/pic.png'), binary(11)) &&
+        holding(O1, 'Projects/X', binary(12)) !== undefined,
+      15_000
+    ),
+    "changed on both sides, the file keeps the owner's version and the writer's goes next to it - in the folder",
+    { pia: P1.vault.attachmentPaths(), olga: O1.vault.attachmentPaths() }
+  )
+  check(
+    await eventually(() => same(Q.vault.bytes('Shared/X/pic.png'), binary(11)) && holding(Q, 'Shared/X', binary(10)) !== undefined, 15_000),
+    "the reader's own version is kept next to the folder's, theirs alone",
+    Q.vault.attachmentPaths()
+  )
+  check(holding(O1, 'Projects/X', binary(10)) === undefined, 'and never reaches the owner')
+
+  await P1.vault.rename(P1.vault.file('Shared/X/Sub/fromPia.png'), 'Shared/X/Sub/byPia.png')
+  check(
+    await eventually(
+      () => same(O1.vault.bytes('Projects/X/Sub/byPia.png'), binary(7)) && !O1.vault.bytes('Projects/X/Sub/fromPia.png') && same(Q.vault.bytes('Shared/X/Sub/byPia.png'), binary(7))
+    ),
+    "a writer's rename of a file inside the folder is everyone's",
+    O1.vault.attachmentPaths()
+  )
+
+  await P1.vault.trash(P1.vault.file('Shared/X/Sub/byPia.png'))
+  check(
+    await eventually(() => !O1.vault.bytes('Projects/X/Sub/byPia.png') && !Q.vault.bytes('Shared/X/Sub/byPia.png')),
+    "a writer's delete of a file is a delete for everyone",
+    O1.vault.attachmentPaths()
+  )
+  const fileNews = P1.folderNews.find((news) => news.kind === 'deleted' && (news.names as string[]).includes('byPia.png'))
+  check(fileNews !== undefined, 'and they are told', P1.folderNews)
+  await fileNews?.undo?.()
+  check(
+    await eventually(
+      () => same(O1.vault.bytes('Projects/X/Sub/byPia.png'), binary(7)) && same(Q.vault.bytes('Shared/X/Sub/byPia.png'), binary(7)) && same(P1.vault.bytes('Shared/X/Sub/byPia.png'), binary(7)),
+      15_000
+    ),
+    'undoing brings the file back for everyone',
+    { olga: O1.vault.attachmentPaths(), pia: P1.vault.attachmentPaths() }
+  )
+
+  await Q.vault.trash(Q.vault.file('Shared/X/Sub/byPia.png'))
+  await delay(1_200)
+  check(same(O1.vault.bytes('Projects/X/Sub/byPia.png'), binary(7)) && same(P1.vault.bytes('Shared/X/Sub/byPia.png'), binary(7)), "a reader's delete of a file is theirs alone")
+  check(!Q.vault.bytes('Shared/X/Sub/byPia.png'), 'and it stays away for them')
+
+  await O1.vault.rename(O1.vault.file('Projects/photo.png'), 'Projects/X/photo.png')
+  check(
+    await eventually(() => same(P1.vault.bytes('Shared/X/photo.png'), binary(4)), 15_000),
+    'an existing file the owner moves in is shared once they said so',
+    P1.vault.attachmentPaths()
+  )
+  check(O1.askedMoveIn.includes('Projects/X/photo.png'), 'and they were asked', O1.askedMoveIn)
+
+  // Deleted for everyone, then brought back from the owner's own trash: back for everyone, and it stays.
+  await P1.vault.trash(P1.vault.file('Shared/X/photo.png'))
+  check(await eventually(() => !O1.vault.bytes('Projects/X/photo.png')), "the owner's copy goes with a writer's delete")
+  {
+    const trashed = O1.attachments?.deletedFiles(0).find((file) => file.path === 'Projects/X/photo.png')
+    check(trashed !== undefined, "and lies in the owner's trash")
+    if (trashed) await O1.attachments?.restoreDeleted(trashed.fileId)
+  }
+  check(
+    await eventually(() => same(P1.vault.bytes('Shared/X/photo.png'), binary(4)) && same(Q.vault.bytes('Shared/X/photo.png'), binary(4)), 15_000),
+    'a file brought back from the trash is back for everyone in the folder',
+    P1.vault.attachmentPaths()
+  )
+  await delay(1_200)
+  check(same(O1.vault.bytes('Projects/X/photo.png'), binary(4)), 'and the folder does not delete it again')
+
+  // A file outside the folder that one of its notes embeds lands in the share folder's Attachments.
+  await O1.vault.userCreateBinary('Assets/logo.png', binary(5))
+  check(await eventually(() => O1.attachments?.fileAt('Assets/logo.png') !== null), 'the owner has a file outside the folder')
+  await O1.vault.userCreate('Projects/X/Gallery.md', '![[logo.png]]\n')
+  check(
+    await eventually(() => same(P1.vault.bytes('Shared/Attachments/logo.png'), binary(5)) && same(Q.vault.bytes('Shared/Attachments/logo.png'), binary(5)), 15_000),
+    'a file outside the folder its notes embed goes along, into the share folder',
+    P1.vault.attachmentPaths()
+  )
+  check(!P1.vault.bytes('Shared/Attachments/pic.png'), 'while a file inside the folder never comes in twice', P1.vault.attachmentPaths())
+
   // --- the folder renamed by its owner --------------------------------------------------
   await O1.vault.renameFolder('Projects/X', 'Projects/Y')
   check(await eventually(() => O2.vault.text('Projects/Y/New.md') === 'from the owner\n'), "the owner's other device follows the folder's rename")
@@ -152,7 +294,7 @@ try {
     "a writer's delete is a delete for everyone",
     O1.vault.paths()
   )
-  const deletedNews = P1.folderNews.find((news) => news.kind === 'deleted')
+  const deletedNews = P1.folderNews.find((news) => news.kind === 'deleted' && (news.names as string[]).includes('FromPia'))
   check(deletedNews !== undefined && (deletedNews.people as string[]).length === 2, 'and they are told who loses it', deletedNews)
   await deletedNews?.undo?.()
   check(
