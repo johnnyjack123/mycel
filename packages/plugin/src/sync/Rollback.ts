@@ -2,6 +2,7 @@ import type { DataAdapter } from 'obsidian'
 import {
   ATTACHMENTS_FIELD,
   CONTENT_FIELD,
+  FOLDERS_FIELD,
   INDEX_FIELD,
   docRoom,
   indexRoom,
@@ -10,7 +11,8 @@ import {
   type BackupSnapshotRef,
   type ChangedResponse,
   type IndexEntry,
-  type LogResponse
+  type LogResponse,
+  type VaultFolder
 } from '@obsidian-connect/shared'
 import { bytes, contentHash, fromUtf8, randomBytes, toHex, utf8 } from '@obsidian-connect/shared/crypto'
 import { ApiError } from '../account/api.js'
@@ -293,7 +295,14 @@ export class Rollback {
     const then = index.stateAt(to)
     const notesThen = new Map(then.getMap<IndexEntry>(INDEX_FIELD).entries())
     const filesThen = new Map(then.getMap<AttachmentEntry>(ATTACHMENTS_FIELD).entries())
+    // Someone else's folders, then or now: their files are the folder's, as their notes are their owner's.
+    const latest = index.latest()
+    const foreignFolders = new Set<string>()
+    for (const state of [then, latest]) {
+      for (const [folderId, record] of state.getMap<VaultFolder>(FOLDERS_FIELD).entries()) if (record.owner) foreignFolders.add(folderId)
+    }
     then.destroy()
+    latest.destroy()
 
     const plan: RollbackPlan = { to, folder, notes: [], files: [], outOfReach: [], foreignKept: 0, backup: null, byPath: false }
     const unreached = new Map<string, Unreached>()
@@ -369,8 +378,10 @@ export class Rollback {
         const pathThen = old && !old.deletedAt ? old.path : null
         if (pathNow === null && pathThen === null) continue
         if (!inFolder(pathNow, folder) && !inFolder(pathThen, folder)) continue
-        // Files that came with a note someone else shares follow that note.
-        if (now?.via || old?.via) {
+        // Files that came with a note someone else shares follow that note; those
+        // of someone else's folder are rolled back by its owner, for everyone.
+        const foreign = (entry: AttachmentEntry | undefined): boolean => Boolean(entry?.via || (entry?.folder && foreignFolders.has(entry.folder.id)))
+        if (foreign(now) || foreign(old)) {
           plan.foreignKept += 1
           continue
         }
