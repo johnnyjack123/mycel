@@ -8,6 +8,46 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.9** (2026-10-25) - what the user found testing 0.8 on their devices.
+  - **Carets no longer flicker while someone types.** The letters and the typist's
+    caret travel apart, either first. Text first, the caret sat in front of each new
+    letter until the caret came; caret first, it named a letter not here yet and
+    vanished. Now the caret of whoever typed a change moves along with it, and one that
+    cannot be placed yet stays where it was drawn (`EditorBinding.buildCursors`). The
+    authors are read from the transaction: a Y.Text event's `changes.added` is always
+    empty. `test:sync` 31 (5 new) - the check "behind the letter as soon as it is
+    there" failed before (9 instead of 10).
+  - **Moving a note into a shared folder asks at once**, not once the move's events
+    settled (2 s), since a note from outside cannot be part of the folder moving. The
+    window names everyone the folder is shared with - contacts by name, others counted -
+    says plainly that the earlier versions do not go along, and lists the files outside
+    the folder the note embeds that go along with it.
+  - **Sharing a folder again with someone who deleted their copy** asked on their
+    devices whether the server had lost data. They had stood on the start snapshot of
+    the first share; the new one, of the same state at the same place but under the new
+    epoch, differed in its bytes. A snapshot made anew under another epoch is taken for
+    what it is (`VaultSocket.applySnapshot`); a server restored from a backup hands its
+    snapshot back as it was. Single notes shared again without history had the same
+    problem. And the folder came back as `X 2`: the empty folder the delete had left on
+    the member's other device counted as taken. Both reproduced in a new `test:folders`
+    scenario before the fixes.
+  - The window asking about a server with other data **names the notes**.
+  - **The owner is told when someone leaves** a shared folder (`left` in the folder's
+    notice).
+  - **Restoring a note from its history backs up what it said first** (invariant 2): the
+    history undoes a restore only as long as it reaches back.
+  - A note copied into someone's folder at once could leave its old file behind on the
+    account's other device, which had not applied the rename yet; the fork moves it
+    along (`DocStore.forkInto`). The window coming at once made that race likely.
+  - A rollback on a participant's device says why it lists nothing: notes others share
+    are rolled back by their owner, for everyone.
+  - The shared-folder mark in the file explorer is grey, like the explorer's own icons.
+  - **Files reach the others sooner.** The device that typed a link names its file at
+    once instead of after 10 s - that wait is for the other devices, so a file of the
+    same name of theirs never gets there first -, and a file copied in from someone's
+    store is written from the bytes just fetched instead of being downloaded again.
+  - Tests: `test:sync` 31, `test:vault` 242, `test:folders` 105, `test:recovery` 72.
+
 - **0.8.8** (2026-10-23) - planning a rollback reads only the notes that changed since
   the moment (PHASE7, small fix 6). It read every note's log, since the server kept no
   time of a room's last frame. The server now lists the rooms of a vault that took a
