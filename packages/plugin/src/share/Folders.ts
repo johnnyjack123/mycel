@@ -25,7 +25,7 @@ import type { AttachmentStore, LocalFileChange } from '../sync/AttachmentStore.j
 import type { DocStore, LocalChange } from '../sync/DocStore.js'
 import { FolderIndex } from '../sync/FolderIndex.js'
 import { FolderFiles } from './FolderFiles.js'
-import { linkedFiles } from './LinkedNotes.js'
+import { linkedFiles, linkedOutside, type LinkedNote } from './LinkedNotes.js'
 import type { IdScheme, VaultIndex } from '../sync/VaultIndex.js'
 import type { VaultSocket } from '../sync/VaultSocket.js'
 import type { Sharing } from './Sharing.js'
@@ -69,10 +69,23 @@ export interface MoveInQuestion {
   people: string[]
   /** Files outside the folder the note embeds or links, which would go along with it. */
   files: string[]
+  /**
+   * Notes outside the folder it reaches through links, which can go along once
+   * - shared on their own, staying where they are (E8).
+   */
+  linked: LinkedNote[]
+  /** Of everyone in the folder, how many are not contacts here: a note can only be shared with a contact. */
+  strangers: number
   /** Someone else's folder: the note is copied in, and becomes theirs. */
   copy: boolean
   /** Resolves when the question no longer stands - answered on another device, the note moved again. */
   moot: Promise<void>
+}
+
+export interface MoveInAnswer {
+  choice: 'share' | 'back'
+  /** Share the notes it links to as well, with everyone in the folder. */
+  withLinked: boolean
 }
 
 /** A note of the owner's lies outside its shared folder, still shared there - after a crash in between. */
@@ -85,7 +98,7 @@ export interface OutsideQuestion {
 }
 
 export interface FolderPrompts {
-  moveIn(question: MoveInQuestion): Promise<'share' | 'back' | null>
+  moveIn(question: MoveInQuestion): Promise<MoveInAnswer | null>
   outside(question: OutsideQuestion): Promise<'end' | 'back' | null>
 }
 
@@ -96,9 +109,11 @@ export type FolderNews =
   | { kind: 'stays-yours'; folderPath: string; path: string }
   | { kind: 'not-yours'; path: string; owner: string }
   | { kind: 'accepted'; path: string; owner: string }
-  | { kind: 'ended'; path: string; owner: string }
+  | { kind: 'ended'; path: string; owner: string; kept: number }
   /** For the owner: someone the folder is shared with left it. */
   | { kind: 'left'; path: string; who: string }
+  /** The notes a note moved into a folder links to went along. */
+  | { kind: 'linked'; path: string; shared: number; failed: number; people: string[] }
 
 interface OpenFolder {
   index: FolderIndex
@@ -162,7 +177,9 @@ export class Folders {
   private readonly fresh = new Set<string>()
   private readonly toldReader = new Set<string>()
   private readonly mootWaiters = new Set<() => void>()
-  private readonly peopleCache = new Map<string, { at: number; names: string[] }>()
+  private readonly peopleCache = new Map<string, { at: number; names: string[]; strangers: number }>()
+  /** Folders this device is leaving or keeping as its own: their end is no news here. */
+  private readonly parting = new Map<string, 'leave' | 'detach'>()
   /** Notes and files asked about as moved in the moment their event came: not asked again once the move settled. */
   private readonly askedEarly = new Set<string>()
   private settleTimer: ReturnType<typeof setTimeout> | null = null
@@ -1034,19 +1051,22 @@ export class Folders {
         const now = this.attachments?.entryOf(fileId)
         return Boolean(now && !now.deletedAt && now.path === path && !now.folder)
       }
+      const audience = await this.audienceOf(folderId)
       const answer = await this.prompts.moveIn({
         folderId,
         folderPath: folder.path,
         path,
-        people: await this.peopleOf(folderId),
+        people: audience.names,
         files: [],
+        linked: [],
+        strangers: audience.strangers,
         copy: false,
         moot: this.moot(stands)
       })
       if (!stands()) return
       if (answer === null) this.dismissed.add(key)
-      if (answer === 'share') await this.files.publish(folderId, opened.index, fileId, place.rel)
-      else if (answer === 'back') await this.moveBack(path, from)
+      if (answer?.choice === 'share') await this.files.publish(folderId, opened.index, fileId, place.rel)
+      else if (answer?.choice === 'back') await this.moveBack(path, from)
     } finally {
       this.asking.delete(key)
     }
@@ -1061,26 +1081,67 @@ export class Folders {
    * for the server.
    */
   private async peopleOf(folderId: string): Promise<string[]> {
+    return (await this.audienceOf(folderId)).names
+  }
+
+  /** `peopleOf`, and how many of them are not contacts here. */
+  private async audienceOf(folderId: string): Promise<{ names: string[]; strangers: number }> {
     const cached = this.peopleCache.get(folderId)
-    if (cached && Date.now() - cached.at < 60_000) return cached.names
+    if (cached && Date.now() - cached.at < 60_000) return cached
     try {
       const state = await this.api.folderState(folderId)
       const others = state.members.map((member) => member.account)
       if (state.owner !== this.keys.accountId) others.unshift(state.owner)
       const names: string[] = []
-      let unknown = 0
+      let strangers = 0
       for (const account of others) {
         if (account === this.keys.accountId) continue
         const name = this.sharing.knownName(account)
         if (name) names.push(name)
-        else unknown += 1
+        else strangers += 1
       }
-      if (unknown > 0) names.push(`${unknown} more ${unknown === 1 ? 'person' : 'people'}`)
-      this.peopleCache.set(folderId, { at: Date.now(), names })
-      return names
+      if (strangers > 0) names.push(`${strangers} more ${strangers === 1 ? 'person' : 'people'}`)
+      const audience = { at: Date.now(), names, strangers }
+      this.peopleCache.set(folderId, audience)
+      return audience
     } catch {
-      return cached?.names ?? []
+      return cached ?? { names: [], strangers: 0 }
     }
+  }
+
+  /** The notes outside the folder a note moved into it reaches through links. */
+  private linkedAlong(folder: VaultFolder, path: string): LinkedNote[] {
+    const note = this.app.vault.getAbstractFileByPath(path)
+    if (!(note instanceof TFile)) return []
+    return linkedOutside(this.app.metadataCache, this.store, [note], folder.path, (account) => this.sharing.nameOf(account))
+  }
+
+  /**
+   * Shares the notes a note moved into a folder links to with everyone in the
+   * folder who is a contact here - once, as a note shared on its own (E8): each
+   * stays where it is, and lands in the others' share folder. Everyone gets the
+   * access they have in the folder, the owner to edit; without the history, as
+   * the note itself went in.
+   */
+  private async shareAlong(folderId: string, path: string, linked: LinkedNote[]): Promise<void> {
+    if (!linked.some((note) => note.docId)) return
+    const state = await this.api.folderState(folderId)
+    const people = state.members.map((member) => ({ account: member.account, role: member.role }))
+    if (state.owner !== this.keys.accountId) people.unshift({ account: state.owner, role: 'write' })
+    const files = this.open.get(folderId)?.index.linkedFiles
+    const names: string[] = []
+    let shared = 0
+    let failed = 0
+    for (const { account, role } of people) {
+      const name = account === this.keys.accountId ? null : this.sharing.knownName(account)
+      if (!name) continue
+      const outcome = await this.sharing.shareLinked(linked, account, role, false, files)
+      names.push(name)
+      shared = Math.max(shared, outcome.shared + outcome.had)
+      failed += outcome.failed
+    }
+    log.info(`${path}: ${shared} note(s) it links to shared along with ${names.length} person(s), ${failed} failed`)
+    if (names.length > 0) this.news({ kind: 'linked', path, shared, failed, people: names })
   }
 
   /** The files a note embeds or links outside its folder that go along with it - the folder's choice. */
@@ -1132,12 +1193,16 @@ export class Folders {
       const opened = await this.ready(folderId)
       if (!opened || opened.index.has(docId)) return
       const path = entry.path
+      const audience = await this.audienceOf(folderId)
+      const linked = this.linkedAlong(folder, path)
       const answer = await this.prompts.moveIn({
         folderId,
         folderPath: folder.path,
         path,
-        people: await this.peopleOf(folderId),
+        people: audience.names,
         files: this.filesAlong(folderId, path),
+        linked,
+        strangers: audience.strangers,
         copy: Boolean(folder.owner),
         moot: this.moot(() => {
           const now = this.index.entry(docId)
@@ -1148,10 +1213,14 @@ export class Folders {
       if (!now || now.deletedAt || now.path !== path || opened.index.has(docId)) return
       // Closed without an answer: it stays here, unshared, until asked again after a restart.
       if (answer === null) this.dismissed.add(docId)
-      if (answer === 'share') {
+      if (answer?.choice === 'share') {
         if (folder.owner) await this.copyIn(this.placeOf(path) as FolderPlace, docId)
         else await this.join(this.placeOf(path) as FolderPlace, docId)
-      } else if (answer === 'back') {
+        if (answer.withLinked) {
+          // The note is in the folder by now: what goes along is a matter of its own.
+          await this.shareAlong(folderId, path, linked).catch((error: unknown) => log.error(`${path}: sharing the notes it links to failed`, error))
+        }
+      } else if (answer?.choice === 'back') {
         await this.moveBack(path, from)
       }
     } finally {
@@ -1592,7 +1661,13 @@ export class Folders {
 
   /** A member leaves a folder and keeps nothing of it; notes they placed elsewhere carry on as their own. */
   async leave(folderId: string): Promise<void> {
-    await this.api.leaveFolder(folderId)
+    // The server's word that the share ended can come before its answer, and is no news here.
+    this.parting.set(folderId, 'leave')
+    try {
+      await this.api.leaveFolder(folderId)
+    } finally {
+      this.parting.delete(folderId)
+    }
     this.finish(folderId, 'leftAt')
     await this.close(folderId)
     for (const { docId, entry } of this.index.live()) {
@@ -1603,8 +1678,14 @@ export class Folders {
 
   /** A member keeps the whole folder as their own and leaves it. */
   async detach(folderId: string): Promise<void> {
-    await this.api.detachFolder(folderId)
-    await this.ended(folderId)
+    // The dialog that asked says so itself.
+    this.parting.set(folderId, 'detach')
+    try {
+      await this.api.detachFolder(folderId)
+      await this.ended(folderId)
+    } finally {
+      this.parting.delete(folderId)
+    }
   }
 
   /**
@@ -1614,15 +1695,20 @@ export class Folders {
    * as well stays shared that way.
    */
   async ended(folderId: string): Promise<void> {
+    const parting = this.parting.get(folderId)
     const folder = this.index.folder(folderId)
-    if (!folder?.owner || folder.endedAt || folder.leftAt) return
+    if (parting === 'leave' || !folder?.owner || folder.endedAt || folder.leftAt) return
     this.index.setFolder(folderId, { ...folder, endedAt: Date.now(), updatedAt: Date.now() })
     await this.close(folderId)
+    let kept = 0
     for (const { docId, entry } of this.index.live()) {
-      if (entry.folder === folderId) await this.keepOrFork(docId)
+      if (entry.folder !== folderId) continue
+      await this.keepOrFork(docId)
+      kept += 1
     }
-    log.info(`${folder.path}: the share of the folder with ${folder.owner} ended`)
-    this.news({ kind: 'ended', path: folder.path, owner: this.sharing.nameOf(folder.owner) })
+    log.info(`${folder.path}: the share of the folder with ${folder.owner} ended, ${kept} note(s) kept`)
+    // Deleted on another device of this account, nothing is kept: the notice must not say otherwise.
+    if (!parting) this.news({ kind: 'ended', path: folder.path, owner: this.sharing.nameOf(folder.owner), kept })
   }
 
   private async keepOrFork(docId: string): Promise<void> {
@@ -1736,6 +1822,12 @@ export class Folders {
   /** The epoch a note's next key is taken from, for single shares of notes in a folder. */
   nextTie(folderId: string): Promise<number> {
     return this.currentEpoch(folderId)
+  }
+
+  /** Whether this account's share of a folder ended, was left or is being kept as its own. */
+  over(folderId: string): boolean {
+    const folder = this.index.folder(folderId)
+    return this.parting.has(folderId) || Boolean(folder?.endedAt || folder?.leftAt)
   }
 
   /** The folder's document as this device has it. */

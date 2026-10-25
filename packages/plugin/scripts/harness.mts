@@ -163,10 +163,12 @@ export class Device {
   folders: InstanceType<typeof Folders> | null = null
   /** What the person answers when a note is moved into a shared folder; null leaves the window open. */
   moveInAnswer: 'share' | 'back' | null = 'share'
+  /** Whether that answer shares the notes it links to as well. */
+  moveInWithLinked = false
   /** Every time a window asked about moving a note into a shared folder, and where it was. */
   readonly askedMoveIn: string[] = []
-  /** The same windows with what they said: who would see it, the files going along, when it opened. */
-  readonly moveInQuestions: Array<{ path: string; files: string[]; people: string[]; at: number }> = []
+  /** The same windows with what they said: who would see it, the files and notes going along, when it opened. */
+  readonly moveInQuestions: Array<{ path: string; files: string[]; linked: string[]; strangers: number; people: string[]; at: number }> = []
   /** What the person answers when a note of theirs lies outside its shared folder after a crash. */
   outsideAnswer: 'end' | 'back' | null = null
   /** What this device said about shared folders, oldest first. */
@@ -318,7 +320,13 @@ export class Device {
       this.api,
       keys,
       store,
-      { folder: () => 'Shared', syncTimeoutMs: 4_000, autoAccept: () => true, folderEpoch: (id): Promise<number> => folders.currentEpoch(id) },
+      {
+        folder: () => 'Shared',
+        syncTimeoutMs: 4_000,
+        autoAccept: () => true,
+        folderEpoch: (id): Promise<number> => folders.currentEpoch(id),
+        folderOver: (id): boolean => folders.over(id)
+      },
       contacts
     )
     const folders: InstanceType<typeof Folders> = new Folders(
@@ -334,12 +342,19 @@ export class Device {
       {
         moveIn: async (question) => {
           this.askedMoveIn.push(question.path)
-          this.moveInQuestions.push({ path: question.path, files: question.files, people: question.people, at: Date.now() })
+          this.moveInQuestions.push({
+            path: question.path,
+            files: question.files,
+            linked: question.linked.map((note) => note.path),
+            strangers: question.strangers,
+            people: question.people,
+            at: Date.now()
+          })
           if (this.moveInAnswer === null) {
             await question.moot
             return null
           }
-          return this.moveInAnswer
+          return { choice: this.moveInAnswer, withLinked: this.moveInWithLinked }
         },
         outside: async (question) => {
           if (this.outsideAnswer === null) {

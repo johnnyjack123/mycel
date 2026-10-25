@@ -908,7 +908,8 @@ export default class ObsidianConnectPlugin extends Plugin {
         folder: () => this.shared().sharedFolder,
         syncTimeoutMs: this.settings.syncTimeoutMs,
         autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1,
-        folderEpoch: (folderId) => folders.currentEpoch(folderId)
+        folderEpoch: (folderId) => folders.currentEpoch(folderId),
+        folderOver: (folderId) => folders.over(folderId)
       },
       this.contacts
     )
@@ -1339,10 +1340,19 @@ export default class ObsidianConnectPlugin extends Plugin {
         new Notice(`${news.owner} shared the folder "${name(news.path)}" with you. It is in ${news.path}, and everything added to it comes along.`, 10_000)
         return
       case 'ended':
-        new Notice(`The share of the folder "${name(news.path)}" with ${news.owner} ended. Your copy is kept as notes of your own, with their history.`, 12_000)
+        new Notice(
+          `The share of the folder "${name(news.path)}" with ${news.owner} ended.${news.kept > 0 ? ' Your copy is kept as notes of your own, with their history.' : ''}`,
+          12_000
+        )
         return
       case 'left':
         new Notice(`${news.who} left the shared folder "${name(news.path)}". They no longer get what is written in it; what they had stays with them.`, 12_000)
+        return
+      case 'linked':
+        new Notice(
+          `The ${news.shared === 1 ? 'note' : `${news.shared} notes`} "${name(news.path)}" links to ${news.shared === 1 ? 'is' : 'are'} shared with ${people(news.people)} as well.${news.failed > 0 ? ` ${news.failed} could not be shared; see the log.` : ''}`,
+          10_000
+        )
         return
     }
   }

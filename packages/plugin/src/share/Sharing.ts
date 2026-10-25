@@ -49,6 +49,8 @@ export interface SharingOptions {
    * the key of every new epoch from there.
    */
   folderEpoch?: (folderId: string) => Promise<number>
+  /** Whether this account's share of a folder is over; the folder announces that for its notes. */
+  folderOver?: (folderId: string) => boolean
 }
 
 const STALE_RETRIES = 5
@@ -65,6 +67,7 @@ function titleOf(path: string): string {
 export class Sharing {
   /** The end of a share arrives as a message, a notice and a detach; one of them carries it out. */
   private readonly ending = new Map<string, Promise<TFile | null>>()
+  private readonly detaching = new Set<string>()
   private incomingRunning: Promise<unknown> = Promise.resolve()
   private incomingQueued: Promise<number> | null = null
 
@@ -87,7 +90,8 @@ export class Sharing {
 
   /** The name of a contact; null for an account this one does not know. */
   knownName(account: string): string | null {
-    return this.contacts?.name(account) ?? null
+    // `Contacts.name` falls back to the id for anyone else.
+    return this.contacts?.isContact(account) ? this.contacts.name(account) : null
   }
 
   members(docId: string): Promise<ShareMembersResponse> {
@@ -394,12 +398,18 @@ export class Sharing {
     }
   }
 
-  /** The server says a share ended - revoked, detached on another device, or its owner's account removed. */
+  /**
+   * The server says a share ended - revoked, detached on another device, or its
+   * owner's account removed. It says so twice, as a message and as a notice, and
+   * for a folder's notes once more with the folder: one of them announces it.
+   */
   async onRevoked(room: string): Promise<void> {
     const docId = roomSubject(room)
     const entry = this.store.entry(docId)
     if (!entry?.owner || entry.deletedAt) return
+    const first = !this.ending.has(docId) && !this.detaching.has(docId)
     const file = await this.endShare(docId)
+    if (!first || (entry.folder && this.options.folderOver?.(entry.folder))) return
     new Notice(
       `The share of "${titleOf(entry.path)}" with ${this.nameOf(entry.owner)} ended.${file ? ' Your copy is kept as a note of your own, with its history.' : ''}`,
       12_000
@@ -420,8 +430,14 @@ export class Sharing {
   async detach(docId: string): Promise<TFile | null> {
     const entry = this.store.entry(docId)
     if (!entry?.owner) throw new Error('This note is already yours.')
-    await this.api.detach(docId)
-    return this.endShare(docId)
+    // The server's word that the share ended can come before its answer; the dialog that asked says so itself.
+    this.detaching.add(docId)
+    try {
+      await this.api.detach(docId)
+      return await this.endShare(docId)
+    } finally {
+      this.detaching.delete(docId)
+    }
   }
 
   /**
