@@ -2,7 +2,7 @@ import { App, Modal, Notice, Setting, type ButtonComponent } from 'obsidian'
 import type { FolderStateResponse, ShareRole } from '@obsidian-connect/shared'
 import { busy } from '../busy.js'
 import type { Contact } from '../sync/AccountSettings.js'
-import type { Folders, MoveInQuestion, OutsideQuestion } from './Folders.js'
+import type { Folders, MoveInAnswer, MoveInQuestion, OutsideQuestion } from './Folders.js'
 import type { LinkedNote } from './LinkedNotes.js'
 import type { Sharing } from './Sharing.js'
 import { log } from '../log.js'
@@ -364,9 +364,10 @@ export class FolderAccessModal extends Modal {
  * someone said so. Answered elsewhere, or moved again, it closes by itself.
  */
 export class MoveInModal extends Modal {
-  private answer: 'share' | 'back' | null = null
-  private settle: (answer: 'share' | 'back' | null) => void = () => undefined
-  readonly answered: Promise<'share' | 'back' | null>
+  private answer: MoveInAnswer | null = null
+  private withLinked = false
+  private settle: (answer: MoveInAnswer | null) => void = () => undefined
+  readonly answered: Promise<MoveInAnswer | null>
 
   constructor(
     app: App,
@@ -398,6 +399,7 @@ export class MoveInModal extends Modal {
       const files = contentEl.createEl('ul', { cls: 'connect-linked-notes' })
       for (const file of question.files) files.createEl('li', { text: file })
     }
+    this.renderLinked(contentEl)
     contentEl.createEl('p', {
       cls: 'setting-item-description',
       text: 'Until you decide it stays here, unshared. Moved back, nobody ever sees it.'
@@ -417,8 +419,36 @@ export class MoveInModal extends Modal {
       })
   }
 
-  private choose(answer: 'share' | 'back'): void {
-    this.answer = answer
+  /** Only when it links to notes outside the folder; those that cannot go along are listed with the reason. */
+  private renderLinked(contentEl: HTMLElement): void {
+    const { linked, strangers } = this.question
+    if (linked.length === 0) return
+    const shareable = linked.filter((note) => note.docId).length
+    const setting = new Setting(contentEl).setName('Also share the notes it links to')
+    if (shareable === 0) {
+      setting.setDesc(`It links to ${notes(linked.length)} outside the folder, none of which can be shared:`)
+    } else {
+      const missing =
+        strangers > 0 ? ` ${strangers === 1 ? 'One person' : `${strangers} people`} in the folder ${strangers === 1 ? 'is' : 'are'} not among your contacts and get${strangers === 1 ? 's' : ''} none of them.` : ''
+      setting
+        .setDesc(
+          `The ${notes(shareable)} outside the folder it links to, and the notes those link to, are shared with everyone in the folder as well - now, once, each with the access they have in the folder and without earlier versions. They stay where they are and remain yours; they land in the others' share folder. Notes linked later do not go along.${missing}`
+        )
+        .addToggle((toggle) =>
+          toggle.setValue(this.withLinked).onChange((value) => {
+            this.withLinked = value
+          })
+        )
+    }
+    const list = contentEl.createEl('ul', { cls: 'connect-linked-notes' })
+    for (const note of linked) {
+      const item = list.createEl('li', { text: note.path })
+      if (note.reason) item.createSpan({ cls: 'connect-linked-reason', text: ` - ${note.reason}` })
+    }
+  }
+
+  private choose(choice: 'share' | 'back'): void {
+    this.answer = { choice, withLinked: choice === 'share' && this.withLinked }
     this.close()
   }
 

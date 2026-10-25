@@ -27,7 +27,8 @@ the server in **`docs/SERVER.md`**. Where the work stands and what is next:
 **`docs/PROGRESS.md`**; what each version changed and how its fixes were verified:
 **`docs/CHANGELOG.md`**. The backup server (0.7) is specified in **`docs/PHASE6.md`**,
 running it in **`docs/BACKUP.md`**; sharing a folder and the small fixes of 0.8 in
-**`docs/PHASE7.md`**.
+**`docs/PHASE7.md`**; the Time Machine (before 0.9, a draft until the user decided) in
+**`docs/TIMEMACHINE.md`**.
 A new milestone gets its design document (`docs/PHASE8.md` for 0.9) written with the
 user before it is built.
 
@@ -534,7 +535,10 @@ the name, which is not unique — is never drawn. There is no global
   when the person has the note, starts from their current access and reads
   "Share again".
 - **Revoke is a protocol message** (`revoked`), also answered to a later
-  subscribe, and moves the note to a new epoch.
+  subscribe, and moves the note to a new epoch. The server says a share ended as a
+  message and as a notice, and a folder's end once more per note: one of them carries
+  it out (`Sharing.ending`) and announces it, a folder's notes leave that to the folder,
+  and an end this device asked for (leaving, keeping a copy) is no news here (0.8.10).
 - **Every end of a share is a fork** (invariant 20). The server writes what the
   participant could read — frames, their starting snapshot, their sealed keys —
   into *their* folder (`server/src/forks.ts`), so the owner's folder can go at
@@ -591,7 +595,10 @@ A folder shared with people, everything added to it later included (0.8, spec
   elsewhere. An existing note moved in is shared only after a window over
   everything (`MoveInModal`), asked the moment it is moved in (`askEarly`: a note
   from outside cannot be part of the folder moving) and naming the files that go
-  along - a participant's own is copied in as the owner's. The
+  along - a participant's own is copied in as the owner's. It also offers the notes
+  outside the folder the note reaches through links (0.8.10): shared once, on their
+  own, with everyone in the folder who is a contact of the mover, each with their access
+  there, the owner to edit, without history; they stay where they are (E8). The
   owner deleting the folder ends the share; a member deleting it leaves.
 - **Files** (0.8.1, `share/FolderFiles.ts`): every file inside the folder belongs to
   it. The folder's document holds them in `files` (`fileId -> SharedAttachment` plus
@@ -628,8 +635,8 @@ and each note's history give the plan; a fresh backup on the backup server
 (`Backups.backUpFresh`) and a copy into the plugin's `rollbacks/` come first -
 `apply` refuses otherwise, unless agreed -, a `rollback:<id>` record in the
 settings, then trashing, moving, restoring and editing as a person would, so every
-device follows and it can be undone. Others' shared notes stay; own shared notes
-go back for everyone. A moment before a snapshot's time is out of reach; a
+device follows and it can be undone. Others' shared notes stay, and so do the files of
+others' shared folders (0.8.10); own shared notes go back for everyone. A moment before a snapshot's time is out of reach; a
 compaction stamps the newest change it folds in. Out of reach is filled from the
 newest backup at or before the moment (0.7.9, `backup/src/restore.ts`, read only
 over the pairing); with the index itself out of reach the whole plan comes from it,
@@ -841,7 +848,7 @@ between two snapshots, never a merge.
   | 0.5 | attachments, in an encrypted blob store |
   | 0.6 | recovery codes and 2FA |
   | 0.7 | the backup server (`docs/PHASE6.md`) |
-  | 0.8 | sharing a folder, and the small fixes listed for it in `docs/PROGRESS.md` |
+  | 0.8 | sharing a folder, and the small fixes listed for it in `docs/PROGRESS.md`; then the Time Machine (`docs/TIMEMACHINE.md`, the user, 2026-10-25) |
   | 0.9 | hardening and a security audit: signatures per author, every note live, durable writes on the server (fsync before the ack, a lock against the admin CLI), a name without "Obsidian" |
   | 1.0.0 | all of the above done and verified on devices |
   | later | syncing plugins and their settings (moved back by the user, 2026-10-14) |

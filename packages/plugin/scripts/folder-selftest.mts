@@ -6,6 +6,9 @@
 //   npm run test:folders -- ws://localhost:1235
 import { check, delay, Device, eventually, failures, useServer } from './harness.mjs'
 
+// Imported after the harness set up the DOM.
+const { Notice } = await import('obsidian')
+
 const { docRoom } = await import('@obsidian-connect/shared')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
@@ -382,6 +385,42 @@ try {
     check(await eventually(() => P1.vault.text('Shared/X/Linked.md') !== undefined), 'shared, it reaches the others')
   }
 
+  // The notes it links to, and theirs, go along when asked for (E8): shared on
+  // their own with everyone in the folder, each with their access there, and
+  // staying where they are.
+  {
+    await O1.vault.userCreate('Notes/Deeper.md', 'deeper\n')
+    await O1.vault.userCreate('Notes/Ref.md', 'ref, see [[Notes/Deeper]]\n')
+    await O1.vault.userCreate('Projects/Hub.md', 'hub: [[Notes/Ref]] and [[Projects/Y/Other]]\n')
+    check(
+      await eventually(() => O1.docText('Projects/Hub.md') !== undefined && O1.docText('Notes/Ref.md') !== undefined && O1.docText('Notes/Deeper.md') !== undefined),
+      'the owner has a note linking to notes outside the folder'
+    )
+    O1.moveInWithLinked = true
+    await O1.vault.rename(O1.vault.file('Projects/Hub.md'), 'Projects/Y/Hub.md')
+    check(await eventually(() => O1.moveInQuestions.some((question) => question.path === 'Projects/Y/Hub.md')), 'moved in, it is asked about')
+    const question = O1.moveInQuestions.find((question) => question.path === 'Projects/Y/Hub.md')
+    check(
+      question?.linked.join() === 'Notes/Ref.md,Notes/Deeper.md',
+      'listing the notes outside the folder it links to, and the notes those link to - not those inside',
+      question?.linked
+    )
+    check(
+      await eventually(() => P1.vault.text('Shared/Notes/Ref.md') === 'ref, see [[Notes/Deeper]]\n' && Q.vault.text('Shared/Notes/Deeper.md') === 'deeper\n'),
+      'they reach everyone in the folder, in their share folder at the path of the link',
+      [P1.vault.paths(), Q.vault.paths()]
+    )
+    const roleOf = (device: Device, path: string): string | undefined => device.index?.entry(device.index?.docIdForPath(path) ?? '')?.role
+    check(roleOf(P1, 'Shared/Notes/Ref.md') === 'write' && roleOf(Q, 'Shared/Notes/Ref.md') === 'read', 'each with the access they have in the folder')
+    check(O1.vault.text('Notes/Ref.md') !== undefined && !folderOf(O1, 'Notes/Ref.md'), 'and they stay where they are, outside the folder')
+    check(
+      await eventually(() => O1.folderNews.some((news) => news.kind === 'linked' && news.shared === 2)),
+      'the owner is told',
+      O1.folderNews.slice(-2)
+    )
+    O1.moveInWithLinked = false
+  }
+
   await O1.vault.rename(O1.vault.file('Projects/Y/Sub/Plan.md'), 'Projects/Plan.md')
   check(
     await eventually(() => {
@@ -410,6 +449,23 @@ try {
     "the writer's other device follows into the copy",
     P2.vault.paths()
   )
+  // A writer's linked notes go to the owner, to edit, and to whoever else is a contact of theirs.
+  {
+    await P1.vault.userCreate('Notes/PiaRef.md', 'pia ref\n')
+    await P1.vault.userCreate('Notes/PiaHub.md', 'see [[Notes/PiaRef]]\n')
+    check(await eventually(() => P1.docText('Notes/PiaHub.md') !== undefined && P1.docText('Notes/PiaRef.md') !== undefined), 'the writer has a note linking to another')
+    P1.moveInWithLinked = true
+    await P1.vault.rename(P1.vault.file('Notes/PiaHub.md'), 'Shared/X/PiaHub.md')
+    check(await eventually(() => O1.vault.text('Projects/Y/PiaHub.md') === 'see [[Notes/PiaRef]]\n'), 'it is copied into the folder')
+    const question = P1.moveInQuestions.find((question) => question.path === 'Shared/X/PiaHub.md')
+    check(question?.linked.join() === 'Notes/PiaRef.md' && question.strangers === 1, 'the window says who of the folder is not a contact of theirs', question)
+    check(await eventually(() => O1.vault.text('Shared/Notes/PiaRef.md') === 'pia ref\n'), 'the note it links to reaches the owner', O1.vault.paths())
+    const refId = O1.index?.docIdForPath('Shared/Notes/PiaRef.md') ?? ''
+    check(O1.index?.entry(refId)?.owner === P1.accountId && O1.index?.entry(refId)?.role === 'write', 'shared to edit, and still the writer\'s')
+    await delay(600)
+    check(!Q.vault.text('Shared/Notes/PiaRef.md'), 'but not someone the writer has no contact with')
+    P1.moveInWithLinked = false
+  }
 
   // --- a note shared on its own as well, and revoking ------------------------------------------
   {
@@ -418,6 +474,9 @@ try {
     await delay(800)
     check(Q.vault.text('Shared/X/Renamed.md') !== undefined && !Q.vault.text('Shared/Renamed.md'), 'a note shared on its own with someone who has it through the folder stays where it is')
     const folderId = folderOf(O1, 'Projects/Y/Renamed.md') as string
+    const noteEnds = (): number => Notice.shown.filter((notice) => notice.startsWith('The share of "')).length
+    const noteEndsBefore = noteEnds()
+    const folderEndsBefore = Q.folderNews.filter((news) => news.kind === 'ended').length
     await O1.folders?.revoke(folderId, Q.accountId)
     check(
       await eventually(() => {
@@ -428,6 +487,13 @@ try {
       Q.vault.paths()
     )
     check(Q.index?.entry(renamedId)?.owner === O1.accountId, 'except a note shared with them on its own, which stays shared')
+    await delay(500)
+    const folderEnds = Q.folderNews.filter((news) => news.kind === 'ended').slice(folderEndsBefore)
+    check(
+      folderEnds.length === 1 && Number(folderEnds[0]?.kept) > 0 && noteEnds() === noteEndsBefore,
+      'the reader is told once, for the folder - not again for each of its notes',
+      { folderEnds, notices: Notice.shown.slice(-4) }
+    )
     await O1.vault.userWrite('Projects/Y/Renamed.md', 'still reaches quinn\n')
     await O1.vault.userWrite('Projects/Y/FromPia.md', 'no longer reaches quinn\n')
     check(await eventually(() => Q.vault.text('Shared/X/Renamed.md') === 'still reaches quinn\n'), 'that one goes on')
@@ -472,6 +538,7 @@ try {
       'shared without history, it reaches both devices of the member'
     )
     const leftBefore = O1.folderNews.filter((news) => news.kind === 'left').length
+    const pEndsBefore = [P1.folderNews.length, P2.folderNews.length]
     await P1.vault.trashFolder('Shared/Team')
     check(
       await eventually(() => O1.folderNews.filter((news) => news.kind === 'left').length > leftBefore, 15_000),
@@ -479,6 +546,14 @@ try {
       O1.folderNews.slice(-3)
     )
     check(await eventually(() => !P2.vault.text('Shared/Team/A.md')), "and it goes from the member's other device")
+    await delay(500)
+    const pEnds = [P1.folderNews.slice(pEndsBefore[0]), P2.folderNews.slice(pEndsBefore[1])].map((news) => news.filter((item) => item.kind === 'ended'))
+    check(
+      pEnds[0]?.length === 0 && pEnds[1]?.every((news) => news.kept === 0) === true,
+      'the device that deleted it says nothing of an end, and none says a copy was kept',
+      pEnds
+    )
+    check(!P1.vault.text('Shared/Team/A.md') && !P2.vault.text('Shared/Team/B.md'), 'nor does one come back', [P1.vault.paths(), P2.vault.paths()])
     const asked = (): number[] => [O1.asked, O2.asked, P1.asked, P2.asked]
     const askedBefore = asked().join()
     await O1.folders?.share('Team', P1.accountId, 'write', false)

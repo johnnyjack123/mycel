@@ -1088,6 +1088,8 @@ try {
 
     // Revoking: C keeps her copy, as a note of her own, and they part ways.
     C.close(cTogether)
+    const endedNotices = (): number => Notice.shown.filter((notice) => notice.startsWith('The share of "Together"')).length
+    const endedBefore = endedNotices()
     await A.sharing?.revoke(docId, C.accountId)
     const keptByCarol = `${beforeReading} for readers`
     check(
@@ -1105,6 +1107,7 @@ try {
         .filter(({ entry }) => entry.path === 'Shared/Together.md')
         .map(({ docId }) => docId)
       check(everIndexed.length === 2, 'the revoke moves the note once, not once per message', everIndexed)
+      check(endedNotices() - endedBefore === 1, 'and says so once', Notice.shown.slice(-4))
     }
     {
       // The copy carries the history C could read - from the share on, never before it.

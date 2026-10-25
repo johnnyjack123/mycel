@@ -112,6 +112,11 @@ try {
   await A1.vault.rename(A1.vault.file('Bilder/Two.png'), 'Bilder/One.png')
   await A1.vault.rename(A1.vault.file('Bilder/swap.png'), 'Bilder/Two.png')
   await B.vault.userWrite('From Ben.md', 'written by ben, and more\n')
+  // A folder Ben shares with A after the moment: its note and its file are Ben's to roll back.
+  await B.vault.userCreate('Team/Agenda.md', 'agenda\n')
+  await B.vault.userCreateBinary('Team/team.png', bytes('the team '.repeat(70)))
+  check(await eventually(() => B.docText('Team/Agenda.md') === 'agenda\n'), 'B has a folder with a note and a picture')
+  await B.folders?.share('Team', A1.accountId, 'write', false)
   const afterChanges = (device: Device): boolean =>
     device.vault.text('Welcome.md') === 'hello, changed\n' &&
     device.vault.text('New.md') === 'a new note\n' &&
@@ -124,7 +129,9 @@ try {
     same(device.vault.bytes('Other/Move.png'), moving) &&
     same(device.vault.bytes('Bilder/One.png'), two) &&
     same(device.vault.bytes('Bilder/Two.png'), one) &&
-    device.vault.text('Shared/From Ben.md') === 'written by ben, and more\n'
+    device.vault.text('Shared/From Ben.md') === 'written by ben, and more\n' &&
+    device.vault.text('Shared/Team/Agenda.md') === 'agenda\n' &&
+    device.vault.bytes('Shared/Team/team.png') !== undefined
   check(await eventually(() => afterChanges(A1) && afterChanges(A2), 20_000), 'A changes notes and files - edits, a new one, a deleted one, renames, swaps - and both devices agree, the swaps included')
   check(await eventually(() => B.vault.text('Shared/Plan.md') === 'the plan, changed\n', 15_000), 'B sees the change of the shared plan')
   await delay(500)
@@ -144,6 +151,11 @@ try {
   check(note('Projects/Plan.md')?.shared === true && note('Projects/Plan.md')?.text === true, 'names a note shared with others among them')
   check(!note('Keep/Untouched.md') && !plan.notes.some((entry) => entry.pathNow?.startsWith('Shared/')), 'leaves out what did not change, and what someone else shares in')
   check(plan.foreignKept >= 1 && plan.outOfReach.length === 0, 'counts what others share as left alone; nothing is out of reach', { foreignKept: plan.foreignKept, outOfReach: plan.outOfReach })
+  check(
+    !note('Shared/Team/Agenda.md') && !file('Shared/Team/team.png'),
+    "leaves someone else's shared folder alone, its files too",
+    plan.files.filter((entry) => (entry.pathNow ?? entry.pathThen)?.startsWith('Shared/'))
+  )
   check(file('Bilder/Foto.png')?.content === true, 'gives a file its content then')
   check(file('Bilder/Alt.png')?.revive === true && file('Bilder/New.png')?.trash === true, 'brings back a file deleted since and trashes one that came later')
   check(file('Bilder/Move.png')?.move === true && file('Bilder/One.png')?.move === true, 'and moves back one that moved, and two that swapped')
@@ -182,7 +194,10 @@ try {
   const steps: string[] = []
   const outcome = await rollback.apply(plan, { backups }, (message) => steps.push(message))
   check(outcome.problems.length === 0 && outcome.record.state === 'done', 'the rollback goes through', outcome.problems)
-  const asBefore = (device: Device): string[] => sameVault(before, snapshot(device)).filter((path) => !path.includes('Shared/From Ben.md') && !path.startsWith('extra Archive') && !path.startsWith('extra Other'))
+  const asBefore = (device: Device): string[] =>
+    sameVault(before, snapshot(device)).filter(
+      (path) => !path.includes('Shared/From Ben.md') && !path.startsWith('extra Shared/Team/') && !path.startsWith('extra Archive') && !path.startsWith('extra Other')
+    )
   check(await eventually(() => asBefore(A1).length === 0, 15_000), 'the vault is as it was then - notes, names, files', asBefore(A1))
   check(A1.vault.text('Shared/From Ben.md') === 'written by ben, and more\n', "what someone else shares in stays as it is now")
   check(await eventually(() => asBefore(A2).length === 0 && A2.vault.text('Shared/From Ben.md') === 'written by ben, and more\n', 20_000), 'the other device follows', asBefore(A2))
