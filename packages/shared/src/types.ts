@@ -801,6 +801,8 @@ export interface FolderNotice {
   folderId: string
   owner: string
   role?: ShareRole
+  /** For the owner: this member left the folder - deleted their copy, or kept it as their own. */
+  left?: string
 }
 
 /** For `contact` (something waits in the inbox), `contact-removed` and `account-changed`. */

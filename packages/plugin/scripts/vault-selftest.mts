@@ -1147,7 +1147,15 @@ try {
       await history.load()
       const draft = history.versions().find((version) => history.textAt(version.seq).includes('draft'))
       check(Boolean(draft), 'A finds the draft in the history')
+      const said = A.docText('Together.md') ?? ''
+      const backupsBefore = new Set(A.vault.adapter.backups())
       if (draft) await A.store?.restore(docId, history.textAt(draft.seq))
+      const added = A.vault.adapter.backups().filter((path) => !backupsBefore.has(path))
+      check(
+        added.length === 1 && (await A.vault.adapter.read(added[0] as string)) === said,
+        'what the note said goes into a backup before it is restored',
+        added
+      )
       check(
         await eventually(() => A.vault.text('Together.md') === 'a draft nobody else should see\n' && B.vault.text('Together.md') === 'a draft nobody else should see\n'),
         'restoring it reaches the file and the other device',

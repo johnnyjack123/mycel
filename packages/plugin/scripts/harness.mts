@@ -165,6 +165,8 @@ export class Device {
   moveInAnswer: 'share' | 'back' | null = 'share'
   /** Every time a window asked about moving a note into a shared folder, and where it was. */
   readonly askedMoveIn: string[] = []
+  /** The same windows with what they said: who would see it, the files going along, when it opened. */
+  readonly moveInQuestions: Array<{ path: string; files: string[]; people: string[]; at: number }> = []
   /** What the person answers when a note of theirs lies outside its shared folder after a crash. */
   outsideAnswer: 'end' | 'back' | null = null
   /** What this device said about shared folders, oldest first. */
@@ -181,6 +183,8 @@ export class Device {
   recoveryAnswer: 'device' | 'server' | null = null
   /** How many times this device had to ask. */
   asked = 0
+  /** Which notes each question named. */
+  readonly askedAbout: string[][] = []
   /** Notes kept in two versions, waiting for someone to choose. */
   readonly reviews: Array<{ docId: string; path: string; kind: string; mine: string; theirs: string; merged: string }> = []
   private settingsStore: { destroy(): unknown } | null = null
@@ -292,8 +296,9 @@ export class Device {
       store,
       settings,
       settingsReady: () => Promise.race([socket.whenSynced(settingsRoom(openVault.vaultId)), delay(4_000)]),
-      ask: async () => {
+      ask: async (notes) => {
         this.asked += 1
+        this.askedAbout.push(notes)
         return this.recoveryAnswer
       },
       onResolved: () => this.editors.refresh()
@@ -329,6 +334,7 @@ export class Device {
       {
         moveIn: async (question) => {
           this.askedMoveIn.push(question.path)
+          this.moveInQuestions.push({ path: question.path, files: question.files, people: question.people, at: Date.now() })
           if (this.moveInAnswer === null) {
             await question.moot
             return null

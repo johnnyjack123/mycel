@@ -60,6 +60,18 @@ export function linkedOutside(
   return reached(metadataCache, store, notes, nameOf, (path) => path.startsWith(prefix))
 }
 
+/** The files - not notes - a note embeds or links, each once, in the order they appear. */
+export function linkedFiles(metadataCache: MetadataCache, note: TFile): TFile[] {
+  const cache = metadataCache.getFileCache(note)
+  const found = new Map<string, TFile>()
+  for (const link of [...(cache?.embeds ?? []), ...(cache?.links ?? []), ...(cache?.frontmatterLinks ?? [])]) {
+    const linkpath = decoded(getLinkpath(link.link))
+    const target = linkpath ? metadataCache.getFirstLinkpathDest(linkpath, note.path) : null
+    if (target && target.extension !== 'md') found.set(target.path, target)
+  }
+  return Array.from(found.values())
+}
+
 function reached(
   metadataCache: MetadataCache,
   store: DocStore,

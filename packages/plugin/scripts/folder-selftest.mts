@@ -276,12 +276,37 @@ try {
   check(await eventually(() => O1.vault.text('Projects/Y/AfterRename.md') === 'still shared\n'), 'and it stays shared', O1.vault.paths())
 
   // --- a member moving a note out of their copy ------------------------------------------
+  // Both have it open in an editor while it moves.
+  const olgas = O1.open('Projects/Y/New.md')
+  const pias = P1.open('Shared/X/New.md')
+  check(await eventually(() => O1.editors.boundCount() >= 1 && P1.editors.boundCount() >= 1), 'both have the note open in an editor')
   await P1.vault.createFolder('Elsewhere')
   await P1.vault.rename(P1.vault.file('Shared/X/New.md'), 'Elsewhere/New.md')
   await delay(800)
   check(O1.vault.text('Projects/Y/New.md') === 'from the owner\n', "a member moving a note out of their copy changes nothing for anyone else")
   await O1.vault.userWrite('Projects/Y/New.md', 'from the owner\nmore\n')
   check(await eventually(() => P1.vault.text('Elsewhere/New.md') === 'from the owner\nmore\n'), 'it stays shared where they put it')
+  {
+    // And the two still see each other's carets in it.
+    const caretOf = (view: typeof olgas): { at: number; name: string } | null => {
+      const caret = view.view.dom.querySelector('.connect-remote-caret')
+      return caret ? { at: view.view.posAtDOM(caret), name: caret.querySelector('.connect-remote-caret-label')?.textContent ?? '' } : null
+    }
+    olgas.view.dispatch({ selection: { anchor: 4 } })
+    pias.view.dispatch({ selection: { anchor: 9 } })
+    check(
+      await eventually(() => caretOf(pias)?.at === 4 && caretOf(olgas)?.at === 9),
+      "in a note a member moved out of their copy, both see where the other's caret is",
+      { onPia: caretOf(pias), onOlga: caretOf(olgas) }
+    )
+    pias.type('!', 9)
+    pias.view.dispatch({ selection: { anchor: 10 } })
+    check(await eventually(() => olgas.text().includes('from the !owner') && caretOf(olgas)?.at === 10), 'and follow it as they type', caretOf(olgas))
+    O1.close(olgas)
+    P1.close(pias)
+    await O1.vault.userWrite('Projects/Y/New.md', 'from the owner\nmore\n')
+    check(await eventually(() => P1.vault.text('Elsewhere/New.md') === 'from the owner\nmore\n'), 'the note as it was')
+  }
   await O1.vault.rename(O1.vault.file('Projects/Y/New.md'), 'Projects/Y/Renamed.md')
   check(await eventually(() => Q.vault.text('Shared/X/Renamed.md') !== undefined), 'the rename reaches whoever follows the folder')
   await delay(600)
@@ -342,6 +367,20 @@ try {
   await delay(600)
   check(!P1.vault.text('Shared/X/Second.md'), 'and nobody ever saw it')
   O1.moveInAnswer = 'share'
+
+  // Asked at once - not once the move's events settled -, naming who sees it and the files going along.
+  {
+    await O1.vault.userCreate('Projects/Linked.md', 'with a picture ![[logo.png]]\n')
+    check(await eventually(() => O1.docText('Projects/Linked.md') === 'with a picture ![[logo.png]]\n'), 'the owner has a note embedding a file outside the folder')
+    const movedAt = Date.now()
+    await O1.vault.rename(O1.vault.file('Projects/Linked.md'), 'Projects/Y/Linked.md')
+    check(await eventually(() => O1.moveInQuestions.some((question) => question.path === 'Projects/Y/Linked.md')), 'moved in, it is asked about')
+    const question = O1.moveInQuestions.find((question) => question.path === 'Projects/Y/Linked.md')
+    check((question?.at ?? Infinity) - movedAt < 250, 'at once, not after the move settled', (question?.at ?? Infinity) - movedAt)
+    check(question?.files.join() === 'Assets/logo.png', 'naming the file outside the folder that goes along with it', question?.files)
+    check(question?.people.length === 2 && !question.people.some((name) => /more/.test(name)), 'and everyone the folder is shared with, by name', question?.people)
+    check(await eventually(() => P1.vault.text('Shared/X/Linked.md') !== undefined), 'shared, it reaches the others')
+  }
 
   await O1.vault.rename(O1.vault.file('Projects/Y/Sub/Plan.md'), 'Projects/Plan.md')
   check(
@@ -421,6 +460,38 @@ try {
     P2.vault.paths()
   )
   check(await eventually(() => !O2.vault.text('Archive/Z/AfterMove.md')), "the owner's notes go to the trash on their devices")
+
+  // --- a member deleting their copy, and the folder shared with them again ------------------------
+  {
+    await O1.vault.userCreate('Team/A.md', 'note a\n')
+    await O1.vault.userCreate('Team/B.md', 'note b\n')
+    check(await eventually(() => O1.docText('Team/A.md') === 'note a\n' && O1.docText('Team/B.md') === 'note b\n'), 'the owner has a folder of two notes')
+    await O1.folders?.share('Team', P1.accountId, 'write', false)
+    check(
+      await eventually(() => P1.vault.text('Shared/Team/A.md') === 'note a\n' && P2.vault.text('Shared/Team/B.md') === 'note b\n', 15_000),
+      'shared without history, it reaches both devices of the member'
+    )
+    const leftBefore = O1.folderNews.filter((news) => news.kind === 'left').length
+    await P1.vault.trashFolder('Shared/Team')
+    check(
+      await eventually(() => O1.folderNews.filter((news) => news.kind === 'left').length > leftBefore, 15_000),
+      'the member deletes their copy, and the owner is told they left',
+      O1.folderNews.slice(-3)
+    )
+    check(await eventually(() => !P2.vault.text('Shared/Team/A.md')), "and it goes from the member's other device")
+    const asked = (): number[] => [O1.asked, O2.asked, P1.asked, P2.asked]
+    const askedBefore = asked().join()
+    await O1.folders?.share('Team', P1.accountId, 'write', false)
+    check(
+      await eventually(() => P1.vault.text('Shared/Team/A.md') === 'note a\n' && P2.vault.text('Shared/Team/B.md') === 'note b\n', 20_000),
+      'shared with them again, the folder comes back',
+      P1.vault.paths()
+    )
+    await delay(1_500)
+    check(asked().join() === askedBefore, 'and no device takes the server for one that lost data', { before: askedBefore, after: asked() })
+    await O1.vault.userWrite('Team/A.md', 'note a\nagain\n')
+    check(await eventually(() => P1.vault.text('Shared/Team/A.md') === 'note a\nagain\n'), 'what the owner writes reaches them again')
+  }
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {

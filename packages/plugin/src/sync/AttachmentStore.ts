@@ -105,6 +105,9 @@ const STOP_DRAIN_MS = 2_000
 // 2 s after the last change; this leaves room for that.
 const STALE_SAVE_MS = 5_000
 const DAY_MS = 24 * 60 * 60 * 1000
+// Content copied in from a shared note or folder is kept this long, up to this much in all, for writing its file.
+const COPIED_KEEP_MS = 60_000
+const COPIED_KEEP_BYTES = 16 * 1024 * 1024
 // Content no file names is let go of only after this long untouched, whatever the retention.
 const UNNAMED_MIN_DAYS = 7
 
@@ -181,6 +184,8 @@ export class AttachmentStore {
   private readonly transfers: Transfers = { uploads: 0, downloads: 0 }
   /** fileId -> when this device last wrote another device's version into the file. */
   private readonly written = new Map<string, number>()
+  /** Content copied in from someone else's store just now, by hash, for the file written from it next. */
+  private readonly copied = new Map<string, Bytes>()
   /** Names a file waits at while two swap names (`followRenames`); nothing may take one for a file of its own. */
   private readonly aside = new Set<string>()
   private applying: Promise<void> = Promise.resolve()
@@ -305,6 +310,12 @@ export class AttachmentStore {
   }
 
   private download(hash: string): Promise<Bytes> {
+    // Copied in from someone's shared note or folder a moment ago: the same bytes, not fetched twice.
+    const copied = this.copied.get(hash)
+    if (copied) {
+      this.copied.delete(hash)
+      return Promise.resolve(copied)
+    }
     return this.transfer('downloads', () => this.blobs.download(hash))
   }
 
@@ -400,6 +411,7 @@ export class AttachmentStore {
 
   async stop(): Promise<void> {
     this.stopped = true
+    this.copied.clear()
     for (const timer of this.settling.values()) window.clearTimeout(timer)
     this.settling.clear()
     if (this.retryTimer !== null) window.clearTimeout(this.retryTimer)
@@ -1136,6 +1148,13 @@ export class AttachmentStore {
     if (await this.blobs.keep(source.hash)) return
     const data = await this.transfer('downloads', () => this.blobs.downloadFrom(source, room))
     await this.upload(data, source.hash)
+    // The file is written from it next (`pull`); kept a moment, all of them together within a budget.
+    let kept = 0
+    for (const bytes of this.copied.values()) kept += bytes.length
+    if (kept + data.length <= COPIED_KEEP_BYTES) {
+      this.copied.set(source.hash, data)
+      setTimeout(() => this.copied.delete(source.hash), COPIED_KEEP_MS)
+    }
   }
 
   /**

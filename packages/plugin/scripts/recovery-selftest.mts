@@ -117,6 +117,7 @@ try {
   A1.recoveryAnswer = 'device'
   server = await serve(empty)
   check(await eventually(() => A1.asked === 1, 20_000), 'A1 notices the server has other data and asks', A1.asked)
+  check(A1.askedAbout[0]?.join() === 'One.md,Two.md', 'naming the notes it asks about', A1.askedAbout[0])
   await A1.recovery?.settled()
   check(A1.vault.text('One.md') === 'first\nmore\n' && A1.vault.text('Two.md') === 'second\n', 'and its notes are untouched')
   check(samePhoto(A1.vault.bytes(PHOTO)), 'as is its attachment')

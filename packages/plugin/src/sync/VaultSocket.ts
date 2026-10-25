@@ -506,8 +506,13 @@ export class VaultSocket {
     // last frame is the common case - a note nobody touched for longer than
     // the retention - and taking that for another server held every old
     // note and asked about each of them. Only a snapshot this device already
-    // stood on is compared, against itself.
-    const folded = uptoSeq > verify.seq || (uptoSeq === verify.seq && !verify.hash?.startsWith('snapshot:'))
+    // stood on is compared, against itself - unless it was made anew under
+    // another epoch: a note or folder shared again without history starts its
+    // members from a new snapshot of the same state, under the new key, and a
+    // member who had stood on the first one was asked whether the server lost
+    // data. A server restored from a backup hands back its snapshot as it was.
+    const reKeyed = uptoSeq === verify.seq && verify.hash?.startsWith('snapshot:') === true && epoch !== registration.options.cursor.epoch
+    const folded = uptoSeq > verify.seq || (uptoSeq === verify.seq && !verify.hash?.startsWith('snapshot:')) || reKeyed
     if (verify.state === 'pending' && folded) verify.state = 'match'
     else this.checkVerification(registration, uptoSeq, hash)
     const plaintext = await this.open(registration, epoch, data, snapshotAad(registration.room, epoch))

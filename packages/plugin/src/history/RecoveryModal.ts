@@ -12,7 +12,8 @@ export class RecoveryModal extends Modal {
 
   constructor(
     app: App,
-    private readonly notes: number
+    /** The notes affected, by path. */
+    private readonly notes: string[]
   ) {
     super(app)
   }
@@ -27,9 +28,12 @@ export class RecoveryModal extends Modal {
   onOpen(): void {
     this.titleEl.setText('The server has other data than this device')
     const { contentEl } = this
+    const count = this.notes.length
     contentEl.createEl('p', {
-      text: `For ${this.notes} note(s), the server's copy is not the one this device last saw. It lost data, or it was restored from a backup. Nothing is sent or overwritten until you choose.`
+      text: `For ${count === 1 ? 'this note' : `these ${count} notes`}, the server's copy is not the one this device last saw. It lost data, or it was restored from a backup. Nothing is sent or overwritten until you choose.`
     })
+    const list = contentEl.createEl('ul', { cls: 'connect-linked-notes' })
+    for (const path of this.notes) list.createEl('li', { text: path })
     new Setting(contentEl)
       .setName('This device is right')
       .setDesc('Upload what this device has, with its history. Choose this if the server lost data.')

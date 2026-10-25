@@ -25,6 +25,7 @@ import type { AttachmentStore, LocalFileChange } from '../sync/AttachmentStore.j
 import type { DocStore, LocalChange } from '../sync/DocStore.js'
 import { FolderIndex } from '../sync/FolderIndex.js'
 import { FolderFiles } from './FolderFiles.js'
+import { linkedFiles } from './LinkedNotes.js'
 import type { IdScheme, VaultIndex } from '../sync/VaultIndex.js'
 import type { VaultSocket } from '../sync/VaultSocket.js'
 import type { Sharing } from './Sharing.js'
@@ -66,6 +67,8 @@ export interface MoveInQuestion {
   path: string
   /** Who would see it. */
   people: string[]
+  /** Files outside the folder the note embeds or links, which would go along with it. */
+  files: string[]
   /** Someone else's folder: the note is copied in, and becomes theirs. */
   copy: boolean
   /** Resolves when the question no longer stands - answered on another device, the note moved again. */
@@ -94,6 +97,8 @@ export type FolderNews =
   | { kind: 'not-yours'; path: string; owner: string }
   | { kind: 'accepted'; path: string; owner: string }
   | { kind: 'ended'; path: string; owner: string }
+  /** For the owner: someone the folder is shared with left it. */
+  | { kind: 'left'; path: string; who: string }
 
 interface OpenFolder {
   index: FolderIndex
@@ -157,6 +162,9 @@ export class Folders {
   private readonly fresh = new Set<string>()
   private readonly toldReader = new Set<string>()
   private readonly mootWaiters = new Set<() => void>()
+  private readonly peopleCache = new Map<string, { at: number; names: string[] }>()
+  /** Notes and files asked about as moved in the moment their event came: not asked again once the move settled. */
+  private readonly askedEarly = new Set<string>()
   private settleTimer: ReturnType<typeof setTimeout> | null = null
   private allTimer: ReturnType<typeof setTimeout> | null = null
   /** Folders whose pass comes back once a delete another device made had time to be weighed. */
@@ -365,8 +373,13 @@ export class Folders {
   }
 
   private freeFolderPath(path: string): string {
-    const used = (candidate: string): boolean =>
-      this.app.vault.getAbstractFileByPath(candidate) !== null || this.index.liveFolders().some(({ folder }) => folder.path === candidate)
+    // An empty folder is free: what a folder deleted on another device of this
+    // account leaves behind here - the same folder shared again took "X 2".
+    const used = (candidate: string): boolean => {
+      const there = this.app.vault.getAbstractFileByPath(candidate)
+      const empty = there instanceof TFolder && !this.app.vault.getFiles().some((file) => inside(file.path, candidate))
+      return (there !== null && !empty) || this.index.liveFolders().some(({ folder }) => folder.path === candidate)
+    }
     if (!used(path)) return path
     let candidate = `${path} 2`
     for (let n = 3; used(candidate); n += 1) candidate = `${path} ${n}`
@@ -642,6 +655,21 @@ export class Folders {
       before?.kind === 'renamed' && change.kind === 'renamed' ? { ...change, from: before.from } : change
     )
     this.scheduleDecide()
+    if (change.kind === 'renamed') this.askEarly(change)
+  }
+
+  /**
+   * A note moved into a shared folder from outside it is asked about at once,
+   * not once the move's events settled: it cannot be part of the folder
+   * itself moving, which moves only notes already in it - and waiting for
+   * that made the window come seconds after the note was dropped there.
+   */
+  private askEarly(change: Extract<LocalChange, { kind: 'renamed' }>): void {
+    const entry = this.index.entry(change.docId)
+    const to = this.placeOf(change.to)
+    if (!entry || entry.deletedAt || entry.folder || !to || this.placeOf(change.from)?.folderId === to.folderId) return
+    this.askedEarly.add(change.docId)
+    void this.askMoveIn(to, change.docId, change.from).catch((error: unknown) => log.error(`${change.to}: asking about it failed`, error))
   }
 
   private onLocalFile(change: LocalFileChange): void {
@@ -657,6 +685,13 @@ export class Folders {
       before?.kind === 'renamed' && change.kind === 'renamed' ? { ...change, from: before.from } : change
     )
     this.scheduleDecide()
+    if (change.kind !== 'renamed') return
+    // Asked at once, as a note is (`askEarly`).
+    const entry = this.attachments?.entryOf(change.fileId)
+    const to = this.placeOf(change.to)
+    if (!entry || entry.deletedAt || entry.folder || !to || this.placeOf(change.from)?.folderId === to.folderId) return
+    this.askedEarly.add(`file:${change.fileId}`)
+    void this.askMoveInFile(to, change.fileId, change.from).catch((error: unknown) => log.error(`${change.to}: asking about it failed`, error))
   }
 
   /** A file new on this device: in a folder this account writes in, it goes into the folder at once. */
@@ -875,6 +910,7 @@ export class Folders {
     }
     // Into a folder from outside it; a note moved about inside one it is not
     // in - one that carries on after its share ended - stays as it is.
+    if (this.askedEarly.delete(change.docId)) return
     if (to && this.placeOf(change.from)?.folderId !== to.folderId) await this.askMoveIn(to, change.docId, change.from)
   }
 
@@ -953,6 +989,7 @@ export class Folders {
       if (to) await this.askMoveInFile(to, change.fileId, change.from)
       return
     }
+    if (this.askedEarly.delete(`file:${change.fileId}`)) return
     if (to && this.placeOf(change.from)?.folderId !== to.folderId) await this.askMoveInFile(to, change.fileId, change.from)
   }
 
@@ -988,10 +1025,10 @@ export class Folders {
       }
       return
     }
-    const opened = await this.ready(folderId)
-    if (!opened) return
     this.asking.add(key)
     try {
+      const opened = await this.ready(folderId)
+      if (!opened) return
       const path = entry.path
       const stands = (): boolean => {
         const now = this.attachments?.entryOf(fileId)
@@ -1002,6 +1039,7 @@ export class Folders {
         folderPath: folder.path,
         path,
         people: await this.peopleOf(folderId),
+        files: [],
         copy: false,
         moot: this.moot(stands)
       })
@@ -1016,15 +1054,44 @@ export class Folders {
 
   // --- moving in and out -----------------------------------------------------------
 
+  /**
+   * Everyone else the folder is shared with, as names: contacts by theirs,
+   * the others - members a participant does not know - counted. Remembered a
+   * minute, so the window asking about a note moved in opens without waiting
+   * for the server.
+   */
   private async peopleOf(folderId: string): Promise<string[]> {
+    const cached = this.peopleCache.get(folderId)
+    if (cached && Date.now() - cached.at < 60_000) return cached.names
     try {
       const state = await this.api.folderState(folderId)
       const others = state.members.map((member) => member.account)
       if (state.owner !== this.keys.accountId) others.unshift(state.owner)
-      return others.filter((account) => account !== this.keys.accountId).map((account) => this.sharing.nameOf(account))
+      const names: string[] = []
+      let unknown = 0
+      for (const account of others) {
+        if (account === this.keys.accountId) continue
+        const name = this.sharing.knownName(account)
+        if (name) names.push(name)
+        else unknown += 1
+      }
+      if (unknown > 0) names.push(`${unknown} more ${unknown === 1 ? 'person' : 'people'}`)
+      this.peopleCache.set(folderId, { at: Date.now(), names })
+      return names
     } catch {
-      return []
+      return cached?.names ?? []
     }
+  }
+
+  /** The files a note embeds or links outside its folder that go along with it - the folder's choice. */
+  private filesAlong(folderId: string, path: string): string[] {
+    const fi = this.open.get(folderId)?.index
+    const folder = this.index.folder(folderId)
+    const note = this.app.vault.getAbstractFileByPath(path)
+    if (!fi?.linkedFiles || !folder || !(note instanceof TFile)) return []
+    return linkedFiles(this.app.metadataCache, note)
+      .map((file) => file.path)
+      .filter((file) => !inside(file, folder.path) && !this.attachments?.isExcluded(file))
   }
 
   /** Resolves once `stands` turns false - something changed elsewhere that answered the question. */
@@ -1059,16 +1126,18 @@ export class Folders {
       }
       return
     }
-    const opened = await this.ready(folderId)
-    if (!opened || opened.index.has(docId)) return
+    // Taken before anything is awaited: the same move may ask from two places.
     this.asking.add(docId)
     try {
+      const opened = await this.ready(folderId)
+      if (!opened || opened.index.has(docId)) return
       const path = entry.path
       const answer = await this.prompts.moveIn({
         folderId,
         folderPath: folder.path,
         path,
         people: await this.peopleOf(folderId),
+        files: this.filesAlong(folderId, path),
         copy: Boolean(folder.owner),
         moot: this.moot(() => {
           const now = this.index.entry(docId)
@@ -1619,6 +1688,10 @@ export class Folders {
         return
       case 'folder-changed': {
         const folder = this.index.folder(notice.folderId)
+        this.peopleCache.delete(notice.folderId)
+        if (notice.left && folder && !folder.owner) {
+          this.news({ kind: 'left', path: folder.path, who: this.sharing.nameOf(notice.left) })
+        }
         if (notice.role && folder?.owner && folder.role !== notice.role) {
           this.index.setFolder(notice.folderId, { ...folder, role: notice.role, updatedAt: Date.now() })
           this.socket.setReadOnly(folderRoom(notice.folderId), notice.role === 'read')

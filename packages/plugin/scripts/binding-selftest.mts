@@ -50,6 +50,8 @@ const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 class Relay {
   readonly state = new Y.Doc()
   private readonly members = new Set<YDoc>()
+  /** How long an update takes to reach the others. */
+  delayMs = 5
 
   join(doc: YDoc): Promise<void> {
     this.members.add(doc)
@@ -58,7 +60,7 @@ class Relay {
       setTimeout(() => {
         Y.applyUpdate(this.state, update, this)
         for (const other of this.members) if (other !== doc) Y.applyUpdate(other, update, this)
-      }, 5)
+      }, this.delayMs)
     })
     return new Promise((resolve) =>
       setTimeout(() => {
@@ -349,12 +351,13 @@ check(
     return awareness
   })
   // The socket's part: every update of one side reaches the other a moment later.
+  let presenceDelayMs = 5
   presence.forEach((awareness, index) => {
     const other = presence[1 - index] as InstanceType<typeof Awareness>
     awareness.on('update', ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
       if (origin === 'relay') return
       const update = encodeAwarenessUpdate(awareness, added.concat(updated, removed))
-      setTimeout(() => applyAwarenessUpdate(other, update, 'relay'), 5)
+      setTimeout(() => applyAwarenessUpdate(other, update, 'relay'), presenceDelayMs)
     })
   })
   await Promise.all([p.synced, q.synced])
@@ -369,6 +372,28 @@ check(
   check(await eventually(() => caretOn(q) === 9), "and follows it when P only moves it, typing nothing", caretOn(q))
   q.view.dispatch({ selection: { anchor: 5 } })
   check(await eventually(() => caretOn(p) === 5), "P sees Q's caret move too", caretOn(p))
+
+  // Typing: the letters and the caret travel apart, either first. Drawn by its
+  // anchor alone the caret sat in front of each new letter until the caret
+  // came, or vanished until the letter did - a flicker on every keystroke.
+  {
+    const typeAt = (at: number, letter: string): void => {
+      p.view.dispatch({ changes: { from: at, insert: letter }, selection: { anchor: at + 1 }, userEvent: 'input.type' })
+    }
+    check(await eventually(() => caretOn(q) === 9), "Q sees P's caret before P types")
+    presenceDelayMs = 200
+    typeAt(9, 'X')
+    check(await eventually(() => q.text().slice(9, 10) === 'X'), 'the letter arrives before the caret')
+    check(caretOn(q) === 10, "P's caret is behind the letter as soon as the letter is there", caretOn(q))
+    await delay(250)
+    presenceDelayMs = 5
+    relay.delayMs = 200
+    typeAt(10, 'Y')
+    await delay(60)
+    check(q.text().slice(10, 11) !== 'Y' && caretOn(q) === 10, "with the caret first, it stays where it was until the letter comes - it never vanishes", caretOn(q))
+    check(await eventually(() => q.text().slice(10, 11) === 'Y' && caretOn(q) === 11), 'and is behind the letter once it came', caretOn(q))
+    relay.delayMs = 5
+  }
   for (const side of [p, q]) {
     side.view.destroy()
     relay.leave(side.doc)

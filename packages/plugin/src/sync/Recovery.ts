@@ -19,8 +19,8 @@ export interface RecoveryOptions {
   settings: AccountSettings
   /** Resolves once the account settings are caught up, so an earlier decision is known. */
   settingsReady: () => Promise<void>
-  /** How many notes are affected; null keeps them held and asks again on the next connect. */
-  ask: (notes: number) => Promise<RecoveryChoice | null>
+  /** The notes affected, by path; null keeps them held and asks again on the next connect. */
+  ask: (notes: string[]) => Promise<RecoveryChoice | null>
   onResolved?: () => void
 }
 
@@ -82,7 +82,8 @@ export class Recovery {
       log.info(`${notes.length} note(s) differ from the server's log; following the decision "${choice}" made on ${new Date(decision?.at ?? 0).toISOString()}`)
     } else {
       log.warn(`${notes.length} note(s) differ from the server's log; asking`)
-      choice = await this.options.ask(notes.length)
+      const paths = notes.map((room) => store.entry(roomSubject(room))?.path ?? `a note no longer in this vault (${roomSubject(room).slice(0, 8)})`)
+      choice = await this.options.ask(paths.sort((a, b) => a.localeCompare(b)))
       log.info(`recovery answer: ${choice ?? 'none yet'}`)
       if (!choice || this.stopped) return
       settings.decideRecovery({ choice, at: Date.now() })
