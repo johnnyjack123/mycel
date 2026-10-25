@@ -135,7 +135,10 @@ someone's notes. Treat them as rules, not preferences.
     another one - except that a snapshot reaching up to or past it is
     compaction, which folded the frame in: one ending exactly at the last
     frame (a note untouched for longer than the retention) was once taken for
-    another server, and every old note was held and asked about. The room is then caught up from zero, merged, and **held** —
+    another server, and every old note was held and asked about. So is a
+    start snapshot made anew under another epoch at the place this device
+    stood on: sharing again without history asked a member who had left
+    whether the server lost data. The room is then caught up from zero, merged, and **held** —
     nothing is sent until the user decided (`Recovery`), because uploading
     would undo a restore made on purpose and taking the server's state would
     drop what the devices wrote since. Index and settings always keep the
@@ -484,7 +487,11 @@ changes stay out of the undo history, and Obsidian reloading a file this device
 wrote just before is recognised and not taken as an edit (`recentWrite`).
 Remote carets are anchored the way CodeMirror maps a selection — a caret stays
 in front of text inserted exactly at it — so everyone sees a caret where its
-owner has it. A caret moving along with text typed *before* it is correct. A
+owner has it. A caret moving along with text typed *before* it is correct. Typing
+and the typist's caret arrive apart, either first: the caret of whoever typed a
+change moves along with it, and one naming a letter not here yet stays where it was
+drawn - drawn by its anchor alone, it flickered on every keystroke (0.8.9). A Y.Text
+event names no authors (`changes.added` is empty); the transaction's clocks do. A
 note shared to read only gets a read-only editor. Remote carets are redrawn on
 any update once their version moved, not only by the refresh the awareness
 change dispatches — typing redraws them anyway, which is why only carets that
@@ -582,7 +589,9 @@ A folder shared with people, everything added to it later included (0.8, spec
   delete declines the note for their account; the owner moving a note out ends its
   share there (everyone keeps a fork); a member moving one out only places it
   elsewhere. An existing note moved in is shared only after a window over
-  everything (`MoveInModal`) - a participant's own is copied in as the owner's. The
+  everything (`MoveInModal`), asked the moment it is moved in (`askEarly`: a note
+  from outside cannot be part of the folder moving) and naming the files that go
+  along - a participant's own is copied in as the owner's. The
   owner deleting the folder ends the share; a member deleting it leaves.
 - **Files** (0.8.1, `share/FolderFiles.ts`): every file inside the folder belongs to
   it. The folder's document holds them in `files` (`fileId -> SharedAttachment` plus

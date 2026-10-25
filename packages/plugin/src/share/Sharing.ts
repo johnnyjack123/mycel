@@ -85,6 +85,11 @@ export class Sharing {
     return this.contacts?.name(account) ?? account.slice(0, 8)
   }
 
+  /** The name of a contact; null for an account this one does not know. */
+  knownName(account: string): string | null {
+    return this.contacts?.name(account) ?? null
+  }
+
   members(docId: string): Promise<ShareMembersResponse> {
     return this.api.members(docId)
   }

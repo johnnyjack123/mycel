@@ -207,7 +207,12 @@ export class RollbackModal extends Modal {
     const notes = plan.notes
     const files = plan.files
     if (notes.length === 0 && files.length === 0 && plan.outOfReach.length === 0) {
-      contentEl.createEl('p', { text: `Nothing in ${this.where} differs from ${when(plan.to)}.` })
+      contentEl.createEl('p', {
+        text:
+          plan.foreignKept > 0
+            ? `Nothing in ${this.where} that is yours differs from ${when(plan.to)}. The ${plan.foreignKept} notes or files in it others share with you are not rolled back from here: that would change them for their owner and everyone else too. Their owner can roll them back.`
+            : `Nothing in ${this.where} differs from ${when(plan.to)}.`
+      })
       new Setting(contentEl).addButton((button) => button.setButtonText('Back').onClick(() => this.go({ kind: 'choose' })))
       return
     }
@@ -243,7 +248,10 @@ export class RollbackModal extends Modal {
       this.list('Shared notes', shared.map(path))
     }
     if (plan.foreignKept > 0) {
-      contentEl.createEl('p', { cls: 'setting-item-description', text: `${plan.foreignKept} notes or files others share with you stay as they are.` })
+      contentEl.createEl('p', {
+        cls: 'setting-item-description',
+        text: `${plan.foreignKept} notes or files others share with you stay as they are: only their owner rolls them back, for everyone.`
+      })
     }
     if (plan.outOfReach.length > 0) {
       contentEl.createEl('p', {

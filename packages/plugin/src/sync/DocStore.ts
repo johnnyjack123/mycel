@@ -1379,6 +1379,17 @@ export class DocStore {
       this.forget(docId)
       await this.history.clear(docRoom(docId))
       if (current) this.index.replace(docId, newDocId, current)
+      // This device may still hold the note where it last had it: a rename
+      // that came just before - a note moved into someone's shared folder and
+      // copied in there at once - was not applied here yet. The file is this
+      // note, so it moves along; left behind, it became a note of its own.
+      if (!current && known && path && known.path !== path && !this.app.vault.getAbstractFileByPath(path)) {
+        const left = this.app.vault.getAbstractFileByPath(known.path)
+        if (left instanceof TFile) {
+          await this.ensureFolder(parentOf(path))
+          await this.app.vault.rename(left, path)
+        }
+      }
       // The last text file and note agreed on stays the base: a file that
       // lags the note, or was edited meanwhile, still merges three ways.
       if (path && base !== null && (await this.state.baseText(newDocId)) === null) await this.state.setBaseText(newDocId, base)
@@ -1488,9 +1499,15 @@ export class DocStore {
     return cleared
   }
 
-  /** Rolls the live document back to `text`; it travels like any other edit. */
+  /**
+   * Rolls the live document back to `text`; it travels like any other edit.
+   * What it said goes into a backup first: the history can undo the restore
+   * only as long as it keeps that far back (invariant 2).
+   */
   async restore(docId: string, text: string): Promise<void> {
     const handle = await this.handleFor(docId)
+    const current = handle.text()
+    if (current !== text && current.length > 0) await this.backups.write(this.index.pathFor(docId) ?? docId, 'local', current)
     const edits = textEdits(handle.text(), text)
     if (edits.length > 0) handle.doc.transact(() => applyTextEdits(handle.ytext, edits), RESTORE_ORIGIN)
   }

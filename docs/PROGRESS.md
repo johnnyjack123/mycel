@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-23 · **0.8 is built: sharing a folder (0.8.0, 0.8.1), the backup server's folder tests, the six small fixes and the race in the fork on return (0.8.2 to 0.8.8). Next: the user tests 0.8 as a whole - server first -, then 0.9 (`docs/PHASE8.md` to be written with the user first).**_
+_Last updated: 2026-10-25 · **0.8.9: what the user found testing 0.8 (carets, the move-in window, sharing again, files sooner). Waiting for the user: (A) linked notes on moving in - move them along or share them once; (B) a "Time Machine" for rollbacks - the idea and when; and on which device cursors failed after a note left its folder (not reproduced).**_
 
 ## Where we are
 
@@ -70,6 +70,22 @@ server reading folder notes. What is next:
    out and in again (0.8.2); turning 2FA on or changing the password - this device is
    back at once (0.8.5); a rollback's plan on a large vault (0.8.8). Their findings come
    first, then 0.9's design document.
+6. The user tested on 2026-10-24/25 (sharing a folder works, the explorer mark works,
+   files come along). Fixed in 0.8.9: flickering carets, the move-in window's delay and
+   text, the false "server has other data" after sharing again, the owner not told
+   when someone leaves, files arriving late, the participant's empty rollback, a grey
+   mark. Open, waiting for the user:
+   - **A:** a note moved into a shared folder links other notes - move them in too, or
+     share them once with the folder's people (recommended, as E8)? With a list either
+     way.
+   - **B:** a "Time Machine" (a slider over every state, a live preview, *Apply*) for
+     the vault, a folder and a note. Proposed: a view of its own, never the real files -
+     every change of a file reaches all devices and people at once -, the note's preview
+     read-only in the same tab; ticks are grouped versions; *Apply* is the rollback or
+     restore with its backups. Asked: the idea, and whether it comes before 0.9 or as a
+     milestone of its own (a design document first either way).
+   - Cursors after a member moved a note out of their copy: at the start or not drawn,
+     the user said; `test:folders` draws them right. Asked which device, which view.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no

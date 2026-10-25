@@ -1341,6 +1341,9 @@ export default class ObsidianConnectPlugin extends Plugin {
       case 'ended':
         new Notice(`The share of the folder "${name(news.path)}" with ${news.owner} ended. Your copy is kept as notes of your own, with their history.`, 12_000)
         return
+      case 'left':
+        new Notice(`${news.who} left the shared folder "${name(news.path)}". They no longer get what is written in it; what they had stays with them.`, 12_000)
+        return
     }
   }
 

@@ -1,8 +1,8 @@
-// A shared folder is marked in the file explorer: one of the vault's own, and
-// one someone shared into it, told apart by colour. Obsidian offers no API for
-// that, so the plugin keeps a stylesheet naming each folder by its path - the
-// explorer's own elements are never touched, and a folder the explorer draws
-// later is marked as well.
+// A shared folder is marked in the file explorer, in the explorer's own muted
+// grey - a colour of its own stood out more than the user wanted. Obsidian
+// offers no API for that, so the plugin keeps a stylesheet naming each folder
+// by its path - the explorer's own elements are never touched, and a folder
+// the explorer draws later is marked as well.
 
 // Lucide's "users", as a mask the theme's colours fill.
 const ICON =
@@ -16,11 +16,11 @@ export class FolderMarks {
   private style: HTMLStyleElement | null = null
   private last = ''
 
-  /** `own`: folders this vault shares; `theirs`: folders shared into it. */
+  /** `own`: folders this vault shares; `theirs`: folders shared into it - marked alike. */
   render(own: string[], theirs: string[]): void {
     const rule = (path: string, colour: string): string =>
       `.nav-folder-title[data-path=${quoted(path)}] .nav-folder-title-content::after{content:'';display:inline-block;width:0.9em;height:0.9em;margin-left:0.4em;vertical-align:-0.1em;background-color:${colour};-webkit-mask-image:${ICON};mask-image:${ICON};-webkit-mask-size:contain;mask-size:contain;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat}`
-    const css = [...own.map((path) => rule(path, 'var(--text-muted)')), ...theirs.map((path) => rule(path, 'var(--text-accent)'))].join('\n')
+    const css = [...own, ...theirs].map((path) => rule(path, 'var(--text-muted)')).join('\n')
     if (css === this.last) return
     this.last = css
     this.style ??= document.head.createEl('style', { attr: { id: 'obsidian-connect-folder-marks' } })

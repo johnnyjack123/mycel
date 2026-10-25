@@ -67,6 +67,30 @@ function isFileRef(ref: string): boolean {
   return dot > 0 && name.slice(dot + 1).toLowerCase() !== 'md'
 }
 
+/**
+ * Whether a link to `ref` in the note was written on this device in this
+ * session: the text of one of its places was inserted by this document's own
+ * client. A link typed in an earlier session counts as someone else's - it
+ * only waits a little longer.
+ */
+function typedHere(ytext: Y.Text, ref: string): boolean {
+  const doc = ytext.doc
+  if (!doc) return false
+  const text = ytext.toString()
+  for (let at = text.indexOf(ref); at !== -1; at = text.indexOf(ref, at + 1)) {
+    let position = 0
+    for (let item = ytext._start; item; item = item.right) {
+      if (item.deleted || !item.countable) continue
+      if (at < position + item.length) {
+        if (item.id.client === doc.clientID) return true
+        break
+      }
+      position += item.length
+    }
+  }
+  return false
+}
+
 function besides(path: string, n: number): string {
   const slash = path.lastIndexOf('/')
   const dot = path.lastIndexOf('.')
@@ -291,7 +315,9 @@ export class SharedFiles {
       const seen = this.unlisted.get(key) ?? Date.now()
       this.unlisted.set(key, seen)
       const waited = Date.now() - seen
-      if (waited < this.options.claimDelayMs) {
+      // The device that typed the link names its file at once; any other waits
+      // for it, so a file of the same name of its own never gets there first.
+      if (waited < this.options.claimDelayMs && !typedHere(note.handle.ytext, ref)) {
         this.schedule(docId, this.options.claimDelayMs - waited + 50)
         return
       }

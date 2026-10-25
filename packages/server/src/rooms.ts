@@ -1193,7 +1193,7 @@ export class RoomHub {
       this.dropMember(folder, notes, account, now)
       await this.finish([folder, ...notes], keeps, 'the share ended')
       this.notify(account, 'folder-removed', { folderId: id, owner: folder.owner })
-      this.notify(folder.owner, 'folder-changed', { folderId: id, owner: folder.owner })
+      this.notify(folder.owner, 'folder-changed', { folderId: id, owner: folder.owner, left: account })
     } finally {
       this.release(opens)
     }
@@ -1208,7 +1208,7 @@ export class RoomHub {
     const notes = this.notesIn(id)
     this.dropMember(folder, notes, account, Date.now())
     await this.finish([folder, ...notes], [], 'the share ended')
-    this.notify(folder.owner, 'folder-changed', { folderId: id, owner: folder.owner })
+    this.notify(folder.owner, 'folder-changed', { folderId: id, owner: folder.owner, left: account })
   }
 
   /**

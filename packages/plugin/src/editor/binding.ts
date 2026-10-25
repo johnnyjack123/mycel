@@ -6,6 +6,7 @@ import {
   EditorState,
   StateEffect,
   Transaction,
+  type ChangeSet,
   type Extension,
   type Range
 } from '@codemirror/state'
@@ -182,7 +183,7 @@ export class EditorBinding implements PluginValue {
 
   private readonly observer = (event: Y.YTextEvent, transaction: Y.Transaction): void => {
     if (transaction.origin === EDITOR_ORIGIN) return
-    this.applyRemote(event)
+    this.applyRemote(event, transaction)
   }
 
   /** Bumped whenever someone else's caret changed; the carets drawn are of `drawnCursors`. */
@@ -192,6 +193,10 @@ export class EditorBinding implements PluginValue {
   /** The caret last announced, so an unchanged one is not sent again. */
   private published = ''
   private drawnLogged = ''
+  /** Where each other client's caret was last drawn, by its awareness client id. */
+  private carets = new Map<number, { anchor: number; head: number }>()
+  /** The clients whose typing the remote change being applied carries. */
+  private remoteAuthors: Set<number> | null = null
 
   private readonly onAwarenessChange = (
     changes: { added: number[]; updated: number[]; removed: number[] },
@@ -295,7 +300,7 @@ export class EditorBinding implements PluginValue {
     if (local) this.applyLocalChanges(update, session)
 
     if (session.awareness) {
-      if (update.docChanged || this.drawnCursors !== this.cursorsVersion) this.drawCursors(session)
+      if (update.docChanged || this.drawnCursors !== this.cursorsVersion) this.drawCursors(session, update.docChanged ? update.changes : null)
       // Remote changes move the caret only in absolute terms; its relative
       // position is still right, so there is nothing new to announce.
       if (update.selectionSet || local || update.focusChanged) this.publishSelection(session)
@@ -328,6 +333,7 @@ export class EditorBinding implements PluginValue {
     }
     this.published = ''
     this.decorations = Decoration.none
+    this.carets.clear()
     if (session.readOnly) this.setReadOnly(false)
     session.release(rebinding)
   }
@@ -430,8 +436,16 @@ export class EditorBinding implements PluginValue {
     if (current !== next) this.dispatchRemote(toChanges(textEdits(current, next)))
   }
 
-  private applyRemote(event: Y.YTextEvent): void {
+  private applyRemote(event: Y.YTextEvent, transaction: Y.Transaction): void {
     const changes = deltaToChanges(event.delta)
+    // Whose typing this is: their caret moves along with it (`buildCursors`).
+    // The clients whose clocks moved wrote something; a text event names no
+    // authors itself - its `changes.added` is always empty.
+    const authors = new Set<number>()
+    transaction.afterState.forEach((clock, client) => {
+      if (clock > (transaction.beforeState.get(client) ?? 0)) authors.add(client)
+    })
+    this.remoteAuthors = authors
     try {
       this.dispatchRemote(changes)
     } catch (error) {
@@ -440,6 +454,8 @@ export class EditorBinding implements PluginValue {
       log.error('applying a remote delta failed, resyncing', error)
       this.realign()
       return
+    } finally {
+      this.remoteAuthors = null
     }
     if (this.view.state.doc.length !== event.target.length) this.realign()
   }
@@ -510,10 +526,10 @@ export class EditorBinding implements PluginValue {
     }
   }
 
-  private drawCursors(session: EditorSession): void {
+  private drawCursors(session: EditorSession, changes: ChangeSet | null): void {
     this.drawnCursors = this.cursorsVersion
     try {
-      this.decorations = this.buildCursors(session)
+      this.decorations = this.buildCursors(session, changes)
     } catch (error) {
       // A caret from another client that cannot be placed; the others still are.
       log.error('drawing the carets failed', error)
@@ -543,7 +559,16 @@ export class EditorBinding implements PluginValue {
     awareness.setLocalStateField('cursor', { anchor: relative(range.anchor), head: relative(range.head) })
   }
 
-  private buildCursors(session: EditorSession): DecorationSet {
+  /**
+   * The carets of the others. Someone's typing and their caret travel apart,
+   * either first: drawn by its anchor alone, their caret sat in front of the
+   * letter they had just typed until their caret came, or vanished while it
+   * named a letter not here yet - a flicker on every keystroke. So the caret
+   * of whoever typed this change moves along with it, as their own does, and
+   * one that cannot be placed yet stays where it was drawn; the next caret
+   * they send places it exactly.
+   */
+  private buildCursors(session: EditorSession, changes: ChangeSet | null): DecorationSet {
     const awareness = session.awareness
     const ydoc = session.ytext.doc
     if (!awareness || !ydoc) return Decoration.none
@@ -553,6 +578,14 @@ export class EditorBinding implements PluginValue {
       if (!absolute || absolute.type !== session.ytext) return null
       return Math.min(absolute.index, length)
     }
+    const before = this.carets
+    const moved = (clientId: number): { anchor: number; head: number } | null => {
+      const drawn = before.get(clientId)
+      if (!drawn) return null
+      if (!changes) return drawn
+      return { anchor: changes.mapPos(drawn.anchor, 1), head: changes.mapPos(drawn.head, 1) }
+    }
+    this.carets = new Map()
 
     const ranges: Range<ReturnType<typeof Decoration.mark>>[] = []
     const me = (awareness.getLocalState()?.user as CollabUser | undefined)?.id
@@ -562,9 +595,15 @@ export class EditorBinding implements PluginValue {
       const user = state.user as CollabUser | undefined
       // The same account on another device: presence is for the others.
       if (!cursor || !user || user.id === me) return
-      const anchor = toIndex(cursor.anchor)
-      const head = toIndex(cursor.head)
+      let anchor = toIndex(cursor.anchor)
+      let head = toIndex(cursor.head)
+      const along = moved(clientId)
+      if (along && (anchor === null || head === null || (changes !== null && this.remoteAuthors?.has(clientId) === true))) {
+        anchor = Math.min(along.anchor, length)
+        head = Math.min(along.head, length)
+      }
       if (anchor === null || head === null) return
+      this.carets.set(clientId, { anchor, head })
       const from = Math.min(anchor, head)
       const to = Math.max(anchor, head)
       if (from !== to) {

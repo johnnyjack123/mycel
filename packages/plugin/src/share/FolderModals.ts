@@ -385,11 +385,19 @@ export class MoveInModal extends Modal {
     const folder = baseName(question.folderPath)
     this.titleEl.setText(question.copy ? `Copy "${note}" into the shared folder?` : `Share "${note}"?`)
     const { contentEl } = this
+    const everyone = question.people.length > 0 ? `everyone the folder is shared with - ${list(question.people)} -` : 'everyone the folder is shared with'
     contentEl.createEl('p', {
       text: question.copy
-        ? `"${note}" was moved into "${folder}", a folder someone shares with you. Copied in, it becomes a note of the folder - its owner's - which ${list(question.people)} can read from then on. Your own note ends here; what it said before does not go along.`
-        : `"${note}" was moved into "${folder}", which you share with ${list(question.people)}. Shared, they see it and everything written in it from now on; what it said before stays yours.`
+        ? `"${note}" was moved into "${folder}", a folder someone shares with you. Copied in, it becomes a note of the folder, owned by the folder's owner, and ${everyone} can read it and everything written in it from then on. Your own note ends here. Its earlier versions do not go along: the folder gets the text as it is now, and its history stays with you.`
+        : `"${note}" was moved into "${folder}", which you share. Shared, ${everyone} sees it and everything written in it from now on. Its earlier versions stay yours: nobody sees what it said before.`
     })
+    if (question.files.length > 0) {
+      contentEl.createEl('p', {
+        text: `It embeds or links ${question.files.length === 1 ? 'a file' : `${question.files.length} files`} outside the folder, which go${question.files.length === 1 ? 'es' : ''} along with it - everyone in the folder gets ${question.files.length === 1 ? 'it' : 'them'}:`
+      })
+      const files = contentEl.createEl('ul', { cls: 'connect-linked-notes' })
+      for (const file of question.files) files.createEl('li', { text: file })
+    }
     contentEl.createEl('p', {
       cls: 'setting-item-description',
       text: 'Until you decide it stays here, unshared. Moved back, nobody ever sees it.'
