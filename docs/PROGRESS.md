@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-25 · **0.8.9: what the user found testing 0.8 (carets, the move-in window, sharing again, files sooner). Waiting for the user: (A) linked notes on moving in - move them along or share them once; (B) a "Time Machine" for rollbacks - the idea and when; and on which device cursors failed after a note left its folder (not reproduced).**_
+_Last updated: 2026-10-25 · **0.8.10: linked notes go along when a note moves into a shared folder, a share's end is announced once, a rollback leaves others' folder files alone. Next: the Time Machine - its design draft `docs/TIMEMACHINE.md` waits for the user's decisions (T2 to T8); nothing of it is built.**_
 
 ## Where we are
 
@@ -74,18 +74,15 @@ server reading folder notes. What is next:
    files come along). Fixed in 0.8.9: flickering carets, the move-in window's delay and
    text, the false "server has other data" after sharing again, the owner not told
    when someone leaves, files arriving late, the participant's empty rollback, a grey
-   mark. Open, waiting for the user:
-   - **A:** a note moved into a shared folder links other notes - move them in too, or
-     share them once with the folder's people (recommended, as E8)? With a list either
-     way.
-   - **B:** a "Time Machine" (a slider over every state, a live preview, *Apply*) for
-     the vault, a folder and a note. Proposed: a view of its own, never the real files -
-     every change of a file reaches all devices and people at once -, the note's preview
-     read-only in the same tab; ticks are grouped versions; *Apply* is the rollback or
-     restore with its backups. Asked: the idea, and whether it comes before 0.9 or as a
-     milestone of its own (a design document first either way).
-   - Cursors after a member moved a note out of their copy: at the start or not drawn,
-     the user said; `test:folders` draws them right. Asked which device, which view.
+   mark. The user's answers on 2026-10-25 (cursors work with 0.8.9):
+   - **A:** linked notes on moving in are shared once with the folder's people, not
+     moved in (as recommended, E8) - built in 0.8.10, with the share's end announced
+     once (it came twice on the revoked person's device).
+   - **B:** the "Time Machine" (a slider over every state, a live preview, *Apply*) for
+     the vault, a folder and a note: the idea as proposed - a view of its own, never the
+     real files, the note's preview read-only, *Apply* the rollback or restore with its
+     backups - and **before 0.9**, which stays hardening only. Its design document comes
+     first, written with the user: `docs/TIMEMACHINE.md`.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
@@ -128,7 +125,8 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing once `fix/rollback-listing` (0.8.8) is merged. Every branch of 0.8
+Nothing once `feat/move-in-linked` (0.8.10) is merged. The Time Machine is a design
+draft only. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
 `fix/fork-base`, `fix/rollback-listing`) is merged into `main` and holds nothing `main`
@@ -188,6 +186,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
+
+At 0.8.10, run 2026-10-25 on `feat/move-in-linked`: `build` passes; `test:merge`,
+`test:load` 14, `test:rooms`, `test:sync`, `test:recovery`, `test:account`,
+`test:rollback` 55, `test:backup` 228, and on a scratch server started fresh from 0.8.10
+`test:socket`, `test:vault` 243, `test:folders` 121 - all pass (the unchanged suites at
+their 0.8.9 counts).
 
 At 0.8.8, run 2026-10-23 on `fix/rollback-listing`: `build` passes; `test:merge` 171,
 `test:load` 14, `test:rooms` 374, `test:sync` 26, `test:recovery` 71, `test:account` 52,

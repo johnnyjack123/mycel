@@ -8,6 +8,39 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.10** (2026-10-25) - the notes a note links to go along when it moves into a
+  shared folder, and a share's end is announced once.
+  - **Moving a note into a shared folder offers the notes it links to** (the user's
+    decision: shared on their own, as E8 has it, not moved in). The window lists every
+    note outside the folder it reaches through links, the notes those link to included,
+    each that cannot go along with the reason - and with the switch on, they are shared
+    once with everyone in the folder who is a contact of the mover: each with the access
+    they have in the folder, the owner to edit, without earlier versions, as the note
+    itself went in. They stay where they are and land in the others' share folder at the
+    path of their link. The window says how many in the folder are not contacts and get
+    none of them (`Folders.shareAlong`).
+  - **The end of a share was announced twice** on the revoked person's device: the
+    server says it as a message and as a notice, and both said so. For a folder, every
+    note of it said so as well. One of them announces it now, and a folder's notes leave
+    it to the folder (`Sharing.onRevoked`). Checked by putting the bug back: "and says
+    so once" (`test:vault`) and "the reader is told once, for the folder"
+    (`test:folders`) failed.
+  - **Deleting someone's shared folder** announced on that very device that the share had
+    ended and the copy was kept as notes of one's own - the server's word came before its
+    answer to the leave. Leaving and keeping a copy are no news on the device that did
+    it, and another device of the account no longer says a copy was kept when nothing
+    was. Checked by putting the bug back.
+  - The window asking about a note moved in counted nobody as a stranger: 0.8.9 took
+    `Contacts.name`, which falls back to the id, for "is a contact".
+  - **A rollback left someone else's shared folder's notes alone, but not its files**:
+    planned on a member's device, a picture that came into the folder after the moment
+    was to be trashed - for everyone, from a writer. Files of a folder whose record has
+    an owner, then or now, are counted as left alone, as that folder's notes are
+    (`Rollback.planFromHistory`). Found while reading the code for the Time Machine's
+    design; checked by putting the bug back ("leaves someone else's shared folder
+    alone, its files too" failed: the picture was to be trashed).
+  - Tests: `test:vault` 243, `test:folders` 121, `test:rollback` 55.
+
 - **0.8.9** (2026-10-25) - what the user found testing 0.8 on their devices.
   - **Carets no longer flicker while someone types.** The letters and the typist's
     caret travel apart, either first. Text first, the caret sat in front of each new

@@ -63,7 +63,11 @@ The numbers are the ones the options were discussed under.
   everyone. Files outside the folder that its notes embed or link travel the way a
   shared note's do, into the share folder's `Attachments/` - if the dialog said so.
   The dialog also offers, once, the notes outside the folder that its notes link to,
-  as a note's dialog does; they land in the share folder.
+  as a note's dialog does; they land in the share folder. So does the window asking
+  about a note moved in (the user, 2026-10-25, after testing 0.8.9: shared on their own,
+  not moved in - built in 0.8.10): the notes outside the folder it links to, and theirs,
+  listed, and shared with everyone in the folder who is a contact of the mover, with
+  their access there and without history.
 
 ## What exists, and what a folder adds
 
