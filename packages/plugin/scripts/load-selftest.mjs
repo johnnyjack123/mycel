@@ -32,7 +32,7 @@ const chainable = () => {
 }
 
 // What onload registered, so the test can check it without Obsidian.
-const registered = { commands: [], editorExtensions: [], layoutReady: [] }
+const registered = { commands: [], editorExtensions: [], layoutReady: [], views: [] }
 const localStorageStub = new Map()
 
 const adapterFiles = new Map()
@@ -70,7 +70,7 @@ const obsidian = {
     addStatusBarItem() {
       return { setText: fn, addClass: fn, removeClass: fn, addEventListener: fn, empty: fn, hide: fn, show: fn, setAttribute: fn }
     }
-    registerView = fn
+    registerView = (type) => registered.views.push(type)
     addSettingTab = fn
     addRibbonIcon = fn
     addCommand = (command) => registered.commands.push(command.id)
@@ -258,6 +258,11 @@ if (exported) {
       ['share-note', 'note-access', 'shared-with-me', 'detach-note'].every((id) => registered.commands.includes(id)),
       'it registers the sharing commands',
       registered.commands
+    )
+    check(
+      registered.views.includes('obsidian-connect-time-machine') && ['time-machine', 'time-machine-note'].every((id) => registered.commands.includes(id)),
+      'it registers the Time Machine, a view of its own, and its commands',
+      { views: registered.views, commands: registered.commands }
     )
 
     try {

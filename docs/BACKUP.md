@@ -284,12 +284,14 @@ by its hash.
 
 ## Rolling back from Obsidian
 
-*Roll the vault back…* in the plugin (or *Roll this folder back…* in a folder's menu)
-takes the vault back to a moment from the history on the sync server - and where
-that no longer reaches, from the newest backup at or before that moment on a backup
-server, read back over the same encrypted connection; nothing to restore by hand.
-Before anything changes, the backup server makes a fresh backup (forgetting no older
-one this time, so the backup rolled back from stays). See the README.
+The plugin's *Time Machine* (for the vault, or a folder from its menu) takes the vault
+back to a moment from the history on the sync server - and where that no longer
+reaches, from the newest backup at or before that moment on a backup server, read back
+over the same encrypted connection; nothing to restore by hand. With *Backups too* in
+the Time Machine, every backup older than the history is a tick of its own to look at
+(this needs the backup server of 0.8.11 or newer). Before anything changes, the backup
+server makes a fresh backup (forgetting no older one this time, so the backup rolled
+back from stays). See the README.
 
 ## Restoring
 

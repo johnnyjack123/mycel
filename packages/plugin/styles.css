@@ -83,17 +83,6 @@
   white-space: nowrap;
 }
 
-/* A version of a note, rendered: room for its pictures, no code-block wrapping. */
-.connect-history-preview.connect-history-rendered {
-  max-height: 50vh;
-  white-space: normal;
-  font-size: inherit;
-}
-
-.connect-history-rendered img {
-  max-width: 100%;
-}
-
 .connect-embed-from-server {
   display: block;
   margin: 0.5em 0;
@@ -203,6 +192,283 @@
   color: var(--text-normal);
   border-bottom-color: var(--interactive-accent);
   font-weight: 600;
+}
+
+/* The Time Machine: a slider over the past, the tree as it was, the note or file as it was. */
+.connect-tm {
+  container-type: inline-size;
+}
+
+.connect-tm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+}
+
+.connect-tm-header h3 {
+  margin: 0.25em 0;
+}
+
+.connect-tm-timeline {
+  margin: 0.5em 0 1em;
+  padding: 0.75em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background-color: var(--background-secondary);
+}
+
+.connect-tm-slider {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+
+.connect-tm-track {
+  flex: 1;
+  min-width: 0;
+}
+
+.connect-tm-track input[type='range'] {
+  width: 100%;
+}
+
+/* A mark per tick under the slider, inset by half its thumb. */
+.connect-tm-marks {
+  position: relative;
+  height: 8px;
+  margin: 0 8px;
+}
+
+.connect-tm-mark-tick {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 6px;
+  margin-left: -1px;
+  background-color: var(--text-faint);
+}
+
+.connect-tm-mark-tick.is-backup {
+  height: 8px;
+  background-color: var(--color-orange);
+}
+
+.connect-tm-mark-tick.is-now {
+  background-color: var(--interactive-accent);
+}
+
+.connect-tm-label {
+  margin-top: 0.4em;
+  font-variant-numeric: tabular-nums;
+}
+
+.connect-tm-when {
+  font-weight: 600;
+}
+
+.connect-tm-what,
+.connect-tm-quiet {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.connect-tm-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  margin-top: 0.4em;
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+.connect-tm-panes {
+  display: grid;
+  grid-template-columns: minmax(12em, 1fr) 2fr;
+  gap: 1em;
+}
+
+@container (max-width: 640px) {
+  .connect-tm-panes {
+    grid-template-columns: 1fr;
+  }
+}
+
+.connect-tm-tree {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.connect-tm-preview {
+  min-width: 0;
+}
+
+.connect-tm-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.2em 0.4em;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.connect-tm-item:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.connect-tm-item.is-selected {
+  background-color: var(--background-modifier-active-hover);
+}
+
+/* Not there then: it would go. */
+.connect-tm-item.is-later .connect-tm-name {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.connect-tm-icon {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.connect-tm-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.connect-tm-folder > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.15em 0.2em;
+  cursor: pointer;
+}
+
+.connect-tm-children {
+  padding-left: 1em;
+}
+
+.connect-tm-badge {
+  padding: 0 0.4em;
+  border-radius: var(--radius-s);
+  background-color: var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: 0.75em;
+}
+
+.connect-tm-badge.is-back {
+  color: var(--color-green);
+}
+
+.connect-tm-badge.is-goes {
+  color: var(--color-red);
+}
+
+.connect-tm-badge.is-moved {
+  color: var(--color-blue);
+}
+
+.connect-tm-badge.is-changed {
+  color: var(--color-orange);
+}
+
+.connect-tm-badge.is-foreign {
+  color: var(--color-purple);
+}
+
+.connect-tm-preview-head h4 {
+  margin: 0 0 0.2em;
+}
+
+.connect-tm-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3em;
+  margin: 0.5em 0;
+}
+
+.connect-tm-modes button.is-active {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.connect-tm-note,
+.connect-tm-file {
+  max-height: 60vh;
+  overflow: auto;
+  padding: 0.6em 0.8em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+}
+
+.connect-tm-preview.is-alone .connect-tm-note {
+  max-height: none;
+}
+
+.connect-tm-rendered img {
+  max-width: 100%;
+}
+
+.connect-tm-source,
+.connect-tm-same,
+.connect-tm-gone,
+.connect-tm-back {
+  margin: 0;
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.connect-tm-same {
+  color: var(--text-muted);
+}
+
+.connect-tm-gone {
+  background-color: rgba(var(--color-red-rgb), 0.12);
+}
+
+.connect-tm-back {
+  background-color: rgba(var(--color-green-rgb), 0.12);
+}
+
+.connect-tm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1em;
+  margin-bottom: 0.5em;
+}
+
+.connect-tm-legend .connect-tm-gone,
+.connect-tm-legend .connect-tm-back {
+  padding: 0 0.4em;
+  border-radius: var(--radius-s);
+}
+
+.connect-tm-actions {
+  margin-top: 1em;
+  padding-top: 0.75em;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.connect-tm-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em;
+  margin-bottom: 0.4em;
+}
+
+.connect-tm-rollbacks {
+  margin-top: 0.75em;
+}
+
+.connect-tm-rollback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25em 1em;
+  padding: 0.4em 0;
+  border-bottom: 1px solid var(--background-modifier-border);
 }
 
 /* What a rollback changes, one list per kind, folded. */

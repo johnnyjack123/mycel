@@ -1,6 +1,5 @@
 import { App, Modal, Notice, Setting } from 'obsidian'
 import { busy } from '../busy.js'
-import type { AccountSettings, RollbackRecord } from '../sync/AccountSettings.js'
 import {
   IndexOutOfReach,
   Rollback,
@@ -11,12 +10,12 @@ import {
 } from '../sync/Rollback.js'
 import { log } from '../log.js'
 
-// Rolling the vault or one folder back to a moment: choosing it, seeing what
-// changes, the backups and the copy first, then the rollback - and undoing
-// an earlier one. The work is `Rollback`'s; this only asks and shows.
+// Taking a moment the Time Machine shows over, for the vault or one folder:
+// what changes, the backups and the copy first, then the rollback. The work
+// is `Rollback`'s; this only asks and shows. The moment comes from the
+// Time Machine's slider, or from an earlier rollback to undo.
 
 type Step =
-  | { kind: 'choose' }
   | { kind: 'planning'; done: number; of: number }
   | { kind: 'review'; plan: RollbackPlan }
   | { kind: 'working'; plan: RollbackPlan; message: string }
@@ -29,16 +28,8 @@ function when(ms: number): string {
   return new Date(ms).toLocaleString()
 }
 
-/** A local date and time for `<input type="datetime-local">`. */
-function inputValue(ms: number): string {
-  const date = new Date(ms - new Date(ms).getTimezoneOffset() * 60_000)
-  return date.toISOString().slice(0, 16)
-}
-
-export class RollbackModal extends Modal {
-  private step: Step = { kind: 'choose' }
-  private moment = Date.now() - 60 * 60 * 1000
-  private reach: number | null = null
+export class ApplyModal extends Modal {
+  private step: Step = { kind: 'planning', done: 0, of: 0 }
   private withoutOutOfReach = false
   private closed = false
 
@@ -46,22 +37,17 @@ export class RollbackModal extends Modal {
     app: App,
     private readonly rollback: Rollback,
     private readonly backups: BackupServers | null,
-    private readonly settings: AccountSettings,
     /** '' for the whole vault. */
-    private folder: string
+    private readonly folder: string,
+    private readonly moment: number,
+    /** Called once the rollback went through, with or without problems. */
+    private readonly applied: () => void = () => undefined
   ) {
     super(app)
   }
 
   onOpen(): void {
-    this.render()
-    void this.rollback.reach().then(
-      (reach) => {
-        this.reach = reach
-        if (this.step.kind === 'choose') this.render()
-      },
-      (error: unknown) => log.warn('asking how far the history reaches failed', error)
-    )
+    void this.plan()
   }
 
   private go(step: Step): void {
@@ -76,11 +62,8 @@ export class RollbackModal extends Modal {
   private render(): void {
     const { contentEl } = this
     contentEl.empty()
-    this.titleEl.setText(this.folder ? `Roll back ${this.folder}` : 'Roll back the vault')
+    this.titleEl.setText(`${this.folder || 'The vault'} back to ${when(this.moment)}`)
     switch (this.step.kind) {
-      case 'choose':
-        this.renderChoose()
-        return
       case 'planning':
         contentEl.createEl('p', {
           text: this.step.of > 0 ? `Reading the history… ${this.step.done} of ${this.step.of} notes` : 'Reading the history…'
@@ -102,74 +85,7 @@ export class RollbackModal extends Modal {
     }
   }
 
-  private renderChoose(): void {
-    const { contentEl } = this
-    contentEl.createEl('p', {
-      text: `Everything in ${this.where} goes back to how it was at the moment you choose: notes get their text then, what came later goes to the trash, what was deleted since comes back. As changes - every device follows, and the rollback itself can be undone. Notes others share with you stay as they are.`
-    })
-    contentEl.createEl('p', {
-      cls: 'setting-item-description',
-      text:
-        this.reach === null
-          ? 'Asking how far the history reaches…'
-          : this.reach === 0
-            ? 'The history on the server reaches back to the beginning.'
-            : `The history on the server reaches back to ${when(this.reach)}.${
-                (this.backups?.servers().length ?? 0) > 0 ? ' Further back, the backups on your backup servers fill in.' : ''
-              }`
-    })
-    const input = new Setting(contentEl).setName('Back to').addText((text) => {
-      text.inputEl.type = 'datetime-local'
-      text.setValue(inputValue(this.moment)).onChange((value) => {
-        const parsed = new Date(value).getTime()
-        if (Number.isFinite(parsed)) this.moment = parsed
-      })
-    })
-    const quick = (label: string, ms: number): void => {
-      input.addButton((button) =>
-        button.setButtonText(label).onClick(() => {
-          this.moment = ms
-          this.render()
-        })
-      )
-    }
-    const now = Date.now()
-    quick('An hour ago', now - 60 * 60 * 1000)
-    quick('A day ago', now - 24 * 60 * 60 * 1000)
-    quick('A week ago', now - 7 * 24 * 60 * 60 * 1000)
-    new Setting(contentEl).addButton((button) =>
-      button
-        .setButtonText('Show what changes')
-        .setCta()
-        .onClick(() => void this.plan())
-    )
-
-    const records = this.settings.rollbacks().slice(0, 5)
-    if (records.length === 0) return
-    new Setting(contentEl).setName('Earlier rollbacks').setHeading()
-    for (const record of records) this.recordRow(record)
-  }
-
-  private recordRow(record: RollbackRecord): void {
-    const state = record.state === 'done' ? 'done' : record.state === 'failed' ? `with problems: ${record.error ?? ''}` : 'broke off, or still running'
-    new Setting(this.contentEl)
-      .setName(`${record.folder || 'The vault'} back to ${when(record.to)}`)
-      .setDesc(`On ${when(record.startedAt)}: ${record.notes} notes, ${record.files} files - ${state}`)
-      .addButton((button) =>
-        button.setButtonText('Undo…').onClick(() => {
-          // To just before it began, in the same place.
-          this.folder = record.folder
-          this.moment = record.startedAt - 1
-          void this.plan()
-        })
-      )
-  }
-
   private async plan(): Promise<void> {
-    if (this.moment >= Date.now()) {
-      new Notice('Choose a moment in the past.')
-      return
-    }
     this.withoutOutOfReach = false
     this.go({ kind: 'planning', done: 0, of: 0 })
     try {
@@ -178,11 +94,11 @@ export class RollbackModal extends Modal {
       })
       this.go({ kind: 'review', plan })
     } catch (error) {
-      this.go({ kind: 'choose' })
+      this.close()
       if (error instanceof IndexOutOfReach) {
         new Notice(
           (this.backups?.servers().length ?? 0) > 0
-            ? `The history on the server reaches back to ${when(error.reach)} only, and no backup server has a backup from before the moment you chose.`
+            ? `The history on the server reaches back to ${when(error.reach)} only, and no backup server has a backup from before ${when(this.moment)}.`
             : `The history on the server reaches back to ${when(error.reach)} only. A backup server would reach further - see the Backups tab.`,
           12_000
         )
@@ -213,10 +129,10 @@ export class RollbackModal extends Modal {
             ? `Nothing in ${this.where} that is yours differs from ${when(plan.to)}. The ${plan.foreignKept} notes or files in it others share with you are not rolled back from here: that would change them for their owner and everyone else too. Their owner can roll them back.`
             : `Nothing in ${this.where} differs from ${when(plan.to)}.`
       })
-      new Setting(contentEl).addButton((button) => button.setButtonText('Back').onClick(() => this.go({ kind: 'choose' })))
+      new Setting(contentEl).addButton((button) => button.setButtonText('Close').onClick(() => this.close()))
       return
     }
-    contentEl.createEl('p', { text: `Back to ${when(plan.to)}, ${this.where}:` })
+    contentEl.createEl('p', { text: `Everything in ${this.where} goes back to how it was then, as changes every device follows. This changes:` })
     if (plan.backup) {
       const source = `the backup of ${when(plan.backup.ref.notes.time)} on ${plan.backup.label}`
       contentEl.createEl('p', {
@@ -278,7 +194,7 @@ export class RollbackModal extends Modal {
           : "No backup server is connected: before anything changes, only a copy of everything that changes goes into the plugin's folder."
     })
     new Setting(contentEl)
-      .addButton((button) => button.setButtonText('Back').onClick(() => this.go({ kind: 'choose' })))
+      .addButton((button) => button.setButtonText('Cancel').onClick(() => this.close()))
       .addButton((button) =>
         button
           .setButtonText('Roll back')
@@ -332,10 +248,11 @@ export class RollbackModal extends Modal {
       new Notice(
         outcome.problems.length === 0
           ? `Obsidian Connect: ${this.where} is back to ${when(plan.to)}.`
-          : `Obsidian Connect: rolled back to ${when(plan.to)}, with ${outcome.problems.length} problem(s) - see the rollback window or the log.`,
+          : `Obsidian Connect: rolled back to ${when(plan.to)}, with ${outcome.problems.length} problem(s) - see the window or the log.`,
         10_000
       )
       this.go({ kind: 'done', outcome })
+      this.applied()
     } catch (error) {
       log.error('the rollback failed', error)
       new Notice(`The rollback failed: ${error instanceof Error ? error.message : String(error)}`, 10_000)
@@ -353,7 +270,7 @@ export class RollbackModal extends Modal {
     }
     contentEl.createEl('p', {
       cls: 'setting-item-description',
-      text: `What changed, as it was before, lies in ${outcome.copy}. To undo the rollback, open this window again and choose "Undo…" next to it.`
+      text: `What changed, as it was before, lies in ${outcome.copy}. To undo the rollback, choose "Undo…" next to it in the Time Machine.`
     })
     new Setting(contentEl).addButton((button) => button.setButtonText('Close').setCta().onClick(() => this.close()))
   }

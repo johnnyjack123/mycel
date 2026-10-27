@@ -27,7 +27,7 @@ the server in **`docs/SERVER.md`**. Where the work stands and what is next:
 **`docs/PROGRESS.md`**; what each version changed and how its fixes were verified:
 **`docs/CHANGELOG.md`**. The backup server (0.7) is specified in **`docs/PHASE6.md`**,
 running it in **`docs/BACKUP.md`**; sharing a folder and the small fixes of 0.8 in
-**`docs/PHASE7.md`**; the Time Machine (before 0.9, a draft until the user decided) in
+**`docs/PHASE7.md`**; the Time Machine (0.8.11, the user's decisions T1 to T8) in
 **`docs/TIMEMACHINE.md`**.
 A new milestone gets its design document (`docs/PHASE8.md` for 0.9) written with the
 user before it is built.
@@ -355,8 +355,8 @@ and the server holds immutable blobs of its versions:
   was written into it (within 5 s, file open in a leaf) is not taken as an
   edit on top: that version is kept next to it (`keepTheirsAside`).
 - The trash lists notes and files (command, settings, every folder's menu); a
-  file's menu has "Version history", like a note's; a note's history renders each version,
-  pictures deleted since shown from the trash. The trash pass also cleans up:
+  file's menu has "Version history" (its earlier contents); a note's Time Machine renders
+  each version, pictures deleted since shown from the trash. The trash pass also cleans up:
   content no live entry, recent tombstone or lasting version names goes, and
   only what the server confirms gone leaves the index.
   The server keeps a blob 10 minutes past its last upload whatever it is asked, and a
@@ -472,7 +472,7 @@ people: whoever runs it can read the vaults on it.
   opens (`refreshAccount`). A field with the focus is never rebuilt under the
   cursor; the tab waits for it to lose the focus.
 - **The note's menus** (its "…" menu, the file explorer, the editor's right
-  click) carry sharing, access, detaching, history and "Compare versions", in
+  click) carry sharing, access, detaching, the Time Machine and "Compare versions", in
   a section of their own under a label with the plugin's name (Obsidian's menus
   have no headings, and its submenus are not public API).
 
@@ -629,7 +629,19 @@ the server lost it. Retention is account-wide; the owner's
 and uploads it; the server drops those frames only then, and keeps a member's
 join snapshot while it is still their starting point.
 
-**Rolling back** (`sync/Rollback.ts`, `history/RollbackModal.ts`, 0.7.8): the vault
+**The Time Machine** (0.8.11, `docs/TIMEMACHINE.md`): a tab of its own
+(`history/TimeMachineView.ts`) with a slider over the past of the vault, a folder or a
+note - a tick per version of a note, per change of a folder or the vault (less than five
+minutes apart as one), and, behind a switch kept on the device, the backups older than
+the history. Sliding never touches the vault: it shows the tree as it was (marked
+against now) and the chosen note or file as it was. The ticks come without reading a
+note (`history/Timeline.ts`): the vault index's history walked once into events, and
+the minutes in which the server took each note's frames (`GET /times`); a note's text is
+replayed forward from where it stood and back from a checkpoint (`Replay`). It changes
+the vault only by *Apply* - the rollback below, `history/ApplyModal.ts` -, *Restore this
+version* (a note, a backup of its text first) or *Restore just this note/file*.
+
+**Rolling back** (`sync/Rollback.ts`, applied from the Time Machine, 0.7.8): the vault
 or a folder back to a moment. The index replayed to it (`history/RoomHistory.ts`)
 and each note's history give the plan; a fresh backup on the backup server
 (`Backups.backUpFresh`) and a copy into the plugin's `rollbacks/` come first -
@@ -667,7 +679,7 @@ npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart 
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
-npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices — in-process server
+npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by OBSIDIAN_CONNECT_RESTIC (where it lies here: docs/PROGRESS.md)
 # needs a server that lets tests create accounts:
@@ -692,7 +704,8 @@ is replaced through `paths` in `scripts/tsconfig.json`.
 Obsidian's saves and reloads, IndexedDB, `requestUrl` (binary bodies too, on
 mobile), `localStorage`, the modals and the settings tab, Obsidian's binary
 file events and link resolution, memory with large files on a phone, the QR code
-scanned by an authenticator app and the `otpauth://` link opening one.
+scanned by an authenticator app and the `otpauth://` link opening one, the Time
+Machine's view (an `ItemView`: the slider, the tree, the preview, its buttons).
 
 ## Gotchas
 

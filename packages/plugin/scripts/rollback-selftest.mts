@@ -16,6 +16,7 @@ const { IndexOutOfReach, Rollback, RollbackRefused } = await import('../src/sync
 const { RoomHistory } = await import('../src/history/RoomHistory.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
 const { VaultTimeline } = await import('../src/history/Timeline.js')
+const { ApiError } = await import('../src/account/api.js')
 const { docRoom } = await import('@obsidian-connect/shared')
 
 const root = mkdtempSync(join(tmpdir(), 'oc-rollback-selftest-'))
@@ -199,6 +200,20 @@ try {
       archive
     )
     check(timeline.ticks('Keep', 1).every((tick) => tick.last < T), 'and a folder nothing changed in since has no tick after it')
+    const olderServer = await VaultTimeline.load({
+      api: {
+        log: (room: string) => A1.api.log(room),
+        frameTimes: async () => {
+          throw new ApiError(404, 'not found')
+        }
+      },
+      vaultId: keys.vaultId,
+      indexCrypto: keys.indexCrypto()
+    })
+    check(
+      olderServer.withoutTimes && !timeline.withoutTimes && olderServer.ticks('', 1).length > 0,
+      'a server before 0.8.11 cannot say when notes were edited: the ticks come from the index alone, and the timeline says so'
+    )
     const ideas = A1.index?.docIdForPath('Archive/Ideas.md') as string
     check(timeline.pathAt(ideas, T) === 'Ideas.md' && timeline.pathAt(ideas, Date.now()) === 'Archive/Ideas.md', 'it knows where a note was at a moment')
     const welcome = A1.index?.docIdForPath('Welcome.md') as string

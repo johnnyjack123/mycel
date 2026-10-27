@@ -150,18 +150,20 @@ start in the note (`fromSeq`). A loaded log answers from memory; any other is re
 **The backup server: `backupTimes`** (a session call). The times of the vault's notes
 snapshots, over its repositories, ascending. A tick's backup is then `backupAt(time)`.
 
-**The timeline** (`history/Timeline.ts`):
-- `NoteTimeline` - one note's history (it replaces `NoteHistory`): its versions as
-  ticks, and the text at any moment, replayed forward from where it stood and from a
-  checkpoint every 200 changes when going back.
+**The timeline** (`history/Timeline.ts`, `history/NoteHistory.ts`, `history/RoomHistory.ts`):
+- `NoteHistory` - one note's history: its versions as ticks, and the text at any
+  moment, replayed forward from where it stood and from a checkpoint every 200 changes
+  when going back (`Replay`).
 - `VaultTimeline` - the vault index's history walked once into a list of entry events
   (a note or file added, moved, deleted, its content changed), the minutes from
   `/times`, and the ticks of the vault or one folder from both: every moment a note or
   file in it changed, its path then decided by the events; moments less than five
-  minutes apart are one tick, which shows the state a minute after its last change
-  (the server's minutes are rounded down, and an author's clock may run ahead). The
-  entries at any moment are the events replayed - no document is replayed for a tick.
-  Whether a note changed after a moment comes from the minutes.
+  minutes apart are one tick, which shows the state two minutes after its last change,
+  before the next tick's first (the server's minutes are rounded down, and an author's
+  clock may run ahead). The entries at any moment are the events replayed - no document
+  is replayed for a tick. Whether a note changed after a moment comes from the minutes.
+  A server before 0.8.11 answers `/times` with 404: then only the index's events make
+  ticks, and the view says so.
 - Text at a tick goes by the authors' clocks, as the rollback does.
 
 **The view** (`history/TimeMachineView.ts`, an `ItemView`): a slider over the ticks with
@@ -178,6 +180,7 @@ rollbacks with *Undo…*. Opened from a note's and a folder's menu, the command 
 **Backups as ticks** (the switch): the backup runs further back than the history
 reaches, drawn apart. The tree comes from the backup's listing, by path, a note's text
 from the backup; *Apply* is the rollback to that moment, which reads the backup itself.
+A note's own Time Machine reads its backups by the path the note has now.
 
 Tested: `/times` in `test:rooms`, `backupTimes` in `test:backup`, the timeline -
 ticks of the vault and of a folder, entries and texts at a tick, a note's ticks - in
