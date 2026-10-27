@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-25 · **0.8.10: linked notes go along when a note moves into a shared folder, a share's end is announced once, a rollback leaves others' folder files alone. Next: the Time Machine - its design draft `docs/TIMEMACHINE.md` waits for the user's decisions (T2 to T8); nothing of it is built.**_
+_Last updated: 2026-10-27 · **0.8.11: the Time Machine - a tab with a slider over the past of the vault, a folder or a note, *Apply* through the rollback, backups as ticks behind a switch; the old *Version history* of notes and *Roll back…* replaced. Next: the user tries it on their devices (server and backup server first); then 0.9's design.**_
 
 ## Where we are
 
@@ -83,6 +83,15 @@ server reading folder notes. What is next:
      real files, the note's preview read-only, *Apply* the rollback or restore with its
      backups - and **before 0.9**, which stays hardening only. Its design document comes
      first, written with the user: `docs/TIMEMACHINE.md`.
+7. The user decided T2 to T8 on 2026-10-27 (`docs/TIMEMACHINE.md`, "Decided"): five
+   minutes, the server route, *Restore just this note*, backups as ticks behind a switch,
+   the old windows replaced at once. Built as 0.8.11 in one go (the user tests it as a
+   whole). To try, **sync server and backup server first** (`/times`, `backupTimes`),
+   then every device: the Time Machine of a note (slide, *Text*, *Changes against now*,
+   *Restore this version*), of a folder and of the vault (the tree, *Only what differs*,
+   a picture as it was, *Restore just this note*, *Apply…* with its list and backups,
+   *Undo…*), *Backups too*, a shared folder of someone else (looked at, not applied),
+   the view on the phone, and the tab staying open over a restart of Obsidian.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
@@ -125,13 +134,12 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing once `feat/move-in-linked` (0.8.10) is merged. The Time Machine is a design
-draft only. Every branch of 0.8
+Nothing once `feat/time-machine` (0.8.11) is merged. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
-`fix/fork-base`, `fix/rollback-listing`) is merged into `main` and holds nothing `main`
-lacks; they are still on the remote - deleting them is the user's call, as with the
-earlier branches.
+`fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`) is merged into `main`
+and holds nothing `main` lacks; they are still on the remote - deleting them is the
+user's call, as with the earlier branches.
 
 ## Decisions made (not visible in the code)
 
@@ -162,7 +170,12 @@ earlier branches.
 
 - **Only on a device** (untestable headless): menus, modals, the settings tab, the
   status bar marks, the header lock, `requestUrl` with binary bodies on mobile, binary
-  file events, `file-open` fetching, memory with large files on a phone.
+  file events, `file-open` fetching, memory with large files on a phone, the Time
+  Machine's view (0.8.11: its layout on a phone, the slider, a large vault's tree).
+- The Time Machine's ticks of a folder or the vault go by the server's minutes for edits
+  (rounded down, by its clock) and by the authors' clocks for the rest, so an edit made
+  in the minute a note moved into a folder can make a tick of that folder; *changed
+  since* is a hint by those minutes - *Changes against now* and *Apply*'s list are exact.
 - Notes beyond `maxLoadedDocuments` (500) get no live updates until opened or the next
   start (0.9). Raising the setting is the workaround: about 6 to 32 KB per loaded note
   of 3000 characters, plus an IndexedDB database and a subscription each.
@@ -186,6 +199,13 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
+
+At 0.8.11, run 2026-10-27 on `feat/time-machine`: `typecheck` and `build` pass;
+`test:merge` 174, `test:load` 15, `test:rooms` 379, `test:sync` 31, `test:recovery`
+72, `test:account` 52, `test:rollback` 65, `test:backup` 229, and on a scratch
+server started fresh from 0.8.11 `test:socket` 19, `test:vault` 243, `test:folders` 121 -
+all pass. `test:backup` failed three of the guard's checks once, run right after the
+other suites (memory, see Known issues; nothing of the guard changed) - alone it passed.
 
 At 0.8.10, run 2026-10-25 on `feat/move-in-linked`: `build` passes; `test:merge`,
 `test:load` 14, `test:rooms`, `test:sync`, `test:recovery`, `test:account`,
