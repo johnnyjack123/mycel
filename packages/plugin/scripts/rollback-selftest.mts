@@ -14,6 +14,9 @@ const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
 const { IndexOutOfReach, Rollback, RollbackRefused } = await import('../src/sync/Rollback.js')
 const { RoomHistory } = await import('../src/history/RoomHistory.js')
+const { NoteHistory } = await import('../src/history/NoteHistory.js')
+const { VaultTimeline } = await import('../src/history/Timeline.js')
+const { ApiError } = await import('../src/account/api.js')
 const { docRoom } = await import('@obsidian-connect/shared')
 
 const root = mkdtempSync(join(tmpdir(), 'oc-rollback-selftest-'))
@@ -161,6 +164,74 @@ try {
   check(file('Bilder/Move.png')?.move === true && file('Bilder/One.png')?.move === true, 'and moves back one that moved, and two that swapped')
   check(progress.length > 1 && progress.at(-1)?.[0] === progress.at(-1)?.[1], 'and says how far reading the history got')
   check(snapshot(A1).size === changed.size && sameVault(changed, snapshot(A1)).length === 0, 'planning changes nothing')
+
+  // --- the Time Machine's timeline -------------------------------------------------------------------
+  {
+    const keys = A1.keys as NonNullable<typeof A1.keys>
+    const timeline = await VaultTimeline.load({ api: A1.api, vaultId: keys.vaultId, indexCrypto: keys.indexCrypto() })
+    const livePaths = (past: ReturnType<typeof timeline.stateAt>): string[] =>
+      [...past.notes.values(), ...past.files.values()]
+        .filter((entry) => !entry.deletedAt)
+        .map((entry) => entry.path)
+        .sort()
+    const sorted = (paths: Iterable<string>): string[] => Array.from(paths).sort()
+    check(JSON.stringify(livePaths(timeline.stateAt(T))) === JSON.stringify(sorted(before.keys())), 'the timeline knows every note and file the vault had at a moment', {
+      then: livePaths(timeline.stateAt(T)),
+      before: sorted(before.keys())
+    })
+    const ticks = timeline.ticks()
+    const latest = ticks.at(-1) as NonNullable<(typeof ticks)[number]>
+    check(
+      ticks.length === 1 && latest.last >= T && JSON.stringify(livePaths(timeline.stateAt(latest.at))) === JSON.stringify(sorted(changed.keys())),
+      "changes less than five minutes apart are one tick, which shows the vault after them",
+      { ticks, at: livePaths(timeline.stateAt(latest.at)), now: sorted(changed.keys()) }
+    )
+    const fine = timeline.ticks('', 1)
+    check(
+      fine.length > 1 && fine.every((tick, i) => tick.last <= tick.at && (i === 0 || (fine[i - 1] as typeof tick).at < tick.from)),
+      'with a shorter pause there are more ticks, in order, each showing the state after its changes and before the next',
+      fine
+    )
+    const archive = timeline.ticks('Archive', 1)
+    // The server's times of a note's edits are rounded down to the minute, and here it moved in within the minute of the moment.
+    check(
+      archive.some((tick) => tick.from > T) && archive.every((tick) => tick.last >= T - (T % 60_000)),
+      "a folder's ticks are when something in it changed - here a note moved in after the moment",
+      archive
+    )
+    check(timeline.ticks('Keep', 1).every((tick) => tick.last < T), 'and a folder nothing changed in since has no tick after it')
+    const olderServer = await VaultTimeline.load({
+      api: {
+        log: (room: string) => A1.api.log(room),
+        frameTimes: async () => {
+          throw new ApiError(404, 'not found')
+        }
+      },
+      vaultId: keys.vaultId,
+      indexCrypto: keys.indexCrypto()
+    })
+    check(
+      olderServer.withoutTimes && !timeline.withoutTimes && olderServer.ticks('', 1).length > 0,
+      'a server before 0.8.11 cannot say when notes were edited: the ticks come from the index alone, and the timeline says so'
+    )
+    const ideas = A1.index?.docIdForPath('Archive/Ideas.md') as string
+    check(timeline.pathAt(ideas, T) === 'Ideas.md' && timeline.pathAt(ideas, Date.now()) === 'Archive/Ideas.md', 'it knows where a note was at a moment')
+    const welcome = A1.index?.docIdForPath('Welcome.md') as string
+    // To the minute: the server's times say no more.
+    check(timeline.editedAfter(welcome, T) && !timeline.editedAfter(welcome, Date.now() + 120_000), "and, from the server's minutes, whether a note was edited after it")
+
+    const history = new NoteHistory(A1.api, docRoom(welcome), keys.ownDocCrypto(welcome), 1)
+    await history.load()
+    const texts = [history.textAtTime(T), history.textAtTime(Date.now()), history.textAtTime(T)]
+    check(texts.join('|') === 'hello\n|hello, changed\n|hello\n', "a note's text at a moment, forward and back again", texts)
+    const noteTicks = history.ticks()
+    check(
+      noteTicks.length >= 2 && history.textAtTime((noteTicks.at(-1) as (typeof noteTicks)[number]).at) === 'hello, changed\n',
+      "a note's ticks are its versions, the last one its text now",
+      noteTicks
+    )
+    history.destroy()
+  }
   {
     // The server lists the notes it saw change since the moment; the others stayed
     // where they were and are not read. Same clock here, so no margin for it.

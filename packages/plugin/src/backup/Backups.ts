@@ -485,6 +485,12 @@ export class Backups {
     return session.call<BackupSnapshotRef | null>('backupAt', { at }, READ_TIMEOUT_MS)
   }
 
+  /** When the vault's notes were backed up on that backup server, oldest first. */
+  async backupTimes(routeId: string): Promise<number[]> {
+    const session = await this.session(routeId)
+    return session.call<number[]>('backupTimes', {}, READ_TIMEOUT_MS)
+  }
+
   /** Every note and file that backup holds, by path, with its SHA-256. */
   async backupListing(routeId: string, ref: BackupSnapshotRef): Promise<BackupListedEntry[]> {
     const session = await this.session(routeId)

@@ -57,6 +57,26 @@ export async function snapshotAt(
   return best
 }
 
+/**
+ * When this vault's notes were backed up, over its repositories, oldest first -
+ * the Time Machine's ticks further back than the history. Each leads to its
+ * backup through `snapshotAt`.
+ */
+export async function snapshotTimes(restic: Restic, destinations: readonly Destination[], vaultId: string): Promise<number[]> {
+  const times = new Set<number>()
+  for (const destination of destinations) {
+    try {
+      for (const snapshot of await restic.snapshots(repoOf(destination), 'notes')) {
+        const time = Date.parse(snapshot.time)
+        if (Number.isFinite(time) && snapshot.paths.some((path) => path.split(/[\\/]/).includes(vaultId))) times.add(time)
+      }
+    } catch {
+      // the next repository
+    }
+  }
+  return Array.from(times).sort((a, b) => a - b)
+}
+
 /** Every note and file a backup holds, by its path in the vault, with its size and SHA-256. */
 export async function listBackup(restic: Restic, destination: Destination, ref: BackupSnapshotRef): Promise<BackupListedEntry[]> {
   const entries = new Map<string, BackupListedEntry>()

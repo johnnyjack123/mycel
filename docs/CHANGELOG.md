@@ -8,6 +8,41 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.11** (2026-10-27) - **the Time Machine** (`docs/TIMEMACHINE.md`, the user's
+  decisions of 2026-10-27). Wants the sync server of 0.8.11 (`GET /times`) - with an
+  older one only notes and files added, moved or deleted make ticks, and the view says
+  so -; *Backups too* needs the backup server of 0.8.11 (`backupTimes`).
+  - **A tab of its own** for the vault, a folder or a note (the note's or folder's menu,
+    two commands, *All devices*): a slider over the past with a tick per version of a
+    note, or per change of a folder or the vault - those less than five minutes apart
+    as one -, *earlier*/*later*/*Now*. Sliding changes nothing in the vault. The vault
+    or a folder shows its tree as it was, by default only what differs from now
+    (*deleted since*, *added since*, *moved*, *changed*); a note is shown rendered -
+    its pictures as they were then -, as text, or as its changes against now; a
+    picture as it was.
+  - **Apply…** is the rollback of 0.7.8 to the tick's moment, with its list, its backups
+    and its gate (`history/ApplyModal.ts`, what is left of `RollbackModal`); *Restore
+    this version* for a note (a backup of its text first); *Restore just this note* /
+    *this file* in the vault's or a folder's view; the earlier rollbacks with *Undo…*.
+    Someone else's folder can be looked at, not applied; a note shared to read only
+    cannot be restored.
+  - **Backups too** (a switch, off unless turned on, kept on the device): the backup
+    server's backups older than the history are ticks of their own, read by path.
+  - **The ticks without reading every note:** the server lists per note room the
+    minutes its frames arrived in, only frames the caller may read, from memory or the
+    headers of `log.bin` (`RoomHub.frameTimes`); the device walks the vault index's
+    history once into events (`VaultTimeline`). A note's text at a moment is replayed
+    forward from where it stood and back from a checkpoint (`Replay`), not from the
+    start each time.
+  - **Replaced** (the user: not in productive use yet): *Version history* of a note and
+    *Roll back…* are gone; a file's *Version history* stays.
+  - Tests: `test:rooms` 379 (the minutes, who may hear them, from disk after a restart),
+    `test:merge` 174 (the replay against one from the start, forward and back, from a
+    snapshot), `test:rollback` 65 (the entries at a moment, ticks of the vault and of a
+    folder, where a note was, edited since, a note's text forward and back, a server
+    without `/times`), `test:backup` 229 (when the vault was backed up), `test:load` 15
+    (the view and its commands registered). The view itself only on a device.
+
 - **0.8.10** (2026-10-25) - the notes a note links to go along when it moves into a
   shared folder, and a share's end is announced once.
   - **Moving a note into a shared folder offers the notes it links to** (the user's

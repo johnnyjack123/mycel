@@ -15,6 +15,7 @@ import {
 } from '@obsidian-connect/shared'
 import * as e2e from '@obsidian-connect/shared/crypto'
 import { hashWasmArgon2id } from '../src/account/argon2.js'
+import { Replay } from '../src/history/RoomHistory.js'
 import { additiveEdits, reconcile } from '../src/sync/Reconciler.js'
 
 const failures: string[] = []
@@ -931,6 +932,38 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     const answered = await e2e.answerSession(keys.psk, otherHello)
     check(await refuses(() => e2e.finishSession(other.psk, otherPending, answered.answer)), "another route's secret does not open a session on this one")
   }
+}
+
+// --- the Time Machine's replay -----------------------------------------------
+{
+  const source = new Y.Doc()
+  const steps: Array<{ seq: number; ts: number; update: Uint8Array }> = []
+  source.on('update', (update: Uint8Array) => steps.push({ seq: steps.length + 1, ts: 1_000 + steps.length * 10, update }))
+  const text = source.getText(CONTENT_FIELD)
+  for (let i = 0; i < 450; i += 1) {
+    if (i % 7 === 3 && text.length > 10) text.delete((i * 17) % (text.length - 3), 3)
+    else text.insert(text.length === 0 ? 0 : (i * 31) % text.length, `${i} `)
+  }
+  const fromStart = (count: number): string => {
+    const doc = new Y.Doc()
+    for (const step of steps.slice(0, count)) Y.applyUpdate(doc, step.update)
+    const result = doc.getText(CONTENT_FIELD).toString()
+    doc.destroy()
+    return result
+  }
+  // Past a checkpoint and back before it, forward again, to the start and the end.
+  const replay = new Replay(null, steps)
+  const wrong = [450, 10, 399, 401, 200, 199, 0, 450, 205, 3].filter((count) => replay.to(count).getText(CONTENT_FIELD).toString() !== fromStart(count))
+  check(wrong.length === 0, "the Time Machine's replay gives the text a replay from the start gives, sliding forward and back", wrong)
+  check(replay.countAt(1_000 + 99 * 10) === 100 && replay.countAt(0) === 0 && replay.countAt(Number.POSITIVE_INFINITY) === 450, 'and counts the changes made up to a moment')
+  replay.destroy()
+  const compacted = new Replay({ seq: 100, ts: 1_990, update: Y.mergeUpdates(steps.slice(0, 100).map((step) => step.update)) }, steps.slice(100))
+  check(
+    compacted.to(0).getText(CONTENT_FIELD).toString() === fromStart(100) && compacted.to(350).getText(CONTENT_FIELD).toString() === fromStart(450),
+    'also from a snapshot'
+  )
+  compacted.destroy()
+  source.destroy()
 }
 
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)

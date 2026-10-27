@@ -23,6 +23,7 @@ import {
   type AccountKeyResponse,
   type AuthConfigResponse,
   type ChangedResponse,
+  type TimesResponse,
   type CompactableResponse,
   type ContactCodeInfo,
   type ContactCodeRequest,
@@ -858,6 +859,15 @@ export function createHttpApp(
     const since = Number(request.query.since)
     if (!Number.isFinite(since)) return reply.code(400).send({ error: 'since is required' })
     const response: ChangedResponse = { rooms: await hub.changedSince(accountId, request.query.vaultId ?? '', since) }
+    return response
+  })
+
+  app.get<{ Querystring: { vaultId?: string; since?: string } }>(API.times, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    const since = Number(request.query.since ?? 0)
+    if (!Number.isFinite(since)) return reply.code(400).send({ error: 'since must be a number' })
+    const response: TimesResponse = { rooms: await hub.frameTimes(accountId, request.query.vaultId ?? '', since) }
     return response
   })
 

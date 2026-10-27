@@ -43,6 +43,7 @@ import type { ContactStore } from './contacts.js'
 import type { FolderKept, ForkStore } from './forks.js'
 import {
   RoomLog,
+  frameTimesOf,
   loadAllMeta,
   roomDir,
   saveMetaOf,
@@ -1516,6 +1517,38 @@ export class RoomHub {
       if (at >= since) rooms.push(meta.room)
     }
     return rooms
+  }
+
+  /**
+   * The minutes in which the vault's notes took frames, at or after `since`,
+   * by this server's clock - the Time Machine's ticks, which would otherwise
+   * read every note's log. Only frames the caller may read, and nothing the
+   * account's devices could not tell from those logs.
+   */
+  async frameTimes(account: string, vault: string, since: number): Promise<Record<string, number[]>> {
+    await this.ready
+    const times: Record<string, number[]> = {}
+    for (const meta of Array.from(this.metas.values())) {
+      if (roomKind(meta.room) !== 'doc' || !this.belongsTo(meta, account, vault)) continue
+      const access = this.access(meta, account)
+      if (!access || access === 'revoked') continue
+      let frames: Array<{ seq: number; ts: number }> | undefined = this.rooms.get(meta.room)?.log.frames
+      if (!frames) {
+        try {
+          if ((await stat(join(roomDir(this.options.dataDir, meta), 'log.bin'))).mtimeMs < since) continue
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          continue
+        }
+        frames = await frameTimesOf(this.options.dataDir, meta)
+      }
+      const minutes = new Set<number>()
+      for (const frame of frames) {
+        if (frame.ts >= since && frame.seq >= access.fromSeq) minutes.add(Math.floor(frame.ts / 60_000))
+      }
+      if (minutes.size > 0) times[meta.room] = Array.from(minutes).sort((a, b) => a - b)
+    }
+    return times
   }
 
   // --- removed accounts ------------------------------------------------------------

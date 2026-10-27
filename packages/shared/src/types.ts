@@ -1105,6 +1105,14 @@ export interface ChangedResponse {
   rooms: string[]
 }
 
+/**
+ * Per note room of a vault, the minutes (`floor(ts / 60 000)`, ascending, each
+ * once) in which frames the caller may read arrived, by the server's clock.
+ */
+export interface TimesResponse {
+  rooms: Record<string, number[]>
+}
+
 // --- blobs -------------------------------------------------------------------------
 
 /**

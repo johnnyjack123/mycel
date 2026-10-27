@@ -12,7 +12,6 @@ import {
   type TAbstractFile
 } from 'obsidian'
 import {
-  docRoom,
   roomKind,
   settingsRoom,
   userColor,
@@ -38,8 +37,7 @@ import { BackupConnectModal, BackupTaskModal } from './backup/BackupModals'
 import { CopyWaitsModal } from './backup/CopyWaitsModal'
 import { EditorSync } from './editor/EditorSync'
 import { BackupModal } from './history/BackupModal'
-import { HistoryModal } from './history/HistoryModal'
-import { NoteHistory } from './history/NoteHistory'
+import { TIME_MACHINE_VIEW, TimeMachineView, type TimeMachineContext, type TimeMachineScope } from './history/TimeMachineView'
 import { AccessModal } from './share/AccessModal'
 import { FolderMarks } from './share/FolderMarks'
 import { FolderAccessModal, MoveInModal, OutsideModal, ShareFolderModal } from './share/FolderModals'
@@ -65,7 +63,6 @@ import { StateStore } from './sync/StateStore'
 import { Trash } from './sync/Trash'
 import { TrashModal } from './history/TrashModal'
 import { Rollback, pruneRollbackCopies } from './sync/Rollback'
-import { RollbackModal } from './history/RollbackModal'
 import { FileVersionsModal } from './history/FileVersionsModal'
 import { ReviewStore, type Review } from './sync/Reviews'
 import { ReviewListModal, ReviewModal } from './history/ReviewModal'
@@ -315,21 +312,33 @@ export default class ObsidianConnectPlugin extends Plugin {
     // Obsidian adds this to every Markdown editor and keeps it there across
     // file switches and mode changes.
     this.registerEditorExtension(this.editors.extension)
+    this.registerView(
+      TIME_MACHINE_VIEW,
+      (leaf) =>
+        new TimeMachineView(leaf, {
+          context: () => this.timeMachineContext(),
+          includeBackups: () => this.settings.timeMachineBackups,
+          setIncludeBackups: async (on) => {
+            this.settings.timeMachineBackups = on
+            await this.saveSettings()
+          }
+        })
+    )
 
     this.addRibbonIcon('refresh-cw', 'Obsidian Connect status', () => this.showStatus())
     this.addCommand({ id: 'show-status', name: 'Show sync status', callback: () => this.showStatus() })
     this.addCommand({
-      id: 'open-history',
-      name: 'Open version history',
+      id: 'time-machine-note',
+      name: 'Open the Time Machine for this note',
       callback: () => {
         const file = this.app.workspace.getActiveFile()
         if (file && file.extension !== 'md') this.openFileVersions(file)
-        else this.openHistory()
+        else this.openNoteTimeMachine()
       }
     })
+    this.addCommand({ id: 'time-machine', name: 'Open the Time Machine for the vault', callback: () => void this.openTimeMachine({ kind: 'vault' }) })
     this.addCommand({ id: 'open-backups', name: 'Browse backups', callback: () => this.openBackups() })
     this.addCommand({ id: 'deleted-notes', name: 'Deleted notes and files…', callback: () => this.openTrash() })
-    this.addCommand({ id: 'roll-back', name: 'Roll the vault back to an earlier moment…', callback: () => this.openRollback() })
     this.addCommand({ id: 'copy-log', name: 'Copy the log (for a bug report)', callback: () => void this.copyLog() })
     this.addCommand({ id: 'compare-versions', name: 'Compare the two versions of this note', callback: () => void this.openReview() })
     this.addCommand({ id: 'review-notes', name: 'Notes with two versions…', callback: () => void this.openReviews() })
@@ -1055,6 +1064,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         )
         window.setTimeout(() => void this.compact(), COMPACT_DELAY_MS)
         this.scheduleBackupCheck()
+        this.wakeTimeMachines()
       }
     } catch (error) {
       log.error('starting sync failed', error)
@@ -1083,6 +1093,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       attachments.setOptions(this.attachmentOptions())
       await attachments.start()
       this.sharedFiles?.start()
+      this.wakeTimeMachines()
     } catch (error) {
       log.warn('starting to sync attachments failed; trying again on the next connection', error)
     }
@@ -1127,27 +1138,70 @@ export default class ObsidianConnectPlugin extends Plugin {
     new TrashModal(this.app, this.trash, this.shared().historyRetentionDays, folder).open()
   }
 
-  /** Rolls the vault, or `folder`, back to an earlier moment. */
-  openRollback(folder = ''): void {
-    const { store, keys, accountSettings } = this
-    if (!store?.ready || !keys || !accountSettings) {
+  /**
+   * The Time Machine for the vault, a folder or a note: a tab of its own, the
+   * one already showing it if there is one.
+   */
+  async openTimeMachine(scope: TimeMachineScope): Promise<void> {
+    if (!this.timeMachineContext()) {
       new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
       return
     }
-    const rollback = new Rollback({
+    const { workspace } = this.app
+    const open = workspace.getLeavesOfType(TIME_MACHINE_VIEW).find((leaf) => leaf.view instanceof TimeMachineView && leaf.view.shows(scope))
+    const leaf = open ?? workspace.getLeaf('tab')
+    if (!open) await leaf.setViewState({ type: TIME_MACHINE_VIEW, active: true, state: scope })
+    await workspace.revealLeaf(leaf)
+  }
+
+  /** Time Machines Obsidian restored before the vault synced, open while sync restarted, or opened before the files were ready. */
+  private wakeTimeMachines(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(TIME_MACHINE_VIEW)) {
+      if (leaf.view instanceof TimeMachineView) leaf.view.connected()
+    }
+  }
+
+  private openNoteTimeMachine(file?: TFile): void {
+    const note = this.activeNote(file)
+    if (note) void this.openTimeMachine({ kind: 'note', path: note.file.path })
+  }
+
+  /** What the Time Machine reads the past with; null until the vault syncs. */
+  private timeMachineContext(): TimeMachineContext | null {
+    const { store, keys, accountSettings } = this
+    if (!store?.ready || !keys || !accountSettings) return null
+    return {
+      api: this.api,
+      vaultId: keys.vaultId,
+      indexCrypto: keys.indexCrypto(),
+      // Which epochs a shared folder's key opens is asked once: the history reads every one.
+      noteCrypto: (docId) => keys.noteCrypto(docId, { owned: !store.entry(docId)?.owner, folder: true }),
+      store,
+      attachments: this.attachments?.isReady ? this.attachments : null,
+      settings: accountSettings,
+      backups: this.backupsOf(),
+      rollback: () => this.makeRollback(store, keys, accountSettings),
+      folderOwner: (path) => {
+        const owner = this.folders?.placeOf(path)?.folder.owner
+        return owner ? (this.sharing?.nameOf(owner) ?? owner) : null
+      }
+    }
+  }
+
+  private makeRollback(store: DocStore, keys: KeyRing, settings: AccountSettings): Rollback {
+    return new Rollback({
       api: this.api,
       vaultId: keys.vaultId,
       indexCrypto: keys.indexCrypto(),
       docCrypto: (docId) => keys.noteCrypto(docId, { owned: true, folder: true }),
       store,
       attachments: this.attachments?.isReady ? this.attachments : null,
-      settings: accountSettings,
+      settings,
       backups: this.backupsOf(),
       adapter: this.app.vault.adapter,
       root: this.pluginDir(),
       isExcluded: (path) => store.isExcluded(path)
     })
-    new RollbackModal(this.app, rollback, this.backupsOf(), accountSettings, folder).open()
   }
 
   /** The version history of a file that is not a note - the active one unless given. */
@@ -1159,7 +1213,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       return
     }
     if (!target || target.extension === 'md') {
-      new Notice('Open an image, a PDF or another file that is not a note first. A note has its version history.')
+      new Notice('Open an image, a PDF or another file that is not a note first. A note has its Time Machine.')
       return
     }
     if (!this.attachments.knows(target)) {
@@ -1466,7 +1520,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       return [
         ...(folder ? this.folderActions(folder) : []),
         { title: 'Deleted notes and files…', icon: 'trash-2', run: () => this.openTrash(folder) },
-        { title: folder ? 'Roll this folder back…' : 'Roll the vault back…', icon: 'history', run: () => this.openRollback(folder ?? '') }
+        { title: 'Time Machine', icon: 'history', run: () => this.openTimeMachine(folder ? { kind: 'folder', path: folder } : { kind: 'vault' }) }
       ]
     }
     if (!(file instanceof TFile)) return []
@@ -1493,7 +1547,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       actions.push({ title: 'Share…', icon: 'share-2', run: () => this.openShare(file) })
       if (entry?.shared && !inFolder) actions.push({ title: 'Who has access', icon: 'users', run: () => this.openAccess(file) })
     }
-    actions.push({ title: 'Version history', icon: 'history', run: () => this.openHistory(file) })
+    actions.push({ title: 'Time Machine', icon: 'history', run: () => this.openNoteTimeMachine(file) })
     if (this.attachments?.isReady && this.settings.attachmentDownloadLimitMb >= 0) {
       actions.push({
         title: 'Download attachments',
@@ -1841,29 +1895,6 @@ export default class ObsidianConnectPlugin extends Plugin {
   private activeFile(): TFile | null {
     const file = this.app.workspace.getActiveFile()
     return file instanceof TFile && file.extension === 'md' ? file : null
-  }
-
-  private openHistory(file?: TFile): void {
-    const note = this.activeNote(file)
-    const store = this.store
-    const keys = this.keys
-    if (!note || !store || !keys) return
-    // Which epochs a shared folder's key opens is asked once: the history reads every one.
-    const crypto = keys.noteCrypto(note.docId, { owned: !store.entry(note.docId)?.owner, folder: true })
-    const attachments = this.attachments
-    new HistoryModal(this.app, {
-      history: new NoteHistory(this.api, docRoom(note.docId), crypto),
-      file: note.file,
-      canRestore: !store.isReadOnly(note.docId),
-      restore: (text) => store.restore(note.docId, text),
-      embeds: attachments?.isReady
-        ? {
-            target: (link) => attachments.embedTarget(link),
-            content: (hash) => attachments.contentOf(hash),
-            restore: (fileId) => attachments.restoreDeleted(fileId)
-          }
-        : undefined
-    }).open()
   }
 
   private openBackups(): void {

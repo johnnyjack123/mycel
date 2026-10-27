@@ -113,6 +113,8 @@ export interface ObsidianConnectSettings {
   attachmentDownloadLimitMb: number
   /** Route id -> when this device last saw a good backup there, for warning when there has been none for long. */
   backupLastGood: Record<string, number>
+  /** Whether the Time Machine shows backups older than the history as ticks too. */
+  timeMachineBackups: boolean
 }
 
 export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
@@ -126,7 +128,8 @@ export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
   syncTimeoutMs: 5_000,
   verboseLog: false,
   attachmentDownloadLimitMb: -1,
-  backupLastGood: {}
+  backupLastGood: {},
+  timeMachineBackups: false
 }
 
 /** Where a phone starts: its storage and data plan are not a desktop's. */
@@ -1184,11 +1187,11 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       .addButton((button) => button.setButtonText('Open the trash').onClick(() => this.plugin.openTrash()))
 
     new Setting(containerEl)
-      .setName('Roll back')
+      .setName('Time Machine')
       .setDesc(
-        "The whole vault back to an earlier moment, within the time above - after a mistake, or something that went wrong. A folder alone: in the folder's menu. Every backup server makes a fresh backup first, and the rollback can be undone."
+        "The vault as it was at any moment within the time above, and further back from the backups if you like - looked at first, taken over only when you apply it, after a fresh backup. A folder or a note alone: in its menu. Applying can be undone."
       )
-      .addButton((button) => button.setButtonText('Roll back…').onClick(() => this.plugin.openRollback()))
+      .addButton((button) => button.setButtonText('Open the Time Machine').onClick(() => void this.plugin.openTimeMachine({ kind: 'vault' })))
 
     const usage = new Setting(containerEl)
       .setName('Attachments on the server')

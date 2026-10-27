@@ -955,6 +955,18 @@ try {
   )
   const aliceLog = await hub.log(alice, room)
   check(aliceLog.snapshot === null && aliceLog.frames[0]?.seq === 1, 'the owner reads the whole log')
+  // The Time Machine's ticks: when the notes took frames, to the minute, without reading them.
+  {
+    const minute = Math.floor(Date.now() / 60_000)
+    const ofAlice = (await hub.frameTimes(alice, aliceVault.vaultId, 0))[room] ?? []
+    check(ofAlice.length > 0 && ofAlice.every((at) => at <= minute && at >= minute - 5), "the owner hears in which minutes a note took frames", ofAlice)
+    check(((await hub.frameTimes(carol, carolVault.vaultId, 0))[room]?.length ?? 0) > 0, 'so does a member, in the vault they took it into')
+    check(
+      !(await hub.frameTimes(bob, bobVault.vaultId, 0))[room] && !(await hub.frameTimes(dave, aliceVault.vaultId, 0))[room],
+      'nobody revoked or outside'
+    )
+    check(!(await hub.frameTimes(alice, aliceVault.vaultId, Date.now() + 120_000))[room], 'and only since the moment asked for')
+  }
 
   // --- compaction ----------------------------------------------------------------------
   check(
@@ -997,6 +1009,11 @@ try {
     (await hub.changedSince(alice, aliceVault.vaultId, lastFrameAt - 60_000)).includes(room) &&
       !(await hub.changedSince(alice, aliceVault.vaultId, Date.now() + 1_000)).includes(room),
     'and after a restart, before the log is loaded, by when it was last written'
+  )
+  check(
+    ((await hub.frameTimes(alice, aliceVault.vaultId, 0))[room]?.length ?? 0) > 0 &&
+      !(await hub.frameTimes(alice, aliceVault.vaultId, Date.now() + 120_000))[room],
+    "the minutes of a note's frames are read from its log on disk, without loading it"
   )
   const afterRestart = new Client(alice, aliceVault.vaultId)
   hub.attach(afterRestart)

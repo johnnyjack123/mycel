@@ -1,8 +1,8 @@
-import * as Y from 'yjs'
-import { CONTENT_FIELD, frameAad, snapshotAad } from '@obsidian-connect/shared'
-import { decrypt, fromBase64, unpackFrame } from '@obsidian-connect/shared/crypto'
+import { CONTENT_FIELD } from '@obsidian-connect/shared'
 import type { ConnectApi } from '../account/api.js'
 import type { RoomCrypto } from '../sync/VaultSocket.js'
+import { Replay, readLog, type HistoryStep } from './RoomHistory.js'
+import type { Tick } from './Timeline.js'
 
 // A note's history, read on this device: the server holds only ciphertext, so
 // replaying to a point in time happens here. Restoring then edits the live
@@ -24,79 +24,92 @@ export interface Version {
 // batch would bury the ones people look for.
 const SESSION_GAP_MS = 60_000
 
-interface Step {
-  seq: number
-  ts: number
-  update: Uint8Array
-}
-
 export class NoteHistory {
-  private base: Step | null = null
-  private steps: Step[] = []
+  private base: HistoryStep | null = null
+  private steps: HistoryStep[] = []
+  private replay: Replay | null = null
   /** Frames this device has no key for - they are skipped, and the view says so. */
   unreadable = 0
 
   constructor(
-    private readonly api: ConnectApi,
+    private readonly api: Pick<ConnectApi, 'log'>,
     private readonly room: string,
     private readonly crypto: RoomCrypto,
     private readonly sessionGapMs = SESSION_GAP_MS
   ) {}
 
   async load(): Promise<void> {
-    const log = await this.api.log(this.room)
-    this.base = null
-    this.steps = []
-    this.unreadable = 0
-    if (log.snapshot) {
-      const key = await this.crypto.key(log.snapshot.epoch)
-      if (key) {
-        const plaintext = await decrypt(key, fromBase64(log.snapshot.data), snapshotAad(this.room, log.snapshot.epoch))
-        const snapshot = unpackFrame(plaintext)
-        this.base = { seq: log.snapshot.uptoSeq, ts: snapshot.authorTs, update: snapshot.update }
-      } else {
-        this.unreadable += 1
-      }
-    }
-    for (const frame of log.frames) {
-      const key = await this.crypto.key(frame.epoch)
-      if (!key) {
-        this.unreadable += 1
-        continue
-      }
-      const plaintext = await decrypt(key, fromBase64(frame.data), frameAad(this.room, frame.epoch))
-      const change = unpackFrame(plaintext)
-      this.steps.push({ seq: frame.seq, ts: change.authorTs, update: change.update })
-    }
-    this.steps.sort((a, b) => a.ts - b.ts || a.seq - b.seq)
+    const { base, steps, unreadable } = await readLog(this.api, this.room, this.crypto)
+    this.replay?.destroy()
+    this.base = base
+    this.steps = steps
+    this.unreadable = unreadable
+    this.replay = new Replay(base, steps)
+  }
+
+  /** The earliest moment the history replays to: 0 while it holds every change. */
+  get reach(): number {
+    return this.base?.ts ?? 0
+  }
+
+  /** Whether the note's text at `ts` can be told. */
+  reaches(ts: number): boolean {
+    return this.unreadable === 0 && ts >= this.reach
   }
 
   /** Newest first, one per editing session. */
   versions(): Version[] {
-    const versions: Version[] = []
-    if (this.base) versions.push({ seq: this.base.seq, ts: this.base.ts })
-    for (let i = 0; i < this.steps.length; i += 1) {
-      const step = this.steps[i] as Step
-      const next = this.steps[i + 1]
-      if (!next || next.ts - step.ts > this.sessionGapMs) versions.push({ seq: step.seq, ts: step.ts })
-    }
-    return versions.reverse()
+    return this.sessions()
+      .map((session) => ({ seq: session.seq, ts: session.ts }))
+      .reverse()
   }
 
+  /** The Time Machine's ticks: a version each, oldest first. */
+  ticks(): Tick[] {
+    return this.sessions()
+      .map((session) => ({ at: session.ts, from: session.from, last: session.ts, changed: 1 }))
+      .sort((a, b) => a.at - b.at)
+  }
+
+  /** The text up to the change `seq`. */
   textAt(seq: number): string {
-    const doc = new Y.Doc()
-    try {
-      doc.transact(() => {
-        if (this.base) Y.applyUpdate(doc, this.base.update)
-        if (this.base?.seq === seq) return
-        for (const step of this.steps) {
-          Y.applyUpdate(doc, step.update)
-          if (step.seq === seq) break
-        }
-      })
-      return doc.getText(CONTENT_FIELD).toString()
-    } finally {
-      doc.destroy()
+    if (this.base?.seq === seq) return this.textOf(0)
+    const index = this.steps.findIndex((step) => step.seq === seq)
+    return this.textOf(index < 0 ? this.steps.length : index + 1)
+  }
+
+  /** The text with every change made up to `ts`, by the authors' clocks. */
+  textAtTime(ts: number): string {
+    return this.textOf(this.replayer().countAt(ts))
+  }
+
+  destroy(): void {
+    this.replay?.destroy()
+    this.replay = null
+  }
+
+  private replayer(): Replay {
+    this.replay ??= new Replay(this.base, this.steps)
+    return this.replay
+  }
+
+  private textOf(count: number): string {
+    return this.replayer().to(count).getText(CONTENT_FIELD).toString()
+  }
+
+  private sessions(): Array<{ seq: number; ts: number; from: number }> {
+    const sessions: Array<{ seq: number; ts: number; from: number }> = []
+    if (this.base) sessions.push({ seq: this.base.seq, ts: this.base.ts, from: this.base.ts })
+    let from: number | null = null
+    for (let i = 0; i < this.steps.length; i += 1) {
+      const step = this.steps[i] as HistoryStep
+      const next = this.steps[i + 1]
+      from ??= step.ts
+      if (!next || next.ts - step.ts > this.sessionGapMs) {
+        sessions.push({ seq: step.seq, ts: step.ts, from })
+        from = null
+      }
     }
+    return sessions
   }
 }

@@ -16,7 +16,7 @@ import { VaultKeys } from './keys.js'
 import { log } from './log.js'
 import type { Restic } from './restic.js'
 import { vaultFolder } from './layout.js'
-import { listBackup, readBackup, snapshotAt } from './restore.js'
+import { listBackup, readBackup, snapshotAt, snapshotTimes } from './restore.js'
 import { runBackup, type Destination, type RunControl, type RunReport } from './run.js'
 import { nextAt } from './schedule.js'
 import { AccessEnded, SyncClient } from './sync.js'
@@ -397,6 +397,12 @@ export class BackupService {
   async backupAt(vaultId: string, at: number): Promise<BackupSnapshotRef | null> {
     const { destinations, folder } = await this.repositories(vaultId)
     return snapshotAt(this.options.restic, destinations, vaultId, folder, at)
+  }
+
+  /** When the vault's notes were backed up, oldest first. */
+  async backupTimes(vaultId: string): Promise<number[]> {
+    const { destinations } = await this.repositories(vaultId)
+    return snapshotTimes(this.options.restic, destinations, vaultId)
   }
 
   /** What a backup holds; kept a while, since a rollback asks again right after. */
