@@ -179,6 +179,8 @@ export function serveSession(session: IncomingSession, deps: SessionDeps): void 
       case 'backupAt':
         if (typeof params.at !== 'number') throw new Error('no moment given')
         return service.backupAt(vaultId, params.at)
+      case 'backupTimes':
+        return service.backupTimes(vaultId)
       case 'backupList':
         return service.listBackup(vaultId, params.ref as BackupSnapshotRef)
       case 'backupRead': {

@@ -226,6 +226,8 @@ export const API = {
   compactable: '/compactable',
   /** The rooms of a vault that took a frame since a moment: what planning a rollback must read. */
   changed: '/changed',
+  /** When the notes of a vault took frames, to the minute: the Time Machine's ticks. */
+  times: '/times',
   /** `/blobs/:account/:vaultId/...`: the encrypted contents of a vault's files. */
   blobs: '/blobs'
 } as const

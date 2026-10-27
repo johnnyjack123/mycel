@@ -1266,6 +1266,14 @@ try {
       const repository = join(encryptedRoot, vaultId)
       const notesSnapshots = (JSON.parse(restic(repository, 'relay password', ['snapshots', '--json', '--tag', 'notes']).stdout.toString('utf8') || '[]') as unknown[]).length
       check(notesSnapshots >= 2, "the backup made first forgot nothing, so the one rolled back from was still there", notesSnapshots)
+      // The Time Machine's ticks further back than the history.
+      const times = await backups.backupTimes(again.routeId)
+      const newest = times.length > 0 ? await backups.backupAt(again.routeId, times.at(-1) as number) : null
+      check(
+        times.length === notesSnapshots && times.every((time, i) => i === 0 || time > (times[i - 1] as number)) && newest?.notes.time === times.at(-1),
+        'the backup server says when the vault was backed up, oldest first, and each time leads to its backup',
+        { times, notesSnapshots, newest }
+      )
     }
 
     // --- one note the history no longer reaches, the rest from the history ---------------------------

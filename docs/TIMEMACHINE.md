@@ -1,9 +1,8 @@
-# The Time Machine (0.8.x, before 0.9)
+# The Time Machine (0.8.11, before 0.9)
 
-A draft, to be decided with the user before anything is built (CLAUDE.md: a milestone's
-design is written with the user first). Asked for on 2026-10-24 after testing 0.8.9;
-on 2026-10-25 the user agreed to the idea as proposed below and asked for it before
-0.9, which stays hardening only.
+Asked for on 2026-10-24 after testing 0.8.9; on 2026-10-25 the user agreed to the idea
+as proposed below and asked for it before 0.9, which stays hardening only. On
+2026-10-27 the user decided T2 to T8 ("Decided" below) and asked for it to be built.
 
 ## What the user asked for
 
@@ -126,19 +125,63 @@ Time Machine has worked on the user's devices, then it replaces them.
   back, for everyone (the rule since 0.7.8).
 - **A note shared to read only** cannot be applied.
 
-## Order of work (if agreed)
+## Decided (the user, 2026-10-27)
 
-1. **Server** `GET /times`. **Plugin:** a timeline layer - ticks, the state at a tick,
-   incremental replay, a cache of notes' histories while open. Tested in
-   `test:rollback` and `test:rooms`.
-2. **The note's Time Machine:** the view with the slider over one note's versions, the
-   preview (rendered, source, changes), *Apply* = restore. The smallest useful piece,
-   to try on a device first.
-3. **The vault's and a folder's Time Machine:** the tree, the preview, *Apply* through
-   the rollback's list and gate, *Restore just this note*.
-4. **Optional:** backups as ticks (T6). Then the old windows go (T7).
+- **T1, T4, T8** as recommended.
+- **T2:** a note's ticks are its versions (a pause of a minute), a folder's or the
+  vault's are changes less than five minutes apart taken together.
+- **T3:** the server route, `GET /times`.
+- **T5:** *Restore just this note* (and *this file*) next to *Apply*.
+- **T6:** backups as ticks, behind a switch in the view the user turns on when wanted -
+  off unless turned on, remembered on the device.
+- **T7:** the old windows go at once - the user does not use the plugin productively
+  yet. *Version history* of a note and *Roll back…* are replaced; a file's *Version
+  history* (an image's earlier contents) stays, it is not a tick of a document.
+- Built as one version, 0.8.11: the user tests it as a whole.
 
-Each step is a version of its own (0.8.11 onward).
+## How it is built
+
+**The server: `GET /times?vaultId&since`** (`RoomHub.frameTimes`). Per note room of the
+vault, the minutes (`floor(ts / 60 000)`, ascending, each once) in which frames arrived
+at or after `since`, by the server's clock. Only frames the caller may read: from their
+start in the note (`fromSeq`). A loaded log answers from memory; any other is read from
+`log.bin`, headers only, and only when the file changed since `since`.
+
+**The backup server: `backupTimes`** (a session call). The times of the vault's notes
+snapshots, over its repositories, ascending. A tick's backup is then `backupAt(time)`.
+
+**The timeline** (`history/Timeline.ts`):
+- `NoteTimeline` - one note's history (it replaces `NoteHistory`): its versions as
+  ticks, and the text at any moment, replayed forward from where it stood and from a
+  checkpoint every 200 changes when going back.
+- `VaultTimeline` - the vault index's history walked once into a list of entry events
+  (a note or file added, moved, deleted, its content changed), the minutes from
+  `/times`, and the ticks of the vault or one folder from both: every moment a note or
+  file in it changed, its path then decided by the events; moments less than five
+  minutes apart are one tick, which shows the state a minute after its last change
+  (the server's minutes are rounded down, and an author's clock may run ahead). The
+  entries at any moment are the events replayed - no document is replayed for a tick.
+  Whether a note changed after a moment comes from the minutes.
+- Text at a tick goes by the authors' clocks, as the rollback does.
+
+**The view** (`history/TimeMachineView.ts`, an `ItemView`): a slider over the ticks with
+*now* as its last place, *earlier*/*later*, the moment and how much changed in it. For
+the vault or a folder, on the left the tree at the tick, by default only what differs
+from now (*would come back*, *would go*, *moved*, *changed*), on the right the chosen
+note or file; for a note, the note alone. The note is rendered, as source, or as its
+changes against now. *Restore this version* for a note; for the vault or a folder,
+*Apply…* (the rollback's list, its backups and its gate, `history/ApplyModal.ts`, which is
+what is left of `RollbackModal`), *Restore just this note/file*, and the earlier
+rollbacks with *Undo…*. Opened from a note's and a folder's menu, the command palette and
+*Settings → All devices*.
+
+**Backups as ticks** (the switch): the backup runs further back than the history
+reaches, drawn apart. The tree comes from the backup's listing, by path, a note's text
+from the backup; *Apply* is the rollback to that moment, which reads the backup itself.
+
+Tested: `/times` in `test:rooms`, `backupTimes` in `test:backup`, the timeline -
+ticks of the vault and of a folder, entries and texts at a tick, a note's ticks - in
+`test:rollback`. The view only on a device.
 
 ## Found on the way
 

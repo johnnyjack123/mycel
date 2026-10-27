@@ -200,6 +200,26 @@ export function saveMetaOf(dataDir: string, meta: RoomMeta): Promise<void> {
   })
 }
 
+/**
+ * When each frame of a room arrived, read from `log.bin` without its content
+ * and without loading the room. Frames a snapshot folded in are left out.
+ */
+export async function frameTimesOf(dataDir: string, meta: RoomMeta): Promise<Array<{ seq: number; ts: number }>> {
+  const raw = await readOptional(join(roomDir(dataDir, meta), 'log.bin'))
+  const times: Array<{ seq: number; ts: number }> = []
+  let offset = 0
+  while (raw && offset + HEADER_BYTES <= raw.length) {
+    const seq = Number(raw.readBigUInt64BE(offset))
+    const ts = Number(raw.readBigUInt64BE(offset + 8))
+    const end = offset + HEADER_BYTES + raw.readUInt32BE(offset + 20)
+    // A frame still being appended.
+    if (end > raw.length) break
+    if (seq > meta.compactedUpTo) times.push({ seq, ts })
+    offset = end
+  }
+  return times
+}
+
 export class RoomLog {
   private constructor(
     private readonly dir: string,

@@ -16,6 +16,7 @@ import {
   type BlobTouchResponse,
   type BlobUsageResponse,
   type ChangedResponse,
+  type TimesResponse,
   type CompactableResponse,
   type ContactCodeInfo,
   type ContactCodeRequest,
@@ -381,6 +382,11 @@ export class ConnectApi {
   /** The vault's notes that took a change since `since`, by the server's clock. */
   changedRooms(vaultId: string, since: number): Promise<ChangedResponse> {
     return this.call('GET', `${API.changed}?vaultId=${vaultId}&since=${Math.floor(since)}`)
+  }
+
+  /** In which minutes the vault's notes took changes since `since`, by the server's clock. */
+  frameTimes(vaultId: string, since = 0): Promise<TimesResponse> {
+    return this.call('GET', `${API.times}?vaultId=${vaultId}&since=${Math.floor(since)}`)
   }
 
   // --- blobs ---------------------------------------------------------------------
