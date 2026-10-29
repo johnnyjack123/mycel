@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-27 · **0.8.11: the Time Machine - a tab with a slider over the past of the vault, a folder or a note, *Apply* through the rollback, backups as ticks behind a switch; the old *Version history* of notes and *Roll back…* replaced. Next: the user tries it on their devices (server and backup server first); then 0.9's design.**_
+_Last updated: 2026-10-29 · **0.8.12: the Time Machine's fixes from the user's test (now after a restore, the newest tick that equalled now, *changed since* by text, the button under *Backups*). Proposed for the user to decide: its second round, U1 to U5 in `docs/TIMEMACHINE.md` - a timeline as in macOS, the past in the note and in the explorer, a notification center. Then 0.9's design.**_
 
 ## Where we are
 
@@ -92,6 +92,17 @@ server reading folder notes. What is next:
    a picture as it was, *Restore just this note*, *Apply…* with its list and backups,
    *Undo…*), *Backups too*, a shared folder of someone else (looked at, not applied),
    the view on the phone, and the tab staying open over a restart of Obsidian.
+8. The user tested 0.8.11 on 2026-10-29: it works, a folder and the vault rolled back
+   fine. Fixed in 0.8.12: *now* kept showing the text a restore had replaced (read from
+   the file, which follows the document a moment later); the newest tick always equalled
+   *now*; a note restored to what it said at a tick was marked *changed since*; the
+   button moved from *All devices* to *Backups*. Asked for besides, and proposed for the
+   user to decide (`docs/TIMEMACHINE.md`, "The second round", U1 to U5): an upright
+   timeline at the right edge with bars that grow towards the pointer as in macOS; a
+   note's past in its own tab, read-only, over its editor; a folder's or the vault's
+   past written into the explorer while sync pauses on the device, undone from a journal
+   before sync starts again; a notification center. Nothing of it is built before the
+   user decided.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
@@ -134,10 +145,10 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing once `feat/time-machine` (0.8.11) is merged. Every branch of 0.8
+Nothing once `fix/time-machine-feedback` (0.8.12) is merged. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
-`fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`) is merged into `main`
+`fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`, `feat/time-machine`) is merged into `main`
 and holds nothing `main` lacks; they are still on the remote - deleting them is the
 user's call, as with the earlier branches.
 
@@ -174,8 +185,10 @@ user's call, as with the earlier branches.
   Machine's view (0.8.11: its layout on a phone, the slider, a large vault's tree).
 - The Time Machine's ticks of a folder or the vault go by the server's minutes for edits
   (rounded down, by its clock) and by the authors' clocks for the rest, so an edit made
-  in the minute a note moved into a folder can make a tick of that folder; *changed
-  since* is a hint by those minutes - *Changes against now* and *Apply*'s list are exact.
+  in the minute a note moved into a folder can make a tick of that folder, and a tick
+  whose edits left every text as it was is still one. *Changed since* compares texts
+  since 0.8.12, up to 200 notes per tick; beyond that it is the server's word, and the
+  view says so.
 - Notes beyond `maxLoadedDocuments` (500) get no live updates until opened or the next
   start (0.9). Raising the setting is the workaround: about 6 to 32 KB per loaded note
   of 3000 characters, plus an IndexedDB database and a subscription each.
@@ -199,6 +212,11 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
+
+At 0.8.12, run 2026-10-29 on `fix/time-machine-feedback`: `typecheck` and `build` pass;
+`test:merge` 174, `test:load` 15, `test:rooms` 379, `test:sync` 31, `test:recovery` 72,
+`test:account` 52, `test:rollback` 72, `test:backup` 229, and on a scratch server started
+fresh from 0.8.12 `test:socket` 19, `test:vault` 243, `test:folders` 121 - all pass.
 
 At 0.8.11, run 2026-10-27 on `feat/time-machine`: `typecheck` and `build` pass;
 `test:merge` 174, `test:load` 15, `test:rooms` 379, `test:sync` 31, `test:recovery`
@@ -277,6 +295,15 @@ CLAUDE.md, Gotchas - `test:socket` and `test:vault` default to 1234, so always p
 ---
 
 ## Log
+
+### 2026-10-29
+- The user tested the Time Machine (0.8.11): it works. 0.8.12 fixes what they found;
+  both new checks seen failing with the old behaviour put back. Their larger wishes are
+  proposed as U1 to U5 in `docs/TIMEMACHINE.md`, for them to decide.
+
+### 2026-10-24 to 27
+- 0.8.9 (the user's first test of 0.8), 0.8.10 (linked notes on moving in), the Time
+  Machine designed with the user (T1 to T8) and built as 0.8.11.
 
 ### 2026-10-23
 - The six small fixes of PHASE7, each with its test and a version (0.8.2 to 0.8.6,

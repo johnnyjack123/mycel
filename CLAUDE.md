@@ -27,8 +27,8 @@ the server in **`docs/SERVER.md`**. Where the work stands and what is next:
 **`docs/PROGRESS.md`**; what each version changed and how its fixes were verified:
 **`docs/CHANGELOG.md`**. The backup server (0.7) is specified in **`docs/PHASE6.md`**,
 running it in **`docs/BACKUP.md`**; sharing a folder and the small fixes of 0.8 in
-**`docs/PHASE7.md`**; the Time Machine (0.8.11, the user's decisions T1 to T8) in
-**`docs/TIMEMACHINE.md`**.
+**`docs/PHASE7.md`**; the Time Machine (0.8.11, the user's decisions T1 to T8; its
+second round proposed as U1 to U5) in **`docs/TIMEMACHINE.md`**.
 A new milestone gets its design document (`docs/PHASE8.md` for 0.9) written with the
 user before it is built.
 
@@ -632,9 +632,10 @@ join snapshot while it is still their starting point.
 **The Time Machine** (0.8.11, `docs/TIMEMACHINE.md`): a tab of its own
 (`history/TimeMachineView.ts`) with a slider over the past of the vault, a folder or a
 note - a tick per version of a note, per change of a folder or the vault (less than five
-minutes apart as one), and, behind a switch kept on the device, the backups older than
-the history. Sliding never touches the vault: it shows the tree as it was (marked
-against now) and the chosen note or file as it was. The ticks come without reading a
+minutes apart as one), each the state after it, the newest being *now*; and, behind a
+switch kept on the device, the backups older than the history. Sliding never touches the
+vault: it shows the tree as it was (marked against now - *changed since* by comparing
+texts, not by the server's minutes alone) and the chosen note or file as it was. The ticks come without reading a
 note (`history/Timeline.ts`): the vault index's history walked once into events, and
 the minutes in which the server took each note's frames (`GET /times`); a note's text is
 replayed forward from where it stood and back from a checkpoint (`Replay`). It changes
