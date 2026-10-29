@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-29 · **0.8.12: the Time Machine's fixes from the user's test (now after a restore, the newest tick that equalled now, *changed since* by text, the button under *Backups*). Proposed for the user to decide: its second round, U1 to U5 in `docs/TIMEMACHINE.md` - a timeline as in macOS, the past in the note and in the explorer, a notification center. Then 0.9's design.**_
+_Last updated: 2026-10-29 · **0.8.12: the Time Machine's fixes from the user's test (now after a restore, the newest tick that equalled now, *changed since* by text, the button under *Backups*). Its second round (`docs/TIMEMACHINE.md`): U1 to U5 mostly decided by the user, V1 to V6 still open; then 0.8.13 (the strip, a note's past in its own editor, the notification center) and 0.8.14 (the explorer). Then 0.9's design.**_
 
 ## Where we are
 
@@ -103,6 +103,12 @@ server reading folder notes. What is next:
    past written into the explorer while sync pauses on the device, undone from a journal
    before sync starts again; a notification center. Nothing of it is built before the
    user decided.
+9. The user decided most of it the same day (`docs/TIMEMACHINE.md`, "Decided"): the
+   strip with a label on the bar under the pointer; a note's past in its own file and
+   editor rather than a layer, the sync away from that file meanwhile; a folder's
+   structure at once and a note's content when opened; a backup on the backup server
+   besides the local copy; notices keep popping up; the order. New: ticks as fine as
+   one chooses. Open: V1 to V6 there.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no

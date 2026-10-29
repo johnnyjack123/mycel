@@ -7,3 +7,5 @@ main.js.map
 .env
 .DS_Store
 packages/server/data/
+# Sketches and screenshots the user hands over for a design, not part of the code
+reference/

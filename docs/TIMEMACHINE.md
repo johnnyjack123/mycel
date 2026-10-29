@@ -379,3 +379,73 @@ everything is in the center.
 
 *Recommended:* 0.8.13 the strip, a note in its tab and the notification center (U1, U2,
 U5); 0.8.14 the explorer (U3) alone. Each tried on the devices before the next.
+
+### Decided (the user, 2026-10-29)
+
+- **U1:** the strip as proposed; for a start the label - date and time to the second -
+  only on the bar under the pointer.
+- **U2, changed by the user:** no layer. The note's own file shows the past, in its own
+  editor - exactly Obsidian's look, live preview included, every theme and update with
+  it. What that needs instead of the layer:
+  - the sync keeps away from that file while it shows the past (V2): nothing of it is
+    read as an edit, and nothing from the server is written into it;
+  - the editor is read-only (the plugin's editor extension, as for a note shared to
+    read) and not bound to the document;
+  - a copy of the file and a journal in the plugin folder *before* the file is
+    replaced; *Back to now* writes the copy back, checked by its hash, and only then
+    does the sync take the file again;
+  - after a crash the next start undoes it before the sync starts (U3, step 9);
+  - the changes against now marked in the editor itself: lines there then and not now
+    highlighted, lines there now and not then shown struck through between them.
+- **U3:** in place. Only the structure is replaced at once - what was deleted since
+  comes back, what came later goes, what moved goes back -, a note's content when it is
+  opened; *Apply* reads everything, as the rollback's plan does now.
+- **Backups:** a local copy and a backup on the backup server; when none can be reached,
+  going on only after a warning, by choice (V3, V4).
+- **U5:** the notices keep popping up.
+- **Order:** 0.8.13 the strip, a note and the notification center; 0.8.14 the explorer.
+- `reference/` is ignored by git.
+
+### Asked for besides: ticks as fine as one likes
+
+How fine the past is kept: a note's history holds every frame its devices sent - while
+online, a frame every 40 ms of typing plus the way to the server and back, so every few
+keystrokes; offline, everything typed until the device came back is one frame, at the
+time it was sent. Inside a frame no change carries a time of its own, so the frame is
+the finest step. That holds for the retention (*Keep history for*, 30 days by default);
+before it, a compaction folded everything into one state, the snapshot; further back
+there are the backups, one per run.
+
+The user's idea: one chooses from what pause on two changes are two ticks, and where the
+history is folded, the next coarser step is taken - the snapshot, then the backups.
+For a note this is its history alone. For a folder or the vault the server says when a
+note was edited only to the minute (`/times`), so a minute is the finest there unless the
+route says seconds - a server update, and more data on every load.
+
+### Still open (V1 to V6)
+
+- **V1 - where the fineness is chosen.** *Recommended:* a selector at the strip, kept on
+  the device: every change, a minute, five minutes, an hour, a day; a note down to every
+  change, a folder or the vault down to a minute.
+- **V2 - what pauses while a note shows its past.** *Recommended:* only that note - its
+  content, its rename and delete, from either side -, and the vault goes on syncing,
+  live editing elsewhere included. For a folder or the vault the whole device pauses
+  (U3, step 2): there the server's side touches many files at once (renames, new notes,
+  deletes, files, a shared folder's mirror), each a way into the folder shown.
+- **V3 - the backup server before a preview.** A run backs up what the server has, and a
+  preview changes nothing there; what brings now back is the local copy and the notes'
+  documents, which a preview never touches. A run takes a while each time.
+  *Recommended:* before a preview a run only when the last backup is older than the
+  vault's last change - otherwise that backup is current already; before *Apply* always
+  (as now), and before *Restore this version* / *just this note* from now on too.
+- **V4 - when the local copy goes.** The user's idea: once the backup server holds the
+  same - each file's hash against the backup's listing, which has the hashes; a file this
+  device had not sent yet does not match and stays. Without a backup server, today's rule
+  takes them after *Keep backups for* (14 days). *To decide:* that rule, or only by hand
+  then.
+- **V5 - a folder's notes until opened.** With only the structure replaced, a note not
+  opened yet holds today's text in the past's tree, and search, graph, backlinks and the
+  hover preview read that. *Recommended:* a mark in the explorer on such notes until they
+  show their past.
+- **V6 - plugins that write on every change** (the user has one that stamps the
+  frontmatter). Its name, to see what it listens to.
