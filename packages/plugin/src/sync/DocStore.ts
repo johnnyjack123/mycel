@@ -1527,12 +1527,38 @@ export class DocStore {
     return this.app.vault.getAbstractFileByPath(path) !== null
   }
 
-  /** What a note says on this device now: its file, or failing that its loaded document; null for neither. */
+  /**
+   * What a note says on this device now: its file, or failing that its loaded
+   * document; null for neither. The document where it is ahead of the file - a
+   * change still to be written, or an editor Obsidian saves when it likes: a
+   * restore read back from the file showed the text it had just replaced.
+   */
   async currentText(docId: string): Promise<string | null> {
+    const handle = this.handles.get(docId)
+    const loaded = handle && !handle.isDestroyed && !this.inFlight.has(docId) ? handle : null
+    if (loaded && (this.writeTimers.has(docId) || this.editorOwned.has(docId))) return loaded.text()
     const file = this.fileFor(docId)
     if (file && this.exists(file)) return this.app.vault.read(file)
-    const handle = this.handles.get(docId)
-    return handle && !handle.isDestroyed ? handle.text() : null
+    return loaded ? loaded.text() : null
+  }
+
+  /** Resolves once every change of the note this device made reached the server, or after `timeoutMs`. */
+  whenSent(docId: string, timeoutMs: number): Promise<boolean> {
+    return this.whenRoomSent(docRoom(docId), timeoutMs)
+  }
+
+  /** The same for the vault index: notes and files added, moved, deleted. */
+  whenIndexSent(timeoutMs: number): Promise<boolean> {
+    return this.whenRoomSent(indexRoom(this.options.vaultId), timeoutMs)
+  }
+
+  private async whenRoomSent(room: string, timeoutMs: number): Promise<boolean> {
+    const until = Date.now() + timeoutMs
+    while (!this.socket.isSettled(room)) {
+      if (Date.now() >= until) return false
+      await new Promise((resolve) => window.setTimeout(resolve, 100))
+    }
+    return true
   }
 
   /** A note that did not exist at the moment rolled back to goes to the trash, here and everywhere. */
