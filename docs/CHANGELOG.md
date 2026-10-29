@@ -8,6 +8,28 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.12** (2026-10-29) - the Time Machine's fixes from the user's first test
+  (`docs/TIMEMACHINE.md`, "How it is built"). Plugin only.
+  - **After *Restore this version*, *now* showed the text the restore replaced** until
+    the file was written a moment later: what a note says now was read from its file,
+    which follows the document. It is the document now wherever that is ahead - a change
+    still to be written, or an editor Obsidian saves when it likes
+    (`DocStore.currentText`; the rollback's plan reads it too). The view moves to *now*
+    at once and reads the past again, quietly, once the server has the restore
+    (`DocStore.whenSent`); the vault's or a folder's view stays at its tick.
+  - **The newest tick always equalled *now*:** a tick shows the state after its
+    changes. It is left out when it shows what now shows, and *now* says when the last
+    change was. A note's version that left its text as it was is no tick either.
+  - ***Changed since* was the server's word only**, so a note restored to its text of a
+    tick was marked changed at that tick. The notes it names are compared by their text
+    then and now, up to 200 per tick; beyond that the view says so.
+  - The Time Machine's button moved from *All devices* to *Backups*.
+  - Checked by putting the bugs back: with the file read first and versions without a
+    change of text kept, exactly the two new checks fail. Tests: `test:rollback` 72
+    (seven new: the text now right after a restore, its file following, the restore on
+    the server, a restored note equal then and now though the server's minutes say
+    changed, the newest tick's text, a change beside the text making no tick).
+
 - **0.8.11** (2026-10-27) - **the Time Machine** (`docs/TIMEMACHINE.md`, the user's
   decisions of 2026-10-27). Wants the sync server of 0.8.11 (`GET /times`) - with an
   older one only notes and files added, moved or deleted make ticks, and the view says

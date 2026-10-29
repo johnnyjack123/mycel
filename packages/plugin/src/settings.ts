@@ -821,6 +821,12 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
   private backupSection(containerEl: HTMLElement): void {
     if (!this.plugin.settings.username) return
+    new Setting(containerEl)
+      .setName('Time Machine')
+      .setDesc(
+        'The vault as it was at any moment its history reaches (Keep history for, under All devices), and further back from the backups if you like - looked at first, taken over only when you apply it, after a fresh backup. A folder or a note alone: in its menu. Applying can be undone.'
+      )
+      .addButton((button) => button.setButtonText('Open the Time Machine').setCta().onClick(() => void this.plugin.openTimeMachine({ kind: 'vault' })))
     const backups = this.plugin.backupsOf()
     if (!backups) {
       containerEl.createEl('p', { cls: 'setting-item-description', text: 'Backups are set up while this vault syncs.' })
@@ -1185,13 +1191,6 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       .setName('Deleted notes and files')
       .setDesc('Restore what was deleted on any of your devices, within the time above. Also in a folder\'s menu, and as a command.')
       .addButton((button) => button.setButtonText('Open the trash').onClick(() => this.plugin.openTrash()))
-
-    new Setting(containerEl)
-      .setName('Time Machine')
-      .setDesc(
-        "The vault as it was at any moment within the time above, and further back from the backups if you like - looked at first, taken over only when you apply it, after a fresh backup. A folder or a note alone: in its menu. Applying can be undone."
-      )
-      .addButton((button) => button.setButtonText('Open the Time Machine').onClick(() => void this.plugin.openTimeMachine({ kind: 'vault' })))
 
     const usage = new Setting(containerEl)
       .setName('Attachments on the server')

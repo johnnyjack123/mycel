@@ -64,11 +64,26 @@ export class NoteHistory {
       .reverse()
   }
 
-  /** The Time Machine's ticks: a version each, oldest first. */
+  /**
+   * The Time Machine's ticks: a version each, oldest first. A version that left
+   * the text as it was is none - a change to the note's shared files, say, would
+   * otherwise show the same text twice and call it changed.
+   */
   ticks(): Tick[] {
-    return this.sessions()
-      .map((session) => ({ at: session.ts, from: session.from, last: session.ts, changed: 1 }))
-      .sort((a, b) => a.at - b.at)
+    const ticks: Tick[] = []
+    let before: string | null = null
+    for (const session of this.sessions()) {
+      const text = this.textOf(session.count)
+      if (text === before) continue
+      before = text
+      ticks.push({ at: session.ts, from: session.from, last: session.ts, changed: 1 })
+    }
+    return ticks
+  }
+
+  /** The text with every change of the history in it. */
+  latestText(): string {
+    return this.textOf(this.steps.length)
   }
 
   /** The text up to the change `seq`. */
@@ -97,16 +112,17 @@ export class NoteHistory {
     return this.replayer().to(count).getText(CONTENT_FIELD).toString()
   }
 
-  private sessions(): Array<{ seq: number; ts: number; from: number }> {
-    const sessions: Array<{ seq: number; ts: number; from: number }> = []
-    if (this.base) sessions.push({ seq: this.base.seq, ts: this.base.ts, from: this.base.ts })
+  /** Oldest first; `count` is how many changes after the base the session ends with. */
+  private sessions(): Array<{ seq: number; ts: number; from: number; count: number }> {
+    const sessions: Array<{ seq: number; ts: number; from: number; count: number }> = []
+    if (this.base) sessions.push({ seq: this.base.seq, ts: this.base.ts, from: this.base.ts, count: 0 })
     let from: number | null = null
     for (let i = 0; i < this.steps.length; i += 1) {
       const step = this.steps[i] as HistoryStep
       const next = this.steps[i + 1]
       from ??= step.ts
       if (!next || next.ts - step.ts > this.sessionGapMs) {
-        sessions.push({ seq: step.seq, ts: step.ts, from })
+        sessions.push({ seq: step.seq, ts: step.ts, from, count: i + 1 })
         from = null
       }
     }

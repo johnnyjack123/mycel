@@ -85,6 +85,17 @@ interface Item {
 
 type Mode = 'rendered' | 'source' | 'changes'
 
+/** The past as read from the server, before it is shown. */
+interface Past {
+  vault: VaultTimeline | null
+  note: { docId: string; history: NoteHistory } | null
+  positions: Position[]
+  reach: number
+  /** The newest tick, when it shows what now shows: now stands for it. */
+  latest: Tick | null
+  backupProblem: string | null
+}
+
 const PREVIEW_MAX_BYTES = 20 * 1024 * 1024
 const TEXT_MAX = 200_000
 const TREE_MAX = 3_000
@@ -92,6 +103,15 @@ const MARKS_MAX = 400
 // While the slider is dragged, the state shown follows once it rests this long.
 const SETTLE_MS = 120
 const ROLLBACKS_SHOWN = 5
+/**
+ * Notes the server took changes of since a tick are compared with now by their
+ * text, up to this many: one restored to what it said then has changes and is
+ * the same. Beyond it, the server's minutes have to do.
+ */
+const COMPARED_MAX = 200
+const COMPARED_AT_ONCE = 6
+// After a restore, how long the view waits for the server to have it before reading the past again.
+const SENT_WAIT_MS = 10_000
 
 function when(ms: number): string {
   return new Date(ms).toLocaleString()
@@ -128,6 +148,8 @@ export class TimeMachineView extends ItemView {
   private vault: VaultTimeline | null = null
   private note: { docId: string; history: NoteHistory } | null = null
   private positions: Position[] = []
+  /** The change that made now what it is, when it is the newest tick. */
+  private latest: Tick | null = null
   private place = 0
   private selected: { kind: Item['kind']; id: string; path: string } | null = null
   private onlyDiffering = true
@@ -141,6 +163,8 @@ export class TimeMachineView extends ItemView {
   private readonly backupTexts = new Map<string, Promise<string | null>>()
   /** What a note says now, by content hash - for comparing with a backup. */
   private readonly nowHashes = new Map<string, Promise<string | null>>()
+  /** Per note and moment, whether it said then what it says now; null where that cannot be told. */
+  private readonly sameAt = new Map<string, Promise<boolean | null>>()
   private previewComponent: Component | null = null
   private readonly urls: string[] = []
   private settleTimer: number | null = null
@@ -219,64 +243,62 @@ export class TimeMachineView extends ItemView {
     this.listings.clear()
     this.backupTexts.clear()
     this.nowHashes.clear()
+    this.sameAt.clear()
     this.vault = null
     this.note = null
     this.positions = []
+    this.latest = null
   }
 
   private get folder(): string {
     return this.target.kind === 'folder' ? this.target.path : ''
   }
 
-  async load(): Promise<void> {
+  /**
+   * Reads the past from the server. `quiet`: what is shown stays until the new
+   * past is read - after a restore, which the view already shows as now.
+   */
+  async load(quiet = false): Promise<void> {
     const load = (this.loads += 1)
-    this.forget()
-    this.ctx = this.host.context()
-    this.problem = null
-    this.backupProblem = null
-    // An earlier load still under way is this one's now.
-    this.loading = false
-    if (!this.ctx) {
-      this.problem = 'Obsidian Connect is not connected yet. The Time Machine reads the past from the server, so it opens once the vault syncs.'
+    const ctx = this.host.context()
+    if (!quiet || !ctx || ctx.store !== this.ctx?.store || this.problem || this.positions.length === 0) {
+      this.forget()
+      this.ctx = ctx
+      this.problem = null
+      this.backupProblem = null
+      // An earlier load still under way is this one's now.
+      this.loading = false
+      if (!ctx) {
+        this.problem = 'Obsidian Connect is not connected yet. The Time Machine reads the past from the server, so it opens once the vault syncs.'
+        this.render()
+        return
+      }
+      this.loading = true
       this.render()
-      return
     }
-    const ctx = this.ctx
-    this.loading = true
-    this.render()
     try {
-      let ticks: Tick[]
-      let reach: number
-      if (this.target.kind === 'note') {
-        const docId = ctx.store.docIdForPath(this.target.path)
-        if (!docId) throw new Error(`${this.target.path} is not synced.`)
-        const history = new NoteHistory(ctx.api, docRoom(docId), ctx.noteCrypto(docId))
-        await history.load()
-        if (load !== this.loads) return history.destroy()
-        this.note = { docId, history }
-        this.histories.set(docId, Promise.resolve(history))
-        ticks = history.ticks()
-        reach = history.reach
-      } else {
-        const vault = await VaultTimeline.load({ api: ctx.api, vaultId: ctx.vaultId, indexCrypto: ctx.indexCrypto })
-        if (load !== this.loads) return
-        this.vault = vault
-        ticks = vault.ticks(this.folder)
-        reach = vault.reach
+      const past = await this.readPast(ctx)
+      if (load !== this.loads) {
+        past.note?.history.destroy()
+        return
       }
-      this.reach = reach
-      const positions: Position[] = ticks.map((tick) => ({ at: tick.at, tick }))
-      if (this.host.includeBackups() && ctx.backups && reach > 0) {
-        const older = await this.backupPositions(ctx.backups, reach)
-        if (load !== this.loads) return
-        positions.unshift(...older)
-      }
-      positions.push({ at: Number.POSITIVE_INFINITY, tick: null })
-      this.positions = positions
-      this.place = positions.length - 1
+      // Read again while looking at a tick: the same moment, if it is still one.
+      const shown = this.position
+      const same = shown?.tick ? past.positions.findIndex((position) => position.at === shown.at) : -1
+      this.forget()
+      this.ctx = ctx
+      this.vault = past.vault
+      this.note = past.note
+      if (past.note) this.histories.set(past.note.docId, Promise.resolve(past.note.history))
+      this.reach = past.reach
+      this.latest = past.latest
+      this.backupProblem = past.backupProblem
+      this.positions = past.positions
+      this.place = same >= 0 ? same : past.positions.length - 1
     } catch (error) {
       if (load !== this.loads) return
       log.error('the Time Machine could not read the past', error)
+      this.forget()
       this.problem = `The past could not be read: ${error instanceof Error ? error.message : String(error)}. It lives on the server, so the Time Machine needs a connection.`
     } finally {
       if (load === this.loads) {
@@ -286,9 +308,50 @@ export class TimeMachineView extends ItemView {
     }
   }
 
+  private async readPast(ctx: TimeMachineContext): Promise<Past> {
+    let ticks: Tick[]
+    let reach: number
+    let latest: Tick | null = null
+    let vault: VaultTimeline | null = null
+    let note: Past['note'] = null
+    if (this.target.kind === 'note') {
+      const docId = ctx.store.docIdForPath(this.target.path)
+      if (!docId) throw new Error(`${this.target.path} is not synced.`)
+      const history = new NoteHistory(ctx.api, docRoom(docId), ctx.noteCrypto(docId))
+      try {
+        await history.load()
+        ticks = history.ticks()
+        // The newest version is what the note says now, unless this device changed it since.
+        if (ticks.length > 0 && history.latestText() === (await ctx.store.currentText(docId))) latest = ticks.pop() ?? null
+      } catch (error) {
+        history.destroy()
+        throw error
+      }
+      note = { docId, history }
+      reach = history.reach
+    } else {
+      vault = await VaultTimeline.load({ api: ctx.api, vaultId: ctx.vaultId, indexCrypto: ctx.indexCrypto })
+      ticks = vault.ticks(this.folder)
+      const last = ticks.at(-1)
+      // A tick shows the state after its changes, so the newest is now - unless this device moved something since.
+      if (last && !this.itemsAt(ctx, vault, last.at, vault.stateAt(last.at)).some((item) => this.differs(item))) latest = ticks.pop() ?? null
+      reach = vault.reach
+    }
+    const positions: Position[] = ticks.map((tick) => ({ at: tick.at, tick }))
+    let backupProblem: string | null = null
+    if (this.host.includeBackups() && ctx.backups && reach > 0) {
+      const older = await this.backupPositions(ctx.backups, reach)
+      positions.unshift(...older.positions)
+      backupProblem = older.problem
+    }
+    positions.push({ at: Number.POSITIVE_INFINITY, tick: null })
+    return { vault, note, positions, reach, latest, backupProblem }
+  }
+
   /** The backups older than `before`, as ticks of their own. */
-  private async backupPositions(backups: TimeMachineBackups, before: number): Promise<Position[]> {
+  private async backupPositions(backups: TimeMachineBackups, before: number): Promise<{ positions: Position[]; problem: string | null }> {
     const found: Position[] = []
+    let problem: string | null = null
     for (const server of backups.servers()) {
       try {
         for (const at of await backups.backupTimes(server.routeId)) {
@@ -296,10 +359,18 @@ export class TimeMachineView extends ItemView {
         }
       } catch (error) {
         log.warn(`asking ${server.label} when it backed up failed`, error)
-        this.backupProblem = `${server.label} could not say when it backed up: ${error instanceof Error ? error.message : String(error)}`
+        problem = `${server.label} could not say when it backed up: ${error instanceof Error ? error.message : String(error)}`
       }
     }
-    return found.sort((a, b) => a.at - b.at)
+    return { positions: found.sort((a, b) => a.at - b.at), problem }
+  }
+
+  /** Once the server has what this device just changed, the past is read again - quietly, now already shows it. */
+  private async readAgainWhenSent(docIds: string[]): Promise<void> {
+    const store = this.ctx?.store
+    if (!store) return
+    await Promise.all([...docIds.map((docId) => store.whenSent(docId, SENT_WAIT_MS)), store.whenIndexSent(SENT_WAIT_MS)])
+    if (this.ctx?.store === store) await this.load(true)
   }
 
   private historyOf(docId: string): Promise<NoteHistory> {
@@ -391,10 +462,12 @@ export class TimeMachineView extends ItemView {
 
   // --- what the vault or folder was ------------------------------------------------
 
-  /** The notes and files of the vault or folder at a history position, against now. */
-  private itemsAt(at: number, past: VaultPast): Item[] {
-    const ctx = this.ctx as TimeMachineContext
-    const vault = this.vault as VaultTimeline
+  /**
+   * The notes and files of the vault or folder at a history position, against
+   * now. Whether a note changed since is the server's word here, by its minutes:
+   * `compareWithNow` makes it exact.
+   */
+  private itemsAt(ctx: TimeMachineContext, vault: VaultTimeline, at: number, past: VaultPast): Item[] {
     const items: Item[] = []
     const keep = (pathThen: string | null, pathNow: string | null): boolean =>
       (inFolder(pathThen, this.folder) || inFolder(pathNow, this.folder)) && !ctx.store.isExcluded((pathThen ?? pathNow) as string)
@@ -440,6 +513,45 @@ export class TimeMachineView extends ItemView {
       items.push(item)
     }
     return items
+  }
+
+  /** Whether a note said at `at` what it says now; null where its history cannot tell. */
+  private sameAsNow(docId: string, at: number): Promise<boolean | null> {
+    const key = `${docId}@${at}`
+    let same = this.sameAt.get(key)
+    if (!same) {
+      const store = (this.ctx as TimeMachineContext).store
+      same = this.historyOf(docId).then(
+        async (history) => {
+          if (!history.reaches(at)) return null
+          const now = await store.currentText(docId)
+          return now === null ? null : history.textAtTime(at) === now
+        },
+        () => null
+      )
+      this.sameAt.set(key, same)
+    }
+    return same
+  }
+
+  /**
+   * The notes the server took changes of since `at`, compared by their text: a
+   * note restored to what it said then is not changed since. `progress` hears
+   * how many are done; once `wanted` says no, the slider moved on.
+   */
+  private async compareWithNow(items: Item[], at: number, progress: (done: number, of: number) => void, wanted: () => boolean): Promise<boolean> {
+    const hinted = items.filter((item) => item.kind === 'note' && item.changed && item.id)
+    if (hinted.length > COMPARED_MAX) return false
+    for (let i = 0; i < hinted.length; i += COMPARED_AT_ONCE) {
+      if (!wanted()) return true
+      progress(i, hinted.length)
+      const batch = hinted.slice(i, i + COMPARED_AT_ONCE)
+      const same = await Promise.all(batch.map((item) => this.sameAsNow(item.id, at)))
+      batch.forEach((item, j) => {
+        if (same[j] === true) item.changed = false
+      })
+    }
+    return true
   }
 
   /** The notes and files of a backup, by path, against now. */
@@ -578,8 +690,10 @@ export class TimeMachineView extends ItemView {
       ticks === 0
         ? 'Nothing changed here as far back as the history reaches.'
         : `${ticks} earlier state${ticks === 1 ? '' : 's'}. ${
-            this.target.kind === 'note' ? 'A tick is a version: typing ended by a pause of a minute.' : 'A tick is every change, those less than five minutes apart together.'
-          } Nothing changes in the vault while you look.`
+            this.target.kind === 'note'
+              ? 'A tick is the note after a version: typing ended by a pause of a minute.'
+              : 'A tick is the state after a change, changes less than five minutes apart together.'
+          } The newest is now. Nothing changes in the vault while you look.`
     )
     const backups = this.ctx?.backups
     if (backups && backups.servers().length > 0) {
@@ -610,6 +724,16 @@ export class TimeMachineView extends ItemView {
     const tick = position.tick
     if (!tick) {
       label.createSpan({ cls: 'connect-tm-when', text: 'Now' })
+      const latest = this.latest
+      if (latest && latest.changed > 0) {
+        label.createSpan({
+          cls: 'connect-tm-what',
+          text:
+            this.target.kind === 'note'
+              ? ` · last changed ${when(latest.last)}`
+              : ` · last changed ${when(latest.last)}, ${latest.changed} note${latest.changed === 1 ? '' : 's'} or file${latest.changed === 1 ? '' : 's'}`
+        })
+      }
       return
     }
     if (position.backup) {
@@ -677,17 +801,27 @@ export class TimeMachineView extends ItemView {
     actions: HTMLElement,
     scrolled: number
   ): Promise<void> {
+    const ctx = this.ctx as TimeMachineContext
+    const vault = this.vault as VaultTimeline
     let items: Item[]
     let past: VaultPast | null = null
+    let compared = true
     try {
       if (!position.tick) {
-        items = this.itemsAt(Number.POSITIVE_INFINITY, (this.vault as VaultTimeline).stateAt(Number.POSITIVE_INFINITY))
+        items = this.itemsAt(ctx, vault, Number.POSITIVE_INFINITY, vault.stateAt(Number.POSITIVE_INFINITY))
       } else if (position.backup) {
         tree.createEl('p', { cls: 'connect-tm-quiet', text: `Reading the backup on ${position.backup.label}…` })
         items = await this.itemsOfBackup(position)
       } else {
-        past = (this.vault as VaultTimeline).stateAt(position.at)
-        items = this.itemsAt(position.at, past)
+        past = vault.stateAt(position.at)
+        items = this.itemsAt(ctx, vault, position.at, past)
+        const waiting = tree.createEl('p', { cls: 'connect-tm-quiet' })
+        compared = await this.compareWithNow(
+          items,
+          position.at,
+          (done, of) => waiting.setText(`Comparing ${of} notes with what they say now… ${done} of ${of}`),
+          () => run === this.run
+        )
       }
     } catch (error) {
       if (run !== this.run) return
@@ -697,7 +831,7 @@ export class TimeMachineView extends ItemView {
     }
     if (run !== this.run) return
     tree.empty()
-    this.renderTree(tree, items, position)
+    this.renderTree(tree, items, position, compared)
     tree.scrollTop = scrolled
     const chosen = this.selected ? items.find((item) => this.isSelected(item)) : undefined
     if (chosen) {
@@ -722,7 +856,7 @@ export class TimeMachineView extends ItemView {
     return item.back || item.goes || item.moved || item.changed
   }
 
-  private renderTree(el: HTMLElement, items: Item[], position: Position): void {
+  private renderTree(el: HTMLElement, items: Item[], position: Position, compared: boolean): void {
     const head = el.createDiv({ cls: 'connect-tm-tree-head' })
     // Now, nothing differs from now: the whole tree.
     const filtered = this.onlyDiffering && position.tick !== null
@@ -745,6 +879,12 @@ export class TimeMachineView extends ItemView {
       cls: 'connect-tm-quiet',
       text: position.tick ? `${differing} differ${differing === 1 ? 's' : ''} from now.` : `${items.length} notes and files.`
     })
+    if (!compared) {
+      head.createDiv({
+        cls: 'connect-tm-quiet',
+        text: `More than ${COMPARED_MAX} notes changed since, too many to compare each: "changed since" says the server took a change, and one may say the same again. Choose a note to see.`
+      })
+    }
     if (shown.length === 0) {
       el.createEl('p', { cls: 'connect-tm-quiet', text: position.tick ? 'Everything here is as it is now.' : 'Nothing here.' })
       return
@@ -1051,7 +1191,8 @@ export class TimeMachineView extends ItemView {
           if ('missing' in then) throw new Error(then.missing)
           await ctx.store.restore(docId, then.text)
           new Notice(`${nameOf(this.target.kind === 'note' ? this.target.path : '')} is back to ${when(position.at)}. The restore is a version itself, so it can be undone.`, 8_000)
-          await this.load()
+          this.showRestored()
+          void this.readAgainWhenSent([docId])
         } catch (error) {
           log.error('restoring a version failed', error)
           new Notice(`Restoring failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -1087,7 +1228,9 @@ export class TimeMachineView extends ItemView {
             try {
               const message = chosen.kind === 'note' ? await this.restoreNote(position, chosen) : await this.restoreFile(position, chosen)
               new Notice(message, 8_000)
-              await this.load()
+              this.showRestored()
+              const docId = chosen.kind === 'note' ? chosen.id || ctx.store.docIdForPath(chosen.pathThen ?? '') : undefined
+              void this.readAgainWhenSent(docId ? [docId] : [])
             } catch (error) {
               log.error('restoring one note or file failed', error)
               new Notice(`Restoring failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -1171,6 +1314,18 @@ export class TimeMachineView extends ItemView {
       // To just before it began, in the same place.
       undo.onclick = () => new ApplyModal(this.app, ctx.rollback(), ctx.backups, record.folder, record.startedAt - 1, () => void this.load()).open()
     }
+  }
+
+  /**
+   * A restore shows at once: a note's Time Machine moves to now, which is what
+   * it restored; the vault's or a folder's stays at the tick, to restore more.
+   * What notes say now was cached before it.
+   */
+  private showRestored(): void {
+    this.sameAt.clear()
+    this.nowHashes.clear()
+    if (this.target.kind === 'note') this.moveTo(this.positions.length - 1)
+    else this.renderState()
   }
 
   private dropPreview(): void {

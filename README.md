@@ -178,10 +178,11 @@ what was deleted on any of your devices and brings it back. Deleted notes and
 files stay restorable for the history retention; after that the server deletes
 them, unless a note is still shared with someone.
 
-**The Time Machine** (a note's or a folder's menu, the command palette, *All devices*
-in the settings) shows the past of the vault, a folder or a note in a tab of its own:
+**The Time Machine** (a note's or a folder's menu, the command palette, *Backups* in
+the settings) shows the past of the vault, a folder or a note in a tab of its own:
 a slider with a tick for every version of a note, or every change in a folder or the
-vault (those less than five minutes apart as one). Moving it shows that moment - the
+vault (those less than five minutes apart as one), each showing the state after it; the
+newest state is *Now*. Moving it shows that moment - the
 tree as it was, marked against now (*deleted since*, *added since*, *moved*,
 *changed*), and the chosen note rendered, as text, or as its changes against now; a
 picture as it was. Nothing in the vault changes while you look. **Apply…** takes the

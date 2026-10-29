@@ -323,6 +323,41 @@ try {
   )
   check(A1.vault.text('Welcome.md') === 'hello, outside the folder\n', 'and nothing outside it changes')
 
+  // --- the Time Machine after a restore ----------------------------------------------------------------------
+  {
+    const keys = A1.keys as NonNullable<typeof A1.keys>
+    const store = A1.store as NonNullable<typeof A1.store>
+    const welcome = A1.index?.docIdForPath('Welcome.md') as string
+    await store.restore(welcome, 'hello\n')
+    check(
+      (await store.currentText(welcome)) === 'hello\n' && A1.vault.text('Welcome.md') === 'hello, outside the folder\n',
+      'right after a restore, what a note says now is the restored text, before its file follows'
+    )
+    check(await eventually(() => A1.vault.text('Welcome.md') === 'hello\n'), 'which it then does')
+    check(await store.whenSent(welcome, 10_000), 'the restore reaches the server')
+    const history = new NoteHistory(A1.api, docRoom(welcome), keys.ownDocCrypto(welcome), 1)
+    await history.load()
+    const timeline = await VaultTimeline.load({ api: A1.api, vaultId: keys.vaultId, indexCrypto: keys.indexCrypto() })
+    check(
+      timeline.editedAfter(welcome, T) && history.textAtTime(T) === (await store.currentText(welcome)),
+      "restored to what it said at a moment, the note took changes since by the server's minutes, and its text then is its text now",
+      { then: history.textAtTime(T), now: await store.currentText(welcome) }
+    )
+    const ticks = history.ticks()
+    check(
+      history.textAtTime((ticks.at(-1) as (typeof ticks)[number]).at) === history.latestText() && history.latestText() === 'hello\n',
+      "the newest of a note's ticks is what it says now"
+    )
+    // A change of the note's document that leaves its text alone.
+    const handle = await store.handle(welcome)
+    await delay(10)
+    handle.doc.getMap('selftest').set('touched', true)
+    check(await store.whenSent(welcome, 10_000), "a change beside the note's text reaches the server")
+    await history.load()
+    check(history.ticks().length === ticks.length, 'and is no version of its own: the text stayed as it was', { before: ticks, after: history.ticks() })
+    history.destroy()
+  }
+
   // --- a history compacted past the moment ----------------------------------------------------------------------
   await delay(300)
   const T3 = Date.now()

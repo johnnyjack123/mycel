@@ -3,6 +3,10 @@
 Asked for on 2026-10-24 after testing 0.8.9; on 2026-10-25 the user agreed to the idea
 as proposed below and asked for it before 0.9, which stays hardening only. On
 2026-10-27 the user decided T2 to T8 ("Decided" below) and asked for it to be built.
+On 2026-10-29 the user tested it and asked for a second round: fixes, built as 0.8.12
+("How it is built"), and a timeline as in macOS, the past in the note and in the
+explorer, and a notification center - proposed under "The second round", for the user
+to decide.
 
 ## What the user asked for
 
@@ -175,7 +179,27 @@ changes against now. *Restore this version* for a note; for the vault or a folde
 *Apply…* (the rollback's list, its backups and its gate, `history/ApplyModal.ts`, which is
 what is left of `RollbackModal`), *Restore just this note/file*, and the earlier
 rollbacks with *Undo…*. Opened from a note's and a folder's menu, the command palette and
-*Settings → All devices*.
+*Settings → Backups* (0.8.12; *All devices* before).
+
+**Now and the newest tick** (0.8.12). A tick shows the state after its changes, so the
+newest one showed exactly what *now* shows - the user saw two identical places at the
+end of every slider. The newest tick is left out when it shows what now shows (a note:
+its newest version is its text now; the vault or a folder: nothing differs from now in
+the index), and *now* names when that last change was. A note's version that left its
+text as it was (a change beside the text, such as its shared files) is no tick either.
+
+**Changed since, exact** (0.8.12). The server's minutes say only that a note took a
+change after a tick; a note restored to what it said then took changes and says the same.
+The notes they name are compared by their text at the tick against their text now (up to
+200 per tick, six read at once, each history read once while the view is open); beyond
+200 the view says the marks are the server's word. The text *now* is the note's document
+where that is ahead of its file - a change still to be written, or an editor Obsidian
+saves when it likes: read from the file, the restore showed the text it had replaced.
+
+**After a restore** (0.8.12): a note's Time Machine moves to *now* at once and shows the
+restored text; the vault's or a folder's stays at its tick, so more can be restored. Once
+the server has the restore, the past is read again quietly - what is shown stays until
+then.
 
 **Backups as ticks** (the switch): the backup runs further back than the history
 reaches, drawn apart. The tree comes from the backup's listing, by path, a note's text
@@ -192,3 +216,166 @@ ticks of the vault and of a folder, entries and texts at a tick, a note's ticks 
 the files of someone else's shared *folder*. A member's rollback would have trashed a
 picture that came into the folder after the moment, and in a folder a writer's delete
 is everyone's. Fixed in 0.8.10, with a test, before the Time Machine builds on it.
+
+## The second round (proposal, 2026-10-29 - the user decides U1 to U5)
+
+The user tested 0.8.11: it works, rolling back a folder and the vault went through.
+Fixed at once in 0.8.12: the preview of *now* after a restore, the button moved to
+*Backups*, the newest tick that equalled now, *changed since* compared by text. Asked
+for besides:
+
+- **A timeline as in macOS** (a sketch in `reference/`, not in the repository): upright,
+  at the right edge of the note; a bar per tick, labelled with date and time; a click
+  goes there; the bars grow towards the pointer as in the Dock, like a wave.
+- **A note:** no tab of its own - the note's own view turns read-only and shows the
+  past, the changes visible in the normal editor.
+- **A folder or the vault:** the same timeline, and the past applied in the explorer
+  itself, the folder or the vault locked meanwhile and backed up first, locally too -
+  to walk through the real vault as it was, read-only, which is easier to picture than
+  a tree. The view of 0.8.11 stays as the overview of what differs, opened beside it.
+- **A notification center:** the notices that vanish after a few seconds, kept in a view
+  of the plugin.
+
+### What Obsidian allows
+
+- A plugin draws what it likes inside its own views, may lay elements over another
+  view's content, and gives every editor CodeMirror extensions of its own (the binding,
+  the read-only editor of a note shared to read).
+- **The explorer shows only files that exist.** There is no API for a file that is not
+  there or for another state of a file: the past in the explorer means the past
+  written into the files.
+- **There are no file locks.** A plugin can make editors read-only and switch a view to
+  reading mode, and hears every create, change, rename and delete - afterwards. It
+  cannot stop the explorer's rename, delete or drag, or another plugin writing.
+- **A text in an editor is saved to its file** by Obsidian when it likes, so the past
+  shown in the editor itself is the past written to disk.
+- **A file written while sync runs is an edit**, sent to every device and to everyone
+  the note is shared with - T1's reason, and the one danger of everything below.
+
+### U1 - The timeline
+
+An upright strip at the right edge. A bar per tick, the oldest at the top and *now* at
+the bottom, as in macOS. At rest a bar is a short line; within about 120 px of the
+pointer the bars grow in length and thickness, falling off smoothly with the distance -
+the wave -, and the one under the pointer shows its label: date, time, what changed. A
+click goes there, the arrow keys step, *Esc* goes back to now. On a phone a finger
+drawn along the strip magnifies the bar under it, lifting it goes there. Backups (the
+switch of T6) in a colour of their own above the history's ticks.
+
+Bars are spaced by order, not by time: by time, a busy hour crowds into a line and
+quiet weeks leave the strip empty. Where more bars than fit (4 px each at the least),
+the strip scrolls. *Recommended:* that, with a label only on the bar under the pointer
+and its neighbours as they grow, and a small date wherever a day begins ("Today",
+"Yesterday", "27 Oct") - two hundred labelled bars do not fit. The horizontal slider
+goes.
+
+### U2 - A note: in its own tab
+
+The note's tab stays. Over its editor lies a layer of the plugin's, in the same place:
+the note at the tick, rendered as Obsidian's reading view renders it, or its text with
+the changes against now marked in it (struck through: there now, would go; marked
+green: there then, would come back), the strip at its right edge, and a bar above with
+the moment, *Restore this version* and *Done* (or *Esc*). The editor beneath is made
+read-only for that note by the plugin's editor extension, and nothing is written - so
+nothing syncs. *Done*, or another note opened in the tab, ends it.
+
+Not the editor itself: the past put into the editor is saved to the file by Obsidian
+and sent by the sync, so every tick slid over would reach every device. The layer looks
+like the note and touches nothing. Its limit: Obsidian's live preview (the editing mode
+with rendered Markdown) cannot be made by a plugin for a text that is not the file, so
+the layer renders like the reading view, or as text.
+
+*Recommended:* this is a note's Time Machine from then on, opened from the note's menu,
+the command, and a clock in the note's header; the tab of 0.8.11 stays for folders and
+the vault.
+
+### U3 - A folder or the vault: in the explorer
+
+In this order:
+
+1. **Ask**, in a window over everything: the folder shows its state of that moment in
+   the explorer; sync pauses on this device until the Time Machine closes; the folder
+   is read-only meanwhile.
+2. **Pause the sync on this device, entirely** - as if it were offline. The other
+   devices go on. Entirely, because the sync must not see the files of the past:
+   teaching each of its parts (notes, files, shared folders, trash, renames, the scan
+   every minute) to look away from one folder is many places, and one missed is the
+   damage T1 avoids. Paused, the device is one that went offline, and afterwards it
+   catches up the way every device does after being offline - a path that runs every
+   day.
+3. **Copy first.** Everything the preview replaces, hides or moves is copied into the
+   plugin folder (`timemachine/`), with a journal of every step, written *before* the
+   step. Nothing reaches a server: the past comes from the history, and the present
+   stays in the notes' documents and in the copy. This copy is the "backup first,
+   locally too"; the backup server runs before *Apply*, as now.
+4. **Write the past** through Obsidian's vault, so explorer, search, graph and links
+   show it: notes get their text then, files their content then (from the server),
+   what was deleted since is created, what came later moves into the copy and leaves
+   the explorer, what was moved goes back. Another tick changes only what differs
+   between the two ticks.
+5. **Read-only:** every note in the folder opens in reading mode and its editor refuses
+   typing; what gets past that - a rename, delete or move in the explorer, another
+   plugin writing - is noticed and put back at once, with a notice.
+6. **Beside it** the overview (the tab of 0.8.11: what differs, and why), the strip at
+   the right edge of the editor area, and a bar at the top: the folder, the moment,
+   *Apply…*, *Back to now*.
+7. **Back to now:** every step of the journal undone from the copy, the newest first;
+   the files are then as they were, byte for byte. Only then does the sync start
+   again: it finds every file as it left it and takes in what the other devices did
+   meanwhile.
+8. **Apply…** is *Back to now* and then the rollback as it is - its list, the backup
+   server, the copy in `rollbacks/`, the gate.
+9. **Obsidian closed or crashed meanwhile:** the next start finds the journal *before*
+   the sync starts, undoes the past first, and only then starts the sync. Should the
+   undoing fail, the sync does not start and a window over everything says why.
+   Started first, the sync would take the past in the files for edits made here and
+   send it everywhere; this order is the rule the whole of U3 rests on.
+
+What it costs:
+- While it shows the past, this device syncs nothing: what is written elsewhere in the
+  vault meanwhile waits and goes afterwards, and shared notes do not move here.
+- Each tick writes every note and file that differs: months back in a large vault,
+  hundreds of files per step and old versions of files downloaded - seconds per tick,
+  not at once like the view. Files over the device's download limit (10 MB on a phone)
+  stay as they are now, marked.
+- Other plugins see the past as real files (a git plugin, a linter, Dataview's index),
+  and Obsidian's *File recovery* may keep snapshots of them.
+
+The alternative, safer and less of what was asked: the past as a read-only copy in a
+folder of its own beside the real one (`⏱ Projects, 27 Oct 14:05/`), the sync untouched
+(the copy excluded). But its links lead to today's notes, and search finds everything
+twice.
+
+*Recommended:* in place as above, built after U1 and U2 as a step of its own: it is the
+part that can do harm, and the test vault can run all of it, a crash in the middle
+included. *To decide:* in place or the copy folder; and whether the local copy is the
+backup a preview needs (recommended) or the backup server runs before every preview too.
+
+### U4 - Which views open
+
+- A note: U2 in its own tab, nothing else.
+- A folder or the vault: U3 in the explorer, the overview beside it.
+- The overview alone, the explorer untouched, as today - for a phone or a large vault,
+  where writing hundreds of files per tick is slow. *Recommended:* keep it, as *Look
+  without the explorer* in the folder's menu.
+
+### U5 - The notification center
+
+Every notice of the plugin goes through one function that also records it: when, the
+text, its kind (information, warning, error) and what it concerns - a note's path, so a
+click opens the note. A view in the right sidebar (a bell) lists them, the newest first,
+by day; the bell counts what was not seen yet; *Clear* empties it. Kept on the device in
+the plugin folder (the last 500, or 30 days), not synced: most are about this device.
+The notices still pop up as before. Windows over everything (the guard, moving in) stay
+windows; what came of them is recorded.
+
+Only the plugin's own notices: Obsidian lets no plugin read another's, short of
+replacing its `Notice` for everyone, which breaks with Obsidian's updates.
+
+*Recommended:* as above. *To decide:* whether only warnings and errors still pop up once
+everything is in the center.
+
+### Order
+
+*Recommended:* 0.8.13 the strip, a note in its tab and the notification center (U1, U2,
+U5); 0.8.14 the explorer (U3) alone. Each tried on the devices before the next.
