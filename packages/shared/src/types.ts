@@ -789,6 +789,7 @@ export type NotifyKind =
   | 'folder-added'
   | 'folder-changed'
   | 'folder-removed'
+  | 'vault-lock'
 
 export interface ShareNotice {
   docId: string
@@ -810,7 +811,48 @@ export interface ContactNotice {
   account: string
 }
 
-export type Notice = ShareNotice | ContactNotice | FolderNotice
+/** For `vault-lock`: the vault was locked, the lock renewed hands on, or it ended (`lock: null`). */
+export interface VaultLockNotice {
+  vaultId: string
+  lock: VaultLockInfo | null
+}
+
+export type Notice = ShareNotice | ContactNotice | FolderNotice | VaultLockNotice
+
+// --- the vault lock ------------------------------------------------------------------
+// While the Time Machine shows the past in the files of one device, or applies it,
+// the server takes nothing from the account's other devices into the vault
+// (`docs/TIMEMACHINE.md`, V2). It holds even against a device whose own guard failed.
+
+/** `preview`: nobody of the account writes. `rollback`: only the connection holding it. */
+export type VaultLockKind = 'preview' | 'rollback'
+
+export interface VaultLockInfo {
+  kind: VaultLockKind
+  /** Who holds it and why, encrypted under the vault's settings key: the server cannot read it. */
+  sealed: string
+  takenAt: number
+  /** Unless renewed before, the lock lapses then - a device that crashed holds nothing for long. */
+  expiresAt: number
+}
+
+export interface VaultLockRequest {
+  kind: VaultLockKind
+  sealed: string
+}
+
+/** To the device that took it: the id renews and releases it, and lets its connection write under a rollback. */
+export interface VaultLockTaken extends VaultLockInfo {
+  id: string
+}
+
+export interface VaultLockResponse {
+  lock: VaultLockInfo | null
+}
+
+export interface VaultLockIdRequest {
+  id: string
+}
 
 // --- shared folders --------------------------------------------------------------
 // A folder is a room of its own (`fld:<folderId>`) whose members reach every

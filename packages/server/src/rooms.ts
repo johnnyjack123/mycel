@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
@@ -36,7 +37,11 @@ import {
   type ShareRequest,
   type ShareRole,
   type SnapshotRequest,
-  type StartSnapshotRequest
+  type StartSnapshotRequest,
+  type VaultLockInfo,
+  type VaultLockKind,
+  type VaultLockRequest,
+  type VaultLockTaken
 } from '@obsidian-connect/shared'
 import { isAccountId, type AccountStore } from './accounts.js'
 import type { ContactStore } from './contacts.js'
@@ -75,6 +80,8 @@ export interface RoomClient {
   sendRekey(room: string, epoch: number, tie: FolderTie | null): void
   sendRevoked(room: string, reason: string): void
   sendDenied(room: string, reason: string): void
+  /** The push `ref` was refused because the vault is locked; the device keeps it. */
+  sendLocked(room: string, ref: number): void
   sendNotify(kind: NotifyKind, payload: Notice): void
   /** Ends the connection; the device learns why from the close code. */
   close(code: number, reason: string): void
@@ -101,6 +108,14 @@ interface OpenRoom {
   idleTimer: NodeJS.Timeout | null
 }
 
+/** A vault's lock (`docs/TIMEMACHINE.md`). Kept in memory: a restart ends it. */
+interface HeldLock {
+  id: string
+  info: VaultLockInfo
+  /** Under a rollback, the connections of its holder - the only ones that write. */
+  holders: Set<RoomClient>
+}
+
 export interface RoomHubOptions {
   dataDir: string
   /** How long an unused room stays in memory. */
@@ -110,6 +125,11 @@ export interface RoomHubOptions {
 
 const IDLE_CLOSE_MS = 30_000
 const ROLES: readonly ShareRole[] = ['read', 'write']
+/** A lock not renewed for this long lapses: its device crashed or lost its connection. */
+export const LOCK_LEASE_MS = 2 * 60_000
+const LOCK_SWEEP_MS = 10_000
+const LOCK_KINDS: readonly VaultLockKind[] = ['preview', 'rollback']
+const SEALED_MAX = 4_096
 
 function toBase64(data: Uint8Array): string {
   return Buffer.from(data).toString('base64')
@@ -136,6 +156,9 @@ export class RoomHub {
   /** `account/vault/blob` -> the rooms whose attachment lists name it. */
   private readonly attached = new Map<string, Set<string>>()
   private sweeping: Promise<void> | null = null
+  /** `account/vault` -> the vault's lock. */
+  private readonly locks = new Map<string, HeldLock>()
+  private lockSweep: NodeJS.Timeout | null = null
   private readonly ready: Promise<void>
 
   constructor(
@@ -289,6 +312,7 @@ export class RoomHub {
     for (const [room, open] of this.rooms) {
       if (open.subscribers.delete(client) && open.subscribers.size === 0) this.scheduleIdle(room, open)
     }
+    for (const lock of this.locks.values()) lock.holders.delete(client)
   }
 
   notify(account: string, kind: NotifyKind, payload: Notice): void {
@@ -312,6 +336,107 @@ export class RoomHub {
   onDisconnect(listener: (account: string) => void): () => void {
     this.disconnectListeners.add(listener)
     return () => this.disconnectListeners.delete(listener)
+  }
+
+  // --- the vault lock ------------------------------------------------------------
+  // While one device shows the past in its files or applies it, the server takes
+  // nothing from the account's other devices into the vault; they keep what they
+  // write and send it once the lock ends. Other people in shared notes are not
+  // the account's devices and go on.
+
+  private lockKey(account: string, vaultId: string): string {
+    return `${account}/${vaultId}`
+  }
+
+  /** The vault's lock while it holds; one that lapsed is let go on the way. */
+  private lockOf(account: string, vaultId: string): HeldLock | null {
+    const lock = this.locks.get(this.lockKey(account, vaultId))
+    if (!lock) return null
+    if (lock.info.expiresAt > Date.now()) return lock
+    this.endLock(account, vaultId, lock)
+    return null
+  }
+
+  private endLock(account: string, vaultId: string, lock: HeldLock): void {
+    const key = this.lockKey(account, vaultId)
+    if (this.locks.get(key) !== lock) return
+    this.locks.delete(key)
+    this.notify(account, 'vault-lock', { vaultId, lock: null })
+    if (this.locks.size === 0 && this.lockSweep) {
+      clearInterval(this.lockSweep)
+      this.lockSweep = null
+    }
+  }
+
+  /** Whether the vault's lock keeps this connection from writing. */
+  private lockedOut(client: RoomClient): boolean {
+    const lock = this.lockOf(client.account, client.vaultId)
+    return lock !== null && !(lock.info.kind === 'rollback' && lock.holders.has(client))
+  }
+
+  private refuseWhileLocked(account: string, vaultId: string): void {
+    if (this.lockOf(account, vaultId)) throw new HubError(409, 'the vault is locked')
+  }
+
+  currentLock(account: string, vaultId: string): VaultLockInfo | null {
+    return this.lockOf(account, vaultId)?.info ?? null
+  }
+
+  takeLock(account: string, vaultId: string, request: Partial<VaultLockRequest>): VaultLockTaken {
+    if (!request.kind || !LOCK_KINDS.includes(request.kind)) throw new HubError(400, 'a lock is for a preview or a rollback')
+    if (typeof request.sealed !== 'string' || request.sealed.length === 0 || request.sealed.length > SEALED_MAX) {
+      throw new HubError(400, 'what the lock is for is missing or too long')
+    }
+    if (this.lockOf(account, vaultId)) throw new HubError(409, 'the vault is locked already')
+    const now = Date.now()
+    const lock: HeldLock = {
+      id: randomBytes(16).toString('hex'),
+      info: { kind: request.kind, sealed: request.sealed, takenAt: now, expiresAt: now + LOCK_LEASE_MS },
+      holders: new Set()
+    }
+    this.locks.set(this.lockKey(account, vaultId), lock)
+    if (!this.lockSweep) {
+      this.lockSweep = setInterval(() => this.sweepLocks(), LOCK_SWEEP_MS)
+      this.lockSweep.unref?.()
+    }
+    this.notify(account, 'vault-lock', { vaultId, lock: lock.info })
+    return { id: lock.id, ...lock.info }
+  }
+
+  /** Refused once the lock lapsed or someone lifted it: its holder learns that here. */
+  renewLock(account: string, vaultId: string, id: unknown): VaultLockInfo {
+    const lock = this.lockOf(account, vaultId)
+    if (!lock || lock.id !== id) throw new HubError(404, 'the lock ended')
+    lock.info = { ...lock.info, expiresAt: Date.now() + LOCK_LEASE_MS }
+    return lock.info
+  }
+
+  releaseLock(account: string, vaultId: string, id: unknown): void {
+    const lock = this.lockOf(account, vaultId)
+    if (lock && lock.id === id) this.endLock(account, vaultId, lock)
+  }
+
+  /** Lifted by any device of the account, should its holder never let go. */
+  breakLock(account: string, vaultId: string): boolean {
+    const lock = this.lockOf(account, vaultId)
+    if (!lock) return false
+    this.endLock(account, vaultId, lock)
+    return true
+  }
+
+  /** The connection of the lock's holder: it writes under a rollback. */
+  holdLock(client: RoomClient, id: string): boolean {
+    const lock = this.lockOf(client.account, client.vaultId)
+    if (!lock || lock.id !== id) return false
+    lock.holders.add(client)
+    return true
+  }
+
+  private sweepLocks(): void {
+    for (const key of Array.from(this.locks.keys())) {
+      const slash = key.indexOf('/')
+      this.lockOf(key.slice(0, slash), key.slice(slash + 1))
+    }
   }
 
   /**
@@ -410,6 +535,10 @@ export class RoomHub {
     const open = this.rooms.get(room)
     if (!open || !open.subscribers.has(client)) {
       client.sendDenied(room, 'not subscribed')
+      return
+    }
+    if (this.lockedOut(client)) {
+      client.sendLocked(room, ref)
       return
     }
     const access = this.access(open.log.meta, client.account)
@@ -1427,6 +1556,8 @@ export class RoomHub {
     // The owner's retention governs a shared note, and only the owner's client
     // may act on it; anyone else could shorten everybody's history.
     if (!access.owner) throw new HubError(403, 'only the owner compacts')
+    // The history a preview or a rollback is reading stays as it is.
+    this.refuseWhileLocked(account, meta.vaultId)
     if (request.epoch !== meta.epoch) throw new HubError(409, 'encrypt the snapshot under the current epoch')
     if (!Number.isInteger(request.uptoSeq) || request.uptoSeq <= meta.compactedUpTo || request.uptoSeq > open.log.headSeq) {
       throw new HubError(400, 'the snapshot does not fit the log')
@@ -1448,6 +1579,7 @@ export class RoomHub {
     const meta = open.log.meta
     if (meta.owner !== account) throw new HubError(403, 'only the owner can do that')
     if (Object.keys(meta.members).length > 0) throw new HubError(409, 'the note is still shared')
+    this.refuseWhileLocked(account, meta.vaultId)
     for (const subscriber of open.subscribers) subscriber.sendDenied(room, 'purged')
     open.subscribers.clear()
     if (open.idleTimer) clearTimeout(open.idleTimer)
