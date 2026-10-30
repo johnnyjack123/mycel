@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting } from 'obsidian'
+import { App, Modal, Setting } from 'obsidian'
+import { Notice } from '../notices.js'
 import { busy } from '../busy.js'
 import type { DeletedItem, Trash } from '../sync/Trash.js'
 import { formatSize as size } from './media.js'

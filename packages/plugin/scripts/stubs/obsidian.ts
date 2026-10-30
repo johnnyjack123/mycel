@@ -13,7 +13,10 @@ export class TFile extends TAbstractFile {
   stat = { ctime: 0, mtime: 0, size: 0 }
 }
 
-export class TFolder extends TAbstractFile {}
+export class TFolder extends TAbstractFile {
+  /** What lies directly in it; the fake vault keeps it current. */
+  children: TAbstractFile[] = []
+}
 
 export class Notice {
   /** Every notice shown so far, for tests to assert on. */

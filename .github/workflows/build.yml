@@ -72,6 +72,12 @@ jobs:
       - name: Rollback self-test
         run: npm run test:rollback
 
+      # Its own server in-process: the past written into one device's files
+      # while its sync is stopped and the vault locked on the others, put back
+      # byte for byte - after a crash too, before the sync starts.
+      - name: Time Machine self-test
+        run: npm run test:timemachine
+
       # The backup server hands vaults to restic, so its self-test runs a real
       # one: the release the image will carry, checked against its checksum.
       - name: Install restic

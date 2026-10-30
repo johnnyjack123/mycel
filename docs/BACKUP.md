@@ -291,7 +291,10 @@ over the same encrypted connection; nothing to restore by hand. With *Backups to
 the Time Machine, every backup older than the history is a tick of its own to look at
 (this needs the backup server of 0.8.11 or newer). Before anything changes, the backup
 server makes a fresh backup (forgetting no older one this time, so the backup rolled
-back from stays). See the README.
+back from stays); before the past is shown at all, it backs up if its last backup is older
+than the last change; and before a single note or file is restored. A rollback's copy in
+the plugin folder is compared with the backup by hash and goes when they match. See the
+README.
 
 ## Restoring
 

@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting } from 'obsidian'
+import { App, Modal, Setting } from 'obsidian'
+import { Notice } from '../notices.js'
 import { busy } from '../busy.js'
 import {
   IndexOutOfReach,
@@ -8,6 +9,7 @@ import {
   type RollbackOutcome,
   type RollbackPlan
 } from '../sync/Rollback.js'
+import { VaultLockedError } from '../sync/VaultLock.js'
 import { log } from '../log.js'
 
 // Taking a moment the Time Machine shows over, for the vault or one folder:
@@ -41,7 +43,7 @@ export class ApplyModal extends Modal {
     private readonly folder: string,
     private readonly moment: number,
     /** Called once the rollback went through, with or without problems. */
-    private readonly applied: () => void = () => undefined
+    private readonly applied: (outcome: RollbackOutcome, rollback: Rollback) => void = () => undefined
   ) {
     super(app)
   }
@@ -252,10 +254,15 @@ export class ApplyModal extends Modal {
         10_000
       )
       this.go({ kind: 'done', outcome })
-      this.applied()
+      this.applied(outcome, this.rollback)
     } catch (error) {
       log.error('the rollback failed', error)
-      new Notice(`The rollback failed: ${error instanceof Error ? error.message : String(error)}`, 10_000)
+      new Notice(
+        error instanceof VaultLockedError
+          ? 'The vault is locked by another device of yours - its Time Machine or a rollback. Nothing was changed; try again once it is done.'
+          : `The rollback failed: ${error instanceof Error ? error.message : String(error)}`,
+        10_000
+      )
       this.go({ kind: 'review', plan })
     }
   }
@@ -270,7 +277,7 @@ export class ApplyModal extends Modal {
     }
     contentEl.createEl('p', {
       cls: 'setting-item-description',
-      text: `What changed, as it was before, lies in ${outcome.copy}. To undo the rollback, choose "Undo…" next to it in the Time Machine.`
+      text: `What changed, as it was before, was copied into ${outcome.copy}; the copy goes once the backup server is found to hold the same. To undo the rollback, choose "Undo…" next to it in the Time Machine's overview.`
     })
     new Setting(contentEl).addButton((button) => button.setButtonText('Close').setCta().onClick(() => this.close()))
   }

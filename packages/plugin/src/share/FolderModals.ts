@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting, type ButtonComponent } from 'obsidian'
+import { App, Modal, Setting, type ButtonComponent } from 'obsidian'
+import { Notice } from '../notices.js'
 import type { FolderStateResponse, ShareRole } from '@obsidian-connect/shared'
 import { busy } from '../busy.js'
 import type { Contact } from '../sync/AccountSettings.js'

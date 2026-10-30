@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
+import { App, Modal, Setting, type TFile } from 'obsidian'
+import { Notice } from '../notices.js'
 import { busy, type BusyButton } from '../busy.js'
 import type { AttachmentStore, FileVersion } from '../sync/AttachmentStore.js'
 import { formatSize as size, imageType, imageUrl } from './media.js'

@@ -1,4 +1,5 @@
-import { App, DropdownComponent, Modal, Notice, Setting, TextAreaComponent, TextComponent } from 'obsidian'
+import { App, DropdownComponent, Modal, Setting, TextAreaComponent, TextComponent } from 'obsidian'
+import { Notice } from '../notices.js'
 import {
   BACKUP_GUARD_DEFAULT,
   BACKUP_GUARD_MAX,

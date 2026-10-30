@@ -69,10 +69,10 @@ export class NoteHistory {
    * the text as it was is none - a change to the note's shared files, say, would
    * otherwise show the same text twice and call it changed.
    */
-  ticks(): Tick[] {
+  ticks(gapMs = this.sessionGapMs): Tick[] {
     const ticks: Tick[] = []
     let before: string | null = null
-    for (const session of this.sessions()) {
+    for (const session of this.sessions(gapMs)) {
       const text = this.textOf(session.count)
       if (text === before) continue
       before = text
@@ -84,6 +84,13 @@ export class NoteHistory {
   /** The text with every change of the history in it. */
   latestText(): string {
     return this.textOf(this.steps.length)
+  }
+
+  /** When the last change up to `ts` was made; null before the history begins. */
+  changedAt(ts: number): number | null {
+    const count = this.replayer().countAt(ts)
+    if (count > 0) return (this.steps[count - 1] as HistoryStep).ts
+    return this.base ? this.base.ts : null
   }
 
   /** The text up to the change `seq`. */
@@ -113,7 +120,7 @@ export class NoteHistory {
   }
 
   /** Oldest first; `count` is how many changes after the base the session ends with. */
-  private sessions(): Array<{ seq: number; ts: number; from: number; count: number }> {
+  private sessions(gapMs = this.sessionGapMs): Array<{ seq: number; ts: number; from: number; count: number }> {
     const sessions: Array<{ seq: number; ts: number; from: number; count: number }> = []
     if (this.base) sessions.push({ seq: this.base.seq, ts: this.base.ts, from: this.base.ts, count: 0 })
     let from: number | null = null
@@ -121,7 +128,8 @@ export class NoteHistory {
       const step = this.steps[i] as HistoryStep
       const next = this.steps[i + 1]
       from ??= step.ts
-      if (!next || next.ts - step.ts > this.sessionGapMs) {
+      // With no pause at all, every change is a tick - those of the same moment one: nothing lies between them.
+      if (!next || next.ts - step.ts > gapMs) {
         sessions.push({ seq: step.seq, ts: step.ts, from, count: i + 1 })
         from = null
       }

@@ -528,3 +528,101 @@ What helps:
   shows it in its own editor, as decided.
 - **W2 - the lock** as above: only the account's devices, and not for a single restore?
 - **W3 - the modification time** written with the author's time, as recommended?
+
+### Decided (the user, 2026-10-30, later)
+
+- **W1: the file**, for a note alone too - one system to maintain, not two.
+- **W2** and **W3** as proposed.
+- Built all at once, as 0.8.13. A name for 0.9 stays open: the user asked for ideas
+  besides "Connect"; free in the directory then were also *Concord*, *Accord*, *Cohort*
+  and *Commons*.
+
+## How the second round is built (0.8.13)
+
+The tab of 0.8.11 with its slider and preview is gone; the past is in the files.
+
+**Opening** (`history/TimeMachineControl.ts`), from a note's or a folder's menu, the
+commands or *Settings → Backups*, in this order and no other:
+1. a window over everything says what happens meanwhile (`StartModal`), and then each
+   step as it goes;
+2. the past is read: the ticks of the scope with the fineness chosen (`TimeMachineSession.load`);
+3. a fresh backup on each backup server whose last backup is older than the last change
+   (V3); one that fails asks whether to go on;
+4. the vault's lock, kind *preview* (below); held by another device, its window says by
+   whom and since when;
+5. the sync stops on this device (`stopSync`, the path every restart takes) - and stays
+   stopped: `startSync` refuses while the Time Machine holds it (`blocksSync`);
+6. the journal opens (`history/PastFiles.ts`), and only then is anything written.
+
+What it needs of the sync is taken before the sync stops (`prepareTimeMachine`): the
+index's notes and files as now, which notes are shared to read only, whose shared folders
+lie where, the keys to read the history and the files' blobs, and a copy of the account
+settings for the backup servers and the rollback records meanwhile.
+
+**A moment** (`history/TimeMachine.ts`): every path of the scope is decided against now
+- a note or file of now that was not there then goes, one that was there then and is not
+now comes back, one that moved goes back. First the structure, at once: what goes is taken
+away, what comes back is put there with its content now if it only moved (a note that
+comes back from the trash waits empty a moment), folders of now that the past has no file
+in go when they empty, never the folder shown itself. Then the contents in the background,
+four read at once and written one after another, the note in front first: a note's text by
+its history at the moment (as the rollback reads it), a file's content from the server's
+blob, a backup's by path from the backup server. Files above 2 MB come when they are opened;
+files above the device's download limit stay as they are now. Each file written gets its
+modification time then. Another moment rewrites only what differs; *now* puts back what was
+touched. The overview (`history/TimeMachineView.ts`, beside the explorer) lists what
+differs from now, the texts compared as they are filled in.
+
+**The files** (`history/PastFiles.ts`): before a path is first replaced, moved away or
+written over, its content goes into `<plugin folder>/timemachine/copies/`, read back and
+checked by its hash, and a journal line (`journal.jsonl`) names it - both before the step.
+Every write is announced in the journal before it happens. *Back to now* writes every
+original back with its times, checks each by its hash, removes what the past added and the
+folders made for it, and only then does the journal go. Whatever someone else wrote over a
+past file meanwhile - a plugin, the user in another app - goes into
+`<plugin folder>/timemachine-aside/` first, at the moment it would be written over.
+
+**After a crash** (`recoverAtStart`, in `onLayoutReady` before `startSync`): a journal
+found means the past may still be in the files. Every file goes back from it first; the
+lock it held is let go; only then does the sync start. Anything that could not be put
+back keeps the sync off, in a window over everything with *Try again*.
+
+**A note** is the same in one file: the note's own editor shows it read-only, with the
+changes against now marked in it - lines there then and not now highlighted, lines there
+now and not then struck through between them (`history/pastEditor.ts`, a state field for
+the read-only state and the block widgets, fed by a view plugin that asks the Time Machine
+after every step; never dispatching from its constructor, invariant 6).
+
+**The lock** (`sync/VaultLock.ts`, server `RoomHub.takeLock` and the routes
+`/vaults/:vaultId/lock`, `/renew`, `/release`, `/break`): held in the server's memory per
+account and vault, for two minutes unless renewed every 30 seconds. Its purpose - what, on
+which kind of device - is sealed under the vault's settings key; the server holds it
+unread. While it holds, a push from any of the account's connections to that vault is
+answered `locked` (MUX 19) instead of taken: the device keeps it and sends it once a
+`vault-lock` notice says the lock ended. Under a *rollback* lock the connection that named
+the lock's id (MUX 5, `holdLock`) writes. Compaction and purging wait while it holds. Every
+other device of the account shows it in a window with *Unlock…*, which lifts it on the
+server for all. A server older than 0.8.13 has no lock: the Time Machine and the rollback
+then refuse, and say to update it.
+
+**The timeline** (`history/Strip.ts`): a bar per moment, the oldest at the top, now at the
+bottom; near the pointer the bars grow with `barScale` (1 at 110 px and beyond, 3.2 under
+the pointer, a squared cosine between), redrawn in an animation frame; the moment under the
+pointer is named to the second. A click, the arrow keys, a finger drawn along it. The
+choices - how fine, backups too - and *Changes: shown/hidden*, *Apply…* (or *Restore this
+version*), *Back to now* are in the bar above the editors (`history/Bar.ts`).
+
+**Apply, restore, undo** all go back to now first and wait for the sync to run again.
+*Apply…* is the rollback as before, now under the rollback lock; afterwards its copy in
+`rollbacks/` is compared by hash with the backup made just before
+(`Rollback.copyIsBackedUp`) and goes if it matches, otherwise a window says it is only on
+this device (V4). *Restore this version* and *Restore just this note/file* run a backup on
+the backup server first (V3) and say so when the backup before them is only local.
+
+**Notices** (`notices.ts`, `NotificationsView.ts`): `Notice` is the plugin's own, a
+subclass of Obsidian's that also records each notice - when, the text, a failure or not,
+the note it names - into `<plugin folder>/notices.json`, the last 500 or 30 days. A bell
+in the ribbon counts what was not seen and opens the view.
+
+Tested in `test:timemachine` (48 checks, its own server in-process), `test:rooms` (the
+lock), `test:load` (the views, commands and both editor extensions).

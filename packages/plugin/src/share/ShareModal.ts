@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting, type TFile } from 'obsidian'
+import { App, Modal, Setting, type TFile } from 'obsidian'
+import { Notice } from '../notices.js'
 import type { ShareRole } from '@obsidian-connect/shared'
 import { busy } from '../busy.js'
 import { formatSize } from '../history/media.js'

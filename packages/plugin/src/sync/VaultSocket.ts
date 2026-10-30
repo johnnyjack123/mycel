@@ -113,6 +113,8 @@ export interface SocketHandlers {
    * replaced a moment ago, or the device was signed out.
    */
   signedOut?(): void
+  /** A push was refused because the vault is locked - this device may not have heard of the lock yet. */
+  locked?(): void
 }
 
 type Verification = 'none' | 'pending' | 'match' | 'mismatch'
@@ -166,6 +168,11 @@ export class VaultSocket {
   private reconnectTimer: number | null = null
   private closed = false
   private nextRef = 1
+  private applying: number | null = null
+  /** The vault is locked for this device (`docs/TIMEMACHINE.md`): what it writes waits. */
+  private locked = false
+  /** The id of the rollback's lock this device holds, named to the server on every connection. */
+  private lockId: string | null = null
 
   constructor(
     private readonly serverUrl: string,
@@ -210,6 +217,8 @@ export class VaultSocket {
       this.retries = 0
       log.info(`connected to ${this.serverUrl}, ${this.registrations.size} room(s)`)
       this.emit('connected')
+      // Before anything is pushed: the server handles a connection's messages in order.
+      if (this.lockId) this.sendHoldLock(this.lockId)
       for (const registration of this.registrations.values()) this.subscribe(registration)
     }
     socket.onmessage = (event: MessageEvent) => {
@@ -275,6 +284,35 @@ export class VaultSocket {
       this.reconnectTimer = null
       this.connect()
     }, delay)
+  }
+
+  /**
+   * Whether the vault is locked for this device: nothing is sent while it is,
+   * and everything kept goes out once it ends. The server refuses it anyway.
+   */
+  setLocked(locked: boolean): void {
+    if (locked === this.locked) return
+    this.locked = locked
+    log.info(locked ? 'the vault is locked: what is written here waits' : 'the vault is unlocked: sending what waited')
+    if (!locked) for (const registration of this.registrations.values()) this.scheduleSend(registration)
+  }
+
+  get isLocked(): boolean {
+    return this.locked
+  }
+
+  /** This device holds the rollback's lock and writes under it; null when it let go. */
+  holdLock(id: string | null): void {
+    this.lockId = id
+    if (id) this.sendHoldLock(id)
+  }
+
+  private sendHoldLock(id: string): void {
+    this.send((encoder) => {
+      encoding.writeVarUint(encoder, MUX.holdLock)
+      encoding.writeVarString(encoder, '')
+      encoding.writeVarString(encoder, id)
+    })
   }
 
   private send(write: (encoder: encoding.Encoder) => void): void {
@@ -441,6 +479,20 @@ export class VaultSocket {
         })
         return
       }
+      case MUX.locked: {
+        const ref = decoding.readVarUint(decoder)
+        this.enqueue(registration, async () => {
+          if (registration.inflight !== ref) return
+          // Not taken: it stays in `sending`, and goes again once the lock ends.
+          registration.inflight = null
+          registration.inflightFrame = null
+          if (!this.locked) {
+            this.setLocked(true)
+            this.handlers.locked?.()
+          }
+        })
+        return
+      }
       case MUX.revoked:
         log.info(`${room}: access ended (${decoding.readVarString(decoder)})`)
         registration.dead = true
@@ -491,11 +543,29 @@ export class VaultSocket {
     if (!plaintext || registration.dead) return
     const frame = unpackFrame(plaintext)
     log.debug(`${registration.room}: frame #${seq}, ${frame.update.length} B, epoch ${epoch}`)
-    Y.applyUpdate(registration.doc, frame.update, this)
+    this.applyRemote(registration.doc, frame.update, frame.authorTs)
     registration.options.history?.({ authorTs: frame.authorTs, update: frame.update })
     cursor.lastSeq = seq
     cursor.lastHash = hash
     cursor.persist()
+  }
+
+  /**
+   * When the change being applied was made, by its author's clock - for the
+   * observers of a document while it applies, null otherwise. A file written
+   * because of it carries that time, not the time it arrived.
+   */
+  get applyingAuthorTs(): number | null {
+    return this.applying
+  }
+
+  private applyRemote(doc: Y.Doc, update: Uint8Array, authorTs: number): void {
+    this.applying = authorTs
+    try {
+      Y.applyUpdate(doc, update, this)
+    } finally {
+      this.applying = null
+    }
   }
 
   private async applySnapshot(registration: Registration, uptoSeq: number, epoch: number, data: Uint8Array): Promise<void> {
@@ -518,7 +588,7 @@ export class VaultSocket {
     const plaintext = await this.open(registration, epoch, data, snapshotAad(registration.room, epoch))
     if (!plaintext || registration.dead) return
     const snapshot = unpackFrame(plaintext)
-    Y.applyUpdate(registration.doc, snapshot.update, this)
+    this.applyRemote(registration.doc, snapshot.update, snapshot.authorTs)
     registration.options.history?.({ authorTs: snapshot.authorTs, update: snapshot.update })
     const cursor = registration.options.cursor
     if (uptoSeq >= cursor.lastSeq) {
@@ -554,7 +624,7 @@ export class VaultSocket {
 
   private scheduleSend(registration: Registration): void {
     const cursor = registration.options.cursor
-    if (registration.dead || registration.options.readOnly || !registration.synced || cursor.held) return
+    if (this.locked || registration.dead || registration.options.readOnly || !registration.synced || cursor.held) return
     if (registration.inflight !== null || registration.sendTimer !== null) return
     if (!cursor.sending && !cursor.outbox && registration.replay.length === 0) return
     registration.sendTimer = window.setTimeout(() => {

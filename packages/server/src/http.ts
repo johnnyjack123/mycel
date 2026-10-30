@@ -66,7 +66,11 @@ import {
   type SessionResponse,
   type ShareRequest,
   type SnapshotRequest,
-  type StartSnapshotRequest
+  type StartSnapshotRequest,
+  type VaultLockIdRequest,
+  type VaultLockRequest,
+  type VaultLockResponse,
+  type VaultLockTaken
 } from '@obsidian-connect/shared'
 import { AccountError, isAccountId, sessionOf, type AccountStore, type StoredAccount } from './accounts.js'
 import type { TokenService, TokenSession } from './auth.js'
@@ -869,6 +873,55 @@ export function createHttpApp(
     if (!Number.isFinite(since)) return reply.code(400).send({ error: 'since must be a number' })
     const response: TimesResponse = { rooms: await hub.frameTimes(accountId, request.query.vaultId ?? '', since) }
     return response
+  })
+
+  // --- the vault lock (docs/TIMEMACHINE.md) -------------------------------------------
+
+  /** The account behind the token, if the vault named is one of its own. */
+  async function vaultOwner(request: FastifyRequest<{ Params: { vaultId: string } }>, reply: FastifyReply): Promise<string | null> {
+    const accountId = await user(request, reply)
+    if (!accountId) return null
+    const { vaultId } = request.params
+    if (!isHexId(vaultId) || !(await accounts.get(accountId))?.vaults[vaultId]) {
+      await reply.code(404).send({ error: 'no such vault' })
+      return null
+    }
+    return accountId
+  }
+
+  app.get<{ Params: { vaultId: string } }>(`${API.vaults}/:vaultId/lock`, async (request, reply) => {
+    const accountId = await vaultOwner(request, reply)
+    if (!accountId) return undefined
+    const response: VaultLockResponse = { lock: hub.currentLock(accountId, request.params.vaultId) }
+    return response
+  })
+
+  app.post<{ Params: { vaultId: string } }>(`${API.vaults}/:vaultId/lock`, async (request, reply) => {
+    const accountId = await vaultOwner(request, reply)
+    if (!accountId) return undefined
+    const taken: VaultLockTaken = hub.takeLock(accountId, request.params.vaultId, (request.body ?? {}) as Partial<VaultLockRequest>)
+    return taken
+  })
+
+  app.post<{ Params: { vaultId: string } }>(`${API.vaults}/:vaultId/lock/renew`, async (request, reply) => {
+    const accountId = await vaultOwner(request, reply)
+    if (!accountId) return undefined
+    const body = (request.body ?? {}) as Partial<VaultLockIdRequest>
+    const response: VaultLockResponse = { lock: hub.renewLock(accountId, request.params.vaultId, body.id) }
+    return response
+  })
+
+  app.post<{ Params: { vaultId: string } }>(`${API.vaults}/:vaultId/lock/release`, async (request, reply) => {
+    const accountId = await vaultOwner(request, reply)
+    if (!accountId) return undefined
+    hub.releaseLock(accountId, request.params.vaultId, ((request.body ?? {}) as Partial<VaultLockIdRequest>).id)
+    return { ok: true }
+  })
+
+  app.post<{ Params: { vaultId: string } }>(`${API.vaults}/:vaultId/lock/break`, async (request, reply) => {
+    const accountId = await vaultOwner(request, reply)
+    if (!accountId) return undefined
+    return { ended: hub.breakLock(accountId, request.params.vaultId) }
   })
 
   return app

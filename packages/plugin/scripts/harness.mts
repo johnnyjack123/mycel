@@ -52,6 +52,7 @@ const { Contacts } = await import('../src/share/Contacts.js')
 const { openInviteSession, openPairingSession } = await import('../src/backup/BackupLink.js')
 const { Backups } = await import('../src/backup/Backups.js')
 const { Rollback } = await import('../src/sync/Rollback.js')
+const { LockSeal, lockNonce, takeVaultLock } = await import('../src/sync/VaultLock.js')
 const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
 )
@@ -246,8 +247,15 @@ export class Device {
         // What main.ts's `refreshAccount` does.
         else if (kind === 'account-changed') void this.refreshAccount()
         else if (kind.startsWith('folder-')) void this.folders?.onNotify(kind, payload as never).then(() => this.editors.refresh())
+        // What main.ts's `showVaultLock` does, without its window.
+        else if (kind === 'vault-lock') this.followLock((payload as { lock: { sealed: string } | null }).lock)
         else void this.sharing?.onNotify(kind, payload as never).then(() => this.editors.refresh())
       },
+      locked: () =>
+        void this.api.vaultLock(openVault.vaultId).then(
+          ({ lock }) => this.followLock(lock),
+          () => undefined
+        ),
       revoked: (room) =>
         void (room.startsWith('fld:') ? this.folders?.onRevoked(room) : this.sharing?.onRevoked(room))?.then(() => this.editors.refresh()),
       diverged: (room) => this.recovery?.diverged(room),
@@ -526,6 +534,32 @@ export class Device {
     this.session.forgetServer()
   }
 
+  /** Locks of the vault this device took itself, by what they say. */
+  readonly ownLocks = new Set<string>()
+
+  /** Another device's lock holds what this one writes; its end lets it go. */
+  private followLock(lock: { sealed: string } | null): void {
+    if (lock && this.ownLocks.has(lock.sealed)) return
+    this.socket?.setLocked(lock !== null)
+  }
+
+  /** The vault locked for a rollback, this connection writing under it - as main.ts's `lockForRollback`. */
+  async lockForRollback(): Promise<{ release(): Promise<void> }> {
+    const keys = this.keys
+    if (!keys) throw new Error('not running')
+    const sealed = await new LockSeal(keys.settingsCrypto(), keys.vaultId).seal({ what: 'a rollback', device: this.username, nonce: lockNonce() })
+    this.ownLocks.add(sealed)
+    const lock = await takeVaultLock(this.api, keys.vaultId, 'rollback', sealed, () => undefined)
+    this.socket?.holdLock(lock.id)
+    return {
+      release: async () => {
+        this.socket?.holdLock(null)
+        await lock.release()
+        this.ownLocks.delete(sealed)
+      }
+    }
+  }
+
   /** Rolling the vault back, wired the way main.ts wires it. */
   get rollback(): InstanceType<typeof Rollback> {
     const keys = this.keys
@@ -543,7 +577,8 @@ export class Device {
       adapter: this.vault.adapter as never,
       root: 'plugin',
       isExcluded: () => false,
-      clockMarginMs: this.rollbackClockMarginMs
+      clockMarginMs: this.rollbackClockMarginMs,
+      lock: () => this.lockForRollback()
     })
   }
 

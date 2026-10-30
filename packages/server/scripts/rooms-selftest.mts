@@ -94,6 +94,9 @@ class Client implements RoomClient {
   sendDenied(room: string, reason: string): void {
     this.messages.push({ type: 'denied', room, reason })
   }
+  sendLocked(room: string, ref: number): void {
+    this.messages.push({ type: 'locked', room, ref })
+  }
   sendNotify(kind: NotifyKind, _payload: Notice): void {
     this.messages.push({ type: 'notify', kind })
   }
@@ -1080,6 +1083,100 @@ try {
     check(!existsSync(join(dataDir, 'users', alice, aliceVault.vaultId, 'notes', doc3)), 'from disk too')
     check((await status(() => hub.purge(alice, room3))) === 404, 'and a second device asking finds nothing')
     check((await status(() => hub.purge(alice, `idx:${aliceVault.vaultId}`))) === 400, 'a vault index is never purged')
+  }
+
+  // --- the vault lock (docs/TIMEMACHINE.md) ----------------------------------------------------
+  {
+    const vault = aliceVault.vaultId
+    const first = new Client(alice, vault)
+    const second = new Client(alice, vault)
+    const elsewhere = new Client(alice, hexId())
+    const carolHere = new Client(carol, carolVault.vaultId)
+    for (const client of [first, second, elsewhere, carolHere]) hub.attach(client)
+    const docLocked = hexId()
+    const roomLocked = `doc:${docLocked}`
+    await hub.subscribe(first, roomLocked, 0)
+    await hub.push(first, roomLocked, 1, 0, bytes('before the lock'))
+    await hub.share(alice, { docId: docLocked, account: carol, role: 'write', withHistory: true, keys: { '0': 'k' }, title: 't' })
+    await hub.accept(carol, docLocked, carolVault.vaultId)
+    await hub.subscribe(second, roomLocked, 0)
+    await hub.subscribe(carolHere, roomLocked, 0, false)
+    for (const client of [first, second, elsewhere, carolHere]) client.take()
+
+    const preview = hub.takeLock(alice, vault, { kind: 'preview', sealed: 'c2VhbGVk' })
+    const heard = (client: Client): boolean => client.take().some((m) => m.type === 'notify' && m.kind === 'vault-lock')
+    check(heard(first) && heard(second) && heard(elsewhere) && !heard(carolHere), "every device of the account hears that the vault was locked, nobody else")
+    check(hub.currentLock(alice, vault)?.kind === 'preview' && hub.currentLock(carol, carolVault.vaultId) === null, 'it is the vault of that account alone')
+    check((await status(async () => hub.takeLock(alice, vault, { kind: 'rollback', sealed: 'eA==' }))) === 409, 'a second lock is refused while one holds')
+    check((await status(async () => hub.takeLock(alice, vault, { kind: 'whatever' as 'preview', sealed: 'eA==' }))) === 400, 'a lock is for a preview or a rollback')
+    await hub.push(second, roomLocked, 71, 0, bytes('written while locked'))
+    const refused = second.take()
+    check(
+      refused.some((m) => m.type === 'locked' && m.ref === 71) && !refused.some((m) => m.type === 'ack') && !first.take().some((m) => m.type === 'frame'),
+      "a device of the account writing meanwhile is refused - it keeps the change - and nothing reaches the others",
+      refused
+    )
+    await hub.push(first, roomLocked, 72, 0, bytes('the previewing device too'))
+    check(first.take().some((m) => m.type === 'locked'), 'nor does the device that locked it, under a preview')
+    await hub.push(carolHere, roomLocked, 73, 0, bytes('carol writes on'))
+    check(carolHere.take().some((m) => m.type === 'ack'), 'someone else in a shared note of the vault goes on')
+    check((await status(() => hub.snapshot(alice, roomLocked, { uptoSeq: 1, epoch: 0, data: 'eA==' }))) === 409, 'and no compaction folds the history being looked at')
+    check(hub.renewLock(alice, vault, preview.id).expiresAt >= preview.expiresAt, 'its holder renews it')
+    hub.releaseLock(alice, vault, 'not its id')
+    check(hub.currentLock(alice, vault) !== null, 'releasing takes its id')
+    hub.releaseLock(alice, vault, preview.id)
+    check(hub.currentLock(alice, vault) === null && heard(second), 'released, every device hears it ended')
+    await hub.push(second, roomLocked, 74, 0, bytes('sent once it ended'))
+    check(second.take().some((m) => m.type === 'ack' && m.ref === 74), 'and then sends what it kept')
+
+    const rollback = hub.takeLock(alice, vault, { kind: 'rollback', sealed: 'c2VhbGVk' })
+    check(hub.holdLock(first, rollback.id) && !hub.holdLock(second, 'not its id'), "a rollback's lock is held by the connection that names its id")
+    for (const client of [first, second]) client.take()
+    await hub.push(first, roomLocked, 75, 0, bytes('the rollback'))
+    await hub.push(second, roomLocked, 76, 0, bytes('meanwhile'))
+    check(first.take().some((m) => m.type === 'ack') && second.take().some((m) => m.type === 'locked'), 'under a rollback its holder writes, the other devices wait')
+    check(hub.breakLock(alice, vault) && hub.currentLock(alice, vault) === null, 'any device of the account lifts a lock')
+    check((await status(async () => hub.renewLock(alice, vault, rollback.id))) === 404, 'and its holder learns so when it renews')
+
+    const lapsing = hub.takeLock(alice, vault, { kind: 'preview', sealed: 'c2VhbGVk' })
+    const held = (hub as unknown as { locks: Map<string, { info: { expiresAt: number } }> }).locks.get(`${alice}/${vault}`)
+    if (held) held.info.expiresAt = Date.now() - 1
+    second.take()
+    await hub.push(second, roomLocked, 77, 0, bytes('after it lapsed'))
+    check(
+      second.take().some((m) => m.type === 'ack') && hub.currentLock(alice, vault) === null && (await status(async () => hub.renewLock(alice, vault, lapsing.id))) === 404,
+      'a lock not renewed lapses: a device that crashed holds nothing for long'
+    )
+
+    // The routes.
+    const tokens = new TokenService('rooms-selftest', 3_600)
+    const store = new BlobStore(dataDir, { maxFileBytes: BLOB_CHUNK_BYTES, quotaBytes: null, purgeGraceMs: 0 })
+    const app = createHttpApp(loadConfig({}), tokens, accounts, hub, contacts, store, { logger: false, paceMs: 0, maxFailures: 1_000 })
+    const headers = { authorization: `Bearer ${(await tokens.issue(alice, sessionOf((await accounts.get(alice)) as StoredAccount))).token}` }
+    const route = `/vaults/${vault}/lock`
+    const none = await app.inject({ method: 'GET', url: route, headers })
+    const taken = await app.inject({ method: 'POST', url: route, headers, payload: { kind: 'preview', sealed: 'c2VhbGVk' } })
+    const id = (taken.json() as { id?: string }).id
+    const again = await app.inject({ method: 'POST', url: route, headers, payload: { kind: 'preview', sealed: 'c2VhbGVk' } })
+    const shown = await app.inject({ method: 'GET', url: route, headers })
+    check(
+      none.json().lock === null && taken.statusCode === 200 && typeof id === 'string' && again.statusCode === 409 && shown.json().lock?.kind === 'preview' && shown.json().lock?.id === undefined,
+      'the routes take a lock, refuse a second, and show it - without its id',
+      [none.json(), taken.json(), again.statusCode, shown.json()]
+    )
+    const renewed = await app.inject({ method: 'POST', url: `${route}/renew`, headers, payload: { id } })
+    const released = await app.inject({ method: 'POST', url: `${route}/release`, headers, payload: { id } })
+    await app.inject({ method: 'POST', url: route, headers, payload: { kind: 'rollback', sealed: 'c2VhbGVk' } })
+    const broken = await app.inject({ method: 'POST', url: `${route}/break`, headers, payload: {} })
+    check(
+      renewed.statusCode === 200 && released.statusCode === 200 && broken.json().ended === true && hub.currentLock(alice, vault) === null,
+      'renewed and released by its id, broken without'
+    )
+    const foreign = await app.inject({ method: 'POST', url: `/vaults/${carolVault.vaultId}/lock`, headers, payload: { kind: 'preview', sealed: 'c2VhbGVk' } })
+    const unsigned = await app.inject({ method: 'GET', url: route })
+    check(foreign.statusCode === 404 && unsigned.statusCode === 401, "nobody locks a vault that is not theirs, nor without signing in")
+    await app.close()
+    for (const client of [first, second, elsewhere, carolHere]) hub.detach(client)
   }
 
   // --- removed accounts ----------------------------------------------------------------------

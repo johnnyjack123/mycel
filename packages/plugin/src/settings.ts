@@ -1,4 +1,5 @@
-import { App, ButtonComponent, Notice, PluginSettingTab, Setting } from 'obsidian'
+import { App, ButtonComponent, PluginSettingTab, Setting } from 'obsidian'
+import { Notice } from './notices.js'
 import { generatePassword } from './account/password'
 import type { ServerProbe } from './account/probe'
 import { PasswordReveal } from './account/reveal'
@@ -14,6 +15,7 @@ import {
 } from '@obsidian-connect/shared'
 import { describeGuard, describeKeep, describeRepository } from './backup/BackupModals'
 import { NO_LONGER_HAS_VAULT, defaultSchedule, deviceZone, type Backups } from './backup/Backups'
+import type { TickChoice } from './history/TimeMachine'
 import type ObsidianConnectPlugin from './main'
 import type { OpenCode } from './share/Contacts'
 import type { SharedSettings } from './sync/AccountSettings'
@@ -115,6 +117,10 @@ export interface ObsidianConnectSettings {
   backupLastGood: Record<string, number>
   /** Whether the Time Machine shows backups older than the history as ticks too. */
   timeMachineBackups: boolean
+  /** How fine the Time Machine's ticks are (`docs/TIMEMACHINE.md`, V1). */
+  timeMachineTicks: TickChoice
+  /** Whether a note showing its past marks the changes against now. */
+  timeMachineMarks: boolean
 }
 
 export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
@@ -129,7 +135,9 @@ export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
   verboseLog: false,
   attachmentDownloadLimitMb: -1,
   backupLastGood: {},
-  timeMachineBackups: false
+  timeMachineBackups: false,
+  timeMachineTicks: 'auto',
+  timeMachineMarks: true
 }
 
 /** Where a phone starts: its storage and data plan are not a desktop's. */

@@ -154,6 +154,11 @@ export const MUX = {
   push: 3,
   /** room, varUint epoch, varUint8Array ciphertext - both directions */
   awareness: 4,
+  /**
+   * room (empty), varString lock id: this connection holds the vault's lock of
+   * kind `rollback` and writes under it. Sent again after every reconnect.
+   */
+  holdLock: 5,
 
   // server -> client
   /** room, varUint seq, varUint ts, varUint epoch, varUint8Array ciphertext */
@@ -177,7 +182,12 @@ export const MUX = {
   /** varString kind, varString json - addressed to the account, not a room */
   notify: 17,
   /** varString message */
-  error: 18
+  error: 18,
+  /**
+   * room, varUint ref - the push was refused because the vault is locked
+   * (`docs/TIMEMACHINE.md`): the device keeps it and sends it once the lock ends.
+   */
+  locked: 19
 } as const
 
 export type MuxMessage = (typeof MUX)[keyof typeof MUX]
@@ -212,6 +222,11 @@ export const API = {
   backupLogin: '/auth/backup',
   /** The rooms of the vault a backup token reads. */
   backupRooms: '/backup/rooms',
+  /**
+   * Also `/vaults/:vaultId/lock`: the vault's lock (`docs/TIMEMACHINE.md`) -
+   * taken, `/renew`ed and `/release`d by its holder, `/break`able by any device
+   * of the account.
+   */
   vaults: '/vaults',
   /** `/accounts/:accountId/key`: someone's public key, by account id. */
   accounts: '/accounts',

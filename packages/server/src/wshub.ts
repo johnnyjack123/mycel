@@ -141,6 +141,10 @@ class VaultConnection implements RoomClient {
     this.message(MUX.denied, room, (encoder) => encoding.writeVarString(encoder, reason))
   }
 
+  sendLocked(room: string, ref: number): void {
+    this.message(MUX.locked, room, (encoder) => encoding.writeVarUint(encoder, ref))
+  }
+
   sendNotify(kind: NotifyKind, payload: Notice): void {
     this.message(MUX.notify, null, (encoder) => {
       encoding.writeVarString(encoder, kind)
@@ -198,6 +202,9 @@ export function setupVaultConnection(ws: WebSocket, account: string, vaultId: st
           hub.awareness(connection, room, epoch, decoding.readVarUint8Array(decoder))
           return
         }
+        case MUX.holdLock:
+          if (!hub.holdLock(connection, decoding.readVarString(decoder))) connection.sendError('no such lock')
+          return
         default:
           connection.sendError(`unknown message type ${type}`)
       }

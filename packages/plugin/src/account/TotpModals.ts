@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting, TextComponent } from 'obsidian'
+import { App, Modal, Setting, TextComponent } from 'obsidian'
+import { Notice } from '../notices.js'
 import qrcode from 'qrcode-generator'
 import { newTotpSecret, totpKeyText, totpMatches, totpUri, type Bytes } from '@obsidian-connect/shared/crypto'
 import { busy, type BusyButton } from '../busy'
