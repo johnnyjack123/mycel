@@ -8,6 +8,46 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.13** (2026-10-30) - **the Time Machine's second round** (`docs/TIMEMACHINE.md`,
+  the user's decisions U1 to U5, V1 to V6, W1 to W3). Wants the sync server of 0.8.13 (the
+  vault lock): with an older one the Time Machine and the rollback refuse and say so.
+  - **The past in the files themselves:** the explorer and the normal editor show the
+    moment, read-only; the sync stops on the device, the vault is locked on the others.
+    Every file is copied into the plugin folder with a journal line before it is
+    replaced, and put back from there byte for byte with its times - after a crash
+    before the sync may start (CLAUDE.md, invariant 30). The structure at once, the
+    contents in the background, the note in front first, large files when opened.
+    Someone writing over the past meanwhile is kept aside, not lost. The tab and its
+    slider of 0.8.11 are gone; the overview of what differs stays, beside the explorer.
+  - **A timeline as in macOS:** upright at the right edge of the editors, a bar per
+    moment, growing towards the pointer like a wave, the moment under it to the second.
+    Its fineness chosen on the device: as usual, every change, a minute, five, an hour, a
+    day. A bar above the editors: the moment, the changes shown or hidden, *Apply…* or
+    *Restore this version*, *Back to now*.
+  - **A note's changes in its editor:** lines there then and not now highlighted, lines
+    there now and not then struck through between them.
+  - **The vault lock** (server and plugin): while it holds, the server answers the
+    account's pushes into the vault with `locked` and the devices keep them; under a
+    rollback only the connection that holds it writes. It lapses after two minutes
+    unrenewed; any device can lift it in the window every other device shows. A rollback
+    takes it too.
+  - **Backups:** before the past is shown, a backup when the last one is older than the
+    last change; before a single restore, always. A rollback's copy goes when the backup
+    holds the same, by hash; otherwise, and when a restore's backup is only local, a
+    window says it lies on this device alone, for *Keep backups for*.
+  - **A synced file carries the time its change was made**, not the time it arrived:
+    *Update time on Edit* (the user's plugin, read from its source) took the arrival for
+    an edit, stamped it and sent the stamp back; two devices stamping at once garbled the
+    date.
+  - **The notification center:** every notice is kept on the device (`notices.json`, 500
+    or 30 days), a bell counts the unseen and opens the list.
+  - Tests: `test:timemachine` 48, new (the past written and put back, also after a crash,
+    nothing of it reaching the other device, a folder, a note's editor read-only with its
+    marks, the lock against the other device and for a rollback, a synced file's time,
+    the notices, the timeline's wave); `test:rooms` (the lock: who hears it, what it
+    refuses, the holder under a rollback, lifting, lapsing, the routes); `test:load` 16
+    (the views, the commands, both editor extensions).
+
 - **0.8.12** (2026-10-29) - the Time Machine's fixes from the user's first test
   (`docs/TIMEMACHINE.md`, "How it is built"). Plugin only.
   - **After *Restore this version*, *now* showed the text the restore replaced** until

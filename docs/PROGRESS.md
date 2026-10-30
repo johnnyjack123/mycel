@@ -1,11 +1,11 @@
 # Progress
 
-_Last updated: 2026-10-29 · **0.8.12: the Time Machine's fixes from the user's test (now after a restore, the newest tick that equalled now, *changed since* by text, the button under *Backups*). Its second round (`docs/TIMEMACHINE.md`): U1 to U5 and V1 to V6 decided by the user, W1 to W3 still open; then 0.8.13 (the strip, a note's past in its own editor, the notification center) and 0.8.14 (the explorer). Then 0.9's design.**_
+_Last updated: 2026-10-30 · **0.8.13: the Time Machine's second round, built at once as the user asked - the past in the files themselves (explorer and editor, read-only), the sync stopped and the vault locked meanwhile, a timeline as in macOS, a note's changes marked in its editor, backups before, the notification center, synced files with the time of their change. Next: the user tries it on their devices (sync server first: the lock); then 0.9's design.**_
 
 ## Where we are
 
 Monorepo (`npm` workspaces): `packages/shared`, `packages/server`, `packages/plugin`,
-`packages/backup`. **Read `CLAUDE.md` first** - 27 invariants, each from a real bug,
+`packages/backup`. **Read `CLAUDE.md` first** - 30 invariants, each from a real bug or a risk the user named,
 the architecture, the roadmap to 1.0.0 and the conventions (a branch per milestone,
 push after every commit, a version for every change the user installs). Designs:
 `docs/PHASE2.md` (keys, sharing), `docs/PHASE3.md` (accounts without names, contacts,
@@ -117,6 +117,17 @@ server reading folder notes. What is next:
    proposed: files written with the time the change was made. Open: W1 to W3 (a layer
    for a note alone after all, since the file would lock the vault for every look; the
    lock's reach; the modification time).
+11. The user decided W1 to W3 the same day (the file for a note too - one system; the
+   lock as proposed; the modification time) and asked for everything at once: built as
+   0.8.13. To try, **sync server first** (the lock; the backup server is unchanged),
+   then every device: the Time Machine of a note (the timeline, its wave and labels,
+   the note read-only in its editor with its changes marked, *Changes: shown/hidden*,
+   *Restore this version*), of a folder and of the vault (the explorer showing the past,
+   the overview, a picture as it was, *Restore just this note*, *Apply…*, *Undo…*), the
+   ticks' fineness, *Backups too*, the window on the other devices while it runs and
+   *Unlock…* there, writing on another device meanwhile (it arrives afterwards), Obsidian
+   closed while the past is shown (the next start puts it back), the bell and its list,
+   and - with *Update time on Edit* installed - that receiving devices no longer stamp.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
@@ -160,10 +171,11 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing once `fix/time-machine-feedback` (0.8.12) is merged. Every branch of 0.8
+Nothing once `feat/time-machine-2` (0.8.13) is merged. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
-`fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`, `feat/time-machine`) is merged into `main`
+`fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`, `feat/time-machine`,
+`fix/time-machine-feedback`) is merged into `main`
 and holds nothing `main` lacks; they are still on the remote - deleting them is the
 user's call, as with the earlier branches.
 
@@ -197,17 +209,21 @@ user's call, as with the earlier branches.
 - **Only on a device** (untestable headless): menus, modals, the settings tab, the
   status bar marks, the header lock, `requestUrl` with binary bodies on mobile, binary
   file events, `file-open` fetching, memory with large files on a phone, the Time
-  Machine's view (0.8.11: its layout on a phone, the slider, a large vault's tree).
+  Machine on screen (0.8.13: the timeline and its wave, the bar, the overview, the
+  explorer and editors showing the past, the marks in live preview, a large vault's
+  structure written per tick, the windows on the other devices), the bell.
 - The Time Machine's ticks of a folder or the vault go by the server's minutes for edits
   (rounded down, by its clock) and by the authors' clocks for the rest, so an edit made
   in the minute a note moved into a folder can make a tick of that folder, and a tick
-  whose edits left every text as it was is still one. *Changed since* compares texts
-  since 0.8.12, up to 200 notes per tick; beyond that it is the server's word, and the
-  view says so.
-- Plugins that stamp a note on every `modify`, such as *Update time on Edit*, stamp
-  again on the devices receiving the edit when it crosses their threshold, and two
-  stamping at once garble the date (`docs/TIMEMACHINE.md`, V6). Proposed: files written
-  with the author's time. Meanwhile: that plugin's minimum minutes between saves at 5.
+  whose edits left every text as it was is still one. The overview compares texts as a
+  moment's contents are filled in.
+- A folder's past shows a note that moved out of it since both there (as it was) and
+  where it is now: outside the folder nothing is touched.
+- Plugins that stamp a note on every `modify`, such as *Update time on Edit*: since
+  0.8.13 a file another device's change wrote carries that change's time, which leaves
+  only an editor open on two devices at a minute's edge (Obsidian saves it with its own
+  time). With that plugin, its minimum minutes between saves at 5 closes even that.
+- A vault lock lives in the sync server's memory: a restart of the server ends it.
 - Notes beyond `maxLoadedDocuments` (500) get no live updates until opened or the next
   start (0.9). Raising the setting is the workaround: about 6 to 32 KB per loaded note
   of 3000 characters, plus an IndexedDB database and a subscription each.
@@ -231,6 +247,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
+
+At 0.8.13, run 2026-10-30 on `feat/time-machine-2`: `typecheck` and `build` pass;
+`test:merge` 174, `test:load` 16, `test:rooms` 399, `test:sync` 31, `test:recovery` 72,
+`test:account` 52, `test:rollback` 72 (its rollbacks now under the lock),
+`test:timemachine` 48, `test:backup` 229, and on a scratch server started fresh from
+0.8.13 `test:socket` 19, `test:vault` 243, `test:folders` 121 - all pass.
 
 At 0.8.12, run 2026-10-29 on `fix/time-machine-feedback`: `typecheck` and `build` pass;
 `test:merge` 174, `test:load` 15, `test:rooms` 379, `test:sync` 31, `test:recovery` 72,
@@ -314,6 +336,13 @@ CLAUDE.md, Gotchas - `test:socket` and `test:vault` default to 1234, so always p
 ---
 
 ## Log
+
+### 2026-10-30
+- The user decided V1 to V6 and W1 to W3 of the Time Machine's second round and asked for
+  all of it at once: built as 0.8.13 on `feat/time-machine-2` - the vault lock (server and
+  plugin), the past in the files with its journal and copies, the timeline, the bar, the
+  overview, a note's marks, backups before, the notification center, synced files' times.
+  New suite `test:timemachine`.
 
 ### 2026-10-29
 - The user tested the Time Machine (0.8.11): it works. 0.8.12 fixes what they found;
