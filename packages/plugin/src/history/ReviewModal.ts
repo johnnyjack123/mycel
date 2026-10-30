@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting } from 'obsidian'
+import { App, Modal, Setting } from 'obsidian'
+import { Notice } from '../notices.js'
 import { busy } from '../busy.js'
 import { assemble, compare, type Choice, type Hunk, type Review } from '../sync/Reviews.js'
 

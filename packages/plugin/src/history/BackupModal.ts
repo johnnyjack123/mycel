@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting, TFile, normalizePath } from 'obsidian'
+import { App, Modal, Setting, TFile, normalizePath } from 'obsidian'
+import { Notice } from '../notices.js'
 import type { BackupRecord, BackupStore } from '../sync/BackupStore'
 import { busy } from '../busy.js'
 import { log } from '../log.js'

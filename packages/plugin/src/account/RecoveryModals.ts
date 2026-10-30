@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting, TextComponent } from 'obsidian'
+import { App, Modal, Setting, TextComponent } from 'obsidian'
+import { Notice } from '../notices.js'
 import { busy, type BusyButton } from '../busy'
 import { PasswordReveal } from './reveal'
 

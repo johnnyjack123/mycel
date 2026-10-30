@@ -1,4 +1,4 @@
-import { Notice } from 'obsidian'
+import { Notice } from '../notices.js'
 import { folderRoom, type AttachmentEntry, type FolderFile, type VaultFolder } from '@obsidian-connect/shared'
 import { deriveFileId, type Bytes } from '@obsidian-connect/shared/crypto'
 import type { ConnectApi } from '../account/api.js'

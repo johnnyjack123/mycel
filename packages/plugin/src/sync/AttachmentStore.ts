@@ -1,4 +1,5 @@
-import { Notice, TFile, getLinkpath, type App } from 'obsidian'
+import { TFile, getLinkpath, type App } from 'obsidian'
+import { Notice } from '../notices.js'
 import type { AttachmentEntry, AttachmentVersion, BlobListResponse, SharedAttachment } from '@obsidian-connect/shared'
 import { contentHash, type Bytes } from '@obsidian-connect/shared/crypto'
 import { ApiError } from '../account/api.js'

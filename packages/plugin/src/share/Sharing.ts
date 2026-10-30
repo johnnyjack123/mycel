@@ -1,4 +1,5 @@
-import { Notice, type TFile } from 'obsidian'
+import { type TFile } from 'obsidian'
+import { Notice } from '../notices.js'
 import * as Y from 'yjs'
 import {
   NOTE_SHARE_FIELD,
