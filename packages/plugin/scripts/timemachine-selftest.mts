@@ -1,0 +1,373 @@
+// The Time Machine's second round (docs/TIMEMACHINE.md), against real devices
+// and a sync server in this process: the past written into one device's files
+// while its sync is stopped and the vault locked on the others, put back byte
+// for byte with its times - after a crash too, before the sync starts -; the
+// lock against the account's other devices and for a rollback; a note's past
+// in its own editor; a synced file's modification time; the notices kept for
+// the notification center.
+//
+//   npm run test:timemachine
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { check, delay, Device, eventually, failures, finish, useServer } from './harness.mjs'
+
+const { loadConfig } = await import('../../server/src/config.js')
+const { startServer } = await import('../../server/src/server.js')
+const { TimeMachineSession } = await import('../src/history/TimeMachine.js')
+const { PastFiles } = await import('../src/history/PastFiles.js')
+const { barScale } = await import('../src/history/Strip.js')
+const { pastEditorExtension } = await import('../src/history/pastEditor.js')
+const { LockSeal, VaultLockedError, lockNonce, takeVaultLock } = await import('../src/sync/VaultLock.js')
+const { Blobs } = await import('../src/sync/Blobs.js')
+const { Notice, notices } = await import('../src/notices.js')
+const { FakeAdapter } = await import('./stubs/fake-vault.js')
+const { EditorState } = await import('@codemirror/state')
+const { EditorView } = await import('@codemirror/view')
+
+type Session = Awaited<ReturnType<typeof TimeMachineSession.load>>
+type Scope = Session['scope']
+
+const root = mkdtempSync(join(tmpdir(), 'oc-timemachine-selftest-'))
+const run = Date.now().toString(36)
+const server = await startServer(
+  loadConfig({
+    HOST: '127.0.0.1',
+    PORT: '0',
+    OBSIDIAN_CONNECT_DATA_DIR: join(root, 'server'),
+    OBSIDIAN_CONNECT_REGISTRATION: 'open',
+    OBSIDIAN_CONNECT_JWT_SECRET: 'timemachine-selftest'
+  }),
+  { logger: false, paceMs: 0 }
+)
+useServer(`ws://127.0.0.1:${server.port}`)
+
+const bytes = (text: string): Uint8Array => new TextEncoder().encode(text)
+const same = (a: Uint8Array | undefined, b: Uint8Array | undefined): boolean => a !== undefined && b !== undefined && Buffer.from(a).equals(Buffer.from(b))
+const photo = bytes('photo, as it was '.repeat(200))
+const photoLater = bytes('photo, painted over '.repeat(200))
+const later = bytes('a picture that came later '.repeat(50))
+
+const A1 = new Device(`anna${run}`, true, {
+  'Welcome.md': 'hello\n',
+  'Projects/Plan.md': 'the plan\n',
+  'Projects/Old.md': 'old\n',
+  'Keep/Untouched.md': 'untouched\n',
+  'Bilder/Foto.png': photo
+})
+const A2 = new Device(`anna${run}`, false)
+const devices = [A1, A2]
+
+/** Every file of a device, its content and its modification time. */
+function snapshot(device: Device): Map<string, string> {
+  const found = new Map<string, string>()
+  for (const file of device.vault.getFiles()) {
+    const data = device.vault.bytes(file.path) ?? bytes(device.vault.text(file.path) ?? '')
+    found.set(file.path, `${Buffer.from(data).toString('base64')}@${file.stat.mtime}`)
+  }
+  return found
+}
+
+function differences(a: Map<string, string>, b: Map<string, string>): string[] {
+  const differ: string[] = []
+  for (const [path, value] of a) if (b.get(path) !== value) differ.push(path)
+  for (const path of b.keys()) if (!a.has(path)) differ.push(`extra ${path}`)
+  return differ
+}
+
+/** What the Time Machine takes from the running sync before it stops it, as main.ts's `prepareTimeMachine`. */
+function prepare(device: Device) {
+  const store = device.store as NonNullable<Device['store']>
+  const keys = device.keys as NonNullable<Device['keys']>
+  const attachments = device.attachments as NonNullable<Device['attachments']>
+  const notes = store.allEntries()
+  const owners = new Map(notes.map(({ docId, entry }) => [docId, entry.owner]))
+  const blobs = new Blobs(device.api, keys)
+  return {
+    vaultId: keys.vaultId,
+    seal: new LockSeal(keys.settingsCrypto(), keys.vaultId),
+    now: { notes, files: attachments.allEntries(), isExcluded: () => false, folderOwner: () => null, readOnly: () => false },
+    source: {
+      api: device.api,
+      vaultId: keys.vaultId,
+      indexCrypto: keys.indexCrypto(),
+      noteCrypto: (docId: string) => keys.noteCrypto(docId, { owned: !owners.get(docId), folder: true }),
+      download: (hash: string) => blobs.download(hash),
+      backups: null
+    }
+  }
+}
+
+/** The Time Machine opened on a device as `TimeMachineControl` does: the past read, the vault locked, the sync stopped, the journal open. */
+async function open(device: Device, scope: Scope) {
+  const prepared = prepare(device)
+  const session = await TimeMachineSession.load(scope, prepared.source, prepared.now, {
+    vault: device.vault as never,
+    choice: 'change',
+    includeBackups: false,
+    fileLimit: Number.POSITIVE_INFINITY
+  })
+  const sealed = await prepared.seal.seal({ what: 'the test', device: device.username, nonce: lockNonce() })
+  device.ownLocks.add(sealed)
+  const lock = await takeVaultLock(device.api, prepared.vaultId, 'preview', sealed, () => undefined)
+  await device.shutdown({ keepViews: true })
+  const files = await PastFiles.begin(device.vault as never, device.vault.adapter as never, 'plugin', { scope, lockId: lock.id, vaultId: prepared.vaultId })
+  session.attach(files)
+  // What main.ts does with the vault's events while the Time Machine runs.
+  const listen = (file: unknown): void => files.noteEvent((file as { path: string }).path)
+  const refs = ['modify', 'create', 'delete'].map((name) => device.vault.on(name, listen))
+  return { session, files, lock, sealed, prepared, stop: () => refs.forEach((ref) => device.vault.offref(ref)) }
+}
+
+/** The moment after the last change before `at` - and before any after it. */
+function placeBefore(session: Session, at: number): number {
+  let place = -1
+  session.positions.forEach((position, i) => {
+    if (position.tick && position.tick.last < at) place = i
+  })
+  return place
+}
+
+try {
+  // --- the notices, kept for the notification center ----------------------------------------
+  {
+    const adapter = new FakeAdapter()
+    await notices.attach(adapter as never, 'plugin/notices.json')
+    notices.clear()
+    new Notice('Projects/Plan.md: syncing failed, see the log')
+    new Notice('Shared a note with Ben.')
+    const kept = notices.list()
+    check(
+      kept.length === 2 && kept[0]?.text === 'Shared a note with Ben.' && kept[1]?.kind === 'error' && kept[1]?.path === 'Projects/Plan.md' && kept[0]?.kind === 'info',
+      'every notice is kept for the notification center, the newest first, a failure as one, with the note it names',
+      kept
+    )
+    check(notices.unseen() === 2, 'and counted as not seen')
+    notices.markSeen()
+    check(notices.unseen() === 0, 'until the center was looked at')
+    notices.detach()
+    const stored = JSON.parse(adapter.files.get('plugin/notices.json') ?? '{}') as { entries?: unknown[] }
+    check(stored.entries?.length === 2, 'they stay on the device, in the plugin folder', stored)
+    notices.clear()
+  }
+  check(barScale(0) > barScale(40) && barScale(40) > barScale(80) && barScale(80) > 1 && barScale(200) === 1, "the timeline's bars grow towards the pointer, falling off as a wave", [
+    barScale(0),
+    barScale(40),
+    barScale(80),
+    barScale(200)
+  ])
+
+  for (const device of devices) check(await device.boot(), `${device.username} starts`)
+  check(
+    await eventually(() => A2.vault.text('Welcome.md') === 'hello\n' && same(A2.vault.bytes('Bilder/Foto.png'), photo), 15_000),
+    "A's second device has the whole vault"
+  )
+  // The server says when notes were edited only to the minute, rounded down: the moment lies just before a
+  // minute begins, and the changes after it in that minute - so none of them is rounded down to before it.
+  let wait = 60_000 - (Date.now() % 60_000) - 2_000
+  if (wait < 0) wait += 60_000
+  await delay(wait)
+  const T = Date.now()
+  await delay(2_500)
+
+  // --- a synced file carries the time its change was made ------------------------------------
+  const typedFrom = Date.now()
+  await A1.vault.userWrite('Welcome.md', 'hello, changed\n')
+  const typedUntil = Date.now()
+  check(await eventually(() => A2.vault.text('Welcome.md') === 'hello, changed\n'), 'A changes a note')
+  const arrivedAt = A2.vault.file('Welcome.md').stat.mtime
+  check(
+    arrivedAt >= typedFrom && arrivedAt <= typedUntil + 1_000,
+    "on the other device its file carries the time the change was made, not the time it arrived - a plugin stamping notes sees no edit there",
+    { arrivedAt, typedFrom, typedUntil }
+  )
+
+  // --- what happens after the moment ------------------------------------------------------------
+  await A1.vault.userCreate('New.md', 'a new note\n')
+  await A1.vault.trash(A1.vault.file('Projects/Old.md'))
+  await A1.vault.createFolder('Archive')
+  await A1.vault.rename(A1.vault.file('Projects/Plan.md'), 'Archive/Plan.md')
+  await A1.vault.userWriteBinary('Bilder/Foto.png', photoLater)
+  await A1.vault.userCreateBinary('Bilder/New.png', later)
+  const settled = (device: Device): boolean =>
+    device.vault.text('New.md') === 'a new note\n' &&
+    device.vault.text('Projects/Old.md') === undefined &&
+    device.vault.text('Archive/Plan.md') === 'the plan\n' &&
+    same(device.vault.bytes('Bilder/Foto.png'), photoLater) &&
+    same(device.vault.bytes('Bilder/New.png'), later)
+  check(await eventually(() => settled(A2), 20_000), 'A adds, deletes, moves and changes notes and files, and the other device follows')
+  await delay(500)
+  const now1 = snapshot(A1)
+  const now2 = snapshot(A2)
+
+  // --- the vault's past in the files ---------------------------------------------------------------
+  {
+    const opened = await open(A1, { kind: 'vault' })
+    const { session, files } = opened
+    check(await eventually(() => A2.socket?.isLocked === true), "the vault is locked on the account's other device")
+    const place = placeBefore(session, T)
+    check(place >= 0 && session.positions.at(-1)?.tick === null, 'the timeline has a moment before the changes, and now at its end', session.positions)
+    await session.moveTo(place)
+    const vault = A1.vault
+    check(vault.text('Welcome.md') === 'hello\n', 'the note says what it said then, in its own file')
+    check(vault.text('New.md') === undefined && vault.bytes('Bilder/New.png') === undefined, 'what came later is gone from the vault')
+    check(vault.text('Projects/Old.md') === 'old\n', 'what was deleted since is back, with its text')
+    check(vault.text('Projects/Plan.md') === 'the plan\n' && vault.text('Archive/Plan.md') === undefined && !vault.hasFolder('Archive'), 'what moved is where it was, and a folder that came later is gone')
+    check(same(vault.bytes('Bilder/Foto.png'), photo), 'a picture shows its content then')
+    check(vault.file('Welcome.md').stat.mtime < T, 'and a note its modification time then', vault.file('Welcome.md').stat.mtime)
+    const item = (path: string) => session.items.find((entry) => entry.pathThen === path || entry.pathNow === path)
+    check(
+      item('Projects/Old.md')?.back === true &&
+        item('New.md')?.goes === true &&
+        item('Projects/Plan.md')?.moved === true &&
+        item('Welcome.md')?.changed === true &&
+        item('Keep/Untouched.md')?.changed === false &&
+        item('Bilder/Foto.png')?.changed === true,
+      'the overview says what differs from now, the texts compared',
+      session.items
+    )
+    check(session.showsPast('Welcome.md') && (await session.nowTextOf('Welcome.md')) === 'hello, changed\n', 'an editor of the note learns it is read-only, and what it says now')
+
+    // Meanwhile on the other device.
+    await A2.vault.userWrite('Keep/Untouched.md', 'written while locked\n')
+    await delay(1_500)
+    const note = A2.vault.file('Keep/Untouched.md')
+    check(A2.store?.noteState(note) === 'unsent', 'what the other device writes meanwhile waits there: the server takes nothing from it')
+    // Someone writes over a past file here - a plugin, the user in another app.
+    await vault.userWrite('Welcome.md', 'stamped by a plugin\n')
+    const otherLock = await takeVaultLock(A2.api, opened.prepared.vaultId, 'preview', 'eA==', () => undefined).then(
+      () => null,
+      (error: unknown) => error
+    )
+    check(
+      otherLock instanceof VaultLockedError &&
+        otherLock.lock?.kind === 'preview' &&
+        (await opened.prepared.seal.open(otherLock.lock.sealed))?.what === 'the test',
+      'another device cannot lock it too, and reads who holds it and why'
+    )
+
+    const report = await session.restore()
+    opened.stop()
+    check(report.failed.length === 0 && report.aside.includes('Welcome.md'), 'back to now: every file goes back, and what was written over the past is kept aside', report)
+    check(
+      report.asideDir !== null && vault.adapter.binaries.get(`${report.asideDir}/Welcome.md`) !== undefined,
+      'in the plugin folder',
+      Array.from(vault.adapter.binaries.keys()).filter((key) => key.includes('aside'))
+    )
+    check(differences(now1, snapshot(A1)).length === 0, 'every file is as it was, byte for byte, with its times', differences(now1, snapshot(A1)))
+    await files.finish()
+    check(!(await PastFiles.pending(vault.adapter as never, 'plugin')), 'and the journal is gone')
+    await opened.lock.release()
+    A1.ownLocks.delete(opened.sealed)
+    check(await eventually(() => A2.socket?.isLocked === false), 'the lock ends on the other device too')
+    check(await A1.boot(), 'the sync starts again')
+    check(await eventually(() => A1.vault.text('Keep/Untouched.md') === 'written while locked\n', 15_000), 'and what the other device wrote meanwhile arrives')
+    await delay(1_500)
+    check(differences(now2, snapshot(A2)).filter((path) => path !== 'Keep/Untouched.md').length === 0, 'nothing of the past ever reached the other device', differences(now2, snapshot(A2)))
+  }
+
+  // --- a crash while a note shows its past ----------------------------------------------------------
+  {
+    const before = snapshot(A1)
+    const opened = await open(A1, { kind: 'note', path: 'Welcome.md' })
+    const place = placeBefore(opened.session, T)
+    await opened.session.moveTo(place)
+    check(A1.vault.text('Welcome.md') === 'hello\n', "a note's Time Machine shows its past in the note's own file")
+    // Its editor: read-only, the changes against now marked in it.
+    const parent = document.createElement('div')
+    document.body.appendChild(parent)
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: A1.vault.text('Welcome.md') ?? '',
+        extensions: [
+          pastEditorExtension(
+            {
+              pastOf: async (path) => (opened.session.showsPast(path) ? { now: (await opened.session.nowTextOf(path)) ?? null, marks: true } : null),
+              onChange: () => () => undefined
+            },
+            () => ({ path: 'Welcome.md' })
+          )
+        ]
+      })
+    })
+    check(
+      await eventually(() => view.state.readOnly && parent.querySelector('.connect-tm-now-lines')?.textContent === 'hello, changed' && parent.querySelector('.connect-tm-then-line') !== null),
+      'its editor is read-only and marks what it said then and what it says now',
+      parent.innerHTML
+    )
+    view.destroy()
+    opened.stop()
+    // Obsidian closes here: nothing is put back, the journal stays.
+    check(await PastFiles.pending(A1.vault.adapter as never, 'plugin'), 'a journal waits after a crash')
+    const refused = await PastFiles.begin(A1.vault as never, A1.vault.adapter as never, 'plugin', { scope: null, lockId: null, vaultId: null }).then(
+      () => null,
+      (error: unknown) => error
+    )
+    check(refused instanceof Error, 'and no other Time Machine opens over it')
+    // The next start: before the sync, the past goes back.
+    const resumed = await PastFiles.resume(A1.vault as never, A1.vault.adapter as never, 'plugin')
+    const report = await resumed?.restore()
+    await resumed?.finish()
+    if (resumed?.start.lockId && resumed.start.vaultId) await A1.api.releaseVaultLock(resumed.start.vaultId, resumed.start.lockId)
+    A1.ownLocks.delete(opened.sealed)
+    check(
+      report?.failed.length === 0 && differences(before, snapshot(A1)).length === 0,
+      'the next start puts every file back from the journal before the sync starts',
+      differences(before, snapshot(A1))
+    )
+    check(await eventually(() => A2.socket?.isLocked === false), 'the lock it held is let go')
+    check(await A1.boot(), 'then the sync starts')
+    await delay(2_000)
+    check(A2.vault.text('Welcome.md') === 'hello, changed\n' && A1.vault.text('Welcome.md') === 'hello, changed\n', 'and the past it showed is no edit anywhere')
+  }
+
+  // --- a folder's past --------------------------------------------------------------------------------
+  {
+    const before = snapshot(A1)
+    const opened = await open(A1, { kind: 'folder', path: 'Projects' })
+    await opened.session.moveTo(placeBefore(opened.session, T))
+    check(
+      A1.vault.text('Projects/Old.md') === 'old\n' && A1.vault.text('Projects/Plan.md') === 'the plan\n' && A1.vault.text('Welcome.md') === 'hello, changed\n' && A1.vault.text('New.md') === 'a new note\n',
+      'a folder shows its past, and nothing outside it changes',
+      {
+        files: ['Projects/Old.md', 'Projects/Plan.md', 'Welcome.md', 'New.md'].map((path) => [path, A1.vault.text(path)]),
+        place: opened.session.place,
+        positions: opened.session.positions.map((position) => [position.at - T, position.tick?.last === undefined ? null : position.tick.last - T])
+      }
+    )
+    await opened.session.moveTo(opened.session.positions.length - 1)
+    check(A1.vault.text('Projects/Old.md') === undefined && A1.vault.text('Projects/Plan.md') === undefined, 'moved to now, it shows now')
+    const report = await opened.session.restore()
+    opened.stop()
+    await opened.files.finish()
+    await opened.lock.release()
+    A1.ownLocks.delete(opened.sealed)
+    check(report.failed.length === 0 && differences(before, snapshot(A1)).length === 0, 'and goes back as it was', differences(before, snapshot(A1)))
+    check(await A1.boot(), 'the sync starts again')
+  }
+
+  // --- a rollback locks the other devices, its own writes go through ------------------------------------
+  {
+    check(await eventually(() => A2.socket?.isLocked === false), 'nothing is locked')
+    const lock = await A1.lockForRollback()
+    check(await eventually(() => A2.socket?.isLocked === true), 'a rollback locks the other device')
+    await A1.vault.userWrite('Keep/Untouched.md', 'the rollback writes\n')
+    check(await eventually(() => A2.vault.text('Keep/Untouched.md') === 'the rollback writes\n', 15_000), 'the device holding the lock writes, and the other one follows')
+    await A2.vault.userCreate('During.md', 'meanwhile\n')
+    await delay(1_500)
+    check(A1.vault.text('During.md') === undefined, 'what the other one writes waits')
+    await lock.release()
+    check(await eventually(() => A1.vault.text('During.md') === 'meanwhile\n', 15_000), 'and arrives once the rollback is done')
+  }
+} catch (error) {
+  check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
+} finally {
+  for (const device of devices) await device.shutdown().catch(() => undefined)
+  await server.close().catch(() => undefined)
+  await delay(100)
+  if (failures.length === 0) rmSync(root, { recursive: true, force: true })
+  else console.log(`kept for a look: ${root}`)
+}
+
+finish()

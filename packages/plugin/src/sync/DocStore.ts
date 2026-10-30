@@ -1,4 +1,5 @@
-import { Notice, TFile, type App } from 'obsidian'
+import { TFile, type App } from 'obsidian'
+import { Notice } from '../notices.js'
 import * as Y from 'yjs'
 import {
   applyTextEdits,
@@ -127,6 +128,8 @@ export class DocStore {
   private readonly pinned = new Set<string>()
   private readonly editorOwned = new Set<string>()
   private readonly writeTimers = new Map<string, number>()
+  /** Per note, when the changes its file has yet to show were made elsewhere; null when one was made here. */
+  private readonly changedAt = new Map<string, number | null>()
   private readonly inFlight = new Map<string, Promise<DocHandle>>()
   // One file operation per document at a time. The scan, vault events, remote
   // changes and an editor binding all reach the same note concurrently, and
@@ -361,9 +364,30 @@ export class DocStore {
     return this.ownWrites.get(docId)?.text ?? null
   }
 
-  private async writeFile(docId: string, file: TFile, text: string): Promise<void> {
+  private async writeFile(docId: string, file: TFile, text: string, fromRemote = false): Promise<void> {
     this.rememberOwnWrite(docId, text)
-    await this.app.vault.modify(file, text)
+    const mtime = fromRemote ? this.remoteChangeTime(docId) : null
+    this.changedAt.delete(docId)
+    await this.app.vault.modify(file, text, mtime === null ? undefined : { mtime })
+  }
+
+  /**
+   * Remembers when the changes a file has yet to show were made: by their
+   * author's clock when they came from another device, as unknown when made
+   * here. A plugin that stamps a note's frontmatter on every change - *Update
+   * time on Edit* - took the moment another device's edit arrived for an edit
+   * made here, stamped it, and sent its stamp back.
+   */
+  private noteChangeTime(docId: string, authorTs: number | null): void {
+    const known = this.changedAt.get(docId)
+    if (authorTs === null || known === null) this.changedAt.set(docId, null)
+    else this.changedAt.set(docId, Math.max(known ?? 0, authorTs))
+  }
+
+  /** When the changes a file is about to show were made elsewhere; null when any was made here, or never in the future. */
+  private remoteChangeTime(docId: string): number | null {
+    const at = this.changedAt.get(docId)
+    return at === null || at === undefined ? null : Math.min(at, Date.now())
   }
 
   // --- lifecycle -------------------------------------------------------------
@@ -438,6 +462,7 @@ export class DocStore {
     this.stopped = true
     for (const timer of this.writeTimers.values()) window.clearTimeout(timer)
     this.writeTimers.clear()
+    this.changedAt.clear()
     // Let file operations already under way record their outcome. Saving the
     // state before a pull finished forgot that this device has the note, and
     // a delete from elsewhere was then no longer applied to it.
@@ -516,6 +541,7 @@ export class DocStore {
       handle.ytext.observe((_event, transaction) => {
         if (this.editorOwned.has(docId)) this.hold(docId, handle.text())
         if (transaction.origin === SYNC_ORIGIN) return
+        this.noteChangeTime(docId, transaction.origin === this.socket ? this.socket.applyingAuthorTs : null)
         this.scheduleWrite(docId)
       })
       return handle
@@ -559,6 +585,7 @@ export class DocStore {
     const timer = this.writeTimers.get(docId)
     if (timer !== undefined) window.clearTimeout(timer)
     this.writeTimers.delete(docId)
+    this.changedAt.delete(docId)
     const handle = this.handles.get(docId)
     this.handles.delete(docId)
     this.lastUsed.delete(docId)
@@ -646,7 +673,7 @@ export class DocStore {
         await this.reconcileFile(docId, file)
         return
       }
-      await this.writeFile(docId, file, text)
+      await this.writeFile(docId, file, text, true)
       await this.recordAgreement(docId, file, text)
     } catch (error) {
       log.error(`writing ${file.path} failed`, error)
@@ -872,7 +899,7 @@ export class DocStore {
         if (!(local === base && (local === this.recentWrite(docId) || this.heldBefore(docId, local)))) {
           await this.backups.write(file.path, 'local', local)
         }
-        await this.writeFile(docId, file, remote)
+        await this.writeFile(docId, file, remote, local === base)
         await this.recordAgreement(docId, file, remote)
         // Without a base, this device's version was only a part of the other
         // one - nothing of it was lost, but the other side's lines came in
@@ -1262,7 +1289,9 @@ export class DocStore {
     const text = handle.text()
     await this.ensureFolder(parentOf(path))
     this.rememberOwnWrite(docId, text)
-    const file = await this.app.vault.create(path, text)
+    const mtime = this.remoteChangeTime(docId)
+    this.changedAt.delete(docId)
+    const file = await this.app.vault.create(path, text, mtime === null ? undefined : { mtime })
     await this.recordAgreement(docId, file, text)
     log.info(`${path}: created from the server, ${text.length} chars`)
   }

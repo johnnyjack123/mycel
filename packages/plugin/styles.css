@@ -83,19 +83,6 @@
   white-space: nowrap;
 }
 
-.connect-embed-from-server {
-  display: block;
-  margin: 0.5em 0;
-}
-
-.connect-embed-note {
-  display: flex;
-  align-items: center;
-  gap: 0.75em;
-  color: var(--text-muted);
-  font-size: 0.85em;
-}
-
 .connect-version-preview {
   display: block;
   max-width: 100%;
@@ -194,80 +181,12 @@
   font-weight: 600;
 }
 
-/* The Time Machine: a slider over the past, the tree as it was, the note or file as it was. */
+/* The Time Machine (docs/TIMEMACHINE.md): the past in the files, a timeline at the
+   right edge of the editors, a bar above them, the overview beside the explorer. */
 .connect-tm {
   container-type: inline-size;
 }
 
-.connect-tm-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5em;
-}
-
-.connect-tm-header h3 {
-  margin: 0.25em 0;
-}
-
-.connect-tm-timeline {
-  margin: 0.5em 0 1em;
-  padding: 0.75em;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-m);
-  background-color: var(--background-secondary);
-}
-
-.connect-tm-slider {
-  display: flex;
-  align-items: center;
-  gap: 0.4em;
-}
-
-.connect-tm-track {
-  flex: 1;
-  min-width: 0;
-}
-
-.connect-tm-track input[type='range'] {
-  width: 100%;
-}
-
-/* A mark per tick under the slider, inset by half its thumb. */
-.connect-tm-marks {
-  position: relative;
-  height: 8px;
-  margin: 0 8px;
-}
-
-.connect-tm-mark-tick {
-  position: absolute;
-  top: 0;
-  width: 2px;
-  height: 6px;
-  margin-left: -1px;
-  background-color: var(--text-faint);
-}
-
-.connect-tm-mark-tick.is-backup {
-  height: 8px;
-  background-color: var(--color-orange);
-}
-
-.connect-tm-mark-tick.is-now {
-  background-color: var(--interactive-accent);
-}
-
-.connect-tm-label {
-  margin-top: 0.4em;
-  font-variant-numeric: tabular-nums;
-}
-
-.connect-tm-when {
-  font-weight: 600;
-}
-
-.connect-tm-what,
 .connect-tm-quiet {
   color: var(--text-muted);
   font-size: var(--font-ui-small);
@@ -282,25 +201,204 @@
   cursor: pointer;
 }
 
-.connect-tm-panes {
-  display: grid;
-  grid-template-columns: minmax(12em, 1fr) 2fr;
-  gap: 1em;
+/* Over the editors, never in the way of the explorer or the sidebars. */
+.connect-tm-ui {
+  position: fixed;
+  inset: 0;
+  z-index: var(--layer-status-bar);
+  pointer-events: none;
 }
 
-@container (max-width: 640px) {
-  .connect-tm-panes {
-    grid-template-columns: 1fr;
-  }
+.connect-tm-ui > * {
+  pointer-events: auto;
+}
+
+body.connect-tm-active .workspace-split.mod-root {
+  box-shadow: inset 0 0 0 2px rgba(var(--color-orange-rgb), 0.55);
+}
+
+/* The bar above the editors. */
+.connect-tm-bar-top {
+  position: absolute;
+  top: var(--connect-tm-top, 0);
+  left: var(--connect-tm-left, 0);
+  right: var(--connect-tm-right, 0);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4em 0.75em;
+  padding: 0.35em 0.75em;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background-color: var(--background-secondary);
+  box-shadow: var(--shadow-s);
+}
+
+.connect-tm-bar-icon {
+  display: inline-flex;
+  color: var(--color-orange);
+}
+
+.connect-tm-bar-text {
+  flex: 1;
+  min-width: 12em;
+}
+
+.connect-tm-bar-title {
+  font-weight: 600;
+}
+
+.connect-tm-bar-line2 {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.5em;
+  font-size: var(--font-ui-small);
+  font-variant-numeric: tabular-nums;
+}
+
+.connect-tm-bar-moment {
+  color: var(--text-normal);
+}
+
+.connect-tm-bar-detail {
+  color: var(--text-muted);
+}
+
+.connect-tm-bar-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4em;
+}
+
+.connect-tm-bar-action.is-active {
+  color: var(--text-accent);
+}
+
+/* The timeline: upright at the right edge, the oldest at the top, now at the bottom. */
+.connect-tm-strip {
+  --connect-tm-base: 18px;
+  position: absolute;
+  top: calc(var(--connect-tm-top, 0px) + 3.6em);
+  right: var(--connect-tm-right, 0);
+  width: 64px;
+  height: calc(var(--connect-tm-height, 100vh) - 4.6em);
+  outline: none;
+  touch-action: none;
+  user-select: none;
+}
+
+.connect-tm-strip-bars {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.connect-tm-bar {
+  display: flex;
+  flex: 0 0 var(--connect-tm-bar, 10px);
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 8px;
+  cursor: pointer;
+}
+
+/* Longer near the pointer, the wave falling off with the distance. */
+.connect-tm-bar-line {
+  width: calc(var(--connect-tm-base) * var(--connect-tm-scale, 1));
+  height: 2px;
+  border-radius: 1px;
+  background-color: var(--text-faint);
+  transform: scaleY(calc(0.6 + 0.4 * var(--connect-tm-scale, 1)));
+  transition:
+    width 90ms ease-out,
+    transform 90ms ease-out,
+    background-color 90ms;
+}
+
+.connect-tm-bar.is-day .connect-tm-bar-line {
+  width: calc((var(--connect-tm-base) + 8px) * var(--connect-tm-scale, 1));
+}
+
+.connect-tm-bar.is-backup .connect-tm-bar-line {
+  background-color: var(--color-orange);
+}
+
+.connect-tm-bar.is-now .connect-tm-bar-line {
+  background-color: var(--text-muted);
+}
+
+.connect-tm-bar:hover .connect-tm-bar-line {
+  background-color: var(--text-normal);
+}
+
+.connect-tm-bar.is-current .connect-tm-bar-line {
+  height: 4px;
+  background-color: var(--interactive-accent);
+}
+
+.connect-tm-strip:focus-visible .connect-tm-bar.is-current .connect-tm-bar-line {
+  box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+}
+
+/* The moment under the pointer, to the second. */
+.connect-tm-strip-tip {
+  position: absolute;
+  right: 100%;
+  margin-right: 6px;
+  padding: 0.2em 0.55em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background-color: var(--background-primary);
+  box-shadow: var(--shadow-s);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 80ms;
+}
+
+.connect-tm-strip-tip.is-shown {
+  opacity: 1;
+}
+
+/* A note showing its past, in its own editor: there then and not now, and there now and not then. */
+.connect-tm-then-line {
+  background-color: rgba(var(--color-green-rgb), 0.14);
+}
+
+.connect-tm-now-lines {
+  padding: 0 0.5em;
+  border-left: 3px solid rgba(var(--color-red-rgb), 0.6);
+  background-color: rgba(var(--color-red-rgb), 0.08);
+  color: var(--text-muted);
+  text-decoration: line-through;
+  white-space: pre-wrap;
+}
+
+/* Opening it, step by step. */
+.connect-tm-steps {
+  min-height: 2em;
+  margin: 0.75em 0;
+}
+
+.connect-tm-step {
+  color: var(--text-muted);
+}
+
+/* The overview: what differs from now. */
+.connect-tm-tree-head {
+  margin-bottom: 0.4em;
 }
 
 .connect-tm-tree {
   max-height: 60vh;
   overflow-y: auto;
-}
-
-.connect-tm-preview {
-  min-width: 0;
 }
 
 .connect-tm-item {
@@ -373,76 +471,12 @@
   color: var(--color-orange);
 }
 
+.connect-tm-badge.is-unsure {
+  opacity: 0.7;
+}
+
 .connect-tm-badge.is-foreign {
   color: var(--color-purple);
-}
-
-.connect-tm-preview-head h4 {
-  margin: 0 0 0.2em;
-}
-
-.connect-tm-modes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3em;
-  margin: 0.5em 0;
-}
-
-.connect-tm-modes button.is-active {
-  background-color: var(--interactive-accent);
-  color: var(--text-on-accent);
-}
-
-.connect-tm-note,
-.connect-tm-file {
-  max-height: 60vh;
-  overflow: auto;
-  padding: 0.6em 0.8em;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-m);
-}
-
-.connect-tm-preview.is-alone .connect-tm-note {
-  max-height: none;
-}
-
-.connect-tm-rendered img {
-  max-width: 100%;
-}
-
-.connect-tm-source,
-.connect-tm-same,
-.connect-tm-gone,
-.connect-tm-back {
-  margin: 0;
-  font-size: 0.85em;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.connect-tm-same {
-  color: var(--text-muted);
-}
-
-.connect-tm-gone {
-  background-color: rgba(var(--color-red-rgb), 0.12);
-}
-
-.connect-tm-back {
-  background-color: rgba(var(--color-green-rgb), 0.12);
-}
-
-.connect-tm-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1em;
-  margin-bottom: 0.5em;
-}
-
-.connect-tm-legend .connect-tm-gone,
-.connect-tm-legend .connect-tm-back {
-  padding: 0 0.4em;
-  border-radius: var(--radius-s);
 }
 
 .connect-tm-actions {
@@ -451,11 +485,10 @@
   border-top: 1px solid var(--background-modifier-border);
 }
 
-.connect-tm-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5em;
-  margin-bottom: 0.4em;
+.connect-tm-chosen {
+  margin-bottom: 0.3em;
+  font-weight: 600;
+  word-break: break-word;
 }
 
 .connect-tm-rollbacks {
@@ -469,6 +502,99 @@
   gap: 0.25em 1em;
   padding: 0.4em 0;
   border-bottom: 1px solid var(--background-modifier-border);
+}
+
+/* The notification center. */
+.connect-notices-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.connect-notices-quiet {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.connect-notices-day {
+  margin: 0.9em 0 0.3em;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.connect-notices-entry {
+  display: flex;
+  gap: 0.5em;
+  padding: 0.45em 0.5em;
+  border-radius: var(--radius-s);
+}
+
+.connect-notices-entry.is-new {
+  background-color: var(--background-modifier-hover);
+}
+
+.connect-notices-entry.is-link {
+  cursor: pointer;
+}
+
+.connect-notices-entry.is-link:hover {
+  background-color: var(--background-modifier-active-hover);
+}
+
+.connect-notices-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-muted);
+}
+
+.connect-notices-entry.is-error .connect-notices-icon {
+  color: var(--color-red);
+}
+
+.connect-notices-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.connect-notices-body {
+  min-width: 0;
+}
+
+.connect-notices-text {
+  word-break: break-word;
+}
+
+.connect-notices-time {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+}
+
+/* How many notices were not seen, on the bell. */
+.connect-notices-ribbon {
+  position: relative;
+}
+
+.connect-notices-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: 9px;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.connect-notices-badge.is-hidden {
+  display: none;
 }
 
 /* What a rollback changes, one list per kind, folded. */

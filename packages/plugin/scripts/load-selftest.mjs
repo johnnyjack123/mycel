@@ -72,7 +72,8 @@ const obsidian = {
     }
     registerView = (type) => registered.views.push(type)
     addSettingTab = fn
-    addRibbonIcon = fn
+    // Obsidian hands back the icon's element; the notification center puts its count on it.
+    addRibbonIcon = () => ({ addClass: fn, createSpan: () => ({ setText: fn, toggleClass: fn }) })
     addCommand = (command) => registered.commands.push(command.id)
     registerEvent = fn
     register = fn
@@ -253,15 +254,24 @@ if (exported) {
     } catch (error) {
       check(false, 'onload runs', error?.stack ?? String(error))
     }
-    check(registered.editorExtensions.length === 1, 'it registers exactly one editor extension', registered.editorExtensions.length)
+    check(
+      registered.editorExtensions.length === 2,
+      'it registers its two editor extensions: the binding, and the one that shows a note its past read-only',
+      registered.editorExtensions.length
+    )
     check(
       ['share-note', 'note-access', 'shared-with-me', 'detach-note'].every((id) => registered.commands.includes(id)),
       'it registers the sharing commands',
       registered.commands
     )
     check(
-      registered.views.includes('obsidian-connect-time-machine') && ['time-machine', 'time-machine-note'].every((id) => registered.commands.includes(id)),
-      'it registers the Time Machine, a view of its own, and its commands',
+      registered.views.includes('obsidian-connect-time-machine') && ['time-machine', 'time-machine-note', 'time-machine-close'].every((id) => registered.commands.includes(id)),
+      "it registers the Time Machine's overview and its commands",
+      { views: registered.views, commands: registered.commands }
+    )
+    check(
+      registered.views.includes('obsidian-connect-notifications') && registered.commands.includes('notifications'),
+      'and the notification center, with its command',
       { views: registered.views, commands: registered.commands }
     )
 

@@ -162,6 +162,8 @@ export interface RollbackOutcome {
   record: RollbackRecord
   /** Where the copy of what changed lies, in the plugin's folder. */
   copy: string
+  /** What the copy holds, by path, with each content's hash - to find it again in a backup. */
+  copied: Array<{ path: string; hash: string }>
   /** What could not be done as planned, and why. */
   problems: string[]
 }
@@ -187,6 +189,12 @@ export interface RollbackDeps {
   root: string
   isExcluded: (path: string) => boolean
   now?: () => number
+  /**
+   * Locks the vault on the account's other devices while the rollback runs
+   * (`docs/TIMEMACHINE.md`, V2): they keep what they write and send it once it
+   * is done. Throws while someone else holds the lock.
+   */
+  lock?: () => Promise<{ release(): Promise<void> }>
 }
 
 /** What the history planning knew of a note or file it could not reach, for a backup to fill in. */
@@ -650,9 +658,10 @@ export class Rollback {
    * Copies everything the plan is about to change or trash, as this device
    * has it now, into the plugin's folder, with the plan beside it.
    */
-  async copy(plan: RollbackPlan, when: number): Promise<string> {
+  async copy(plan: RollbackPlan, when: number): Promise<{ dir: string; copied: Array<{ path: string; hash: string }> }> {
     const { adapter, store, attachments } = this.deps
     const dir = `${this.deps.root}/${COPY_DIR}/${stamp(new Date(when))}`
+    const copied: Array<{ path: string; hash: string }> = []
     const made = new Set<string>()
     const ensure = async (path: string): Promise<void> => {
       if (!path || made.has(path)) return
@@ -667,6 +676,7 @@ export class Rollback {
       if (text === undefined) continue
       await ensure(parentOf(into(note.pathNow)))
       await adapter.write(into(note.pathNow), text)
+      copied.push({ path: note.pathNow, hash: await contentHash(utf8(text)) })
     }
     for (const file of plan.files) {
       if (!(file.trash || file.content) || file.pathNow === null || !file.fileId || !attachments) continue
@@ -674,6 +684,7 @@ export class Rollback {
       if (!data) continue
       await ensure(parentOf(into(file.pathNow)))
       await adapter.writeBinary(into(file.pathNow), buffer(data))
+      copied.push({ path: file.pathNow, hash: await contentHash(bytes(data)) })
     }
     await ensure(dir)
     const summary = {
@@ -695,7 +706,32 @@ export class Rollback {
       outOfReach: plan.outOfReach
     }
     await adapter.write(`${dir}/rollback.json`, `${JSON.stringify(summary, null, 2)}\n`)
-    return dir
+    return { dir, copied }
+  }
+
+  /**
+   * Whether every file of a rollback's copy lies in the backup made just before
+   * it, with the same content (`docs/TIMEMACHINE.md`, V4): then the copy in the
+   * plugin folder goes. Not there - no backup server, or something this device
+   * had not sent yet - it stays, for *Keep backups for*.
+   */
+  async copyIsBackedUp(outcome: RollbackOutcome): Promise<boolean> {
+    const source = this.deps.backups
+    if (!source || outcome.copied.length === 0) return false
+    for (const server of source.servers()) {
+      try {
+        const ref = await source.backupAt(server.routeId, this.now)
+        if (!ref) continue
+        const listed = new Map((await source.backupListing(server.routeId, ref)).map((entry) => [entry.path, entry.hash]))
+        if (!outcome.copied.every((item) => listed.get(item.path) === item.hash)) continue
+        await this.deps.adapter.rmdir(outcome.copy, true)
+        log.info(`the rollback's copy matched the backup on ${server.label}; removed it from the plugin folder`)
+        return true
+      } catch (error) {
+        log.warn(`comparing the rollback's copy with the backup on ${server.label} failed`, error)
+      }
+    }
+    return false
   }
 
   /**
@@ -707,10 +743,20 @@ export class Rollback {
   async apply(plan: RollbackPlan, consent: RollbackConsent, progress: (message: string) => void = () => undefined): Promise<RollbackOutcome> {
     const refused = Rollback.refusal(plan, consent)
     if (refused) throw new RollbackRefused(refused)
+    progress('Locking the vault on your other devices…')
+    const lock = await this.deps.lock?.()
+    try {
+      return await this.applyLocked(plan, progress)
+    } finally {
+      await lock?.release()
+    }
+  }
+
+  private async applyLocked(plan: RollbackPlan, progress: (message: string) => void): Promise<RollbackOutcome> {
     const { store, attachments, settings } = this.deps
     const startedAt = this.now
     progress('Copying what changes into the plugin folder…')
-    const copy = await this.copy(plan, startedAt)
+    const { dir: copy, copied } = await this.copy(plan, startedAt)
     const record: RollbackRecord = {
       id: toHex(randomBytes(8)),
       startedAt,
@@ -820,7 +866,7 @@ export class Rollback {
     if (problems.length > 0) finished.error = `${problems.length} problem(s), e.g. ${problems[0]}`
     settings.setRollback(finished)
     log.info(`rollback ${record.id}: ${finished.state}${problems.length > 0 ? `, ${problems.length} problem(s)` : ''}`)
-    return { record: finished, copy, problems }
+    return { record: finished, copy, copied, problems }
   }
 
   /**

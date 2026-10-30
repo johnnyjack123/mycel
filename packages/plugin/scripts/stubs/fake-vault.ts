@@ -13,6 +13,8 @@ import type { LocalStore, OpenLocalStore } from '../../src/sync/DocHandle.js'
 import { memoryHistory } from '../../src/sync/History.js'
 
 type Listener = (...args: unknown[]) => void
+/** Obsidian's `DataWriteOptions`: a write may set the file's times. */
+type WriteOptions = { ctime?: number; mtime?: number }
 
 function parentOf(path: string): string {
   const slash = path.lastIndexOf('/')
@@ -43,8 +45,18 @@ export class FakeAdapter {
     return text
   }
 
+  async readBinary(path: string): Promise<ArrayBuffer> {
+    const data = this.binaries.get(path) ?? (this.files.has(path) ? new TextEncoder().encode(this.files.get(path)) : undefined)
+    if (data === undefined) throw new Error(`ENOENT: ${path}`)
+    return data.slice().buffer
+  }
+
   async write(path: string, data: string): Promise<void> {
     this.files.set(path, data)
+  }
+
+  async append(path: string, data: string): Promise<void> {
+    this.files.set(path, (this.files.get(path) ?? '') + data)
   }
 
   async remove(path: string): Promise<void> {
@@ -107,10 +119,18 @@ export class FakeVault {
     const parent = parentOf(path)
     if (!parent || this.entries.has(parent)) return
     this.ensureParents(parent)
+    this.entries.set(parent, this.newFolder(parent))
+  }
+
+  /** A folder whose `children` are what lies directly in it, as Obsidian keeps them. */
+  private newFolder(path: string): TFolder {
     const folder = new TFolder()
-    folder.path = parent
-    folder.name = parent.split('/').pop() ?? parent
-    this.entries.set(parent, folder)
+    folder.path = path
+    folder.name = path.split('/').pop() ?? path
+    Object.defineProperty(folder, 'children', {
+      get: () => Array.from(this.entries.values()).filter((entry) => entry.path !== folder.path && parentOf(entry.path) === folder.path)
+    })
+    return folder
   }
 
   private newFile(path: string): TFile {
@@ -125,28 +145,35 @@ export class FakeVault {
   }
 
   /** Puts a file in place without any event: the vault as it was before Obsidian started. */
-  private put(path: string, text: string): TFile {
+  private put(path: string, text: string, options?: WriteOptions): TFile {
     const file = this.newFile(path)
-    this.setText(file, text)
+    this.setText(file, text, options)
     return file
   }
 
-  private putBinary(path: string, data: Uint8Array): TFile {
+  private putBinary(path: string, data: Uint8Array, options?: WriteOptions): TFile {
     const file = this.newFile(path)
-    this.setBytes(file, data)
+    this.setBytes(file, data, options)
     return file
   }
 
-  private setText(file: TFile, text: string): void {
+  private setText(file: TFile, text: string, options?: WriteOptions): void {
     this.contents.set(file.path, text)
+    this.binaries.delete(file.path)
     this.clock += 1
-    file.stat = { ctime: file.stat.ctime || this.clock, mtime: this.clock, size: text.length }
+    file.stat = { ctime: options?.ctime ?? (file.stat.ctime || this.clock), mtime: options?.mtime ?? this.clock, size: text.length }
   }
 
-  private setBytes(file: TFile, data: Uint8Array): void {
+  private setBytes(file: TFile, data: Uint8Array, options?: WriteOptions): void {
+    // A file is bytes on disk; Obsidian reads a note's as text, whichever way it was written.
+    if (file.extension === 'md') {
+      this.setText(file, new TextDecoder('utf-8', { ignoreBOM: true }).decode(data), options)
+      return
+    }
+    this.contents.delete(file.path)
     this.binaries.set(file.path, new Uint8Array(data))
     this.clock += 1
-    file.stat = { ctime: file.stat.ctime || this.clock, mtime: this.clock, size: data.length }
+    file.stat = { ctime: options?.ctime ?? (file.stat.ctime || this.clock), mtime: options?.mtime ?? this.clock, size: data.length }
   }
 
   getMarkdownFiles(): TFile[] {
@@ -165,19 +192,19 @@ export class FakeVault {
     return data.slice().buffer
   }
 
-  async createBinary(path: string, data: ArrayBuffer): Promise<TFile> {
+  async createBinary(path: string, data: ArrayBuffer, options?: WriteOptions): Promise<TFile> {
     if (this.entries.has(path)) throw new Error('File already exists.')
     const parent = parentOf(path)
     if (parent && !(this.entries.get(parent) instanceof TFolder)) throw new Error(`Folder does not exist: ${parent}`)
-    const file = this.putBinary(path, new Uint8Array(data))
+    const file = this.putBinary(path, new Uint8Array(data), options)
     this.emit('create', file)
     return file
   }
 
-  async modifyBinary(file: TFile, data: ArrayBuffer): Promise<void> {
+  async modifyBinary(file: TFile, data: ArrayBuffer, options?: WriteOptions): Promise<void> {
     if (this.entries.get(file.path) !== file) throw new Error(`ENOENT: ${file.path}`)
     this.contents.delete(file.path)
-    this.setBytes(file, new Uint8Array(data))
+    this.setBytes(file, new Uint8Array(data), options)
     this.emit('modify', file)
   }
 
@@ -191,18 +218,18 @@ export class FakeVault {
     return text
   }
 
-  async modify(file: TFile, text: string): Promise<void> {
+  async modify(file: TFile, text: string, options?: WriteOptions): Promise<void> {
     if (this.entries.get(file.path) !== file) throw new Error(`ENOENT: ${file.path}`)
-    this.setText(file, text)
+    this.setText(file, text, options)
     this.emit('modify', file)
   }
 
-  async create(path: string, text: string): Promise<TFile> {
+  async create(path: string, text: string, options?: WriteOptions): Promise<TFile> {
     if (this.entries.has(path)) throw new Error('File already exists.')
     // Obsidian refuses to create a file in a folder that does not exist.
     const parent = parentOf(path)
     if (parent && !(this.entries.get(parent) instanceof TFolder)) throw new Error(`Folder does not exist: ${parent}`)
-    const file = this.put(path, text)
+    const file = this.put(path, text, options)
     this.emit('create', file)
     return file
   }
@@ -211,12 +238,20 @@ export class FakeVault {
     if (this.entries.has(path)) throw new Error('Folder already exists.')
     const parent = parentOf(path)
     if (parent && !(this.entries.get(parent) instanceof TFolder)) throw new Error(`Folder does not exist: ${parent}`)
-    const folder = new TFolder()
-    folder.path = path
-    folder.name = path.split('/').pop() ?? path
+    const folder = this.newFolder(path)
     this.entries.set(path, folder)
     this.emit('create', folder)
     return folder
+  }
+
+  /** Gone for good, not into the trash - Obsidian's `delete`; a folder only once empty. */
+  async delete(file: TAbstractFile): Promise<void> {
+    if (this.entries.get(file.path) !== file) throw new Error(`ENOENT: ${file.path}`)
+    if (file instanceof TFolder && file.children.length > 0) throw new Error(`Folder is not empty: ${file.path}`)
+    this.entries.delete(file.path)
+    this.contents.delete(file.path)
+    this.binaries.delete(file.path)
+    this.emit('delete', file)
   }
 
   async rename(file: TFile, newPath: string): Promise<void> {

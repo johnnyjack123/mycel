@@ -61,6 +61,10 @@ import {
   type TotpDisableRequest,
   type TotpEnableRequest,
   type TotpLoginRequest,
+  type VaultLockIdRequest,
+  type VaultLockRequest,
+  type VaultLockResponse,
+  type VaultLockTaken,
   type VaultRecord
 } from '@obsidian-connect/shared'
 
@@ -387,6 +391,30 @@ export class ConnectApi {
   /** In which minutes the vault's notes took changes since `since`, by the server's clock. */
   frameTimes(vaultId: string, since = 0): Promise<TimesResponse> {
     return this.call('GET', `${API.times}?vaultId=${vaultId}&since=${Math.floor(since)}`)
+  }
+
+  // --- the vault lock (docs/TIMEMACHINE.md) ---------------------------------------
+
+  vaultLock(vaultId: string): Promise<VaultLockResponse> {
+    return this.call('GET', `${API.vaults}/${vaultId}/lock`)
+  }
+
+  /** Refused with 409 while a lock holds. */
+  takeVaultLock(vaultId: string, request: VaultLockRequest): Promise<VaultLockTaken> {
+    return this.call('POST', `${API.vaults}/${vaultId}/lock`, request)
+  }
+
+  /** Refused with 404 once the lock lapsed or someone lifted it. */
+  renewVaultLock(vaultId: string, id: string): Promise<VaultLockResponse> {
+    return this.call('POST', `${API.vaults}/${vaultId}/lock/renew`, { id } satisfies VaultLockIdRequest)
+  }
+
+  releaseVaultLock(vaultId: string, id: string): Promise<unknown> {
+    return this.call('POST', `${API.vaults}/${vaultId}/lock/release`, { id } satisfies VaultLockIdRequest)
+  }
+
+  breakVaultLock(vaultId: string): Promise<{ ended: boolean }> {
+    return this.call('POST', `${API.vaults}/${vaultId}/lock/break`, {})
   }
 
   // --- blobs ---------------------------------------------------------------------

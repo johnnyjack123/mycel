@@ -219,6 +219,16 @@ export class VaultTimeline {
     return ticks
   }
 
+  /** When the index last changed a note or file up to `ts` - added, moved, given new content; null before the history. */
+  changedAt(id: string, ts: number): number | null {
+    let at: number | null = null
+    for (const event of this.events) {
+      if (event.ts > ts) break
+      if (event.id === id) at = event.ts
+    }
+    return at
+  }
+
   /** Whether the server took a change of the note after `ts` - a hint, by its clock, to the minute. */
   editedAfter(docId: string, ts: number): boolean {
     const last = this.minutes.get(docRoom(docId))?.at(-1)
