@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-29 · **0.8.12: the Time Machine's fixes from the user's test (now after a restore, the newest tick that equalled now, *changed since* by text, the button under *Backups*). Its second round (`docs/TIMEMACHINE.md`): U1 to U5 mostly decided by the user, V1 to V6 still open; then 0.8.13 (the strip, a note's past in its own editor, the notification center) and 0.8.14 (the explorer). Then 0.9's design.**_
+_Last updated: 2026-10-29 · **0.8.12: the Time Machine's fixes from the user's test (now after a restore, the newest tick that equalled now, *changed since* by text, the button under *Backups*). Its second round (`docs/TIMEMACHINE.md`): U1 to U5 and V1 to V6 decided by the user, W1 to W3 still open; then 0.8.13 (the strip, a note's past in its own editor, the notification center) and 0.8.14 (the explorer). Then 0.9's design.**_
 
 ## Where we are
 
@@ -109,6 +109,14 @@ server reading folder notes. What is next:
    structure at once and a note's content when opened; a backup on the backup server
    besides the local copy; notices keep popping up; the order. New: ticks as fine as
    one chooses. Open: V1 to V6 there.
+10. On 2026-10-30 the user decided V1 to V6 ("Decided (the user, 2026-10-30)"): the
+   vault locked on every device whenever the past is shown in the files or applied,
+   liftable by hand; a window when a backup exists only on this device. Their
+   frontmatter plugin, *Update time on Edit*, read from its source: an extra version
+   per edit across a minute's edge, a garbled date when two devices stamp at once -
+   proposed: files written with the time the change was made. Open: W1 to W3 (a layer
+   for a note alone after all, since the file would lock the vault for every look; the
+   lock's reach; the modification time).
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
@@ -139,7 +147,8 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
   at once. Frames signed per author (`docs/PHASE3.md`). Every note live without all
   of them in memory (CLAUDE.md, "Not built yet"). A name and plugin id without
   "Obsidian" (the community directory refuses it; plugin folder, `data.json` and the
-  `localStorage` keys move with the id, so it needs a migration). A review of the
+  `localStorage` keys move with the id, so it needs a migration) - the user's
+  proposal, 2026-10-30: "Connect", free in the directory then. A review of the
   cryptography and the server's API, including that signing out does not replace the
   account secret (`docs/PHASE5.md`). For the community directory besides: a public
   repository, a `LICENSE`, a release tagged `x.y.z`, the README saying a server and an
@@ -195,6 +204,10 @@ user's call, as with the earlier branches.
   whose edits left every text as it was is still one. *Changed since* compares texts
   since 0.8.12, up to 200 notes per tick; beyond that it is the server's word, and the
   view says so.
+- Plugins that stamp a note on every `modify`, such as *Update time on Edit*, stamp
+  again on the devices receiving the edit when it crosses their threshold, and two
+  stamping at once garble the date (`docs/TIMEMACHINE.md`, V6). Proposed: files written
+  with the author's time. Meanwhile: that plugin's minimum minutes between saves at 5.
 - Notes beyond `maxLoadedDocuments` (500) get no live updates until opened or the next
   start (0.9). Raising the setting is the workaround: about 6 to 32 KB per loaded note
   of 3000 characters, plus an IndexedDB database and a subscription each.

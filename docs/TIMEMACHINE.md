@@ -449,3 +449,82 @@ route says seconds - a server update, and more data on every load.
   show their past.
 - **V6 - plugins that write on every change** (the user has one that stamps the
   frontmatter). Its name, to see what it listens to.
+
+### Decided (the user, 2026-10-30)
+
+- **V1** as recommended; a folder or the vault to the minute is fine.
+- **V2: the vault is locked on every device** whenever the Time Machine shows the past
+  in the files or applies it, to the user "for the cases nobody thought of yet" - and the
+  lock can be lifted by hand, should a bug leave it in place. Mechanics below.
+- **V3** as recommended. **V4:** fourteen days, and a window telling the user whenever a
+  backup was made that exists only on this device.
+- **V5:** a trade-off for speed; the user asks whether fetching the notes alone - most
+  of a vault, and small - would do. Below.
+- **V6:** the plugin is *Update time on Edit*. Below.
+- **A name for 0.9:** "Connect" (the user) - nothing in the community directory has
+  that id or name (9660 plugins, 2026-10-30); many are called "… Connect".
+
+### The lock (proposed for V2)
+
+On the server, so that it holds even against a device whose guard failed:
+- A device takes it for the vault (`POST /vaults/:id/lock`, *preview* or *rollback*) and
+  renews it every 30 seconds; not renewed for two minutes - a device that crashed or lost
+  its connection -, it lapses.
+- While it holds, the server takes no frame from the account's devices into the vault's
+  rooms - index, settings, notes, folders -, but during a *rollback* from the connection
+  that holds it. A refused push is kept on its device, as offline, and goes once the lock
+  ends: what is written elsewhere meanwhile waits, nothing is lost.
+- Every device shows it, in a window over everything: who holds it, since when, and
+  *Unlock*, which asks first and lifts it on the server for all.
+- Not locked: other people in shared notes and folders - they are not the account's
+  devices, and their edits merge as always -, and restoring a single note, which is an
+  edit like typing.
+- A server update, like `/times`.
+
+### V5 - the notes of a folder shown
+
+Notes are small; what costs is reading each one's history from the server (a request and
+decrypting, six at a time), not its size. *Recommended:* the structure at once, the open
+note next, then every other note that differs filled in in the background, with its
+progress shown - so search and links are right after seconds, not after each note was
+opened. Other files (pictures, PDFs) only when opened, since they can be large. Moving to
+another tick rewrites only what differs between the two, and every history read stays.
+
+### V6 - Update time on Edit
+
+Read from its source (`beaussan/update-time-on-edit-obsidian`): on every `modify` of a
+note it sets `updated` to the file's modification time - when that time is more than the
+*minimum minutes between saves* (1 by default) after the `updated` already there - and
+writes it keeping that modification time. Its default format is to the minute.
+
+With this plugin's sync that means:
+- A device receiving an edit writes the file *now*: within the minute of the edit
+  nothing happens; across a minute's edge it stamps once more, which goes back to the
+  first device and stops there - no endless loop, but an extra version.
+- A device that was offline stamps the time it came back, not the time of the edit.
+- Two devices stamping the same line at once (three devices, two receiving at a
+  minute's edge) are merged character by character, and the date comes out garbled -
+  which the plugin takes for a missing date and stamps again. That can repeat.
+- After a rollback the rolling-back device stamps today: arguably right, it was
+  changed.
+
+What helps:
+- At once, without code: a higher *minimum minutes between saves* (5) in that plugin.
+- *Recommended,* in the sync: a file written because of another device's change gets
+  the time that change was made (the author's time in the frame), not the time it
+  arrived, as its modification time - Obsidian lets a write set it. Such plugins then
+  see nothing new on the receiving devices, and *sorted by modified* is right on every
+  device. A file an editor holds is saved by Obsidian with its own time; there the
+  plugin's minute still covers almost everything.
+
+### Still open (W1 to W3)
+
+- **W1 - a note alone: layer or the file.** With the lock, showing a note's past in its
+  file locks the vault on every device each time someone looks at an earlier version of
+  a note. A layer writes nothing and needs no lock. It is rendered by Obsidian itself, so
+  it takes on themes, snippets, updates and other plugins' rendering - the reading view
+  exactly, with the properties drawn by the plugin in Obsidian's style. *Recommended:*
+  the layer for a note alone; a note opened while a folder or the vault shows its past
+  shows it in its own editor, as decided.
+- **W2 - the lock** as above: only the account's devices, and not for a single restore?
+- **W3 - the modification time** written with the author's time, as recommended?
