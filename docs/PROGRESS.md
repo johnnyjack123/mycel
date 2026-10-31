@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-30 · **0.8.13: the Time Machine's second round, built at once as the user asked - the past in the files themselves (explorer and editor, read-only), the sync stopped and the vault locked meanwhile, a timeline as in macOS, a note's changes marked in its editor, backups before, the notification center, synced files with the time of their change. Next: the user tries it on their devices (sync server first: the lock); then 0.9's design.**_
+_Last updated: 2026-10-31 · **0.8.13: the Time Machine's second round, built at once as the user asked - the past in the files themselves (explorer and editor, read-only), the sync stopped and the vault locked meanwhile, a timeline as in macOS, a note's changes marked in its editor, backups before, the notification center, synced files with the time of their change. 0.8.14: its bar no longer under Windows' window buttons, one tooltip on the timeline. Next: the user tries the rest on their devices; then 0.9's design.**_
 
 ## Where we are
 
@@ -128,6 +128,10 @@ server reading folder notes. What is next:
    *Unlock…* there, writing on another device meanwhile (it arrives afterwards), Obsidian
    closed while the past is shown (the next start puts it back), the bell and its list,
    and - with *Update time on Edit* installed - that receiving devices no longer stamp.
+12. The user's first try of 0.8.13 (2026-10-31): *Back to now* could not be found - the
+   bar lay in the tabs' row, under Windows' own window buttons - and the timeline showed
+   two tooltips. Fixed in 0.8.14 (the bar under the tabs, the editors moved down; one
+   tooltip). The rest of item 11 still to try.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
@@ -336,6 +340,10 @@ CLAUDE.md, Gotchas - `test:socket` and `test:vault` default to 1234, so always p
 ---
 
 ## Log
+
+### 2026-10-31
+- The user's first try of the 0.8.13 Time Machine: the bar's buttons hidden under the
+  window's own, two tooltips on the timeline. 0.8.14 fixes both.
 
 ### 2026-10-30
 - The user decided V1 to V6 and W1 to W3 of the Time Machine's second round and asked for
