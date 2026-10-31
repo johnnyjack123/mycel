@@ -1,4 +1,4 @@
-import { TFile, type App, type DataAdapter } from 'obsidian'
+import { TFile, type App, type DataAdapter, type EventRef } from 'obsidian'
 import type { ConnectApi } from '../account/api.js'
 import { Notice } from '../notices.js'
 import { LockSeal, lockNonce, takeVaultLock, VaultLockedError, type HeldLock } from '../sync/VaultLock.js'
@@ -80,7 +80,7 @@ export class TimeMachineControl implements PastEditorHost {
   private session: TimeMachineSession | null = null
   private files: PastFiles | null = null
   private lock: HeldLock | null = null
-  private ui: { root: HTMLElement; strip: TimeMachineStrip; bar: TimeMachineBar; resize: ResizeObserver | null } | null = null
+  private ui: { root: HTMLElement; strip: TimeMachineStrip; bar: TimeMachineBar; resize: ResizeObserver | null; layout: EventRef } | null = null
   private opening = false
   private ending = false
   /** The sync is stopped for the past and must not start: from just before it stops until it is started again. */
@@ -502,27 +502,51 @@ export class TimeMachineControl implements PastEditorHost {
     )
     doc.body.addClass('connect-tm-active')
     const editors = doc.querySelector('.workspace-split.mod-root')
+    // Below the tabs, never in their row: on Windows the window's own buttons lie
+    // at the right end of it, over everything, and they hid *Back to now*. The
+    // editors of the top row move down by the bar's height, so it covers nothing.
     const place = (): void => {
       const box = (editors ?? doc.body).getBoundingClientRect()
-      root.style.setProperty('--connect-tm-top', `${box.top}px`)
+      let top = box.top
+      const groups = editors ? Array.from(editors.querySelectorAll<HTMLElement>('.workspace-tabs')) : []
+      for (const group of groups) {
+        const topRow = Math.abs(group.getBoundingClientRect().top - box.top) < 2
+        group.toggleClass('connect-tm-below-bar', topRow)
+        const header = topRow ? group.querySelector<HTMLElement>(':scope > .workspace-tab-header-container') : null
+        const headerBox = header?.getBoundingClientRect()
+        if (headerBox && headerBox.height > 0) top = Math.max(top, headerBox.bottom)
+      }
+      const height = bar.el.offsetHeight
+      // The status bar floats over the editors' lower right corner, where *now* is.
+      const status = doc.querySelector<HTMLElement>('.status-bar')?.getBoundingClientRect()
+      const bottom = status && status.height > 0 ? Math.min(box.bottom, status.top) : box.bottom
+      root.style.setProperty('--connect-tm-top', `${top}px`)
       root.style.setProperty('--connect-tm-right', `${Math.max(0, doc.documentElement.clientWidth - box.right)}px`)
       root.style.setProperty('--connect-tm-left', `${box.left}px`)
-      root.style.setProperty('--connect-tm-height', `${box.height}px`)
+      root.style.setProperty('--connect-tm-strip-top', `${top + height + 8}px`)
+      root.style.setProperty('--connect-tm-strip-height', `${Math.max(0, bottom - top - height - 16)}px`)
+      doc.body.style.setProperty('--connect-tm-bar-height', `${height}px`)
     }
     const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place)
     if (editors) resize?.observe(editors)
+    resize?.observe(bar.el)
+    const layout = this.host.app.workspace.on('layout-change', place)
     place()
-    this.ui = { root, strip, bar, resize }
+    this.ui = { root, strip, bar, resize, layout }
     this.refresh()
   }
 
   private hideUi(): void {
     if (!this.ui) return
+    const doc = this.host.app.workspace.containerEl.doc
     this.ui.resize?.disconnect()
+    this.host.app.workspace.offref(this.ui.layout)
     this.ui.strip.destroy()
     this.ui.bar.destroy()
     this.ui.root.remove()
-    this.host.app.workspace.containerEl.doc.body.removeClass('connect-tm-active')
+    doc.body.removeClass('connect-tm-active')
+    doc.body.style.removeProperty('--connect-tm-bar-height')
+    doc.querySelectorAll('.connect-tm-below-bar').forEach((group) => group.removeClass('connect-tm-below-bar'))
     this.ui = null
   }
 

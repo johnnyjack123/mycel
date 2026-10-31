@@ -43,7 +43,10 @@ export class TimeMachineStrip {
     parent: HTMLElement,
     private readonly handlers: StripHandlers
   ) {
-    this.el = parent.createDiv({ cls: 'connect-tm-strip', attr: { tabindex: '0', role: 'listbox', 'aria-label': 'Time Machine timeline' } })
+    // Named by hidden text, never `aria-label`: Obsidian shows a tooltip of its own
+    // for every element that has one, a second one beside the moment's.
+    this.el = parent.createDiv({ cls: 'connect-tm-strip', attr: { tabindex: '0', role: 'listbox', 'aria-labelledby': 'connect-tm-strip-name' } })
+    this.el.createSpan({ cls: 'connect-tm-unseen', text: 'Time Machine timeline', attr: { id: 'connect-tm-strip-name' } })
     this.list = this.el.createDiv({ cls: 'connect-tm-strip-bars' })
     this.tip = this.el.createDiv({ cls: 'connect-tm-strip-tip' })
     this.el.addEventListener('pointermove', (event) => this.point(event))
@@ -92,7 +95,8 @@ export class TimeMachineStrip {
     this.list.style.setProperty('--connect-tm-bar', `${height}px`)
     let day = ''
     this.bars = this.positions.map((position, i) => {
-      const bar = this.list.createDiv({ cls: 'connect-tm-bar', attr: { role: 'option', 'aria-label': this.handlers.label(position) } })
+      const bar = this.list.createDiv({ cls: 'connect-tm-bar', attr: { role: 'option' } })
+      bar.createSpan({ cls: 'connect-tm-unseen', text: this.handlers.label(position) })
       if (!position.tick) bar.addClass('is-now')
       if (position.backup) bar.addClass('is-backup')
       // A day's first moment is drawn a little longer; the words only under the pointer (the user, U1).
