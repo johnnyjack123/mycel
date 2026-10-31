@@ -8,6 +8,18 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.14** (2026-10-31) - the Time Machine's bar and timeline, from the user's first try
+  on a device. Plugin only.
+  - **The bar lay in the row of the tabs**, and on Windows the window's own buttons sit at
+    the right end of that row, over everything: they hid *Apply…* and *Back to now* and
+    cut *Changes: shown* in half, so there seemed to be no way back. The bar now lies under
+    the tabs of the top row, whose editors move down by its height, so it covers neither
+    the tabs nor the editors; the timeline starts under it and ends above the status bar.
+  - **Two tooltips on the timeline:** Obsidian shows a tooltip of its own for every
+    element with an `aria-label`, and the strip and each bar had one besides the moment's
+    own. They are named by hidden text now.
+  - Only verifiable on a device (`test:load` and `test:timemachine` pass).
+
 - **0.8.13** (2026-10-30) - **the Time Machine's second round** (`docs/TIMEMACHINE.md`,
   the user's decisions U1 to U5, V1 to V6, W1 to W3). Wants the sync server of 0.8.13 (the
   vault lock): with an older one the Time Machine and the rollback refuse and say so.
