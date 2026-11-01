@@ -8,12 +8,26 @@ import { log } from './log.js'
 
 export type NoticeKind = 'info' | 'error'
 
+/**
+ * A button a notice carries - *Undo* on a delete for everyone - kept with it, so
+ * it still works from the notification center, after a restart too: what it does
+ * is named by `kind`, carried out by the handler registered for it, with `data`.
+ */
+export interface NoticeAction {
+  label: string
+  kind: string
+  data: unknown
+  /** Done already, from the notice or from the center: not offered again. */
+  done?: boolean
+}
+
 export interface NoticeEntry {
   at: number
   text: string
   kind: NoticeKind
   /** The note it is about, when it names one. */
   path?: string
+  action?: NoticeAction
 }
 
 const KEPT_MAX = 500
@@ -29,6 +43,7 @@ function textOf(message: string | DocumentFragment): string {
 
 class NoticeLog {
   private entries: NoticeEntry[] = []
+  private readonly handlers = new Map<string, (data: unknown) => Promise<void>>()
   /** Everything up to this moment was seen in the view. */
   private seenUntil = 0
   private adapter: DataAdapter | null = null
@@ -60,16 +75,49 @@ class NoticeLog {
     this.file = null
   }
 
-  add(message: string | DocumentFragment): void {
-    const text = textOf(message).trim()
-    if (!text) return
-    const entry: NoticeEntry = { at: Date.now(), text, kind: PROBLEM.test(text) ? 'error' : 'info' }
-    const path = NOTE_PATH.exec(text)?.[1]
+  /** Keeps a notice's text; null when it says nothing. Its button's label is not part of the text. */
+  add(text: string, action?: NoticeAction): NoticeEntry | null {
+    let said = text.trim()
+    if (action && said.endsWith(action.label)) said = said.slice(0, -action.label.length).trim()
+    if (!said) return null
+    const entry: NoticeEntry = { at: Date.now(), text: said, kind: PROBLEM.test(said) ? 'error' : 'info' }
+    const path = NOTE_PATH.exec(said)?.[1]
     if (path) entry.path = path
+    if (action) entry.action = { ...action }
     this.entries.push(entry)
     this.trim()
     this.scheduleSave()
     this.emit()
+    return entry
+  }
+
+  /** What a button of `kind` does; registered once by the plugin, before any such notice is used. */
+  handle(kind: string, handler: (data: unknown) => Promise<void>): () => void {
+    this.handlers.set(kind, handler)
+    return () => this.handlers.delete(kind)
+  }
+
+  /** Whether an entry's button can still be pressed. */
+  canAct(entry: NoticeEntry): boolean {
+    return Boolean(entry.action && !entry.action.done && this.handlers.has(entry.action.kind))
+  }
+
+  /** Presses an entry's button - from the notice or from the center -, once. */
+  async act(entry: NoticeEntry): Promise<void> {
+    const action = entry.action
+    const handler = action ? this.handlers.get(action.kind) : undefined
+    if (!action || action.done || !handler) return
+    action.done = true
+    this.scheduleSave()
+    this.emit()
+    try {
+      await handler(action.data)
+    } catch (error) {
+      action.done = false
+      this.scheduleSave()
+      this.emit()
+      throw error
+    }
   }
 
   /** Newest first. */
@@ -139,8 +187,14 @@ export const notices = new NoticeLog()
 
 /** Obsidian's notice, kept for the notification center as well. */
 export class Notice extends ObsidianNotice {
-  constructor(message: string | DocumentFragment, duration?: number) {
+  /** What the center keeps of it; null for a notice that said nothing. */
+  readonly entry: NoticeEntry | null
+
+  constructor(message: string | DocumentFragment, duration?: number, action?: NoticeAction) {
+    // Read before Obsidian takes the fragment's nodes into its own notice, which
+    // leaves it empty: a notice with a button never reached the center (0.8.14).
+    const text = textOf(message)
     super(message as string, duration)
-    notices.add(message)
+    this.entry = notices.add(text, action)
   }
 }

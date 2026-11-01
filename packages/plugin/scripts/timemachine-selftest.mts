@@ -99,15 +99,16 @@ function prepare(device: Device) {
 }
 
 /** The Time Machine opened on a device as `TimeMachineControl` does: the past read, the vault locked, the sync stopped, the journal open. */
-async function open(device: Device, scope: Scope) {
+async function open(device: Device, scope: Scope, marks: Array<{ at: number; label: string }> = []) {
   const prepared = prepare(device)
   const session = await TimeMachineSession.load(scope, prepared.source, prepared.now, {
     vault: device.vault as never,
     choice: 'change',
     includeBackups: false,
-    fileLimit: Number.POSITIVE_INFINITY
+    fileLimit: Number.POSITIVE_INFINITY,
+    marks
   })
-  const sealed = await prepared.seal.seal({ what: 'the test', device: device.username, nonce: lockNonce() })
+  const sealed = await prepared.seal.seal({ what: 'the test', device: device.username, nonce: lockNonce(), scope })
   device.ownLocks.add(sealed)
   const lock = await takeVaultLock(device.api, prepared.vaultId, 'preview', sealed, () => undefined)
   await device.shutdown({ keepViews: true })
@@ -149,6 +150,51 @@ try {
     const stored = JSON.parse(adapter.files.get('plugin/notices.json') ?? '{}') as { entries?: unknown[] }
     check(stored.entries?.length === 2, 'they stay on the device, in the plugin folder', stored)
     notices.clear()
+
+    // A notice with a button: Obsidian takes the fragment's nodes, and 0.8.13 kept nothing of it.
+    await notices.attach(adapter as never, 'plugin/notices.json')
+    const undone: unknown[] = []
+    const unhandle = notices.handle('test-undo', async (data) => {
+      undone.push(data)
+    })
+    const fragment = document.createDocumentFragment()
+    fragment.append(document.createTextNode('"Plan" was deleted for everyone in "Projects" (Ben). '))
+    const button = document.createElement('button')
+    button.textContent = 'Undo'
+    fragment.append(button)
+    const notice = new Notice(fragment, 15_000, { label: 'Undo', kind: 'test-undo', data: { folderId: 'f' } })
+    const entry = notices.list()[0]
+    check(
+      notice.entry === entry && entry?.text === '"Plan" was deleted for everyone in "Projects" (Ben).' && entry.action?.label === 'Undo' && notices.canAct(entry),
+      'a notice with a button is kept too, its button with it',
+      entry
+    )
+    await notices.act(entry as NonNullable<typeof entry>)
+    await notices.act(entry as NonNullable<typeof entry>)
+    check(undone.length === 1 && (undone[0] as { folderId: string }).folderId === 'f' && !notices.canAct(entry as NonNullable<typeof entry>), 'pressed from the center it does what the notice did, once', undone)
+    notices.detach()
+    const again = JSON.parse(adapter.files.get('plugin/notices.json') ?? '{}') as { entries?: Array<{ action?: { done?: boolean } }> }
+    check(again.entries?.at(-1)?.action?.done === true, 'and stays done after a restart', again)
+    unhandle()
+    notices.clear()
+  }
+  {
+    const { inLockScope } = await import('../src/sync/VaultLock.js')
+    const { dimRule } = await import('../src/history/ExplorerGuard.js')
+    check(
+      inLockScope({ kind: 'folder', path: 'Projects' }, 'Projects/Plan.md') &&
+        !inLockScope({ kind: 'folder', path: 'Projects' }, 'Projects2/Plan.md') &&
+        inLockScope({ kind: 'note', path: 'Welcome.md' }, 'Welcome.md') &&
+        !inLockScope({ kind: 'note', path: 'Welcome.md' }, 'Other.md') &&
+        inLockScope({ kind: 'vault' }, 'Anything/at all.md'),
+      'a lock covers its folder, its note or the vault - and nothing beside them'
+    )
+    const rule = dimRule({ kind: 'folder', path: 'A "quoted"/B' })
+    check(
+      rule.includes(':not([data-path^="A \\"quoted\\"/B/"])') && rule.includes(':not([data-path="A \\"quoted\\""])') && dimRule({ kind: 'vault' }) === '',
+      'the explorer greys what lies outside a folder, the way to it excepted, by the paths its entries carry',
+      rule
+    )
   }
   check(barScale(0) > barScale(40) && barScale(40) > barScale(80) && barScale(80) > 1 && barScale(200) === 1, "the timeline's bars grow towards the pointer, falling off as a wave", [
     barScale(0),
@@ -281,9 +327,13 @@ try {
       state: EditorState.create({
         doc: A1.vault.text('Welcome.md') ?? '',
         extensions: [
+          // What Obsidian's own editor says, before any plugin's: both facets take the first value given.
+          EditorState.readOnly.of(false),
+          EditorView.editable.of(true),
           pastEditorExtension(
             {
               pastOf: async (path) => (opened.session.showsPast(path) ? { now: (await opened.session.nowTextOf(path)) ?? null, marks: true } : null),
+              lockedWhy: () => null,
               onChange: () => () => undefined
             },
             () => ({ path: 'Welcome.md' })
@@ -296,6 +346,19 @@ try {
       'its editor is read-only and marks what it said then and what it says now',
       parent.innerHTML
     )
+    check(
+      view.contentDOM.getAttribute('contenteditable') === 'false',
+      "read-only even with Obsidian's editor saying otherwise first - the note could be typed into in 0.8.13",
+      view.contentDOM.outerHTML.slice(0, 200)
+    )
+    {
+      const text = view.state.doc.toString()
+      view.dispatch({ changes: { from: 0, insert: 'typed ' }, userEvent: 'input.type' })
+      view.dispatch({ changes: { from: 0, to: 2 }, userEvent: 'delete.backward' })
+      check(view.state.doc.toString() === text, 'what is typed into it, or deleted, does not get in')
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: `${text}reloaded\n` } })
+      check(view.state.doc.toString() === `${text}reloaded\n`, 'while Obsidian loading the file again does')
+    }
     view.destroy()
     opened.stop()
     // Obsidian closes here: nothing is put back, the journal stays.
@@ -325,8 +388,16 @@ try {
   // --- a folder's past --------------------------------------------------------------------------------
   {
     const before = snapshot(A1)
-    const opened = await open(A1, { kind: 'folder', path: 'Projects' })
-    await opened.session.moveTo(placeBefore(opened.session, T))
+    // An earlier rollback's moment, as the overview offers it: a place of its own on the strip.
+    const opened = await open(A1, { kind: 'folder', path: 'Projects' }, [{ at: T, label: 'before the rollback of then' }])
+    check(
+      opened.session.positions.some((position) => position.at === T && position.mark === 'before the rollback of then'),
+      "the moment before an earlier rollback is a place on the strip, whatever the ticks (0.8.15)",
+      opened.session.positions.map((position) => [position.at - T, position.mark ?? null])
+    )
+    const purpose = await opened.prepared.seal.open(opened.sealed)
+    check(purpose?.scope?.kind === 'folder' && purpose.scope.path === 'Projects', 'the lock tells the other devices what it covers, sealed', purpose)
+    check(await opened.session.moveToMark(T), 'and choosing it there shows it')
     check(
       A1.vault.text('Projects/Old.md') === 'old\n' && A1.vault.text('Projects/Plan.md') === 'the plan\n' && A1.vault.text('Welcome.md') === 'hello, changed\n' && A1.vault.text('New.md') === 'a new note\n',
       'a folder shows its past, and nothing outside it changes',
@@ -345,6 +416,33 @@ try {
     A1.ownLocks.delete(opened.sealed)
     check(report.failed.length === 0 && differences(before, snapshot(A1)).length === 0, 'and goes back as it was', differences(before, snapshot(A1)))
     check(await A1.boot(), 'the sync starts again')
+  }
+
+  // --- a restore leaves the past under the lock: the others write again once it arrived (0.8.15) ---------
+  {
+    const opened = await open(A1, { kind: 'note', path: 'Welcome.md' })
+    await opened.session.moveTo(placeBefore(opened.session, T))
+    const docId = opened.session.noteId as string
+    const then = await opened.session.noteTextAt('Welcome.md')
+    check(then === 'hello\n' && (await eventually(() => A2.socket?.isLocked === true)), 'a note shows its past, the other device locked', then)
+    // What TimeMachineControl.leaveLocked does: every file back, then the sync, writing under the lock.
+    const report = await opened.session.restore()
+    opened.stop()
+    await opened.files.finish()
+    A1.heldLockId = opened.lock.id
+    check(report.failed.length === 0 && (await A1.boot()), 'the files are back and the sync runs, the lock still held')
+    await A2.vault.userCreate('While restoring.md', 'written meanwhile\n')
+    const store = A1.store as NonNullable<Device['store']>
+    await store.restore(docId, then as string)
+    check(await store.whenSent(docId, 15_000), 'the restore reaches the server under the lock its Time Machine took')
+    check(await eventually(() => A2.vault.text('Welcome.md') === 'hello\n', 15_000), 'and the other device follows it')
+    check(A2.socket?.isLocked === true && A1.vault.text('While restoring.md') === undefined, 'while what that one writes still waits')
+    A1.heldLockId = null
+    A1.socket?.holdLock(null)
+    await opened.lock.release()
+    A1.ownLocks.delete(opened.sealed)
+    check(await eventually(() => A1.vault.text('While restoring.md') === 'written meanwhile\n', 15_000), 'and goes out once the lock is let go')
+    check(A1.vault.text('Welcome.md') === 'hello\n' && A2.vault.text('Welcome.md') === 'hello\n', 'the restore stays as it was')
   }
 
   // --- a rollback locks the other devices, its own writes go through ------------------------------------

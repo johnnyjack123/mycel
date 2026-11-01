@@ -173,7 +173,7 @@ export class Device {
   /** What the person answers when a note of theirs lies outside its shared folder after a crash. */
   outsideAnswer: 'end' | 'back' | null = null
   /** What this device said about shared folders, oldest first. */
-  readonly folderNews: Array<{ kind: string; undo?: () => Promise<void>; [key: string]: unknown }> = []
+  readonly folderNews: Array<{ kind: string; batch?: unknown; [key: string]: unknown }> = []
   compactor: InstanceType<typeof Compactor> | null = null
   trash: InstanceType<typeof Trash> | null = null
   settings: InstanceType<typeof AccountSettings> | null = null
@@ -271,6 +271,8 @@ export class Device {
           await this.shutdown()
         })
     })
+    // As main.ts: a restore from the Time Machine starts the sync under the lock it holds.
+    if (this.heldLockId) socket.holdLock(this.heldLockId)
     const settings = new AccountSettings()
     const settingsStore = this.locals.open(`obsidian-connect/${openVault.vaultId}/set`, settings.doc)
     this.settingsCursor = await LocalCursor.load(settingsStore)
@@ -536,6 +538,8 @@ export class Device {
 
   /** Locks of the vault this device took itself, by what they say. */
   readonly ownLocks = new Set<string>()
+  /** The lock this device writes under, named to every new connection - main.ts's `heldLockId`. */
+  heldLockId: string | null = null
 
   /** Another device's lock holds what this one writes; its end lets it go. */
   private followLock(lock: { sealed: string } | null): void {
@@ -544,15 +548,19 @@ export class Device {
   }
 
   /** The vault locked for a rollback, this connection writing under it - as main.ts's `lockForRollback`. */
-  async lockForRollback(): Promise<{ release(): Promise<void> }> {
+  async lockForRollback(folder = ''): Promise<{ release(): Promise<void> }> {
     const keys = this.keys
     if (!keys) throw new Error('not running')
-    const sealed = await new LockSeal(keys.settingsCrypto(), keys.vaultId).seal({ what: 'a rollback', device: this.username, nonce: lockNonce() })
+    const scope = folder ? { kind: 'folder' as const, path: folder } : { kind: 'vault' as const }
+    const sealed = await new LockSeal(keys.settingsCrypto(), keys.vaultId).seal({ what: 'a rollback', device: this.username, nonce: lockNonce(), scope })
     this.ownLocks.add(sealed)
     const lock = await takeVaultLock(this.api, keys.vaultId, 'rollback', sealed, () => undefined)
+    this.heldLockId = lock.id
     this.socket?.holdLock(lock.id)
     return {
       release: async () => {
+        await this.store?.whenAllSent(30_000)
+        this.heldLockId = null
         this.socket?.holdLock(null)
         await lock.release()
         this.ownLocks.delete(sealed)
@@ -578,7 +586,7 @@ export class Device {
       root: 'plugin',
       isExcluded: () => false,
       clockMarginMs: this.rollbackClockMarginMs,
-      lock: () => this.lockForRollback()
+      lock: (folder) => this.lockForRollback(folder)
     })
   }
 

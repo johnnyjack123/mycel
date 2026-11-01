@@ -7,7 +7,7 @@ import { log } from '../log.js'
 // it would read every file written here as an edit and send the past to every
 // device and person. Before a file is first replaced, moved away or written
 // over, its content goes into the plugin folder, and a journal line says so -
-// both before the step. *Back to now* puts every file back from there, byte for
+// both before the step. *Abort* puts every file back from there, byte for
 // byte, with its times; a start of the plugin that finds a journal does that
 // before the sync may start (`docs/TIMEMACHINE.md`, U3 step 9).
 

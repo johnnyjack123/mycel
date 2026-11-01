@@ -1,17 +1,18 @@
 import type { Position } from './TimeMachine.js'
 
 // The Time Machine's timeline as in macOS (`docs/TIMEMACHINE.md`, U1): upright at
-// the right edge of the editors, a bar per moment, the oldest at the top and now
-// at the bottom. Near the pointer the bars grow, falling off with the distance -
-// a wave -, and the one under it says when it is. A click goes there; on a phone
-// a finger drawn along it does the same, and lifting it goes there.
+// the left edge of the editors - the right one is their scrollbar's -, a bar per
+// moment, the oldest at the top and now at the bottom, a small gap where a day
+// begins. Near the pointer the bars grow, falling off with the distance - a
+// wave -, and the one under it says when it is. A click goes there; on a phone a
+// finger drawn along it does the same, and lifting it goes there. The bars keep
+// their distance however many there are; more than fit scroll, under the wheel
+// too (the third round).
 
 /** How far around the pointer the bars grow, in pixels. */
 const REACH_PX = 110
 /** How much longer the bar under the pointer is than one at rest. */
 const GROW = 3.2
-const BAR_MIN_PX = 5
-const BAR_MAX_PX = 26
 
 /** How much a bar grows at this distance from the pointer: 1 at rest, `GROW` under it, a smooth wave between. */
 export function barScale(distance: number, reach = REACH_PX, grow = GROW): number {
@@ -88,23 +89,17 @@ export class TimeMachineStrip {
 
   private build(): void {
     this.list.empty()
-    const count = this.positions.length
-    // As many as fit, each at least a few pixels; more than that scrolls.
-    const room = Math.max(120, this.el.clientHeight - 16)
-    const height = Math.max(BAR_MIN_PX, Math.min(BAR_MAX_PX, Math.floor(room / Math.max(1, count))))
-    this.list.style.setProperty('--connect-tm-bar', `${height}px`)
-    let day = ''
+    let day: string | null = null
     this.bars = this.positions.map((position, i) => {
       const bar = this.list.createDiv({ cls: 'connect-tm-bar', attr: { role: 'option' } })
       bar.createSpan({ cls: 'connect-tm-unseen', text: this.handlers.label(position) })
       if (!position.tick) bar.addClass('is-now')
       if (position.backup) bar.addClass('is-backup')
-      // A day's first moment is drawn a little longer; the words only under the pointer (the user, U1).
-      const label = position.tick ? new Date(position.at).toDateString() : 'now'
-      if (label !== day) {
-        day = label
-        bar.addClass('is-day')
-      }
+      if (position.mark) bar.addClass('is-mark')
+      // A gap where a day begins; the words only under the pointer (the user, U1).
+      const label = position.tick ? new Date(position.at).toDateString() : day
+      if (day !== null && label !== day) bar.addClass('is-new-day')
+      day = label
       bar.createDiv({ cls: 'connect-tm-bar-line' })
       bar.dataset.place = String(i)
       return bar

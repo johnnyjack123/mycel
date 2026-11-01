@@ -104,7 +104,7 @@ export interface FolderPrompts {
 
 /** What a device says about folders, as a notice or in the log. */
 export type FolderNews =
-  | { kind: 'deleted'; folderPath: string; names: string[]; people: string[]; undo: () => Promise<void> }
+  | { kind: 'deleted'; folderPath: string; names: string[]; people: string[]; batch: DeletedBatch }
   | { kind: 'moved-out'; path: string; people: string[] }
   | { kind: 'stays-yours'; folderPath: string; path: string }
   | { kind: 'not-yours'; path: string; owner: string }
@@ -122,7 +122,8 @@ interface OpenFolder {
 }
 
 /** What one weighing deleted for everyone in a folder: said in one notice that can undo it. */
-interface DeletedBatch {
+/** What a delete for everyone in a shared folder took: enough to bring it back, from a notice or later from the notification center. */
+export interface DeletedBatch {
   folderId: string
   names: string[]
   docIds: Array<{ docId: string; path: string }>
@@ -960,26 +961,25 @@ export class Folders {
     return batch
   }
 
-  private async announceDeleted({ folderId, names, docIds, files }: DeletedBatch): Promise<void> {
-    const folder = this.index.folder(folderId)
+  private async announceDeleted(batch: DeletedBatch): Promise<void> {
+    const folder = this.index.folder(batch.folderId)
     if (!folder) return
-    this.news({
-      kind: 'deleted',
-      folderPath: folder.path,
-      names,
-      people: await this.peopleOf(folderId),
-      undo: async () => {
-        const opened = await this.opened(folderId)
-        const mount = this.index.folder(folderId)?.path ?? folder.path
-        for (const { docId, path } of docIds) {
-          opened?.index.revive(docId, this.relOf(path, mount) ?? baseName(path), this.keys.accountId)
-        }
-        for (const { file, path } of files) {
-          opened?.index.reviveFile(file, this.relOf(path, mount) ?? baseName(path), this.keys.accountId)
-        }
-        await this.schedule(folderId)
-      }
-    })
+    this.news({ kind: 'deleted', folderPath: folder.path, names: batch.names, people: await this.peopleOf(batch.folderId), batch })
+  }
+
+  /** Brings back what a delete for everyone took, for everyone - its notice's *Undo*. */
+  async undoDeleted({ folderId, docIds, files }: DeletedBatch): Promise<void> {
+    const folder = this.index.folder(folderId)
+    if (!folder) throw new Error('the folder is no longer shared here')
+    const opened = await this.opened(folderId)
+    const mount = folder.path
+    for (const { docId, path } of docIds) {
+      opened?.index.revive(docId, this.relOf(path, mount) ?? baseName(path), this.keys.accountId)
+    }
+    for (const { file, path } of files) {
+      opened?.index.reviveFile(file, this.relOf(path, mount) ?? baseName(path), this.keys.accountId)
+    }
+    await this.schedule(folderId)
   }
 
   // --- files -------------------------------------------------------------------------

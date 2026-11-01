@@ -14,8 +14,9 @@ import { log } from '../log.js'
 
 // Taking a moment the Time Machine shows over, for the vault or one folder:
 // what changes, the backups and the copy first, then the rollback. The work
-// is `Rollback`'s; this only asks and shows. The moment comes from the
-// Time Machine's slider, or from an earlier rollback to undo.
+// is `Rollback`'s; this only asks and shows. The moment comes from the Time
+// Machine, whose lock of the vault this window holds on to until the rollback
+// is done or called off (the third round) - `held`.
 
 type Step =
   | { kind: 'planning'; done: number; of: number }
@@ -43,9 +44,19 @@ export class ApplyModal extends Modal {
     private readonly folder: string,
     private readonly moment: number,
     /** Called once the rollback went through, with or without problems. */
-    private readonly applied: (outcome: RollbackOutcome, rollback: Rollback) => void = () => undefined
+    private readonly applied: (outcome: RollbackOutcome, rollback: Rollback) => void = () => undefined,
+    /** The vault's lock, held since the Time Machine: let go of once the rollback is done, or the window closed without one. */
+    private readonly held: { release(): Promise<void> } | null = null
   ) {
     super(app)
+  }
+
+  private released = false
+
+  private release(): void {
+    if (this.released || !this.held) return
+    this.released = true
+    void this.held.release()
   }
 
   onOpen(): void {
@@ -55,6 +66,8 @@ export class ApplyModal extends Modal {
   private go(step: Step): void {
     this.step = step
     if (!this.closed) this.render()
+    // Closed while it worked, and now it stopped - done, failed or waiting for an answer nobody sees.
+    else if (step.kind !== 'working') this.release()
   }
 
   private get where(): string {
@@ -254,6 +267,7 @@ export class ApplyModal extends Modal {
         10_000
       )
       this.go({ kind: 'done', outcome })
+      this.release()
       this.applied(outcome, this.rollback)
     } catch (error) {
       log.error('the rollback failed', error)
@@ -277,7 +291,7 @@ export class ApplyModal extends Modal {
     }
     contentEl.createEl('p', {
       cls: 'setting-item-description',
-      text: `What changed, as it was before, was copied into ${outcome.copy}; the copy goes once the backup server is found to hold the same. To undo the rollback, choose "Undo…" next to it in the Time Machine's overview.`
+      text: `What changed, as it was before, was copied into ${outcome.copy}; the copy goes once the backup server is found to hold the same. To undo the rollback, open the Time Machine and click it under "Earlier rollbacks": that shows the moment before it, and Restore this version takes it back.`
     })
     new Setting(contentEl).addButton((button) => button.setButtonText('Close').setCta().onClick(() => this.close()))
   }
@@ -285,5 +299,7 @@ export class ApplyModal extends Modal {
   onClose(): void {
     this.closed = true
     this.contentEl.empty()
+    // Still working: the rollback lets go once it is done.
+    if (this.step.kind !== 'working') this.release()
   }
 }

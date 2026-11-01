@@ -32,7 +32,7 @@ const chainable = () => {
 }
 
 // What onload registered, so the test can check it without Obsidian.
-const registered = { commands: [], editorExtensions: [], layoutReady: [], views: [] }
+const registered = { commands: [], editorExtensions: [], layoutReady: [], views: [], documentListeners: [] }
 const localStorageStub = new Map()
 
 const adapterFiles = new Map()
@@ -56,7 +56,15 @@ const obsidian = {
         workspace: {
           on: () => ({}),
           onLayoutReady: (callback) => registered.layoutReady.push(callback),
-          getActiveFile: () => null
+          getActiveFile: () => null,
+          // The explorer's guard listens on the document and greys with a style of its own.
+          containerEl: {
+            doc: {
+              head: { createEl: () => ({ remove: fn, textContent: '' }) },
+              addEventListener: (type) => registered.documentListeners.push(type),
+              removeEventListener: fn
+            }
+          }
         },
         metadataCache: { on: () => ({}) },
         loadLocalStorage: (key) => localStorageStub.get(key) ?? null,
@@ -151,7 +159,8 @@ const cmState = permissive({
     of = (value) => value
     reconfigure = fn
   },
-  EditorState: { create: () => ({}), readOnly: { of: fn } },
+  EditorState: { create: () => ({}), readOnly: { of: fn, from: fn }, transactionFilter: { of: fn } },
+  Prec: { highest: (extension) => extension },
   EditorSelection: {}
 })
 
@@ -282,6 +291,11 @@ if (exported) {
     } catch (error) {
       check(false, 'starting while signed out does not throw', error?.stack ?? String(error))
     }
+    check(
+      ['click', 'contextmenu', 'dragstart'].every((type) => registered.documentListeners.includes(type)),
+      'once the layout is ready, the explorer is guarded: clicks, its menu and dragging are caught first',
+      registered.documentListeners
+    )
     try {
       await instance.onunload()
       check(true, 'onunload runs')

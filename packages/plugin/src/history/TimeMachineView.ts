@@ -5,7 +5,8 @@ import type { PastItem, TimeMachineSession } from './TimeMachine.js'
 // The overview beside the explorer while a folder or the vault shows its past
 // (`docs/TIMEMACHINE.md`, U3 and U4): what differs from now and how - the files
 // themselves are in the explorer, as they were. A click opens one; *Restore
-// just this* takes one back alone; the earlier rollbacks can be undone.
+// just this* takes one back alone. An earlier rollback, clicked, shows the moment
+// before it; *Restore this version* then undoes it (the third round).
 
 export const TIME_MACHINE_VIEW = 'obsidian-connect-time-machine'
 
@@ -15,7 +16,8 @@ export interface OverviewHost {
   open(path: string): void
   restore(item: PastItem): void
   rollbacks(folder: string): RollbackRecord[]
-  undo(record: RollbackRecord): void
+  /** Shows the moment before that rollback, applying nothing. */
+  showBefore(record: RollbackRecord): void
 }
 
 const TREE_MAX = 3_000
@@ -27,6 +29,10 @@ function nameOf(path: string): string {
 
 function when(ms: number): string {
   return new Date(ms).toLocaleString()
+}
+
+function plural(count: number, what: string): string {
+  return count === 0 ? '' : `${count} ${what}${count === 1 ? '' : 's'}`
 }
 
 export class TimeMachineView extends ItemView {
@@ -174,13 +180,13 @@ export class TimeMachineView extends ItemView {
     const mark = (cls: string, text: string, tip: string): void => {
       row.createSpan({ cls: `connect-tm-badge ${cls}`, text, attr: { 'aria-label': tip } })
     }
-    if (item.back) mark('is-back', 'deleted since', 'Gone now; Apply brings it back')
-    if (item.goes) mark('is-goes', 'added since', 'Not there then; Apply moves it to the trash')
-    if (item.moved) mark('is-moved', 'moved', `Now at ${item.pathNow}; Apply moves it back`)
-    if (item.changed === true) mark('is-changed', 'changed since', 'Apply gives it its content then')
+    if (item.back) mark('is-back', 'deleted since', 'Gone now; Restore this version brings it back')
+    if (item.goes) mark('is-goes', 'added since', 'Not there then; Restore this version moves it to the trash')
+    if (item.moved) mark('is-moved', 'moved', `Now at ${item.pathNow}; Restore this version moves it back`)
+    if (item.changed === true) mark('is-changed', 'changed since', 'Restore this version gives it its content then')
     if (item.changed === null) mark('is-changed is-unsure', 'changed?', 'The server took changes since; being compared')
     if (item.unreadable) mark('is-foreign', item.unreadable, 'Shown as it is now')
-    if (item.foreign) mark('is-foreign', 'shared with you', "Someone else's: Apply leaves it as it is")
+    if (item.foreign) mark('is-foreign', 'shared with you', "Someone else's: Restore this version leaves it as it is")
     row.onclick = () => {
       this.selected = path
       // Not there then: nothing of it is in the explorer to open.
@@ -196,14 +202,14 @@ export class TimeMachineView extends ItemView {
     if (item.goes) lines.push('It did not exist then, so the explorer does not show it now.')
     if (item.back) lines.push('It is gone now; the explorer shows it as it was.')
     if (item.moved) lines.push(`It is at ${item.pathNow} now.`)
-    if (item.foreign) lines.push("It is someone else's, shared with you: Apply leaves it as it is - its owner takes it back, for everyone.")
+    if (item.foreign) lines.push("It is someone else's, shared with you: Restore this version leaves it as it is - its owner takes it back, for everyone.")
     for (const line of lines) box.createDiv({ cls: 'connect-tm-quiet', text: line })
     const restorable =
       !item.goes && item.pathThen !== null && (item.back || item.changed !== false) && !item.readOnly && !(item.foreign && item.pathNow === null)
     if (restorable && !session.folderOwner) {
       const button = box.createEl('button', { text: item.kind === 'note' ? 'Restore just this note' : 'Restore just this file' })
       button.onclick = () => this.host.restore(item)
-      box.createDiv({ cls: 'connect-tm-quiet', text: 'Goes back to now first, then takes this one back alone - a backup of what it is now comes first.' })
+      box.createDiv({ cls: 'connect-tm-quiet', text: 'A backup of what it is now comes first; everything else goes back as it is now.' })
     }
   }
 
@@ -213,12 +219,17 @@ export class TimeMachineView extends ItemView {
     if (records.length === 0) return
     const details = el.createEl('details', { cls: 'connect-tm-rollbacks' })
     details.createEl('summary', { text: `Earlier rollbacks: ${records.length}` })
+    details.createDiv({ cls: 'connect-tm-quiet', text: 'Click one to see the moment before it; Restore this version then undoes it.' })
     for (const record of records) {
-      const row = details.createDiv({ cls: 'connect-tm-rollback' })
-      const state = record.state === 'done' ? 'done' : record.state === 'failed' ? `with problems: ${record.error ?? ''}` : 'broke off, or still running'
-      row.createDiv({ text: `${record.folder || 'The vault'} back to ${when(record.to)}` })
-      row.createDiv({ cls: 'connect-tm-quiet', text: `On ${when(record.startedAt)}: ${record.notes} notes, ${record.files} files - ${state}` })
-      row.createEl('button', { text: 'Undo…' }).onclick = () => this.host.undo(record)
+      const row = details.createDiv({ cls: 'connect-tm-rollback', attr: { role: 'button', tabindex: '0' } })
+      const changed = [plural(record.notes, 'note'), plural(record.files, 'file')].filter(Boolean).join(' and ') || 'nothing'
+      const state = record.state === 'done' ? '' : record.state === 'failed' ? ` - with problems: ${record.error ?? ''}` : ' - it broke off, or still runs'
+      row.createDiv({ text: `${when(record.startedAt)}: ${record.folder || 'the vault'} rolled back to ${when(record.to)}` })
+      row.createDiv({ cls: 'connect-tm-quiet', text: `${changed} changed${state}` })
+      row.onclick = () => this.host.showBefore(record)
+      row.onkeydown = (event) => {
+        if (event.key === 'Enter' || event.key === ' ') this.host.showBefore(record)
+      }
     }
   }
 }

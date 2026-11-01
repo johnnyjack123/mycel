@@ -48,7 +48,10 @@ function describeBackupServer(error: string | null, status: BackupVaultStatus | 
   const last = status.runs[0]
   if (!last) return 'No backup yet.'
   if (!last.ok) return `The last backup, ${when(last.startedAt)}, failed: ${last.error ?? 'see below'}.`
-  const checked = last.destinations.every((destination) => destination.checked) ? ', read back and checked' : ''
+  if (last.destinations.length > 0 && last.destinations.every((destination) => destination.unchanged)) {
+    return `Last backup ${when(last.finishedAt)}: ${last.notes} notes, ${last.files} files - nothing changed since the one before, which holds them.`
+  }
+  const checked = last.destinations.every((destination) => destination.checked || destination.unchanged) ? ', read back and checked' : ''
   return `Last backup ${when(last.finishedAt)}: ${last.notes} notes, ${last.files} files${checked}.`
 }
 
@@ -59,6 +62,7 @@ function describeRepositoryState(task: BackupTaskSetting, outcome: BackupDestina
   const keep = describeKeep(task.keep)
   if (!outcome) return `Encrypted with its own password. Filled by the next backup. ${keep}`
   if (!outcome.ok) return `Failed: ${outcome.error ?? 'unknown'}`
+  if (outcome.unchanged) return `Encrypted with its own password. Nothing changed since its last snapshot, which holds the vault as it is. ${keep}`
   return `Encrypted with its own password. Last backup ${outcome.checked === 'deep' ? 'read back in full' : 'checked'}. ${keep}`
 }
 
@@ -1067,6 +1071,20 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
   private device(containerEl: HTMLElement): void {
     const settings = this.plugin.settings
     containerEl.createEl('p', { cls: 'setting-item-description', text: 'These apply on this device only.' })
+
+    // Another device's lock, liftable here too: a phone has no status bar, and its window may have been closed.
+    const locked = this.plugin.vaultLockState()
+    if (locked) {
+      new Setting(containerEl)
+        .setName('The vault is locked')
+        .setDesc(`${locked} Lift it only if that device hangs or is gone.`)
+        .addButton((button) =>
+          button
+            .setButtonText('Unlock…')
+            .setWarning()
+            .onClick(() => this.plugin.openLockModal())
+        )
+    }
 
     new Setting(containerEl)
       .setName('Sync this vault')

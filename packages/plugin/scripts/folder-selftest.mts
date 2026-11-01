@@ -220,7 +220,7 @@ try {
   )
   const fileNews = P1.folderNews.find((news) => news.kind === 'deleted' && (news.names as string[]).includes('byPia.png'))
   check(fileNews !== undefined, 'and they are told', P1.folderNews)
-  await fileNews?.undo?.()
+  if (fileNews) await P1.folders?.undoDeleted(fileNews.batch as never)
   check(
     await eventually(
       () => same(O1.vault.bytes('Projects/X/Sub/byPia.png'), binary(7)) && same(Q.vault.bytes('Shared/X/Sub/byPia.png'), binary(7)) && same(P1.vault.bytes('Shared/X/Sub/byPia.png'), binary(7)),
@@ -324,7 +324,7 @@ try {
   )
   const deletedNews = P1.folderNews.find((news) => news.kind === 'deleted' && (news.names as string[]).includes('FromPia'))
   check(deletedNews !== undefined && (deletedNews.people as string[]).length === 2, 'and they are told who loses it', deletedNews)
-  await deletedNews?.undo?.()
+  if (deletedNews) await P1.folders?.undoDeleted(deletedNews.batch as never)
   check(
     await eventually(() => O1.vault.text('Projects/Y/FromPia.md') === 'from pia\n' && P1.vault.text('Shared/X/FromPia.md') === 'from pia\n'),
     'undoing brings it back for everyone',

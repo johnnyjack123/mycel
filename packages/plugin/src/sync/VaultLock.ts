@@ -11,6 +11,9 @@ import { log } from '../log.js'
 // and it lapses when its holder stops renewing it, so a device that crashed
 // locks nothing for long. Any device of the account can lift it by hand.
 
+/** What a lock covers: the vault, a folder or a note. */
+export type LockScope = { kind: 'vault' } | { kind: 'folder'; path: string } | { kind: 'note'; path: string }
+
 /** What a lock is for, as the devices read it; the server only holds it sealed. */
 export interface LockPurpose {
   /** "the vault", "the folder Projects", "the note Plan". */
@@ -19,6 +22,26 @@ export interface LockPurpose {
   device: string
   /** Tells two locks for the same thing apart, so a device knows its own. */
   nonce: string
+  /**
+   * What the other devices may not edit meanwhile (0.8.15). A lock without one,
+   * from an older plugin, covers the vault.
+   */
+  scope?: LockScope
+}
+
+function lockScope(value: unknown): LockScope | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const { kind, path } = value as { kind?: unknown; path?: unknown }
+  if (kind === 'vault') return { kind }
+  if ((kind === 'folder' || kind === 'note') && typeof path === 'string') return { kind, path }
+  return undefined
+}
+
+/** Whether a path lies in what a lock covers. */
+export function inLockScope(scope: LockScope, path: string): boolean {
+  if (scope.kind === 'vault') return true
+  if (scope.kind === 'note') return path === scope.path
+  return scope.path === '' || path.startsWith(`${scope.path}/`)
 }
 
 /** Half the lease of the server's (two minutes): one renewal may get lost. */
@@ -54,9 +77,9 @@ export class LockSeal {
       const key = await this.crypto.key(0)
       if (!key) return null
       const value = JSON.parse(fromUtf8(await decrypt(key, fromBase64(sealed), this.aad))) as Partial<LockPurpose>
-      return typeof value.what === 'string' && typeof value.device === 'string' && typeof value.nonce === 'string'
-        ? { what: value.what, device: value.device, nonce: value.nonce }
-        : null
+      if (typeof value.what !== 'string' || typeof value.device !== 'string' || typeof value.nonce !== 'string') return null
+      const scope = lockScope(value.scope)
+      return { what: value.what, device: value.device, nonce: value.nonce, ...(scope ? { scope } : {}) }
     } catch {
       return null
     }

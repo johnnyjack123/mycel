@@ -87,6 +87,20 @@ export class NotificationsView extends ItemView {
     const body = row.createDiv({ cls: 'connect-notices-body' })
     body.createDiv({ cls: 'connect-notices-text', text: entry.text })
     body.createDiv({ cls: 'connect-notices-time', text: new Date(entry.at).toLocaleTimeString() })
+    // A notice's button - *Undo* - as long as it was not pressed: the notice itself was gone after a few seconds.
+    const action = entry.action
+    if (action && notices.canAct(entry)) {
+      const button = body.createEl('button', { cls: 'connect-notices-action mod-cta', text: action.label })
+      button.onclick = (event) => {
+        event.stopPropagation()
+        button.disabled = true
+        void notices.act(entry).catch(() => {
+          button.disabled = false
+        })
+      }
+    } else if (action?.done) {
+      body.createDiv({ cls: 'connect-notices-time', text: `${action.label}: done` })
+    }
     const file = entry.path ? this.app.vault.getAbstractFileByPath(entry.path) : null
     if (file instanceof TFile) {
       row.addClass('is-link')
