@@ -155,8 +155,10 @@ export const MUX = {
   /** room, varUint epoch, varUint8Array ciphertext - both directions */
   awareness: 4,
   /**
-   * room (empty), varString lock id: this connection holds the vault's lock of
-   * kind `rollback` and writes under it. Sent again after every reconnect.
+   * room (empty), varString lock id: this connection holds the vault's lock and
+   * writes under it - a rollback, or a restore from the Time Machine. Sent
+   * again after every reconnect. Before 0.8.15 the server let it write only
+   * under a lock of kind `rollback`.
    */
   holdLock: 5,
 

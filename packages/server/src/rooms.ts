@@ -112,7 +112,10 @@ interface OpenRoom {
 interface HeldLock {
   id: string
   info: VaultLockInfo
-  /** Under a rollback, the connections of its holder - the only ones that write. */
+  /**
+   * The connections of its holder that named its id - the only ones that write:
+   * a rollback, or a restore from the Time Machine before it lets go.
+   */
   holders: Set<RoomClient>
 }
 
@@ -371,7 +374,7 @@ export class RoomHub {
   /** Whether the vault's lock keeps this connection from writing. */
   private lockedOut(client: RoomClient): boolean {
     const lock = this.lockOf(client.account, client.vaultId)
-    return lock !== null && !(lock.info.kind === 'rollback' && lock.holders.has(client))
+    return lock !== null && !lock.holders.has(client)
   }
 
   private refuseWhileLocked(account: string, vaultId: string): void {
@@ -424,7 +427,7 @@ export class RoomHub {
     return true
   }
 
-  /** The connection of the lock's holder: it writes under a rollback. */
+  /** The connection of the lock's holder: it writes under the lock, whatever its kind. */
   holdLock(client: RoomClient, id: string): boolean {
     const lock = this.lockOf(client.account, client.vaultId)
     if (!lock || lock.id !== id) return false
