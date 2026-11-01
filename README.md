@@ -181,31 +181,36 @@ them, unless a note is still shared with someone.
 **The Time Machine** (a note's or a folder's menu, the command palette, *Backups* in
 the settings) shows the past of the vault, a folder or a note in your files themselves:
 the explorer and the normal editor show that moment, read-only, a note with its changes
-against now marked in it. A timeline at the right edge has a bar for every version of a
-note or every change in a folder or the vault - as fine as you choose, from every change
-to a day apart -, each the state after it, the newest being *Now*; the bars grow towards
-the pointer, and the one under it says when it is, to the second. Meanwhile the sync is
-stopped on this device and the vault is locked on your other devices: what is written
-there waits and goes out afterwards. Every file is copied into the plugin folder before it
-is replaced and comes back from there, byte for byte - also when Obsidian closes
-meanwhile, before the sync starts again. If the last backup is older than the last change,
-the backup server backs up first. **Back to now** puts everything back.
+against now marked in it. A timeline at the left of the editors has a bar for every
+version of a note or every change in a folder or the vault - as fine as you choose, from
+every change to a day apart -, each the state after it, the newest being *Now*, a small
+gap where a day begins; the bars grow towards the pointer, the one under it says when it
+is, to the second, and with many of them the timeline scrolls. Meanwhile the sync is
+stopped on this device and the vault is locked on your other devices: what the Time
+Machine shows is read-only there, what is written elsewhere waits and goes out afterwards.
+The explorer and links stay inside what it shows. Every file is copied into the plugin
+folder before it is replaced and comes back from there, byte for byte - also when Obsidian
+closes meanwhile, before the sync starts again. The backup server backs up first - at once
+when nothing changed since its last backup. **Abort** puts everything back as it was.
 
-**Apply…** takes the vault or the folder back to the moment shown: notes get their text
+**Restore this version** takes the note, the folder or the vault back to the moment shown,
+backed up first and under the lock until it reached the server; for a folder or the vault
+it shows what changes first. Notes get their text
 then, what came later goes to the trash, what was deleted since comes back, renames are
 undone. Before anything changes you see the list of what changes, the backup server makes
 a fresh backup and a copy of everything that changes goes into the plugin folder
 (`rollbacks/`) - it goes again once the backup is found to hold the same, and a window says
 so when it is the only copy. It happens as ordinary changes, so every device follows, and
-the rollback can be undone (*Earlier rollbacks*, *Undo…*, in the overview beside the
-explorer). *Restore just this note* (or file) takes back one alone, and a note's own Time
-Machine has *Restore this version*. Notes others share with you stay as they are; your own
+the rollback can be undone: click it under *Earlier rollbacks* in the overview beside the
+explorer, which shows the moment before it, and restore that. *Restore just this note* (or
+file) takes back one alone. Notes others share with you stay as they are; your own
 shared notes go back for everyone. With *Backups too*, the backup server's backups older
 than the history are moments as well. The Time Machine needs a sync server of 0.8.13 or
 newer: it locks the vault there.
 
 **Notifications** that pop up are kept, too: the bell in the ribbon counts the ones not
-seen yet and opens the list - the last 30 days, on this device.
+seen yet and opens the list - the last 30 days, on this device -, an *Undo* in one still
+working there.
 
 If the server ever lost data or was restored from an older backup, the plugin
 notices, syncs nothing for the affected notes and asks once whether this device

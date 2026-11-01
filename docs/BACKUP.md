@@ -277,10 +277,13 @@ files, `<Vault> files.tar`, made only when a file changed. The decrypted copy ho
 all of it in one folder: the vault at its top, the trash in `.obsidian-connect/trash/`,
 the settings in `.obsidian-connect/settings.json`.
 
-Every backup is checked: restic's own check, every note's path and size in the new
-snapshot, the newest notes read back byte for byte; once a week a part of the stored
-data is read in full, and every file of the files snapshot is read back and compared
-by its hash.
+Every backup is checked: every note's path and size in the new snapshot, the newest
+notes read back byte for byte; once a day restic's own check of the whole repository;
+once a week a part of the stored data is read in full, and every file of the files
+snapshot is read back and compared by its hash. A run that finds nothing changed since
+the last one - every note and file, and the retention, as they were - starts no restic
+at all and says so: the last snapshot holds the vault as it is (0.8.15). The log names
+how long each step of a run took, for a run that seems slow.
 
 ## Rolling back from Obsidian
 
@@ -291,8 +294,8 @@ over the same encrypted connection; nothing to restore by hand. With *Backups to
 the Time Machine, every backup older than the history is a tick of its own to look at
 (this needs the backup server of 0.8.11 or newer). Before anything changes, the backup
 server makes a fresh backup (forgetting no older one this time, so the backup rolled
-back from stays); before the past is shown at all, it backs up if its last backup is older
-than the last change; and before a single note or file is restored. A rollback's copy in
+back from stays); so it does before the past is shown at all, and before a single note or
+file is restored - done at once when nothing changed since the last one. A rollback's copy in
 the plugin folder is compared with the backup by hash and goes when they match. See the
 README.
 

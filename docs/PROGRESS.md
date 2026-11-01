@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-10-31 · **0.8.13: the Time Machine's second round, built at once as the user asked - the past in the files themselves (explorer and editor, read-only), the sync stopped and the vault locked meanwhile, a timeline as in macOS, a note's changes marked in its editor, backups before, the notification center, synced files with the time of their change. 0.8.14: its bar no longer under Windows' window buttons, one tooltip on the timeline. Next: the user tries the rest on their devices; then 0.9's design.**_
+_Last updated: 2026-11-01 · **0.8.15: the Time Machine's third round, from the user's first try - Abort and Restore this version, a restore made under the lock until it reached the server, what is locked read-only in the editor on every device, the explorer and links kept inside what is shown, the timeline on the left with a fixed distance and scrolling, earlier rollbacks as moments on it, notices with a button kept in the center, a backup with nothing changed done at once. Next: the user tries it (sync server, then backup server, then the plugin); then 0.9's design.**_
 
 ## Where we are
 
@@ -132,6 +132,20 @@ server reading folder notes. What is next:
    bar lay in the tabs' row, under Windows' own window buttons - and the timeline showed
    two tooltips. Fixed in 0.8.14 (the bar under the tabs, the editors moved down; one
    tooltip). The rest of item 11 still to try.
+13. The user's further try of 0.8.14 (2026-11-01): the restore showed the old text for
+   seconds and could be typed into, the editor's read-only did not hold, other devices could
+   type after closing the lock window, the explorer let one leave, the timeline was too dense
+   with many changes, the rollback entries said little, a notice's *Undo* vanished, backups
+   were slow. Proposed as X1 to X4 and the rest in `docs/TIMEMACHINE.md`, decided as
+   recommended, built as 0.8.15. To try, **sync server first** (a lock's holder writes), then
+   the **backup server** (a run with nothing changed is done at once), then every device:
+   *Restore this version* of a note (the new text at once, not typable before), of a folder
+   (the rollback's window, the vault locked until it is done), *Abort*; typing into a note
+   under the Time Machine, here and on another device (both refused, the lock in the header);
+   *Unlock…* from the header, the cloud and *This device*; the explorer and a link outside
+   the note or folder shown; the timeline on the left with many changes, scrolling, the day
+   gaps; an earlier rollback clicked in the overview; a delete for everyone's *Undo* from the
+   bell; how long a backup takes now, and the steps the backup server's log names.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
@@ -252,6 +266,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
 
+At 0.8.15, run 2026-11-01 on `feat/time-machine-3`: `typecheck` and `build` pass;
+`test:merge` 174, `test:load` 16, `test:rooms` 401, `test:sync` 31, `test:recovery` 72,
+`test:account` 52, `test:rollback` 72, `test:timemachine` 66, `test:backup` 231, and on
+a scratch server started fresh from 0.8.15 `test:socket` 19, `test:vault` 243,
+`test:folders` 121 - all pass.
+
 At 0.8.13, run 2026-10-30 on `feat/time-machine-2`: `typecheck` and `build` pass;
 `test:merge` 174, `test:load` 16, `test:rooms` 399, `test:sync` 31, `test:recovery` 72,
 `test:account` 52, `test:rollback` 72 (its rollbacks now under the lock),
@@ -340,6 +360,13 @@ CLAUDE.md, Gotchas - `test:socket` and `test:vault` default to 1234, so always p
 ---
 
 ## Log
+
+### 2026-11-01
+- The user's further try of the Time Machine: X1 to X4 proposed and decided as recommended,
+  built as 0.8.15 on `feat/time-machine-3` - a restore under the lock, the editors read-only
+  everywhere (Obsidian's own read-only came first), the explorer guarded, the timeline on
+  the left, rollbacks as moments, notices with a button, backups with nothing changed done
+  at once.
 
 ### 2026-10-31
 - The user's first try of the 0.8.13 Time Machine: the bar's buttons hidden under the

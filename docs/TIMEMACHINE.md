@@ -626,3 +626,110 @@ in the ribbon counts what was not seen and opens the view.
 
 Tested in `test:timemachine` (48 checks, its own server in-process), `test:rooms` (the
 lock), `test:load` (the views, commands and both editor extensions).
+
+## The third round (0.8.15, the user's first try of 0.8.13, 2026-11-01)
+
+What the user found, and asked for:
+
+- *Back to now* could not be found (fixed in 0.8.14: the bar lay under Windows' window
+  buttons). It is called **Abort** now - clear what it does. *Apply…* is **Restore this
+  version** for a folder and the vault too, as for a note.
+- After *Restore this version* the note showed its text of now for a few seconds, and could
+  be typed into. That was the backup, run after the files went back and the lock was let go.
+  Something typed meanwhile, here or on another device, the restore then overwrote - so the
+  lock window's "nothing is lost" was not true. The note is to show its new text at once, and
+  the vault stay locked until it is there.
+- A note's editor under the Time Machine could be typed into. Other devices could too, once
+  their lock window was closed with *OK*. A locked note is to be read-only on every device
+  until the lock ends, and the lock liftable after its window was closed - from the cloud on a
+  computer, from the settings on a phone.
+- The explorer let one leave the note or folder shown. Clicks outside are to do nothing,
+  however the explorer is folded.
+- The timeline: bars shorter than others (the start of a day, unexplained); too close
+  together with many changes - a fixed distance and scrolling instead, on the left of the
+  editors, where it does not meet their scrollbar, the wheel scrolling only it.
+- An earlier rollback's entry ("test back to … On …: 1 notes, 0 files - done") said little.
+  A click on it is to show the moment before it, applied by *Restore this version* - no
+  *Undo…* button.
+- A notice with *Undo* (a delete for everyone in a shared folder) vanished too fast and never
+  reached the notification center.
+- Backups: when is one made, and why does one take so long?
+
+### Decided (the user, 2026-11-01, all as recommended)
+
+- **X1 - read-only, not the reading view.** The editor itself refuses edits, in Live
+  Preview and in source mode; the reading view would lose the marks of the changes, and
+  Ctrl+E would have to be fought.
+- **X2 - a gap where a day begins**, instead of longer bars.
+- **X3 - restic's check of the whole repository once a day**, not every run. Every new
+  snapshot is still read back (its listing complete, the newest notes byte for byte), the
+  deep check stays weekly.
+- **X4 - also links, the quick switcher, a search:** opening something outside the scope
+  goes back, with a notice.
+
+### How it is built (0.8.15)
+
+**Backups: one rule.** Before the past is shown and before every restore, a backup on every
+backup server - and when nothing changed since the last one there, the backup server says
+so at once: it fetches what changed as before, compares a digest of everything the backup
+would hold (every path and content hash, what could not be had) and the retention with its
+last successful run, and starts restic only when they differ or a check is due
+(`backup/src/run.ts`, `DestinationReport.unchanged`). A run with changes reads its snapshot
+back as before; restic's `check` of the whole repository runs once a day (`checkMs`), the
+deep one once a week. A rollback's run forgets nothing, so the run after it forgets in any
+case. The trusted copy is brought level only when it is not already level with exactly this.
+The log says how long each step took. The device asks every half second for the first
+fifteen seconds, then every two.
+
+**Restore under the lock** (`TimeMachineControl.restoreLocked`, `leaveLocked`): the backup
+first, while the past is still shown and everything locked; then every file back, the
+session closed - and the lock kept: this device names it to its connection before the sync
+starts (`writeUnderLock`, `heldLockId` in main.ts), and the server lets the holder write
+under a lock of any kind now (`RoomHub.lockedOut`). The restore is applied, and the lock let
+go once it reached the server (`DocStore.whenSent`, at most 30 s; an older server refuses the
+holder under a preview, and the restore then goes out once the lock lapses). *Restore this
+version* of a folder or the vault hands the lock to the rollback's window
+(`ApplyModal.held`), which lets go once the rollback is done (`whenAllSent`) or the window
+closed without one.
+
+**What may not be edited** (`history/EditLocks.ts`): this device's own Time Machine - its
+whole scope, at every moment of the strip, also while restoring - and another device's
+lock, by the scope it seals into its purpose (`LockPurpose.scope`; without one, from an
+older plugin, the vault). The editor extension (`history/pastEditor.ts`) makes such a note
+read-only at the highest precedence - `EditorState.readOnly` and `EditorView.editable` take
+the first value given, and Obsidian's own came first, which is why the note could be typed
+into - and a transaction filter drops typing, deleting, pasting and undoing in it besides;
+Obsidian loading the file again passes. A lock in the note's header says why; for another
+device's lock it opens the window with *Unlock…*, as do the cloud's menu and *This device* in
+the settings.
+
+**The explorer** (`history/ExplorerGuard.ts`): clicks, its menu, dragging and double clicks
+are caught on the document in the capture phase, before Obsidian's handlers, by the path the
+entry carries - no overlay to keep in size. While the Time Machine runs, a file outside the
+scope does not open, and its menu and dragging are off everywhere; another device's lock
+keeps them off in its scope. What lies outside a folder or note shown is greyed by a style
+rule on those paths (`dimRule`), so entries Obsidian draws later are greyed too. Opened
+otherwise (X4), the tab goes back to the file before, or the tab that showed it comes to the
+front (`TimeMachineControl.opened`).
+
+**The timeline** on the left of the editors, in a column of its own: the editors of the left
+column move right by its width, those of the top row down by the bar's height. A bar every
+26 px whatever their number, a 12 px gap where a day begins, scrolling beyond what fits (the
+wheel over it scrolls only it). The moment before each earlier rollback of the scope is a
+place of its own (`SessionOptions.marks`, drawn purple); a click on the rollback in the
+overview goes there (`TimeMachineSession.moveToMark`).
+
+**Notices with a button** (`notices.ts`): the text is read before Obsidian takes the
+fragment's nodes into its own notice - read after, it was empty, and nothing was kept. A
+button is kept with the notice (`NoticeAction`: a label, a kind, data), carried out by the
+handler registered for its kind, once, from the notice or from the center, also after a
+restart; a delete for everyone's *Undo* is `folder-undelete` with the batch
+(`Folders.undoDeleted`).
+
+Tested in `test:timemachine` (66 checks: the editor read-only with Obsidian's facets in front
+and typing dropped, a restore reaching the other device under the lock while what that one
+writes waits, a rollback's moment on the strip, the lock's scope sealed, notices with a
+button), `test:rooms` (the holder writes under a preview's lock), `test:backup` (a run with
+nothing changed starts no restic, the day's check, a changed retention still forgets),
+`test:load` (the explorer's guard installed). Each fix of the editor and the notices was
+checked by putting the bug back.
