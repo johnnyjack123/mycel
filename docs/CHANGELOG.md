@@ -36,7 +36,9 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
     sending waits* instead of *synced*.
   - A rollback in a shared folder: the notes it moved to the trash get one notice that the
     rollback did it, instead of an *Undo* per note.
-  - Tests: `test:timemachine` 89 (was 66), `test:rollback` 78 (was 72).
+  - Tests: `test:timemachine` 89 (was 66), `test:rollback` 78 (was 72). `test:recovery`
+    waits for the sweep to delete a removed account's folder: the participant's fork is
+    written first, and CI checked in between.
 
 - **0.8.15** (2026-11-01) - **the Time Machine's third round** (`docs/TIMEMACHINE.md`,
   the user's first try of 0.8.13, X1 to X4 decided as recommended). Sync server, backup
