@@ -458,6 +458,27 @@ try {
     await lock.release()
     check(await eventually(() => A1.vault.text('During.md') === 'meanwhile\n', 15_000), 'and arrives once the rollback is done')
   }
+
+  // --- a lock lifted while a device was away: it learns so when it comes back (0.8.16) -------------------
+  {
+    check(await eventually(() => A2.socket?.isLocked === false), 'nothing is locked')
+    const lock = await A1.lockForRollback()
+    check(await eventually(() => A2.socket?.isLocked === true), 'the other device is locked')
+    // The connection drops, and stays away long enough for the lock to end meanwhile: its notice reaches nobody there.
+    const socket = A2.socket as unknown as { ws: WebSocket | null; retries: number }
+    socket.retries = 2
+    socket.ws?.close()
+    check(await eventually(() => A2.socket?.connected === false), 'the other device goes offline')
+    await lock.release()
+    check(A2.socket?.connected === false, 'the lock ends while it is away')
+    check(await eventually(() => A2.socket?.connected === true, 15_000), 'it comes back')
+    check(
+      await eventually(() => A2.socket?.isLocked === false, 10_000),
+      'and asks whether the vault is still locked: it is not, so what it writes goes out again - in 0.8.15 it kept waiting'
+    )
+    await A2.vault.userCreate('After.md', 'after coming back\n')
+    check(await eventually(() => A1.vault.text('After.md') === 'after coming back\n', 15_000), 'and arrives')
+  }
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {

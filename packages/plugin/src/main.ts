@@ -1122,8 +1122,10 @@ export default class ObsidianConnectPlugin extends Plugin {
       else {
         void store.resume().then(() => this.editors.refresh())
         void this.resumeAttachments()
-        // What changed on the account while this device was away was not told to it.
+        // What changed on the account while this device was away was not told to it -
+        // a lock lifted meanwhile too: held, nothing written here went out again (0.8.16).
         void this.refreshAccount()
+        void this.checkVaultLock()
       }
     })
     const unwatchNotes = this.index.onChange(() => this.scheduleIndexApply())
