@@ -1,12 +1,11 @@
 import { ItemView, setIcon, type WorkspaceLeaf } from 'obsidian'
-import type { RollbackRecord } from '../sync/AccountSettings.js'
 import type { PastItem, TimeMachineSession } from './TimeMachine.js'
 
 // The overview beside the explorer while a folder or the vault shows its past
 // (`docs/TIMEMACHINE.md`, U3 and U4): what differs from now and how - the files
 // themselves are in the explorer, as they were. A click opens one; *Restore
-// just this* takes one back alone. An earlier rollback, clicked, shows the moment
-// before it; *Restore this version* then undoes it (the third round).
+// just this* takes one back alone. The earlier rollbacks are listed in the
+// notification center since 0.8.16, each opening the Time Machine before it.
 
 export const TIME_MACHINE_VIEW = 'obsidian-connect-time-machine'
 
@@ -15,24 +14,12 @@ export interface OverviewHost {
   onChange(listener: () => void): () => void
   open(path: string): void
   restore(item: PastItem): void
-  rollbacks(folder: string): RollbackRecord[]
-  /** Shows the moment before that rollback, applying nothing. */
-  showBefore(record: RollbackRecord): void
 }
 
 const TREE_MAX = 3_000
-const ROLLBACKS_SHOWN = 5
 
 function nameOf(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1)
-}
-
-function when(ms: number): string {
-  return new Date(ms).toLocaleString()
-}
-
-function plural(count: number, what: string): string {
-  return count === 0 ? '' : `${count} ${what}${count === 1 ? '' : 's'}`
 }
 
 export class TimeMachineView extends ItemView {
@@ -99,9 +86,8 @@ export class TimeMachineView extends ItemView {
     if (!position?.tick) {
       el.createEl('p', {
         cls: 'connect-tm-quiet',
-        text: 'Move along the timeline at the right edge: the explorer and every note show that moment, and this lists what differs from now.'
+        text: 'Move along the timeline at the left of the editors: the explorer and every note show that moment, and this lists what differs from now.'
       })
-      this.renderRollbacks(el, session)
       return
     }
     if (session.progress) el.createDiv({ cls: 'connect-tm-quiet', text: `Showing it: ${session.progress.done} of ${session.progress.of} notes and files filled in…` })
@@ -124,7 +110,6 @@ export class TimeMachineView extends ItemView {
     tree.scrollTop = scrolled
     const chosen = this.selected ? items.find((item) => (item.pathThen ?? item.pathNow) === this.selected) : undefined
     if (chosen) this.renderChosen(el, chosen, session)
-    this.renderRollbacks(el, session)
   }
 
   private renderTree(el: HTMLElement, shown: PastItem[], session: TimeMachineSession): void {
@@ -210,26 +195,6 @@ export class TimeMachineView extends ItemView {
       const button = box.createEl('button', { text: item.kind === 'note' ? 'Restore just this note' : 'Restore just this file' })
       button.onclick = () => this.host.restore(item)
       box.createDiv({ cls: 'connect-tm-quiet', text: 'A backup of what it is now comes first; everything else goes back as it is now.' })
-    }
-  }
-
-  private renderRollbacks(el: HTMLElement, session: TimeMachineSession): void {
-    if (session.folderOwner) return
-    const records = this.host.rollbacks(session.folder).slice(0, ROLLBACKS_SHOWN)
-    if (records.length === 0) return
-    const details = el.createEl('details', { cls: 'connect-tm-rollbacks' })
-    details.createEl('summary', { text: `Earlier rollbacks: ${records.length}` })
-    details.createDiv({ cls: 'connect-tm-quiet', text: 'Click one to see the moment before it; Restore this version then undoes it.' })
-    for (const record of records) {
-      const row = details.createDiv({ cls: 'connect-tm-rollback', attr: { role: 'button', tabindex: '0' } })
-      const changed = [plural(record.notes, 'note'), plural(record.files, 'file')].filter(Boolean).join(' and ') || 'nothing'
-      const state = record.state === 'done' ? '' : record.state === 'failed' ? ` - with problems: ${record.error ?? ''}` : ' - it broke off, or still runs'
-      row.createDiv({ text: `${when(record.startedAt)}: ${record.folder || 'the vault'} rolled back to ${when(record.to)}` })
-      row.createDiv({ cls: 'connect-tm-quiet', text: `${changed} changed${state}` })
-      row.onclick = () => this.host.showBefore(record)
-      row.onkeydown = (event) => {
-        if (event.key === 'Enter' || event.key === ' ') this.host.showBefore(record)
-      }
     }
   }
 }

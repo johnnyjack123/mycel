@@ -19,6 +19,8 @@ export interface BarState {
   ticks: TickChoice
   backups: boolean | null
   busy: string | null
+  /** Which colors the timeline uses besides its own: what they mean is said here (0.8.16). */
+  legend: { marks: boolean; backups: boolean }
 }
 
 export interface BarHandlers {
@@ -44,6 +46,7 @@ export class TimeMachineBar {
   private readonly title: HTMLElement
   private readonly moment: HTMLElement
   private readonly detail: HTMLElement
+  private readonly legend: HTMLElement
   private readonly buttons: HTMLElement
   private state: BarState | null = null
 
@@ -60,6 +63,7 @@ export class TimeMachineBar {
     const line = text.createDiv({ cls: 'connect-tm-bar-line2' })
     this.moment = line.createSpan({ cls: 'connect-tm-bar-moment' })
     this.detail = line.createSpan({ cls: 'connect-tm-bar-detail' })
+    this.legend = line.createSpan()
     this.buttons = this.el.createDiv({ cls: 'connect-tm-bar-buttons' })
     if (overview) {
       const list = this.buttons.createEl('button', { cls: 'clickable-icon', attr: { 'aria-label': 'What differs from now' } })
@@ -76,6 +80,14 @@ export class TimeMachineBar {
     this.title.setText(state.title)
     this.moment.setText(state.moment)
     this.detail.setText([state.detail, state.busy ?? state.progress ?? ''].filter(Boolean).join(' · '))
+    this.legend.empty()
+    const swatch = (cls: string, text: string): void => {
+      const item = this.legend.createSpan({ cls: 'connect-tm-legend' })
+      item.createSpan({ cls: `connect-tm-legend-swatch ${cls}` })
+      item.appendText(text)
+    }
+    if (state.legend.marks) swatch('is-mark', 'before an earlier rollback or restore')
+    if (state.legend.backups) swatch('is-backup', 'a backup')
     this.buttons.querySelectorAll('.connect-tm-bar-action').forEach((el) => el.remove())
     const marks = this.buttons.createEl('button', { cls: 'connect-tm-bar-action', text: state.marks ? 'Changes: shown' : 'Changes: hidden' })
     marks.toggleClass('is-active', state.marks)

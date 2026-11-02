@@ -71,15 +71,21 @@ export interface PendingContact {
   requestedAt: number
 }
 
-/** `rollback:<id>`: one rollback of the vault or a folder. */
+/** `rollback:<id>`: one rollback of the vault or a folder, or one note restored from the Time Machine. */
 export interface RollbackRecord {
   id: string
   /** When it began, before it changed anything: undoing it rolls back to just before this. */
   startedAt: number
   /** The moment it rolled back to. */
   to: number
-  /** '' for the whole vault. */
+  /** '' for the whole vault; the note's path for a note. */
   folder: string
+  /**
+   * A note restored on its own (0.8.16); absent for the vault or a folder. Its
+   * path is in `folder`, so a device before 0.8.16 lists it by that and marks no
+   * folder's timeline with it.
+   */
+  kind?: 'note'
   /** `running` on a record whose device went away meanwhile: it broke off. */
   state: 'running' | 'done' | 'failed'
   notes: number
@@ -89,7 +95,8 @@ export interface RollbackRecord {
 }
 
 const ROLLBACK_KEY = 'rollback:'
-const ROLLBACKS_KEPT = 20
+// The notification center lists them, notes restored included (0.8.16).
+const ROLLBACKS_KEPT = 50
 
 // One key per entry, so two devices adding different contacts at once do not
 // overwrite each other the way one shared object would.

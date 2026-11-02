@@ -177,6 +177,93 @@ try {
     check(again.entries?.at(-1)?.action?.done === true, 'and stays done after a restart', again)
     unhandle()
     notices.clear()
+
+    // *Undo…* of a rollback opens the Time Machine: it stays on offer after it was pressed (0.8.16).
+    const opened: unknown[] = []
+    const unhandleOpen = notices.handle('test-open', async (data) => {
+      opened.push(data)
+    })
+    const rolled = new Notice('The vault is back to then.', 10_000, { label: 'Undo…', kind: 'test-open', data: 'r1', again: true })
+    await notices.act(rolled.entry as NonNullable<typeof rolled.entry>)
+    await notices.act(rolled.entry as NonNullable<typeof rolled.entry>)
+    check(opened.length === 2 && notices.canAct(rolled.entry as NonNullable<typeof rolled.entry>), "a button that opens something is offered again after it was pressed", opened)
+    unhandleOpen()
+    notices.clear()
+  }
+  {
+    const { rollbackMarks, recordScope } = await import('../src/history/TimeMachine.js')
+    const record = (id: string, folder: string, kind?: 'note') => ({ id, startedAt: 1_000, to: 500, folder, state: 'done' as const, notes: 1, files: 0, ...(kind ? { kind } : {}) })
+    const records = [record('v', ''), record('f', 'Projects'), record('s', 'Projects/Sub'), record('n', 'Projects/Plan.md', 'note')]
+    const marks = (scope: Parameters<typeof rollbackMarks>[1]) => rollbackMarks(records, scope).map((mark) => mark.label.split(' ')[2])
+    check(
+      marks({ kind: 'vault' }).length === 1 &&
+        rollbackMarks(records, { kind: 'folder', path: 'Projects' }).length === 1 &&
+        rollbackMarks(records, { kind: 'note', path: 'Projects/Plan.md' }).length === 1 &&
+        rollbackMarks(records, { kind: 'folder', path: 'Other' }).length === 0,
+      "a timeline marks only the rollbacks of exactly its own place - the vault's not a folder's, which shown in the vault restored all of it (0.8.16)",
+      { vault: marks({ kind: 'vault' }) }
+    )
+    check(
+      marks({ kind: 'note', path: 'Projects/Plan.md' })[0] === 'restore' &&
+        marks({ kind: 'vault' })[0] === 'rollback' &&
+        rollbackMarks(records, { kind: 'vault' })[0]?.at === 999,
+      'a note restored is marked as a restore, the moment just before it began'
+    )
+    const scopes = records.map(recordScope)
+    check(
+      scopes[0]?.kind === 'vault' && scopes[1]?.kind === 'folder' && scopes[3]?.kind === 'note' && (scopes[3] as { path: string }).path === 'Projects/Plan.md',
+      "*Undo…* opens the Time Machine of what a rollback took back",
+      scopes
+    )
+  }
+  {
+    // A note locked by another device says so in a bar at its editor's top, with the way to lift the lock (0.8.16).
+    let banner: { text: string; unlock: (() => void) | null } | null = { text: 'Read-only while the Time Machine on a computer shows the past of the note Plan.', unlock: null }
+    let unlocked = 0
+    banner.unlock = () => (unlocked += 1)
+    const listeners = new Set<() => void>()
+    const parent = document.createElement('div')
+    document.body.appendChild(parent)
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: 'the plan\n',
+        extensions: [
+          EditorState.readOnly.of(false),
+          EditorView.editable.of(true),
+          pastEditorExtension(
+            {
+              pastOf: async () => null,
+              lockedWhy: () => (banner ? 'locked' : null),
+              banner: () => banner,
+              onChange: (listener) => {
+                listeners.add(listener)
+                return () => listeners.delete(listener)
+              }
+            },
+            () => ({ path: 'Projects/Plan.md' })
+          )
+        ]
+      })
+    })
+    check(
+      await eventually(() => view.state.readOnly && parent.querySelector('.connect-lock-banner-text')?.textContent === banner?.text),
+      'a locked note shows why at the top of its editor',
+      parent.innerHTML.slice(0, 400)
+    )
+    const panel = parent.querySelector('.connect-lock-banner')
+    view.dispatch({ changes: { from: view.state.doc.length, insert: 'arrived from elsewhere\n' } })
+    check(parent.querySelector('.connect-lock-banner') === panel, 'and keeps that bar while the note changes under it, rather than drawing it again')
+    parent.querySelector<HTMLButtonElement>('.connect-lock-banner button')?.click()
+    check(unlocked === 1, 'its Unlock… opens the window that lifts the lock')
+    banner = null
+    for (const listener of listeners) listener()
+    check(
+      await eventually(() => !view.state.readOnly && parent.querySelector('.connect-lock-banner') === null),
+      'once the lock ends, the bar goes and the note can be edited again'
+    )
+    view.destroy()
+    parent.remove()
   }
   {
     const { inLockScope } = await import('../src/sync/VaultLock.js')
@@ -425,6 +512,8 @@ try {
     const docId = opened.session.noteId as string
     const then = await opened.session.noteTextAt('Welcome.md')
     check(then === 'hello\n' && (await eventually(() => A2.socket?.isLocked === true)), 'a note shows its past, the other device locked', then)
+    // What TimeMachineControl.restoreVersion reads while the past is still shown.
+    const base = (await opened.session.nowTextOf('Welcome.md')) ?? null
     // What TimeMachineControl.leaveLocked does: every file back, then the sync, writing under the lock.
     const report = await opened.session.restore()
     opened.stop()
@@ -433,7 +522,7 @@ try {
     check(report.failed.length === 0 && (await A1.boot()), 'the files are back and the sync runs, the lock still held')
     await A2.vault.userCreate('While restoring.md', 'written meanwhile\n')
     const store = A1.store as NonNullable<Device['store']>
-    await store.restore(docId, then as string)
+    check((await store.restoreFromPast(docId, then as string, base)) === 'restored', 'with nothing written in it since the lock, the note becomes exactly that version')
     check(await store.whenSent(docId, 15_000), 'the restore reaches the server under the lock its Time Machine took')
     check(await eventually(() => A2.vault.text('Welcome.md') === 'hello\n', 15_000), 'and the other device follows it')
     check(A2.socket?.isLocked === true && A1.vault.text('While restoring.md') === undefined, 'while what that one writes still waits')
@@ -443,6 +532,48 @@ try {
     A1.ownLocks.delete(opened.sealed)
     check(await eventually(() => A1.vault.text('While restoring.md') === 'written meanwhile\n', 15_000), 'and goes out once the lock is let go')
     check(A1.vault.text('Welcome.md') === 'hello\n' && A2.vault.text('Welcome.md') === 'hello\n', 'the restore stays as it was')
+  }
+
+  // --- the lock lifted on another device, written there meanwhile: the restore keeps it (0.8.16) -------------
+  {
+    await delay(300)
+    const T5 = Date.now()
+    await delay(300)
+    await A1.vault.userWrite('Welcome.md', 'hello, once more\n')
+    check(await eventually(() => A2.vault.text('Welcome.md') === 'hello, once more\n', 15_000), 'A changes the note again')
+    await delay(300)
+    const opened = await open(A1, { kind: 'note', path: 'Welcome.md' })
+    await opened.session.moveTo(placeBefore(opened.session, T5))
+    const docId = opened.session.noteId as string
+    const then = await opened.session.noteTextAt('Welcome.md')
+    const base = (await opened.session.nowTextOf('Welcome.md')) ?? null
+    check(then === 'hello\n' && base === 'hello, once more\n' && (await eventually(() => A2.socket?.isLocked === true)), 'its past is shown, the other device locked', { then, base })
+    // The other device lifts the lock and writes into the note.
+    await A2.api.breakVaultLock(opened.prepared.vaultId)
+    check(await eventually(() => A2.socket?.isLocked === false), 'the other device lifts the lock')
+    await A2.vault.userWrite('Welcome.md', 'hello, once more\nwritten after the lock was lifted\n')
+    const report = await opened.session.restore()
+    opened.stop()
+    await opened.files.finish()
+    A1.ownLocks.delete(opened.sealed)
+    check(report.failed.length === 0 && (await A1.boot()), 'the restoring device leaves the past and syncs')
+    const store = A1.store as NonNullable<Device['store']>
+    check(
+      await eventually(async () => (await store.currentText(docId))?.includes('written after the lock was lifted') === true, 15_000),
+      'what the other device wrote arrives first'
+    )
+    const outcome = await store.restoreFromPast(docId, then as string, base)
+    check(
+      outcome === 'merged' && (await store.currentText(docId)) === 'hello\nwritten after the lock was lifted\n',
+      'the restore takes back what the note said when the lock was taken and keeps what was written after it',
+      { outcome, text: await store.currentText(docId) }
+    )
+    check(
+      await eventually(() => A2.vault.text('Welcome.md') === 'hello\nwritten after the lock was lifted\n', 15_000),
+      'on the other device too',
+      A2.vault.text('Welcome.md')
+    )
+    await opened.lock.release()
   }
 
   // --- a rollback locks the other devices, its own writes go through ------------------------------------

@@ -121,7 +121,6 @@ interface OpenFolder {
   cursor: LocalCursor
 }
 
-/** What one weighing deleted for everyone in a folder: said in one notice that can undo it. */
 /** What a delete for everyone in a shared folder took: enough to bring it back, from a notice or later from the notification center. */
 export interface DeletedBatch {
   folderId: string

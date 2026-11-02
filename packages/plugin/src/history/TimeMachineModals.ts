@@ -121,11 +121,11 @@ export class LockedModal extends Modal {
     const scope = this.purpose?.scope
     const locked = !scope || scope.kind === 'vault' ? 'Every note of the vault' : scope.kind === 'folder' ? `Every note in ${scope.path}` : `The note ${scope.path}`
     contentEl.createEl('p', {
-      text: `${locked} is read-only here until it is over: a restore would overwrite what is written into it. Whatever else is written on this device waits and goes out once the lock ends. Shared notes still update from the people you share them with.`
+      text: `${locked} is read-only here until it is over. Whatever else is written on this device waits and goes out once the lock ends; what comes from your other devices and the people you share with still arrives.`
     })
     contentEl.createEl('p', {
       cls: 'setting-item-description',
-      text: 'Lift it only if that device hangs or is gone: the lock also ends by itself two minutes after its device stops answering. Later, the lock in the header of a locked note, the cloud in the status bar and This device in the settings lift it too.'
+      text: 'Lift it only if that device hangs or is gone: the lock also ends by itself two minutes after its device stops answering. What is written into it after you lift it is kept - a restore there merges it in. Later, the bar at the top of a locked note, the lock in its header, the cloud in the status bar and This device in the settings lift it too.'
     })
     const buttons = contentEl.createDiv({ cls: 'modal-button-container' })
     const lift = buttons.createEl('button', { cls: 'mod-warning', text: 'Unlock…' })

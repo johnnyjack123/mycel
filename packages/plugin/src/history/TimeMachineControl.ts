@@ -1,6 +1,6 @@
 import { TFile, type App, type DataAdapter, type EventRef, type WorkspaceLeaf } from 'obsidian'
 import type { ConnectApi } from '../account/api.js'
-import { Notice } from '../notices.js'
+import { Notice, noticeWithAction } from '../notices.js'
 import type { RollbackRecord } from '../sync/AccountSettings.js'
 import { LockSeal, lockNonce, takeVaultLock, VaultLockedError, type HeldLock } from '../sync/VaultLock.js'
 import { TimeMachineBar } from './Bar.js'
@@ -10,6 +10,8 @@ import { PastFiles, type PastVault, type RestoreReport } from './PastFiles.js'
 import { TimeMachineStrip } from './Strip.js'
 import {
   TimeMachineSession,
+  recordScope,
+  rollbackMarks,
   sameScope,
   scopeName,
   type NowSnapshot,
@@ -34,7 +36,10 @@ import { log } from '../log.js'
 // the lock: the backup while the past is still shown, every file back, the sync
 // started with this device writing under the lock - and only once the restore
 // reached the server do the other devices write again. In between, a note typed
-// into here, or written on another device, was overwritten by the restore.
+// into here, or written on another device, was overwritten by the restore. What
+// was written all the same - the lock lifted elsewhere, or someone in a shared
+// note - is kept: a restore takes back only what the note said when the lock
+// was taken, and merges in what came after (0.8.16).
 
 export interface Prepared {
   now: NowSnapshot
@@ -49,9 +54,17 @@ export interface BackupRuns {
   backupTimes(routeId: string): Promise<number[]>
 }
 
+/** What a restore says, and the id of its rollback record when it is listed with them. */
+export interface Restored {
+  text: string
+  undo: string | null
+}
+
 /** A lock this device holds and hands on: the rollback's window lets go of it when it is done. */
 export interface HandedLock {
   release(): Promise<void>
+  /** When it was taken, by this device's clock: what was written after that is kept. */
+  lockedAt: number
 }
 
 export interface ControlHost {
@@ -80,14 +93,18 @@ export interface ControlHost {
   writeUnderLock(id: string | null): void
   /** Resolves once what this device wrote reached the server - these notes and the index, or everything - or after `timeoutMs`. */
   whenSent(docIds: string[] | 'all', timeoutMs: number): Promise<boolean>
-  /** The rollbacks made of a folder ('' for the vault), newest first. */
-  rollbacks(folder: string): RollbackRecord[]
+  /** Every rollback and restore of the account, newest first. */
+  rollbacks(): RollbackRecord[]
   openOverview(): Promise<void>
   closeOverview(): void
   /** With the sync running and the vault still locked: the rollback to a moment, in its window, which lets go of the lock. */
   applyAt(folder: string, at: number, lock: HandedLock): void
-  /** One note to its text then. What the notice says. */
-  restoreNote(docId: string, path: string, text: string, at: number, backedUp: boolean): Promise<string>
+  /**
+   * One note to its text then; `base` is what it said when the lock was taken -
+   * what was written after that is merged in. What the notice says, and the
+   * rollback record its *Undo…* opens the Time Machine before.
+   */
+  restoreNote(docId: string, path: string, text: string, at: number, backedUp: boolean, base: string | null): Promise<Restored>
   /** One file to its content then. */
   restoreFile(item: PastItem, content: { data: Uint8Array; hash: string; size: number }, at: number, backedUp: boolean): Promise<string>
 }
@@ -103,6 +120,8 @@ export class TimeMachineControl implements PastEditorHost {
   private session: TimeMachineSession | null = null
   private files: PastFiles | null = null
   private lock: HeldLock | null = null
+  /** When `lock` was taken, by this device's clock. */
+  private lockedAt = 0
   private ui: { root: HTMLElement; strip: TimeMachineStrip; bar: TimeMachineBar; resize: ResizeObserver | null; layout: EventRef } | null = null
   private opening = false
   private ending = false
@@ -202,10 +221,12 @@ export class TimeMachineControl implements PastEditorHost {
 
   // --- opening ----------------------------------------------------------------------
 
-  async open(scope: TimeMachineScope): Promise<void> {
+  /** Opens the Time Machine for `scope`; `at`: at that mark on its timeline - the moment before an earlier rollback. */
+  async open(scope: TimeMachineScope, at?: number): Promise<void> {
     if (this.session) {
       if (this.shows(scope)) {
         if (scope.kind !== 'note') await this.host.openOverview()
+        if (at !== undefined) await this.goToMark(this.session, at)
         return
       }
       new Notice(`The Time Machine shows ${scopeName(this.session.scope)}. Restore this version or abort first.`)
@@ -238,8 +259,10 @@ export class TimeMachineControl implements PastEditorHost {
       if (!(await this.backUp((label) => modal.step(`Backing up on ${label}…`), (question) => modal.goOn(question, 'Show it anyway')))) throw new Cancelled()
       modal.step('Locking the vault on your other devices…')
       const sealed = await prepared.seal.seal({ what: scopeName(scope), device: this.host.device(), nonce: lockNonce(), scope })
+      const lockedAt = Date.now()
       const lock = await takeVaultLock(this.host.api, prepared.vaultId, 'preview', sealed, (why) => this.lockLost(why))
       this.lock = lock
+      this.lockedAt = lockedAt
       modal.step('Stopping the sync on this device…')
       this.holding = true
       stopped = true
@@ -261,6 +284,7 @@ export class TimeMachineControl implements PastEditorHost {
       if (scope.kind !== 'note') await this.host.openOverview()
       log.info(`the Time Machine shows ${scopeName(scope)}: the sync is stopped, the vault locked`)
       this.emit()
+      if (at !== undefined) await this.goToMark(session, at)
     } catch (error) {
       modal.close()
       await this.lock?.release()
@@ -283,13 +307,9 @@ export class TimeMachineControl implements PastEditorHost {
     }
   }
 
-  /** The moments before the earlier rollbacks of a folder or the vault, as marks on the strip. */
+  /** The moments before the earlier rollbacks of exactly this place, as marks on the strip. */
   private marksFor(scope: TimeMachineScope): Array<{ at: number; label: string }> {
-    if (scope.kind === 'note') return []
-    return this.host.rollbacks(scope.kind === 'folder' ? scope.path : '').map((record) => ({
-      at: record.startedAt - 1,
-      label: `before the rollback of ${new Date(record.startedAt).toLocaleString()}`
-    }))
+    return rollbackMarks(this.host.rollbacks(), scope)
   }
 
   /**
@@ -344,12 +364,19 @@ export class TimeMachineControl implements PastEditorHost {
     this.emit()
   }
 
-  /** An earlier rollback, chosen in the overview: the moment before it, shown - *Restore this version* undoes it. */
-  async showBeforeRollback(record: RollbackRecord): Promise<void> {
-    const session = this.session
-    if (!session || this.ending) return
-    if (!(await session.moveToMark(record.startedAt - 1))) {
-      new Notice('The moment before that rollback lies before the history the server keeps.')
+  /**
+   * *Undo…* of an earlier rollback or restore, from the notification center: the
+   * Time Machine of what it took back, at the moment before it - *Restore this
+   * version* there undoes it.
+   */
+  async openBefore(record: RollbackRecord): Promise<void> {
+    await this.open(recordScope(record), record.startedAt - 1)
+  }
+
+  private async goToMark(session: TimeMachineSession, at: number): Promise<void> {
+    if (this.session !== session || this.ending) return
+    if (!(await session.moveToMark(at))) {
+      new Notice('The moment before it lies before the history the server keeps: the Time Machine shows now.')
       return
     }
     this.emit()
@@ -507,7 +534,7 @@ export class TimeMachineControl implements PastEditorHost {
     }
     // The rollback's window backs up itself, and asks when that fails.
     if (!(await this.leaveLocked(session, `A rollback of ${scopeName(session.scope)} runs on this device.`))) return
-    this.host.applyAt(session.folder, position.at, { release: () => this.afterRestore('all') })
+    this.host.applyAt(session.folder, position.at, { release: () => this.afterRestore('all'), lockedAt: this.lockedAt })
   }
 
   /** Lets go of the lock once what was restored reached the server - or after a while, when it goes out afterwards. */
@@ -541,7 +568,9 @@ export class TimeMachineControl implements PastEditorHost {
       new Notice('Its text at that moment cannot be told.')
       return
     }
-    await this.restoreLocked(session, [docId], (backedUp) => this.host.restoreNote(docId, path, text, position.at, backedUp))
+    // What it said as the past was first shown - read while the past still is.
+    const base = (await session.nowTextOf(path)) ?? null
+    await this.restoreLocked(session, [docId], (backedUp) => this.host.restoreNote(docId, path, text, position.at, backedUp, base))
   }
 
   /** *Restore just this note* (or file), from the overview. */
@@ -556,28 +585,31 @@ export class TimeMachineControl implements PastEditorHost {
       new Notice(`${path} at that moment cannot be read.`)
       return
     }
-    await this.restoreLocked(session, item.kind === 'note' && item.id ? [item.id] : [], (backedUp) =>
+    const base = item.kind === 'note' ? ((await session.nowTextOf(path)) ?? null) : null
+    await this.restoreLocked(session, item.kind === 'note' && item.id ? [item.id] : [], async (backedUp) =>
       item.kind === 'note'
-        ? this.host.restoreNote(item.id, path, text as string, position.at, backedUp)
-        : this.host.restoreFile(item, content as NonNullable<typeof content>, position.at, backedUp)
+        ? this.host.restoreNote(item.id, path, text as string, position.at, backedUp, base)
+        : { text: await this.host.restoreFile(item, content as NonNullable<typeof content>, position.at, backedUp), undo: null }
     )
   }
 
   /** A backup, out of the past with the lock kept, `restore`, and the lock let go once it reached the server. */
-  private async restoreLocked(session: TimeMachineSession, docIds: string[], restore: (backedUp: boolean) => Promise<string>): Promise<void> {
+  private async restoreLocked(session: TimeMachineSession, docIds: string[], restore: (backedUp: boolean) => Promise<Restored>): Promise<void> {
     const backedUp = await this.backUpFirst()
     if (backedUp === null) return
     if (!(await this.leaveLocked(session, `${scopeName(session.scope)} is being restored on this device.`))) return
-    let message: string | null = null
+    let restored: Restored | null = null
     try {
-      message = await restore(backedUp)
+      restored = await restore(backedUp)
     } catch (error) {
       log.error('restoring from the Time Machine failed', error)
       new Notice(`Restoring failed: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       await this.afterRestore(docIds)
     }
-    if (message) new Notice(message, 8_000)
+    if (!restored) return
+    if (restored.undo) noticeWithAction(restored.text, 8_000, { label: 'Undo…', kind: 'rollback-undo', data: restored.undo, again: true })
+    else new Notice(restored.text, 8_000)
   }
 
   /** At a start of the plugin, before the sync: a past a crash left in the files goes back first. */
@@ -735,7 +767,11 @@ export class TimeMachineControl implements PastEditorHost {
       marks: this.host.settings().marks,
       ticks: this.host.settings().ticks,
       backups: this.host.backups() ? this.host.settings().backups : null,
-      busy: this.busy
+      busy: this.busy,
+      legend: {
+        marks: session.positions.some((each) => each.mark !== undefined),
+        backups: session.positions.some((each) => each.backup !== undefined)
+      }
     })
     this.emit()
   }

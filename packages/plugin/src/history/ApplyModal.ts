@@ -1,5 +1,5 @@
 import { App, Modal, Setting } from 'obsidian'
-import { Notice } from '../notices.js'
+import { Notice, noticeWithAction } from '../notices.js'
 import { busy } from '../busy.js'
 import {
   IndexOutOfReach,
@@ -45,8 +45,12 @@ export class ApplyModal extends Modal {
     private readonly moment: number,
     /** Called once the rollback went through, with or without problems. */
     private readonly applied: (outcome: RollbackOutcome, rollback: Rollback) => void = () => undefined,
-    /** The vault's lock, held since the Time Machine: let go of once the rollback is done, or the window closed without one. */
-    private readonly held: { release(): Promise<void> } | null = null
+    /**
+     * The vault's lock, held since the Time Machine: let go of once the rollback is
+     * done, or the window closed without one. What was written after it was taken
+     * is kept.
+     */
+    private readonly held: { release(): Promise<void>; lockedAt: number } | null = null
   ) {
     super(app)
   }
@@ -104,9 +108,14 @@ export class ApplyModal extends Modal {
     this.withoutOutOfReach = false
     this.go({ kind: 'planning', done: 0, of: 0 })
     try {
-      const plan = await this.rollback.plan(this.moment, this.folder, (done, of) => {
-        if (this.step.kind === 'planning') this.go({ kind: 'planning', done, of })
-      })
+      const plan = await this.rollback.plan(
+        this.moment,
+        this.folder,
+        (done, of) => {
+          if (this.step.kind === 'planning') this.go({ kind: 'planning', done, of })
+        },
+        this.held?.lockedAt
+      )
       this.go({ kind: 'review', plan })
     } catch (error) {
       this.close()
@@ -260,11 +269,13 @@ export class ApplyModal extends Modal {
       const outcome = await this.rollback.apply(plan, { backups, withoutBackup, withoutOutOfReach: this.withoutOutOfReach }, (message) =>
         this.go({ kind: 'working', plan, message })
       )
-      new Notice(
+      // Kept in the notification center with its *Undo…*, which opens the Time Machine before it.
+      noticeWithAction(
         outcome.problems.length === 0
-          ? `Obsidian Connect: ${this.where} is back to ${when(plan.to)}.`
-          : `Obsidian Connect: rolled back to ${when(plan.to)}, with ${outcome.problems.length} problem(s) - see the window or the log.`,
-        10_000
+          ? `${this.where.replace(/^the /, 'The ')} is back to ${when(plan.to)}.`
+          : `${this.where.replace(/^the /, 'The ')} is rolled back to ${when(plan.to)}, with ${outcome.problems.length} problem(s) - see the window or the log.`,
+        10_000,
+        { label: 'Undo…', kind: 'rollback-undo', data: outcome.record.id, again: true }
       )
       this.go({ kind: 'done', outcome })
       this.release()
@@ -289,9 +300,16 @@ export class ApplyModal extends Modal {
       const ul = contentEl.createEl('ul')
       for (const problem of outcome.problems.slice(0, LIST_MAX)) ul.createEl('li', { text: problem })
     }
+    if (outcome.merged.length > 0) {
+      contentEl.createEl('p', {
+        text: `Written in after the vault was locked - on a device that lifted the lock, or by someone you share with: what was written there is kept, merged into the text then.`
+      })
+      const ul = contentEl.createEl('ul')
+      for (const path of outcome.merged.slice(0, LIST_MAX)) ul.createEl('li', { text: path })
+    }
     contentEl.createEl('p', {
       cls: 'setting-item-description',
-      text: `What changed, as it was before, was copied into ${outcome.copy}; the copy goes once the backup server is found to hold the same. To undo the rollback, open the Time Machine and click it under "Earlier rollbacks": that shows the moment before it, and Restore this version takes it back.`
+      text: `What changed, as it was before, was copied into ${outcome.copy}; the copy goes once the backup server is found to hold the same. To undo the rollback: Rollbacks in the notification center (the bell), Undo… - it opens the Time Machine at the moment before it, and Restore this version there takes it back.`
     })
     new Setting(contentEl).addButton((button) => button.setButtonText('Close').setCta().onClick(() => this.close()))
   }

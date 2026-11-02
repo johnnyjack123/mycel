@@ -1655,14 +1655,41 @@ export class DocStore {
    * server sent: edits computed against a stale copy would let in again what
    * came after (invariant 1).
    */
-  async rollBackText(docId: string, text: string): Promise<void> {
-    await this.withLock(docId, async () => {
+  async rollBackText(docId: string, text: string, base?: string): Promise<'restored' | 'merged'> {
+    return this.rewind(docId, text, base ?? null, false)
+  }
+
+  /**
+   * One note back to its text at a moment, from the Time Machine: what it says
+   * now goes into a backup first, and the server's state is waited for, as for a
+   * rollback. `base` as there.
+   */
+  async restoreFromPast(docId: string, text: string, base: string | null): Promise<'restored' | 'merged'> {
+    return this.rewind(docId, text, base, true)
+  }
+
+  /**
+   * `base`: what the note said when the vault was locked for this. Written in
+   * after that all the same - the lock lifted on another device, someone in a
+   * shared note - it is merged with the text then, both kept where the two
+   * disagree, rather than overwritten (0.8.16). Without one, or with nothing
+   * written since, the note says exactly `text`.
+   */
+  private async rewind(docId: string, text: string, base: string | null, backUp: boolean): Promise<'restored' | 'merged'> {
+    return this.withLock(docId, async () => {
       const handle = await this.handleFor(docId)
       if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs))) {
         throw new Error(`the server did not send ${this.index.pathFor(docId) ?? docId}`)
       }
-      const edits = textEdits(handle.text(), text)
+      const current = handle.text()
+      const path = this.index.pathFor(docId) ?? docId
+      if (backUp && current !== text && current.length > 0) await this.backups.write(path, 'local', current)
+      const merged = base !== null && current !== base
+      const target = merged ? threeWayMerge(base, current, text, { markers: this.options.conflictMarkers }).text : text
+      const edits = textEdits(current, target)
       if (edits.length > 0) handle.doc.transact(() => applyTextEdits(handle.ytext, edits), RESTORE_ORIGIN)
+      if (merged) log.info(`${path}: written in after the lock was taken - merged into the text restored`)
+      return merged ? 'merged' : 'restored'
     })
   }
 
