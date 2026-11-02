@@ -252,6 +252,13 @@ user's call, as with the earlier branches.
   reaches P1" failed on 2026-10-16 and 2026-10-23: a race in the fork on return, fixed
   in 0.8.7 (CHANGELOG). If it fails again, its log shows `merge (no common base,
   union)` for `Shared/Shared.md` - then the base did not move along some other way.
+- `test:folders`' checks "a file brought back from the trash is back for everyone in the
+  folder" and "and the folder does not delete it again" failed in CI on `main` on
+  2026-10-29 and 2026-11-02 (passed on rerun, and locally): the owner restores
+  `Projects/X/photo.png` from the trash while the delete of another of the account's
+  devices is still being decided - the log shows "deleted for everyone in its shared
+  folder" after "brought back for everyone". The delete-versus-restore race of
+  invariant 29 (`decideMs`), not looked into yet.
 - The development machine is short of memory (often 1.6 GB free of 15.6 GB): a
   `test:backup` run takes four to ten minutes, and twice died at its start (restic,
   then Node out of memory); rerun before suspecting the code.
