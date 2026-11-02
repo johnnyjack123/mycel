@@ -1117,7 +1117,12 @@ try {
       refused
     )
     await hub.push(first, roomLocked, 72, 0, bytes('the previewing device too'))
-    check(first.take().some((m) => m.type === 'locked'), 'nor does the device that locked it, under a preview')
+    check(first.take().some((m) => m.type === 'locked'), 'nor does the device that locked it, under a preview, before it names the lock')
+    // A restore from the Time Machine writes under the lock it previewed with, before letting go (0.8.15).
+    check(hub.holdLock(first, preview.id), "a preview's lock is held by the connection that names its id")
+    await hub.push(first, roomLocked, 77, 0, bytes('the restore'))
+    await hub.push(second, roomLocked, 78, 0, bytes('still meanwhile'))
+    check(first.take().some((m) => m.type === 'ack' && m.ref === 77) && second.take().some((m) => m.type === 'locked' && m.ref === 78), 'then it writes, and the other devices still wait')
     await hub.push(carolHere, roomLocked, 73, 0, bytes('carol writes on'))
     check(carolHere.take().some((m) => m.type === 'ack'), 'someone else in a shared note of the vault goes on')
     check((await status(() => hub.snapshot(alice, roomLocked, { uptoSeq: 1, epoch: 0, data: 'eA==' }))) === 409, 'and no compaction folds the history being looked at')

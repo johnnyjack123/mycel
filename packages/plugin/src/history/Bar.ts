@@ -2,10 +2,10 @@ import { Menu, setIcon } from 'obsidian'
 import type { TickChoice } from './TimeMachine.js'
 
 // The bar above the editors while the Time Machine shows the past: what it
-// shows, how far filling in the moment got, and the ways out - *Apply*, a
-// restore, *Back to now*. Over everything else on purpose: the vault is not
-// as it is while it stands there (the user: states that guard data are shown
-// where they cannot be missed).
+// shows, how far filling in the moment got, and the two ways out - *Restore this
+// version*, and *Abort*, which puts everything back as it was. Over everything
+// else on purpose: the vault is not as it is while it stands there (the user:
+// states that guard data are shown where they cannot be missed).
 
 export interface BarState {
   title: string
@@ -13,8 +13,8 @@ export interface BarState {
   detail: string
   /** Filling in contents: how far. */
   progress: string | null
-  /** What *Apply* does here, or null where it cannot. */
-  apply: string | null
+  /** Whether *Restore this version* can be done here. */
+  restore: boolean
   marks: boolean
   ticks: TickChoice
   backups: boolean | null
@@ -80,14 +80,14 @@ export class TimeMachineBar {
     const marks = this.buttons.createEl('button', { cls: 'connect-tm-bar-action', text: state.marks ? 'Changes: shown' : 'Changes: hidden' })
     marks.toggleClass('is-active', state.marks)
     marks.onclick = () => this.handlers.toggleMarks(!state.marks)
-    if (state.apply) {
-      const apply = this.buttons.createEl('button', { cls: 'connect-tm-bar-action mod-warning', text: state.apply })
-      apply.disabled = state.busy !== null
-      apply.onclick = () => this.handlers.apply()
+    if (state.restore) {
+      const restore = this.buttons.createEl('button', { cls: 'connect-tm-bar-action mod-warning', text: 'Restore this version' })
+      restore.disabled = state.busy !== null
+      restore.onclick = () => this.handlers.apply()
     }
-    const back = this.buttons.createEl('button', { cls: 'connect-tm-bar-action mod-cta', text: 'Back to now' })
-    back.disabled = state.busy !== null
-    back.onclick = () => this.handlers.backToNow()
+    const abort = this.buttons.createEl('button', { cls: 'connect-tm-bar-action mod-cta', text: 'Abort', attr: { 'aria-label': 'Put every file back as it was, unlock the vault and sync again' } })
+    abort.disabled = state.busy !== null
+    abort.onclick = () => this.handlers.backToNow()
   }
 
   private menu(event: MouseEvent): void {

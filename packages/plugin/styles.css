@@ -217,9 +217,14 @@ body.connect-tm-active .workspace-split.mod-root {
   box-shadow: inset 0 0 0 2px rgba(var(--color-orange-rgb), 0.55);
 }
 
-/* The editors of the top row make room for the bar under their tabs. */
+/* The editors of the top row make room for the bar under their tabs, those of the
+   left column for the timeline beside them. */
 body.connect-tm-active .workspace-tabs.connect-tm-below-bar > .workspace-tab-container {
   margin-top: var(--connect-tm-bar-height, 0);
+}
+
+body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-container {
+  margin-left: var(--connect-tm-strip-width, 56px);
 }
 
 .connect-tm-unseen {
@@ -294,14 +299,17 @@ body.connect-tm-active .workspace-tabs.connect-tm-below-bar > .workspace-tab-con
   color: var(--text-accent);
 }
 
-/* The timeline: upright at the right edge, the oldest at the top, now at the bottom. */
+/* The timeline: upright at the left edge, in a column of its own, the oldest at the
+   top, now at the bottom. */
 .connect-tm-strip {
-  --connect-tm-base: 18px;
+  --connect-tm-base: 14px;
   position: absolute;
   top: var(--connect-tm-strip-top, 4em);
-  right: var(--connect-tm-right, 0);
-  width: 64px;
+  left: var(--connect-tm-left, 0);
+  width: var(--connect-tm-strip-width, 56px);
   height: var(--connect-tm-strip-height, calc(100vh - 6em));
+  border-right: 1px solid var(--background-modifier-border);
+  background-color: var(--background-secondary);
   outline: none;
   touch-action: none;
   user-select: none;
@@ -310,19 +318,34 @@ body.connect-tm-active .workspace-tabs.connect-tm-below-bar > .workspace-tab-con
 .connect-tm-strip-bars {
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
   height: 100%;
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-width: none;
+}
+
+.connect-tm-strip-bars::-webkit-scrollbar {
+  display: none;
+}
+
+/* Now at the bottom while they fit; justify-content: flex-end would cut off the
+   oldest once they no longer do. */
+.connect-tm-bar:first-child {
+  margin-top: auto;
 }
 
 .connect-tm-bar {
   display: flex;
-  flex: 0 0 var(--connect-tm-bar, 10px);
+  flex: 0 0 26px;
   align-items: center;
-  justify-content: flex-end;
-  padding-right: 8px;
+  justify-content: flex-start;
+  padding-left: 8px;
   cursor: pointer;
+}
+
+.connect-tm-bar.is-new-day {
+  margin-top: 12px;
 }
 
 /* Longer near the pointer, the wave falling off with the distance. */
@@ -338,8 +361,8 @@ body.connect-tm-active .workspace-tabs.connect-tm-below-bar > .workspace-tab-con
     background-color 90ms;
 }
 
-.connect-tm-bar.is-day .connect-tm-bar-line {
-  width: calc((var(--connect-tm-base) + 8px) * var(--connect-tm-scale, 1));
+.connect-tm-bar.is-mark .connect-tm-bar-line {
+  background-color: var(--color-purple);
 }
 
 .connect-tm-bar.is-backup .connect-tm-bar-line {
@@ -366,8 +389,8 @@ body.connect-tm-active .workspace-tabs.connect-tm-below-bar > .workspace-tab-con
 /* The moment under the pointer, to the second. */
 .connect-tm-strip-tip {
   position: absolute;
-  right: 100%;
-  margin-right: 6px;
+  left: 100%;
+  margin-left: 6px;
   padding: 0.2em 0.55em;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
@@ -591,6 +614,10 @@ body.connect-tm-active .workspace-tabs.connect-tm-below-bar > .workspace-tab-con
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
   font-variant-numeric: tabular-nums;
+}
+
+.connect-notices-action {
+  margin-top: 0.3em;
 }
 
 /* How many notices were not seen, on the bell. */

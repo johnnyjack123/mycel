@@ -48,7 +48,12 @@ export interface DestinationReport {
   filesSnapshot?: string
   /** No file changed since this destination's last files snapshot, so none was made. */
   filesUnchanged?: boolean
-  /** `quick` every run; `deep` reads a part of the stored data and every file back. */
+  /**
+   * Nothing at all changed since this destination's last backup: restic was not
+   * started, and its last snapshots hold the vault as it is.
+   */
+  unchanged?: boolean
+  /** `quick` every run; `deep` reads a part of the stored data and every file back. Absent when unchanged. */
   checked?: 'quick' | 'deep'
   error?: string
 }
@@ -97,6 +102,12 @@ export interface RunnerOptions {
   samples?: number
   /** How often the stored data is read in part, and every file of the files snapshot in full. */
   deepCheckMs?: number
+  /**
+   * How often restic checks the structure of the whole repository. Every new
+   * snapshot is read back in any case; the structure took longer with every
+   * backup, and a backup asked for before a restore waited for it.
+   */
+  checkMs?: number
   /** How often a destination is pruned after `forget`. */
   pruneMs?: number
   /** How often every room is fetched again, not only those whose tag changed. */
@@ -119,6 +130,12 @@ export interface RunControl {
 interface DestinationState {
   filesDigest?: string
   filesSnapshot?: string
+  /** What the last backup here held, notes and files (`layoutDigest`), and its notes snapshot. */
+  digest?: string
+  notesSnapshot?: string
+  /** The retention the last run here forgot by, as JSON; absent when it forgot nothing (a rollback's run). */
+  keep?: string
+  checkAt?: number
   deepCheckAt?: number
   pruneAt?: number
 }
@@ -142,10 +159,13 @@ interface JobState {
   liveNotes?: number
   liveFiles?: number
   verifiedCacheAt?: number
+  /** What the trusted copy was last brought level with (`layoutDigest`). */
+  trustedDigest?: string
   destinations: Record<string, DestinationState>
 }
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
+const WEEK_MS = 7 * DAY_MS
 const COUNTS_KEPT = 500
 const TAG = 'obsidian-connect'
 
@@ -173,6 +193,36 @@ function filesDigest(files: readonly OutFile[]): string {
   const digest = createHash('sha256')
   for (const file of files) digest.update(`${file.path}\0${hashOf(file)}\0${file.mtime}\n`)
   return digest.digest('hex')
+}
+
+/**
+ * Changes whenever the backup would hold anything else: every note and file,
+ * its place and content, and what could not be had this time. Not the times:
+ * the settings' file takes the run's own when it knows no other.
+ */
+function layoutDigest(files: readonly OutFile[], incomplete: ReadonlySet<string>): string {
+  const digest = createHash('sha256')
+  for (const file of [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))) {
+    digest.update(`${file.part}\0${file.path}\0${hashOf(file)}\n`)
+  }
+  for (const path of [...incomplete].sort()) digest.update(`incomplete\0${path}\n`)
+  return digest.digest('hex')
+}
+
+/** How long each step of a run took, for the log: where a slow backup spends its time. */
+class Stopwatch {
+  private readonly laps: string[] = []
+  private last = performance.now()
+
+  lap(step: string): void {
+    const at = performance.now()
+    this.laps.push(`${step} ${((at - this.last) / 1000).toFixed(1)}s`)
+    this.last = at
+  }
+
+  toString(): string {
+    return this.laps.join(', ')
+  }
 }
 
 /**
@@ -275,6 +325,7 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
   }
   const state = await readState(statePath)
   const cache = new Cache(join(jobDir, 'cache'))
+  const watch = new Stopwatch()
 
   let layout: VaultLayout
   let keys: VaultKeys
@@ -282,9 +333,11 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
     keys = await VaultKeys.open(grant)
     const client = new SyncClient(grant.server, grant.backupKey)
     await client.signIn()
+    watch.lap('sign-in')
     const verifyAll = now() - (state.verifiedCacheAt ?? 0) >= (options.verifyCacheMs ?? WEEK_MS)
     const rooms = await fetchRooms(client, cache, grant.accountId, verifyAll)
     if (verifyAll) state.verifiedCacheAt = now()
+    watch.lap(`${rooms.fetched} rooms fetched`)
     report.fetched.rooms = rooms.fetched
     report.diverged = rooms.diverged.length
     if (rooms.diverged.length > 0) {
@@ -308,6 +361,7 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
       if (blobs.damaged.length > 0) layout.problems.push(`${blobs.damaged.length} file(s) whose content on the sync server is damaged`)
     }
     report.problems.push(...layout.problems)
+    watch.lap(`layout and ${blobs.fetched} files fetched`)
   } catch (error) {
     report.error = error instanceof AccessEnded ? 'the backup key no longer opens the vault; connect the backup server again' : message(error)
     report.accessEnded = error instanceof AccessEnded
@@ -323,11 +377,18 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
   report.notes = notes.length
   report.files = streamed.length
   const digest = filesDigest(streamed)
+  const whole = layoutDigest(layout.files, layout.incomplete)
+  // Only a destination that backs up needs the notes laid out, and then only once.
+  let laidOut: Promise<void> | null = null
+  const layOut = (): Promise<void> => {
+    laidOut ??= writeNotes(workRoot, folder, notes, cache, keys).then(() => watch.lap('notes laid out'))
+    return laidOut
+  }
 
   try {
-    await writeNotes(workRoot, folder, notes, cache, keys)
     for (const destination of job.config.destinations) {
-      report.destinations.push(await backUpTo(destination, workRoot, folder, notes, streamed, digest, state, cache, keys, options, now, control))
+      const target = { destination, workRoot, folder, notes, streamed, digest, whole, layOut }
+      report.destinations.push(await backUpTo(target, state, cache, keys, options, now, control, watch))
     }
   } catch (error) {
     report.error = message(error)
@@ -355,14 +416,22 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
     } else if (held) {
       // Nothing is counted while it waits: the counts it waits against stay, however long.
       report.trusted = { ok: true, held, shrunk: lost }
+      state.trustedDigest = undefined
       log.warn(`backup of ${grant.vaultId}: trusted copy held, ${held}`)
+    } else if (state.trustedDigest === `${job.config.trusted}\n${whole}`) {
+      // Level with exactly this already.
+      report.trusted = { ok: true, written: 0, deleted: 0 }
+      state.followed = followedAt(state.followed, counted, confirmed)
     } else {
       try {
         const aligned = await alignTrusted(job.config.trusted, grant.vaultId, folder, layout.files, layout.incomplete, cache, keys)
         report.trusted = { ok: true, ...aligned }
         state.followed = followedAt(state.followed, counted, confirmed)
+        state.trustedDigest = `${job.config.trusted}\n${whole}`
+        watch.lap('trusted copy')
       } catch (error) {
         report.trusted = { ok: false, error: message(error) }
+        state.trustedDigest = undefined
         if (!(error instanceof TrustedRefused)) log.error(`backup of ${grant.vaultId}: trusted copy failed`, error)
       }
     }
@@ -373,35 +442,59 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
   report.ok = !report.error && report.destinations.every((destination) => destination.ok) && report.trusted?.ok !== false
   report.finishedAt = now()
   await writeState(statePath, state)
+  const unchanged = report.destinations.length > 0 && report.destinations.every((destination) => destination.unchanged)
   log.info(
-    `backup of ${grant.vaultId}: ${report.ok ? 'done' : 'failed'} - ${report.notes} notes, ${report.files} files, ` +
-      `${report.fetched.rooms} rooms and ${report.fetched.blobs} files fetched, ${report.problems.length} problem(s)`
+    `backup of ${grant.vaultId}: ${report.ok ? (unchanged ? 'done, nothing changed since the last one' : 'done') : 'failed'} - ${report.notes} notes, ${report.files} files, ` +
+      `${report.fetched.rooms} rooms and ${report.fetched.blobs} files fetched, ${report.problems.length} problem(s) - ${watch}`
   )
   return report
 }
 
+/** One destination's part of a run: what goes in, and how to lay the notes out for restic. */
+interface Target {
+  destination: Destination
+  workRoot: string
+  folder: string
+  notes: readonly OutFile[]
+  streamed: readonly OutFile[]
+  /** `filesDigest` of the stream. */
+  digest: string
+  /** `layoutDigest` of everything. */
+  whole: string
+  layOut: () => Promise<void>
+}
+
 async function backUpTo(
-  destination: Destination,
-  workRoot: string,
-  folder: string,
-  notes: readonly OutFile[],
-  streamed: readonly OutFile[],
-  digest: string,
+  { destination, workRoot, folder, notes, streamed, digest, whole, layOut }: Target,
   state: JobState,
   cache: Cache,
   keys: VaultKeys,
   options: RunnerOptions,
   now: () => number,
-  control: RunControl
+  control: RunControl,
+  watch: Stopwatch
 ): Promise<DestinationReport> {
   const restic = options.restic
   const repo: ResticRepo = { repository: destination.repository, password: destination.password, env: destination.env }
   const known = (state.destinations[destination.id] ??= {})
   const result: DestinationReport = { id: destination.id, ok: false }
+  const deep = now() - (known.deepCheckAt ?? 0) >= (options.deepCheckMs ?? WEEK_MS)
+  const structure = deep || now() - (known.checkAt ?? 0) >= (options.checkMs ?? DAY_MS)
+  const policy = JSON.stringify(destination.keep ?? null)
+  // Nothing changed since the last backup here, no check is due and the retention is the one it last
+  // forgot by: its snapshots hold the vault as it is, and a run asked for before a restore is done at
+  // once instead of starting restic ten times.
+  if (!structure && known.digest === whole && known.keep === policy && known.notesSnapshot && known.filesSnapshot) {
+    return { id: destination.id, ok: true, unchanged: true, notesSnapshot: known.notesSnapshot, filesSnapshot: known.filesSnapshot, filesUnchanged: true }
+  }
+  known.digest = undefined
   try {
+    await layOut()
     await restic.ensureRepo(repo)
+    watch.lap(`${destination.id}: opened`)
     const notesSummary = await restic.backupFolder(repo, workRoot, topLevel(folder, notes), [TAG, 'notes'])
     result.notesSnapshot = notesSummary.snapshotId
+    watch.lap(`${destination.id}: notes`)
 
     const tarName = `${folder} files.tar`
     let streamedBytes: number | null = null
@@ -420,6 +513,7 @@ async function backUpTo(
       known.filesSnapshot = filesSummary.snapshotId
       known.filesDigest = digest
     }
+    watch.lap(`${destination.id}: files`)
 
     if (destination.keep && !control.keepAll) {
       await restic.forget(repo, destination.keep)
@@ -427,13 +521,19 @@ async function backUpTo(
         await restic.prune(repo)
         known.pruneAt = now()
       }
+      watch.lap(`${destination.id}: forget`)
     }
 
-    const deep = now() - (known.deepCheckAt ?? 0) >= (options.deepCheckMs ?? WEEK_MS)
-    await checkBackup(repo, result.notesSnapshot, result.filesSnapshot, tarName, notes, streamed, streamedBytes, deep, cache, keys, options)
+    await checkBackup(repo, result.notesSnapshot, result.filesSnapshot, tarName, notes, streamed, streamedBytes, { structure, deep }, cache, keys, options)
+    watch.lap(`${destination.id}: ${deep ? 'deep check' : structure ? 'check' : 'read back'}`)
+    if (structure) known.checkAt = now()
     if (deep) known.deepCheckAt = now()
     result.checked = deep ? 'deep' : 'quick'
     result.ok = true
+    known.digest = whole
+    known.notesSnapshot = result.notesSnapshot
+    // A rollback's run forgot nothing: the next one does, whatever changed.
+    known.keep = destination.keep && control.keepAll ? undefined : policy
   } catch (error) {
     result.error = message(error)
     log.error(`backup to ${destination.id} failed`, error)
@@ -442,10 +542,10 @@ async function backUpTo(
 }
 
 /**
- * Reads the new snapshots back: restic's own check of the repository, every
- * note's path and size in the listing, a few notes compared byte for byte -
- * and, in a deep check, a part of the stored data and every file of the files
- * snapshot by its hash.
+ * Reads the new snapshots back: every note's path and size in the listing, a
+ * few notes compared byte for byte - with `structure` (once a day) restic's
+ * own check of the repository first, and in a deep check (once a week) a part
+ * of the stored data and every file of the files snapshot by its hash.
  */
 async function checkBackup(
   repo: ResticRepo,
@@ -455,13 +555,13 @@ async function checkBackup(
   notes: readonly OutFile[],
   streamed: readonly OutFile[],
   streamedBytes: number | null,
-  deep: boolean,
+  { structure, deep }: { structure: boolean; deep: boolean },
   cache: Cache,
   keys: VaultKeys,
   options: RunnerOptions
 ): Promise<void> {
   const restic = options.restic
-  await restic.check(repo, deep ? '5%' : undefined)
+  if (structure || deep) await restic.check(repo, deep ? '5%' : undefined)
 
   const listed = await restic.ls(repo, notesSnapshot)
   const sizes = new Map<string, number>()

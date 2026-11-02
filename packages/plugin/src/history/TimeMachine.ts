@@ -100,6 +100,11 @@ export interface SessionOptions {
   includeBackups: boolean
   /** Files larger than this stay as they are now: the device's download limit. */
   fileLimit: number
+  /**
+   * Moments of their own on the strip, whatever the ticks: the moment before each
+   * earlier rollback here - showing it and restoring it undoes that rollback.
+   */
+  marks?: Array<{ at: number; label: string }>
 }
 
 /** One place on the strip. */
@@ -110,6 +115,8 @@ export interface Position {
   tick: Tick | null
   /** A backup run's, further back than the history reaches. */
   backup?: { routeId: string; label: string }
+  /** What this moment is besides a tick: before an earlier rollback. */
+  mark?: string
 }
 
 /** A note or file of the past against now, for the overview. */
@@ -126,7 +133,7 @@ export interface PastItem {
   moved: boolean
   /** Its content then is another: true or false once compared, null while not yet. */
   changed: boolean | null
-  /** Someone else's: *Apply* leaves it as it is. */
+  /** Someone else's: *Restore this version* leaves it as it is. */
   foreign: boolean
   /** A note shared to read only: it cannot be restored. */
   readOnly?: boolean
@@ -279,6 +286,15 @@ export class TimeMachineSession {
       this.reach = timeline.reach
     }
     const positions: Position[] = ticks.map((tick) => ({ at: tick.at, tick }))
+    if (this.scope.kind !== 'note') {
+      for (const mark of this.options.marks ?? []) {
+        if (mark.at < this.reach) continue
+        const same = positions.find((position) => position.at === mark.at)
+        if (same) same.mark = mark.label
+        else positions.push({ at: mark.at, tick: { at: mark.at, from: mark.at, last: mark.at, changed: 0 }, mark: mark.label })
+      }
+      positions.sort((a, b) => a.at - b.at)
+    }
     if (this.options.includeBackups && this.source.backups && this.reach > 0) positions.unshift(...(await this.backupPositions(this.source.backups, this.reach)))
     positions.push({ at: Number.POSITIVE_INFINITY, tick: null })
     this.positions = positions
@@ -516,6 +532,14 @@ export class TimeMachineSession {
       this.queue.splice(at, 1)
       this.queue.unshift(path)
     }
+  }
+
+  /** Moves to the place of a moment given as a mark; false when there is none, it lying before the history. */
+  async moveToMark(at: number): Promise<boolean> {
+    const place = this.positions.findIndex((position) => position.at === at && position.mark !== undefined)
+    if (place < 0) return false
+    await this.moveTo(place)
+    return true
   }
 
   /** Moves to a place on the strip. Files change in order; a move while one is under way takes its place. */

@@ -842,6 +842,12 @@ export class VaultSocket {
     return !cursor || (!cursor.sending && !cursor.outbox)
   }
 
+  /** Whether every room this device writes into has everything it wrote confirmed. */
+  allSettled(): boolean {
+    for (const room of this.registrations.keys()) if (!this.isSettled(room)) return false
+    return true
+  }
+
   epochOf(room: string): number {
     return this.registrations.get(room)?.options.cursor.epoch ?? 0
   }

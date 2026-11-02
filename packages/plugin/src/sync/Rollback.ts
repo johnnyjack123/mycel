@@ -192,9 +192,10 @@ export interface RollbackDeps {
   /**
    * Locks the vault on the account's other devices while the rollback runs
    * (`docs/TIMEMACHINE.md`, V2): they keep what they write and send it once it
-   * is done. Throws while someone else holds the lock.
+   * is done, and the folder rolled back ('' for the vault) is read-only there.
+   * Throws while someone else holds the lock.
    */
-  lock?: () => Promise<{ release(): Promise<void> }>
+  lock?: (folder: string) => Promise<{ release(): Promise<void> }>
 }
 
 /** What the history planning knew of a note or file it could not reach, for a backup to fill in. */
@@ -744,7 +745,7 @@ export class Rollback {
     const refused = Rollback.refusal(plan, consent)
     if (refused) throw new RollbackRefused(refused)
     progress('Locking the vault on your other devices…')
-    const lock = await this.deps.lock?.()
+    const lock = await this.deps.lock?.(plan.folder)
     try {
       return await this.applyLocked(plan, progress)
     } finally {

@@ -42,8 +42,11 @@ export class StartModal extends Modal {
       text: `${this.note ? 'The note' : 'Your files'} will show ${this.what} as it was at the moment you choose - in the normal editor${this.note ? '' : ' and the explorer'}, read-only.`
     })
     const list = contentEl.createEl('ul')
-    list.createEl('li', { text: 'The sync stops on this device until you go back to now. Nothing you see is sent anywhere.' })
-    list.createEl('li', { text: 'The vault is locked on your other devices: what is written there waits, and goes out once you are back.' })
+    list.createEl('li', { text: 'A backup comes first - at once when nothing changed since the last one.' })
+    list.createEl('li', { text: 'The sync stops on this device until you restore a version or abort. Nothing you see is sent anywhere.' })
+    list.createEl('li', {
+      text: `${this.note ? 'The note' : this.what.replace(/^the /, 'The ')} is read-only on all your devices meanwhile. What is written elsewhere in the vault waits, and goes out once it is over.`
+    })
     list.createEl('li', { text: 'Every file is copied into the plugin folder before it is replaced, and comes back from there - also if Obsidian closes meanwhile.' })
     this.stepsEl = contentEl.createDiv({ cls: 'connect-tm-steps' })
     this.buttonsEl = contentEl.createDiv({ cls: 'modal-button-container' })
@@ -115,12 +118,14 @@ export class LockedModal extends Modal {
           ? `A rollback of ${what} runs since ${when(this.lock.takenAt)}.`
           : `The Time Machine shows the past of ${what} since ${when(this.lock.takenAt)}.`
     })
+    const scope = this.purpose?.scope
+    const locked = !scope || scope.kind === 'vault' ? 'Every note of the vault' : scope.kind === 'folder' ? `Every note in ${scope.path}` : `The note ${scope.path}`
     contentEl.createEl('p', {
-      text: 'Meanwhile nothing written on this device reaches the server. It is kept here and goes out once the lock ends - nothing is lost. Shared notes still update from the people you share them with.'
+      text: `${locked} is read-only here until it is over: a restore would overwrite what is written into it. Whatever else is written on this device waits and goes out once the lock ends. Shared notes still update from the people you share them with.`
     })
     contentEl.createEl('p', {
       cls: 'setting-item-description',
-      text: 'Lift it only if that device hangs or is gone: the lock also ends by itself two minutes after its device stops answering.'
+      text: 'Lift it only if that device hangs or is gone: the lock also ends by itself two minutes after its device stops answering. Later, the lock in the header of a locked note, the cloud in the status bar and This device in the settings lift it too.'
     })
     const buttons = contentEl.createDiv({ cls: 'modal-button-container' })
     const lift = buttons.createEl('button', { cls: 'mod-warning', text: 'Unlock…' })
@@ -142,6 +147,48 @@ export class LockedModal extends Modal {
   }
 
   onClose(): void {
+    this.contentEl.empty()
+  }
+}
+
+/** A question with two answers, over everything; closing the window answers no. */
+export class ConfirmModal extends Modal {
+  private resolve: ((go: boolean) => void) | null = null
+
+  constructor(
+    app: App,
+    private readonly title: string,
+    private readonly question: string,
+    private readonly goLabel: string
+  ) {
+    super(app)
+  }
+
+  ask(): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.resolve = resolve
+      this.open()
+    })
+  }
+
+  onOpen(): void {
+    this.titleEl.setText(this.title)
+    this.contentEl.createEl('p', { text: this.question })
+    const buttons = this.contentEl.createDiv({ cls: 'modal-button-container' })
+    buttons.createEl('button', { text: 'Stop' }).onclick = () => this.answer(false)
+    buttons.createEl('button', { cls: 'mod-warning', text: this.goLabel }).onclick = () => this.answer(true)
+  }
+
+  private answer(go: boolean): void {
+    const resolve = this.resolve
+    this.resolve = null
+    resolve?.(go)
+    this.close()
+  }
+
+  onClose(): void {
+    this.resolve?.(false)
+    this.resolve = null
     this.contentEl.empty()
   }
 }

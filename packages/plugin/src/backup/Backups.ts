@@ -406,9 +406,12 @@ export class Backups {
     params: { keepAll?: boolean; acceptShrink?: boolean },
     options: { pollMs?: number; timeoutMs?: number } = {}
   ): Promise<{ ok: boolean; error?: string; run?: BackupRunStatus }> {
-    const pollMs = options.pollMs ?? 2_000
-    const deadline = Date.now() + (options.timeoutMs ?? 60 * 60 * 1000)
-    const wait = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, pollMs))
+    // Asked often at first: a run with nothing changed is done in a moment, and a restore waits for
+    // it. A run that takes longer is asked about every two seconds, as before.
+    const pollMs = options.pollMs ?? 500
+    const started = Date.now()
+    const deadline = started + (options.timeoutMs ?? 60 * 60 * 1000)
+    const wait = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, Date.now() - started < 15_000 ? pollMs : Math.max(pollMs, 2_000)))
     try {
       const session = await this.session(routeId)
       let status = await session.call<BackupVaultStatus>('status')

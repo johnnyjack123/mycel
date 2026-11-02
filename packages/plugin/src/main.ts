@@ -43,22 +43,24 @@ import { EditorSync } from './editor/EditorSync'
 import { BackupModal } from './history/BackupModal'
 import { ApplyModal } from './history/ApplyModal'
 import type { PastItem, TimeMachineScope } from './history/TimeMachine'
-import { TimeMachineControl, type Prepared } from './history/TimeMachineControl'
+import { TimeMachineControl, type HandedLock, type Prepared } from './history/TimeMachineControl'
 import { LocalOnlyModal, LockedModal } from './history/TimeMachineModals'
 import { TIME_MACHINE_VIEW, TimeMachineView } from './history/TimeMachineView'
 import { pastEditorExtension } from './history/pastEditor'
+import { EditLocks } from './history/EditLocks'
+import { ExplorerGuard, type ExplorerPolicy } from './history/ExplorerGuard'
 import { NOTIFICATIONS_VIEW, NotificationsView } from './NotificationsView'
 import { AccessModal } from './share/AccessModal'
 import { FolderMarks } from './share/FolderMarks'
 import { FolderAccessModal, MoveInModal, OutsideModal, ShareFolderModal } from './share/FolderModals'
-import { Folders, type FolderNews } from './share/Folders'
+import { Folders, type DeletedBatch, type FolderNews } from './share/Folders'
 import { IncomingModal } from './share/IncomingModal'
 import { ShareModal } from './share/ShareModal'
 import { linkedNotes, linkedOutside } from './share/LinkedNotes'
 import { Contacts, type OpenCode } from './share/Contacts'
 import { Sharing } from './share/Sharing'
 import { SharedFiles } from './share/SharedFiles'
-import { AccountSettings, DEFAULT_SHARED_SETTINGS, type Contact, type SharedSettings } from './sync/AccountSettings'
+import { AccountSettings, DEFAULT_SHARED_SETTINGS, type Contact, type RollbackRecord, type SharedSettings } from './sync/AccountSettings'
 import { AttachmentIndex } from './sync/AttachmentIndex'
 import { AttachmentStore, type AttachmentOptions, type AttachmentSyncState } from './sync/AttachmentStore'
 import { BackupStore } from './sync/BackupStore'
@@ -78,7 +80,7 @@ import { ReviewStore, type Review } from './sync/Reviews'
 import { ReviewListModal, ReviewModal } from './history/ReviewModal'
 import { VaultIndex } from './sync/VaultIndex'
 import { VaultSocket, type SocketStatus } from './sync/VaultSocket'
-import { LockSeal, lockNonce, takeVaultLock } from './sync/VaultLock'
+import { LockSeal, inLockScope, lockNonce, takeVaultLock, type LockPurpose, type LockScope } from './sync/VaultLock'
 import { ObsidianConnectSettingTab, DEFAULT_SETTINGS, MOBILE_DOWNLOAD_LIMIT_MB, type ObsidianConnectSettings } from './settings'
 import { log, withSummary } from './log'
 
@@ -238,6 +240,14 @@ export default class ObsidianConnectPlugin extends Plugin {
   /** Another device's lock, shown here once. */
   private lockShown: string | null = null
   private lockModal: LockedModal | null = null
+  /** Another device's lock as it stands, for the window that lifts it again once its first one was closed. */
+  private otherLock: { lock: VaultLockInfo; purpose: LockPurpose | null } | null = null
+  /** What may not be edited here: the Time Machine's own scope, another device's lock. */
+  private readonly editLocks = new EditLocks()
+  /** The id of the vault lock this device writes under - a restore or a rollback -, named to every new connection. */
+  private heldLockId: string | null = null
+  private explorerGuard: ExplorerGuard | null = null
+  private refusedAt = 0
   private noticeBadge: HTMLElement | null = null
 
   private unlocked: Unlocked | null = null
@@ -321,10 +331,21 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on('file-open', (file) => {
         if (file?.extension === 'md') void this.attachments?.fetchFor(file)
-        this.timeMachine.opened(file)
+        void this.timeMachine.opened(file)
         this.renderNoteStatus()
       })
     )
+    // A lock taken or let go: the headers' locks and the explorer follow at once.
+    this.register(
+      this.editLocks.onChange(() => {
+        this.noteStatusKey = ''
+        this.renderNoteStatus()
+        this.explorerGuard?.refresh()
+        this.settingTab?.refresh()
+      })
+    )
+    this.register(this.timeMachine.onChange(() => this.explorerGuard?.refresh()))
+    this.register(notices.handle('folder-undelete', (data) => this.undoFolderDelete(data as DeletedBatch)))
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => this.noteMenu(menu, file)))
     this.registerEvent(
       this.app.workspace.on('editor-menu', (menu, _editor, info) => {
@@ -337,8 +358,24 @@ export default class ObsidianConnectPlugin extends Plugin {
     // Obsidian adds this to every Markdown editor and keeps it there across
     // file switches and mode changes.
     this.registerEditorExtension(this.editors.extension)
-    // A note showing its past: read-only, its changes against now marked.
-    this.registerEditorExtension(pastEditorExtension(this.timeMachine, (state) => state.field(editorInfoField, false)?.file ?? null))
+    // A note showing its past: read-only, its changes against now marked. A locked note: read-only.
+    this.registerEditorExtension(
+      pastEditorExtension(
+        {
+          pastOf: (path) => this.timeMachine.pastOf(path),
+          lockedWhy: (path) => this.editLocks.lockOf(path)?.why ?? null,
+          onChange: (listener) => {
+            const unwatchMachine = this.timeMachine.onChange(listener)
+            const unwatchLocks = this.editLocks.onChange(listener)
+            return () => {
+              unwatchMachine()
+              unwatchLocks()
+            }
+          }
+        },
+        (state) => state.field(editorInfoField, false)?.file ?? null
+      )
+    )
     this.registerView(
       TIME_MACHINE_VIEW,
       (leaf) =>
@@ -350,8 +387,8 @@ export default class ObsidianConnectPlugin extends Plugin {
             if (file instanceof TFile) void this.app.workspace.getLeaf(false).openFile(file)
           },
           restore: (item) => void this.timeMachine.restoreItem(item),
-          rollbacks: (folder) => (this.accountSettings ?? this.frozenSettings)?.rollbacks().filter((record) => !folder || record.folder === folder) ?? [],
-          undo: (record) => void this.timeMachine.undo(record.folder, record.startedAt)
+          rollbacks: (folder) => this.rollbackRecords(folder),
+          showBefore: (record) => void this.timeMachine.showBeforeRollback(record)
         })
     )
     this.registerView(NOTIFICATIONS_VIEW, (leaf) => new NotificationsView(leaf))
@@ -372,7 +409,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.addCommand({ id: 'time-machine', name: 'Open the Time Machine for the vault', callback: () => void this.openTimeMachine({ kind: 'vault' }) })
     this.addCommand({
       id: 'time-machine-close',
-      name: 'Time Machine: back to now',
+      name: 'Time Machine: abort - every file back as it was',
       checkCallback: (checking) => {
         if (!this.timeMachine.current) return false
         if (!checking) void this.timeMachine.backToNow()
@@ -409,10 +446,42 @@ export default class ObsidianConnectPlugin extends Plugin {
     // Time Machine left in the files goes back first: started before that,
     // the sync would take it for edits and send it everywhere.
     this.app.workspace.onLayoutReady(() => {
+      this.installExplorerGuard()
       void this.timeMachine.recoverAtStart().then((free) => {
         if (free) void this.startSync()
       })
     })
+  }
+
+  /** The explorer while something is locked: what the Time Machine does not show stays shut, a locked note unchanged. */
+  private installExplorerGuard(): void {
+    if (this.unloaded || this.explorerGuard) return
+    const guard = new ExplorerGuard(this.app.workspace.containerEl.doc, () => this.explorerPolicy(), (why) => {
+      // A notice per refused click would pile up.
+      if (Date.now() - this.refusedAt < 3_000) return
+      this.refusedAt = Date.now()
+      new Notice(why, 6_000)
+    })
+    this.explorerGuard = guard
+    const uninstall = guard.install()
+    this.register(() => {
+      uninstall()
+      this.explorerGuard = null
+    })
+    guard.refresh()
+  }
+
+  private explorerPolicy(): ExplorerPolicy | null {
+    const own = this.timeMachine.explorerPolicy()
+    if (own) return own
+    const other = this.editLocks.otherLock
+    if (!other) return null
+    return { refuseOpen: () => null, refuseChange: (path) => (inLockScope(other.scope, path) ? other.why : null), dimOutside: null }
+  }
+
+  /** The rollbacks made of a folder ('' for the vault: all of them), newest first - from the settings frozen while the sync is stopped. */
+  private rollbackRecords(folder: string): RollbackRecord[] {
+    return (this.accountSettings ?? this.frozenSettings)?.rollbacks().filter((record) => !folder || record.folder === folder) ?? []
   }
 
   async onunload(): Promise<void> {
@@ -913,6 +982,8 @@ export default class ObsidianConnectPlugin extends Plugin {
       signedOut: () => void this.checkSignedIn(socket),
       locked: () => void this.checkVaultLock()
     })
+    // A restore from the Time Machine starts the sync under the lock it holds: named before anything is sent.
+    if (this.heldLockId) socket.holdLock(this.heldLockId)
     this.socket = socket
     this.history = indexedDbHistory(vault.vaultId)
 
@@ -1222,6 +1293,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       adapter: this.app.vault.adapter,
       root: this.pluginDir(),
       api: this.api,
+      locks: this.editLocks,
       settings: () => ({ ticks: this.settings.timeMachineTicks, backups: this.settings.timeMachineBackups, marks: this.settings.timeMachineMarks }),
       saveSettings: async (patch) => {
         if (patch.ticks !== undefined) this.settings.timeMachineTicks = patch.ticks
@@ -1249,12 +1321,25 @@ export default class ObsidianConnectPlugin extends Plugin {
         }
         return true
       },
+      writeUnderLock: (id) => {
+        this.heldLockId = id
+        this.socket?.holdLock(id)
+      },
+      whenSent: async (docIds, timeoutMs) => {
+        const store = this.store
+        if (!store) return false
+        if (docIds === 'all') return store.whenAllSent(timeoutMs)
+        const until = Date.now() + timeoutMs
+        for (const docId of docIds) if (!(await store.whenSent(docId, Math.max(0, until - Date.now())))) return false
+        return store.whenIndexSent(Math.max(0, until - Date.now()))
+      },
+      rollbacks: (folder) => this.rollbackRecords(folder),
       openOverview: () => this.openTimeMachineOverview(),
       closeOverview: () => {
         for (const leaf of this.app.workspace.getLeavesOfType(TIME_MACHINE_VIEW)) leaf.detach()
       },
-      applyAt: (folder, at) => this.applyAt(folder, at),
-      restoreNote: (docId, path, text, at) => this.restoreNoteFromPast(docId, path, text, at),
+      applyAt: (folder, at, lock) => this.applyAt(folder, at, lock),
+      restoreNote: (docId, path, text, at, backedUp) => this.restoreNoteFromPast(docId, path, text, at, backedUp),
       restoreFile: (item, content, at) => this.restoreFileFromPast(item, content, at)
     })
   }
@@ -1312,55 +1397,49 @@ export default class ObsidianConnectPlugin extends Plugin {
     await workspace.revealLeaf(leaf)
   }
 
-  /** The rollback to a moment, after the Time Machine went back to now and the sync runs again. */
-  private applyAt(folder: string, at: number): void {
+  /**
+   * The rollback to a moment, once the Time Machine put the files back and the
+   * sync runs again - under the Time Machine's lock, which the rollback's window
+   * lets go of when it is done or closed.
+   */
+  private applyAt(folder: string, at: number, held: HandedLock): void {
     const { store, keys, accountSettings } = this
     if (!store || !keys || !accountSettings) {
       new Notice('Obsidian Connect is not connected yet.')
+      void held.release()
       return
     }
-    new ApplyModal(this.app, this.makeRollback(store, keys, accountSettings), this.backupsOf(), folder, at, (outcome, rollback) =>
-      void rollback.copyIsBackedUp(outcome).then((backedUp) => {
-        if (!backedUp) {
-          new LocalOnlyModal(
-            this.app,
-            'The copy of everything the rollback changed',
-            outcome.copy,
-            this.shared().backupRetentionDays,
-            this.backupsOf() ? 'the backup server did not hold the same' : 'there is no backup server'
-          ).open()
-        }
-      })
+    const rollback = this.makeRollback(store, keys, accountSettings, true)
+    new ApplyModal(
+      this.app,
+      rollback,
+      this.backupsOf(),
+      folder,
+      at,
+      (outcome, done) =>
+        void done.copyIsBackedUp(outcome).then((backedUp) => {
+          if (!backedUp) {
+            new LocalOnlyModal(
+              this.app,
+              'The copy of everything the rollback changed',
+              outcome.copy,
+              this.shared().backupRetentionDays,
+              this.backupsOf() ? 'the backup server did not hold the same' : 'there is no backup server'
+            ).open()
+          }
+        }),
+      held
     ).open()
-  }
-
-  /**
-   * A fresh backup on every backup server before a note or file is restored
-   * (`docs/TIMEMACHINE.md`, V3); whether one went through.
-   */
-  private async backUpBeforeRestore(): Promise<boolean> {
-    const backups = this.backupsOf()
-    if (!backups) return false
-    let ok = backups.servers().length > 0
-    for (const server of backups.servers()) {
-      const outcome = await backups.backUpFresh(server.routeId)
-      if (!outcome.ok) {
-        ok = false
-        log.warn(`the backup on ${server.label} before a restore did not go through: ${outcome.error ?? ''}`)
-      }
-    }
-    return ok
   }
 
   private localOnly(what: string, why: string): void {
     new LocalOnlyModal(this.app, what, `${this.pluginDir()}/backups`, this.shared().backupRetentionDays, why).open()
   }
 
-  /** One note back to its text at a moment - after a backup, local and on the backup server. */
-  private async restoreNoteFromPast(docId: string, path: string, text: string, at: number): Promise<string> {
+  /** One note back to its text at a moment - the backup servers backed up first (`backedUp`); what it says now goes into the plugin folder. */
+  private async restoreNoteFromPast(docId: string, path: string, text: string, at: number, backedUp: boolean): Promise<string> {
     const store = this.store
     if (!store) throw new Error('the sync is not running')
-    const backedUp = await this.backUpBeforeRestore()
     const moment = new Date(at).toLocaleString()
     let message: string
     if (!docId) {
@@ -1382,7 +1461,6 @@ export default class ObsidianConnectPlugin extends Plugin {
   private async restoreFileFromPast(item: PastItem, content: { data: Uint8Array; hash: string; size: number }, at: number): Promise<string> {
     const attachments = this.attachments
     if (!attachments?.isReady) throw new Error('attachments are not synced yet')
-    await this.backUpBeforeRestore()
     const moment = new Date(at).toLocaleString()
     const path = item.pathThen as string
     if (!item.id) return `${await attachments.createFile(path, bytes(content.data), content.hash)} is back, from the backup of ${moment}.`
@@ -1396,7 +1474,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     return `${item.pathNow} is back to ${moment}. The version it replaced is kept.`
   }
 
-  private makeRollback(store: DocStore, keys: KeyRing, settings: AccountSettings): Rollback {
+  /** `locked`: the vault is locked already, by the Time Machine that hands its lock on. */
+  private makeRollback(store: DocStore, keys: KeyRing, settings: AccountSettings, locked = false): Rollback {
     return new Rollback({
       api: this.api,
       vaultId: keys.vaultId,
@@ -1409,22 +1488,28 @@ export default class ObsidianConnectPlugin extends Plugin {
       adapter: this.app.vault.adapter,
       root: this.pluginDir(),
       isExcluded: (path) => store.isExcluded(path),
-      lock: () => this.lockForRollback(keys)
+      lock: locked ? async () => ({ release: async () => undefined }) : (folder) => this.lockForRollback(keys, folder)
     })
   }
 
-  /** The vault locked on the account's other devices while a rollback runs; this connection writes under it. */
-  private async lockForRollback(keys: KeyRing): Promise<{ release(): Promise<void> }> {
+  /** The vault locked on the account's other devices while a rollback runs - `folder` read-only there; this connection writes under it. */
+  private async lockForRollback(keys: KeyRing, folder: string): Promise<{ release(): Promise<void> }> {
     const seal = new LockSeal(keys.settingsCrypto(), keys.vaultId)
-    const sealed = await seal.seal({ what: 'a rollback', device: Platform.isMobile ? 'a phone or tablet' : 'a computer', nonce: lockNonce() })
+    const scope: LockScope = folder ? { kind: 'folder', path: folder } : { kind: 'vault' }
+    const what = folder ? `the folder ${folder.slice(folder.lastIndexOf('/') + 1)}` : 'the vault'
+    const sealed = await seal.seal({ what, device: Platform.isMobile ? 'a phone or tablet' : 'a computer', nonce: lockNonce(), scope })
     this.ownLocks.add(sealed)
     try {
       const lock = await takeVaultLock(this.api, keys.vaultId, 'rollback', sealed, () =>
         new Notice('The lock of the vault was lifted on another device while the rollback runs: what they write merges in as usual.', 12_000)
       )
+      this.heldLockId = lock.id
       this.socket?.holdLock(lock.id)
       return {
         release: async () => {
+          // What the rollback changed reaches the server before the others write again.
+          await this.store?.whenAllSent(30_000)
+          this.heldLockId = null
           this.socket?.holdLock(null)
           await lock.release()
           this.ownLocks.delete(sealed)
@@ -1449,12 +1534,17 @@ export default class ObsidianConnectPlugin extends Plugin {
     }
   }
 
-  /** Another device locked the vault, or let go: this one holds what it writes meanwhile, and says so. */
+  /**
+   * Another device locked the vault, or let go: this one holds what it writes
+   * meanwhile, what the lock covers is read-only here, and it says so.
+   */
   private async showVaultLock(lock: VaultLockInfo | null): Promise<void> {
     if (!lock) {
       this.socket?.setLocked(false)
       this.lockModal?.close()
       this.lockModal = null
+      this.otherLock = null
+      this.editLocks.set(false, null)
       if (this.lockShown) new Notice('The vault is unlocked again: what was written here meanwhile goes out now.')
       this.lockShown = null
       return
@@ -1465,10 +1555,47 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.lockShown = lock.sealed
     const keys = this.keys
     const purpose = keys ? await new LockSeal(keys.settingsCrypto(), keys.vaultId).open(lock.sealed) : null
-    const vaultId = keys?.vaultId ?? this.vault?.vaultId
+    this.otherLock = { lock, purpose }
+    // A lock without a scope comes from a plugin before 0.8.15: it covers the vault.
+    const scope: LockScope = purpose?.scope ?? { kind: 'vault' }
+    const what = purpose ? `${purpose.what}, on ${purpose.device}` : 'another device of yours'
+    this.editLocks.set(false, {
+      scope,
+      why: `Locked: ${lock.kind === 'rollback' ? 'a rollback of' : 'the Time Machine shows the past of'} ${what}. Click to see more, or to lift the lock.`,
+      own: false
+    })
+    this.openLockModal()
+  }
+
+  /** The window about another device's lock - again, after its first one was closed: from a note's lock, the cloud, the settings. */
+  openLockModal(): void {
+    const other = this.otherLock
+    if (!other) return
+    const vaultId = this.keys?.vaultId ?? this.vault?.vaultId
     this.lockModal?.close()
-    this.lockModal = new LockedModal(this.app, lock, purpose, async () => (vaultId ? this.timeMachine.unlock(vaultId) : false))
+    this.lockModal = new LockedModal(this.app, other.lock, other.purpose, async () => (vaultId ? this.timeMachine.unlock(vaultId) : false))
     this.lockModal.open()
+  }
+
+  /** Another device's lock, in a sentence for the settings; null when none holds. */
+  vaultLockState(): string | null {
+    const other = this.otherLock
+    if (!other) return null
+    const what = other.purpose ? `${other.purpose.what}, on ${other.purpose.device}` : 'another device of yours'
+    return `${other.lock.kind === 'rollback' ? 'A rollback of' : 'The Time Machine shows the past of'} ${what}, since ${new Date(other.lock.takenAt).toLocaleString()}.`
+  }
+
+  /** What a delete for everyone in a shared folder took, back for everyone - its notice's *Undo*, also from the notification center. */
+  private async undoFolderDelete(batch: DeletedBatch): Promise<void> {
+    const folders = this.folders
+    if (!folders) throw new Error('Obsidian Connect is not syncing.')
+    try {
+      await folders.undoDeleted(batch)
+      new Notice(`${batch.names.length === 1 ? `"${batch.names[0]}" is` : 'They are'} back, for everyone.`)
+    } catch (error) {
+      new Notice(`Bringing it back failed: ${error instanceof Error ? error.message : String(error)}`)
+      throw error
+    }
   }
 
   // --- the notification center ------------------------------------------------------------
@@ -1671,12 +1798,11 @@ export default class ObsidianConnectPlugin extends Plugin {
         let notice: Notice | null = null
         fragment.createEl('button', { text: 'Undo' }).addEventListener('click', () => {
           notice?.hide()
-          void news.undo().then(
-            () => new Notice(`${news.names.length === 1 ? `"${news.names[0]}" is` : 'They are'} back, for everyone.`),
-            (error: unknown) => new Notice(`Bringing it back failed: ${error instanceof Error ? error.message : String(error)}`)
-          )
+          const entry = notice?.entry
+          // Through the center's entry, so it is pressed once, wherever.
+          if (entry) void notices.act(entry).catch(() => undefined)
         })
-        notice = new Notice(fragment, 15_000)
+        notice = new Notice(fragment, 15_000, { label: 'Undo', kind: 'folder-undelete', data: news.batch })
         return
       }
       case 'moved-out':
@@ -1803,6 +1929,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       )
     }
     menu.addSeparator()
+    if (this.otherLock) menu.addItem((item) => item.setTitle('The vault is locked - unlock…').setIcon('lock-open').onClick(() => this.openLockModal()))
     menu.addItem((item) => item.setTitle('Deleted notes and files…').setIcon('trash-2').onClick(() => this.openTrash()))
     menu.addItem((item) => item.setTitle('Notes shared with me').setIcon('inbox').onClick(() => this.openIncoming()))
     menu.showAtMouseEvent(event)
@@ -2051,7 +2178,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   }
 
   statusLine(): string {
-    if (this.timeMachine.current) return 'The Time Machine shows the past: the sync is stopped on this device until you go back to now.'
+    if (this.timeMachine.current) return 'The Time Machine shows the past: the sync is stopped on this device until you restore a version or abort.'
     if (!this.store) return this.settings.syncEnabled ? 'Not syncing yet.' : 'Sync is off on this device.'
     const label =
       this.status === 'connected' ? 'synced' : this.status === 'connecting' ? 'connecting' : 'offline'
@@ -2145,9 +2272,10 @@ export default class ObsidianConnectPlugin extends Plugin {
   }
 
   /**
-   * A lock in the header of every view showing a note shared to read only.
-   * The status bar says it too, but a phone has none, and the header is
-   * where one looks when typing does nothing.
+   * A lock in the header of every view showing a note shared to read only, or
+   * locked - by the Time Machine here, by another device's lock. The status bar
+   * says it too, but a phone has none, and the header is where one looks when
+   * typing does nothing. Another device's lock opens the window that lifts it.
    */
   private markReadOnlyViews(): void {
     const shown = new Set<MarkdownView>()
@@ -2156,12 +2284,15 @@ export default class ObsidianConnectPlugin extends Plugin {
       if (!(view instanceof MarkdownView)) return
       shown.add(view)
       const share = view.file ? this.shareState(view.file) : null
-      const text = share?.readOnly ? share.text : null
+      const locked = view.file ? this.editLocks.lockOf(view.file.path) : null
+      const text = locked?.why ?? (share?.readOnly ? share.text : null)
       const mark = this.readOnlyMarks.get(view)
       if (mark?.text === text) return
       mark?.el.remove()
       this.readOnlyMarks.delete(view)
-      if (text) this.readOnlyMarks.set(view, { text, el: view.addAction('lock', text, () => new Notice(text, 10_000)) })
+      if (!text) return
+      const click = locked && !locked.own ? () => this.openLockModal() : () => new Notice(text, 10_000)
+      this.readOnlyMarks.set(view, { text, el: view.addAction('lock', text, click) })
     })
     for (const [view, mark] of this.readOnlyMarks) {
       if (shown.has(view)) continue

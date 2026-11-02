@@ -561,6 +561,8 @@ export interface BackupDestinationStatus {
   notesSnapshot?: string
   filesSnapshot?: string
   filesUnchanged?: boolean
+  /** Nothing changed since its last backup there: no snapshot was made, the last one holds the vault as it is (0.8.15). */
+  unchanged?: boolean
   checked?: 'quick' | 'deep'
   error?: string
 }

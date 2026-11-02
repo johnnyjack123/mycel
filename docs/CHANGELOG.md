@@ -8,6 +8,43 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.15** (2026-11-01) - **the Time Machine's third round** (`docs/TIMEMACHINE.md`,
+  the user's first try of 0.8.13, X1 to X4 decided as recommended). Sync server, backup
+  server and plugin; the sync server first.
+  - **Abort** instead of *Back to now*; **Restore this version** for a folder and the vault
+    too, instead of *Apply…*.
+  - **A restore under the lock:** the backup while the past is still shown, then the files
+    back and the sync started with this device writing under the lock it took - the server
+    lets a lock's holder write whatever its kind -, and the lock let go only once the
+    restore reached the server. The note showed its old text for seconds and could be typed
+    into, and what was typed there or on another device meanwhile the restore overwrote: the
+    backup ran after the lock was let go. *Restore this version* of a folder or the vault
+    hands the lock on to the rollback's window.
+  - **Read-only on every device:** what the Time Machine shows, or a rollback changes, is
+    read-only in the editor on this device and on the other devices (the lock seals what it
+    covers). The editor's read-only lost to Obsidian's own, given first, and could be typed
+    into - reproduced with Obsidian's facets in front, checked by putting the bug back;
+    typing is now also dropped by a transaction filter. The lock can be lifted from a note's
+    header, the cloud's menu and *This device* once its window was closed.
+  - **The explorer** stays inside what the Time Machine shows, caught before Obsidian's own
+    handlers; outside is greyed. Links, the quick switcher and a search go back too.
+  - **The timeline** at the left, in a column of its own, a fixed distance between bars and
+    scrolling, a gap where a day begins (the longer bars were that, unexplained). The moment
+    before an earlier rollback is a place on it; clicking the rollback in the overview goes
+    there, and *Restore this version* undoes it - no *Undo…* button.
+  - **Notices with a button** reached the notification center empty and were dropped:
+    Obsidian takes a fragment's nodes into its notice, and the text was read after that
+    (checked by putting the bug back). Read before now, and the button is kept and works
+    from the center, once, after a restart too.
+  - **Backups:** a run with nothing changed since the last one starts no restic and is done
+    at once; restic's check of the whole repository once a day instead of every run; the
+    time of each step in the log; the device asks every half second at first. So the rule is
+    simply: a backup before the past is shown and before every restore. `test:backup` found
+    a changed retention not forgetting when nothing else changed; it is part of the
+    comparison.
+  - Tests: `test:timemachine` 66 (was 48), `test:rooms` 401, `test:backup` 231, `test:load`
+    16 (the explorer's guard installed).
+
 - **0.8.14** (2026-10-31) - the Time Machine's bar and timeline, from the user's first try
   on a device. Plugin only.
   - **The bar lay in the row of the tabs**, and on Windows the window's own buttons sit at

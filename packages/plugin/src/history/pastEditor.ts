@@ -1,4 +1,4 @@
-import { EditorState, StateEffect, StateField, type Extension, type Range } from '@codemirror/state'
+import { EditorState, Prec, StateEffect, StateField, type Extension, type Range, type Transaction } from '@codemirror/state'
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import { lineDiff } from '@obsidian-connect/shared'
 
@@ -6,7 +6,9 @@ import { lineDiff } from '@obsidian-connect/shared'
 // W1): read-only, and with the changes against now marked in it - the lines
 // there then and not now highlighted, the lines there now and not then struck
 // through between them. The editor never writes: the past is in the file, and
-// nothing of it may become an edit.
+// nothing of it may become an edit. A note that is locked - the Time Machine's
+// on this device, another device's on this one - is read-only the same way,
+// without marks (the third round).
 
 /** What an editor shows of the past: the note's text now (null: not there now), and whether changes are marked. */
 export interface PastShown {
@@ -17,12 +19,19 @@ export interface PastShown {
 export interface PastEditorHost {
   /** For a file the Time Machine shows the past in, what to mark; null for any other. */
   pastOf(path: string): Promise<PastShown | null>
+  /** Why a file may not be edited now; null when it may. */
+  lockedWhy(path: string): string | null
   onChange(listener: () => void): () => void
 }
 
 export type PathOf = (state: EditorState) => { path: string } | null
 
-const setPast = StateEffect.define<PastShown | null>()
+interface Shown {
+  past: PastShown | null
+  locked: string | null
+}
+
+const setShown = StateEffect.define<Shown>()
 
 /** Lines there now and not then, shown where they would come back. */
 class GoneLines extends WidgetType {
@@ -70,30 +79,54 @@ function marksFor(now: string | null, then: string): DecorationSet {
   return Decoration.set(ranges, true)
 }
 
-const pastField = StateField.define<{ past: PastShown | null; deco: DecorationSet }>({
-  create: () => ({ past: null, deco: Decoration.none }),
+const NOTHING: Shown = { past: null, locked: null }
+
+function readOnly(shown: Shown): boolean {
+  return shown.past !== null || shown.locked !== null
+}
+
+const shownField = StateField.define<Shown & { deco: DecorationSet }>({
+  create: () => ({ ...NOTHING, deco: Decoration.none }),
   update(value, transaction) {
-    let past = value.past
+    let shown: Shown = value
     let set = false
     for (const effect of transaction.effects) {
-      if (effect.is(setPast)) {
-        past = effect.value
+      if (effect.is(setShown)) {
+        shown = effect.value
         set = true
       }
     }
     if (!set && !transaction.docChanged) return value
-    return { past, deco: past?.marks ? marksFor(past.now, transaction.state.doc.toString()) : Decoration.none }
+    return { past: shown.past, locked: shown.locked, deco: shown.past?.marks ? marksFor(shown.past.now, transaction.state.doc.toString()) : Decoration.none }
   },
-  // Block widgets may only come from a state field, not from a view plugin.
   provide: (field) => [
+    // Block widgets may only come from a state field, not from a view plugin.
     EditorView.decorations.from(field, (value) => value.deco),
-    EditorState.readOnly.from(field, (value) => value.past !== null),
-    EditorView.editable.from(field, (value) => value.past === null)
+    // Both facets take the first value given, and Obsidian gives its own before a
+    // plugin's: at the default precedence the note stayed editable (0.8.14).
+    Prec.highest([EditorState.readOnly.from(field, readOnly), EditorView.editable.from(field, (value) => !readOnly(value))])
   ]
 })
 
-function same(a: PastShown | null, b: PastShown | null): boolean {
-  return a === b || (a !== null && b !== null && a.now === b.now && a.marks === b.marks)
+/** Typing, pasting, dropping, deleting, undoing: what a person does in an editor. */
+function typed(transaction: Transaction): boolean {
+  return ['input', 'delete', 'move', 'undo', 'redo'].some((event) => transaction.isUserEvent(event))
+}
+
+/**
+ * A change a person makes in a read-only note never gets through - not even by a
+ * key binding of Obsidian's or another plugin that dispatches it directly. Obsidian
+ * loading the file again, which the Time Machine relies on, is no person's.
+ */
+const refuseTyping = EditorState.transactionFilter.of((transaction) => {
+  if (!transaction.docChanged || !typed(transaction)) return transaction
+  const shown = transaction.startState.field(shownField, false)
+  return shown && readOnly(shown) ? [] : transaction
+})
+
+function same(a: Shown, b: Shown): boolean {
+  const past = a.past === b.past || (a.past !== null && b.past !== null && a.past.now === b.past.now && a.past.marks === b.past.marks)
+  return past && a.locked === b.locked
 }
 
 export function pastEditorExtension(host: PastEditorHost, pathOf: PathOf): Extension {
@@ -124,8 +157,9 @@ export function pastEditorExtension(host: PastEditorHost, pathOf: PathOf): Exten
         const path = pathOf(this.view.state)?.path ?? null
         const past = path ? await host.pastOf(path).catch(() => null) : null
         if (this.destroyed || ask !== this.asked || !this.view.dom.isConnected) return
-        if (same(this.view.state.field(pastField, false)?.past ?? null, past)) return
-        this.view.dispatch({ effects: setPast.of(past) })
+        const shown: Shown = { past, locked: path ? host.lockedWhy(path) : null }
+        if (same(this.view.state.field(shownField, false) ?? NOTHING, shown)) return
+        this.view.dispatch({ effects: setShown.of(shown) })
       }
 
       destroy(): void {
@@ -134,5 +168,5 @@ export function pastEditorExtension(host: PastEditorHost, pathOf: PathOf): Exten
       }
     }
   )
-  return [pastField, follower]
+  return [shownField, refuseTyping, follower]
 }

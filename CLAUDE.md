@@ -311,9 +311,13 @@ payload until `ack`. See `MUX` in `shared/protocol.ts` and `VaultSocket`.
 While a vault is **locked** (`sync/VaultLock.ts`, `RoomHub.takeLock`; 0.8.13) the
 server answers the account's pushes into it with `locked` instead of `ack`; the device
 keeps them, as offline, and sends them once a `vault-lock` notice says the lock ended.
-Only under a rollback's lock does one connection - the one that named its id - write.
-The lock lapses two minutes after its holder stopped renewing it, and any device of
-the account can lift it. Other people in shared notes are not locked.
+Only the connection that named the lock's id writes - a rollback's, or a restore from the
+Time Machine before it lets go (0.8.15; before, only under a rollback's). The lock
+seals what it covers (`LockPurpose.scope`: the vault, a folder, a note), and on the other
+devices that is read-only meanwhile (`history/EditLocks.ts`): typed into, a restore
+overwrote it. The lock lapses two minutes after its holder stopped renewing it, and any
+device of the account can lift it - its window, the lock in a note's header, the cloud's
+menu, *This device*. Other people in shared notes are not locked.
 
 A file written because of another device's change carries the time that change was
 made (the author's time in the frame, `VaultSocket.applyingAuthorTs`), not the time it
@@ -468,6 +472,13 @@ people: whoever runs it can read the vaults on it.
   window over everything (`CopyWaitsModal`) - with the settings, whatever the tab,
   and live -, and letting it follow is waited for to the end (`Backups.followCopy`):
   a row that only said "waits" and stayed after the click left the user guessing.
+- **Nothing changed, nothing run** (0.8.15): when everything a run would hold - every
+  path and content hash, what could not be had - and the retention are what the last
+  successful run here held, restic is not started at all (`unchanged`): the Time Machine
+  backs up before every restore, and ten starts of restic for nothing took seconds on a
+  Pi. A run with changes reads its new snapshot back every time; restic's `check` of the
+  whole repository runs once a day, the deep check once a week. The log says how long
+  each step of a run took.
 
 ### Around the notes
 
@@ -490,7 +501,10 @@ people: whoever runs it can read the vaults on it.
   plugin's `Notice` is its own subclass of Obsidian's, which also keeps each notice -
   when, the text, a failure or not, the note it names - in the plugin folder's
   `notices.json` (500, or 30 days). A bell in the ribbon counts the unseen and opens the
-  view. Import `Notice` from `notices.ts`, never from `obsidian`, or it is not kept.
+  view. Import `Notice` from `notices.ts`, never from `obsidian`, or it is not kept. A
+  notice with a button passes it as a `NoticeAction` (label, kind, data) and the plugin
+  registers what the kind does (`notices.handle`): the button then works from the center
+  too, once, after a restart as well (0.8.15) - a closure would not survive one.
 - **The settings are in tabs** - Account, Contacts, Backups, This device, All
   devices; signed out only Account and This device.
 - **The settings tab is live** (`settings.ts` `refresh`): a change of the
@@ -657,24 +671,28 @@ the server lost it. Retention is account-wide; the owner's
 and uploads it; the server drops those frames only then, and keeps a member's
 join snapshot while it is still their starting point.
 
-**The Time Machine** (0.8.11, its second round 0.8.13, `docs/TIMEMACHINE.md`): the past
-of the vault, a folder or a note shown in the vault's own files - in the explorer and the
-normal editor, read-only - while the sync is stopped on this device and the vault locked
-on the others (invariant 30; `history/TimeMachineControl.ts`, `TimeMachine.ts`,
-`PastFiles.ts`). A timeline at the right edge of the editors (`history/Strip.ts`) has a
-bar per tick - a version of a note, a change of a folder or the vault, as fine as chosen
+**The Time Machine** (0.8.11, its second round 0.8.13, its third 0.8.15,
+`docs/TIMEMACHINE.md`): the past of the vault, a folder or a note shown in the vault's own
+files - in the explorer and the normal editor, read-only - while the sync is stopped on
+this device and the vault locked on the others, what it shows read-only there too
+(invariant 30; `history/TimeMachineControl.ts`, `TimeMachine.ts`, `PastFiles.ts`). A
+timeline in a column of its own at the left of the editors (`history/Strip.ts`) has a bar
+per tick - a version of a note, a change of a folder or the vault, as fine as chosen
 (every change, a minute, five, an hour, a day) -, each the state after it, the newest
-being *now*; and, behind a switch kept on the device, the backups older than the history.
-A moment is written as its structure at once and its contents in the background, the
-note in front first; a note's editor marks its changes against now
-(`history/pastEditor.ts`); the overview beside the explorer lists what differs
-(`history/TimeMachineView.ts`). The ticks come without reading a note
-(`history/Timeline.ts`): the vault index's history walked once into events, and the
-minutes in which the server took each note's frames (`GET /times`); a note's text is
-replayed forward from where it stood and back from a checkpoint (`Replay`). It changes the
-vault only after going back to now: *Apply* - the rollback below,
-`history/ApplyModal.ts` -, *Restore this version* or *Restore just this note/file*, each
-with a backup first.
+being *now*, a fixed distance apart and scrolling beyond what fits, a gap where a day
+begins; the moment before each earlier rollback a place of its own; and, behind a switch
+kept on the device, the backups older than the history. A moment is written as its
+structure at once and its contents in the background, the note in front first; a note's
+editor marks its changes against now (`history/pastEditor.ts`); the overview beside the
+explorer lists what differs (`history/TimeMachineView.ts`). The explorer and every other
+way to open a file stay inside what it shows (`history/ExplorerGuard.ts`). The ticks come
+without reading a note (`history/Timeline.ts`): the vault index's history walked once into
+events, and the minutes in which the server took each note's frames (`GET /times`); a
+note's text is replayed forward from where it stood and back from a checkpoint (`Replay`).
+It changes the vault only through *Restore this version* (for a folder or the vault the
+rollback below, `history/ApplyModal.ts`) or *Restore just this note/file*: a backup while
+the past is still shown, every file back, and the restore made under the lock it took,
+which goes only once the restore reached the server. *Abort* puts everything back.
 
 **Rolling back** (`sync/Rollback.ts`, applied from the Time Machine, 0.7.8): the vault
 or a folder back to a moment. The index replayed to it (`history/RoomHistory.ts`)
@@ -717,7 +735,7 @@ npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-proces
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
-npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too), the vault lock, a synced file's time, the notices — in-process server
+npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too), the vault lock, a restore under it, the editor read-only, a synced file's time, the notices — in-process server
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by OBSIDIAN_CONNECT_RESTIC (where it lies here: docs/PROGRESS.md)
 # needs a server that lets tests create accounts:
@@ -745,7 +763,10 @@ file events and link resolution, memory with large files on a phone, the QR code
 scanned by an authenticator app and the `otpauth://` link opening one, the Time
 Machine on screen (the timeline and its wave, the bar, the overview, the windows, the
 explorer and the editors showing the past, the editor's marks in live preview, Obsidian's
-own writes with a modification time), the notification center and its bell.
+own writes with a modification time; and since 0.8.15 the editors read-only in
+Obsidian's own editor, the explorer's guard against Obsidian's handlers, the tab going
+back, the editors moved aside for the bar and the timeline), the notification center, its
+bell and its buttons.
 
 ## Gotchas
 

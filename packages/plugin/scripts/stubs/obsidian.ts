@@ -22,9 +22,18 @@ export class Notice {
   /** Every notice shown so far, for tests to assert on. */
   static readonly shown: string[] = []
 
-  constructor(message: string, _duration?: number) {
-    Notice.shown.push(message)
+  constructor(message: string | DocumentFragment, _duration?: number) {
+    if (typeof message === 'string') {
+      Notice.shown.push(message)
+      return
+    }
+    // As Obsidian does: the fragment's nodes move into the notice, and the fragment is left empty.
+    const el = document.createElement('div')
+    el.appendChild(message)
+    Notice.shown.push(el.textContent ?? '')
   }
+
+  hide(): void {}
 }
 
 export function normalizePath(path: string): string {

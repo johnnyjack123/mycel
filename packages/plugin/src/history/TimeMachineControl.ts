@@ -1,8 +1,11 @@
-import { TFile, type App, type DataAdapter, type EventRef } from 'obsidian'
+import { TFile, type App, type DataAdapter, type EventRef, type WorkspaceLeaf } from 'obsidian'
 import type { ConnectApi } from '../account/api.js'
 import { Notice } from '../notices.js'
+import type { RollbackRecord } from '../sync/AccountSettings.js'
 import { LockSeal, lockNonce, takeVaultLock, VaultLockedError, type HeldLock } from '../sync/VaultLock.js'
 import { TimeMachineBar } from './Bar.js'
+import type { EditLocks } from './EditLocks.js'
+import type { ExplorerPolicy } from './ExplorerGuard.js'
 import { PastFiles, type PastVault, type RestoreReport } from './PastFiles.js'
 import { TimeMachineStrip } from './Strip.js'
 import {
@@ -16,17 +19,22 @@ import {
   type TickChoice,
   type TimeMachineScope
 } from './TimeMachine.js'
-import { LockedModal, RestoreFailedModal, StartModal } from './TimeMachineModals.js'
+import { ConfirmModal, LockedModal, RestoreFailedModal, StartModal } from './TimeMachineModals.js'
 import type { PastEditorHost, PastShown } from './pastEditor.js'
 import { log } from '../log.js'
 
 // Opens and closes the Time Machine's past in the files (`docs/TIMEMACHINE.md`,
-// "The second round"), in this order and never another: read the past, back up
-// if the last backup is older than the last change, lock the vault on every
-// device, stop the sync here, open the journal - and only then write. Back to
-// now: every file back from its copy, the journal gone, the lock let go, the
-// sync started. Whatever stops half way leaves a journal, and the next start of
-// the plugin puts the files back before the sync may start.
+// "The second round"), in this order and never another: read the past, back up,
+// lock the vault on every device, stop the sync here, open the journal - and only
+// then write. *Abort*: every file back from its copy, the journal gone, the lock
+// let go, the sync started. Whatever stops half way leaves a journal, and the next
+// start of the plugin puts the files back before the sync may start.
+//
+// *Restore this version* (the third round) leaves the past without letting go of
+// the lock: the backup while the past is still shown, every file back, the sync
+// started with this device writing under the lock - and only once the restore
+// reached the server do the other devices write again. In between, a note typed
+// into here, or written on another device, was overwritten by the restore.
 
 export interface Prepared {
   now: NowSnapshot
@@ -41,6 +49,11 @@ export interface BackupRuns {
   backupTimes(routeId: string): Promise<number[]>
 }
 
+/** A lock this device holds and hands on: the rollback's window lets go of it when it is done. */
+export interface HandedLock {
+  release(): Promise<void>
+}
+
 export interface ControlHost {
   app: App
   vault: PastVault
@@ -48,6 +61,8 @@ export interface ControlHost {
   /** The plugin folder. */
   root: string
   api: ConnectApi
+  /** What may not be edited on this device; the control keeps its own part of it. */
+  locks: EditLocks
   settings(): { ticks: TickChoice; backups: boolean; marks: boolean }
   saveSettings(patch: Partial<{ ticks: TickChoice; backups: boolean; marks: boolean }>): Promise<void>
   /** Files larger than this stay as they are now: the device's download limit. */
@@ -61,17 +76,25 @@ export interface ControlHost {
   startSync(): Promise<void>
   /** Waits until the sync runs again, at most this long. */
   whenSyncing(timeoutMs: number): Promise<boolean>
+  /** This device's connection writes under that lock from now on, a new one too; null: under none. */
+  writeUnderLock(id: string | null): void
+  /** Resolves once what this device wrote reached the server - these notes and the index, or everything - or after `timeoutMs`. */
+  whenSent(docIds: string[] | 'all', timeoutMs: number): Promise<boolean>
+  /** The rollbacks made of a folder ('' for the vault), newest first. */
+  rollbacks(folder: string): RollbackRecord[]
   openOverview(): Promise<void>
   closeOverview(): void
-  /** After *Back to now*, with the sync running: the rollback to a moment, in its window. */
-  applyAt(folder: string, at: number): void
-  /** After *Back to now*: one note to its text then, a backup first. What the notice says. */
-  restoreNote(docId: string, path: string, text: string, at: number): Promise<string>
-  /** After *Back to now*: one file to its content then. */
-  restoreFile(item: PastItem, content: { data: Uint8Array; hash: string; size: number }, at: number): Promise<string>
+  /** With the sync running and the vault still locked: the rollback to a moment, in its window, which lets go of the lock. */
+  applyAt(folder: string, at: number, lock: HandedLock): void
+  /** One note to its text then. What the notice says. */
+  restoreNote(docId: string, path: string, text: string, at: number, backedUp: boolean): Promise<string>
+  /** One file to its content then. */
+  restoreFile(item: PastItem, content: { data: Uint8Array; hash: string; size: number }, at: number, backedUp: boolean): Promise<string>
 }
 
 const SYNC_BACK_MS = 60_000
+/** How long the lock waits for a restore to reach the server before letting go anyway: it goes out afterwards then. */
+const SENT_MS = 30_000
 
 /** Opening was called off on the way; nothing to report. */
 class Cancelled extends Error {}
@@ -87,6 +110,8 @@ export class TimeMachineControl implements PastEditorHost {
   private holding = false
   private busy: string | null = null
   private foreign = 0
+  /** The last file opened in what the Time Machine shows, and its tab: where it goes back to when something else was opened. */
+  private lastOpened: { file: TFile; leaf: WorkspaceLeaf } | null = null
   private readonly listeners = new Set<() => void>()
   private unwatchSession: (() => void) | null = null
 
@@ -119,13 +144,60 @@ export class TimeMachineControl implements PastEditorHost {
     for (const listener of this.listeners) listener()
   }
 
-  // --- the editor -------------------------------------------------------------------
+  // --- the editor and the explorer -----------------------------------------------------------
 
   async pastOf(path: string): Promise<PastShown | null> {
     const session = this.session
     if (!session || !session.showsPast(path)) return null
     const now = await session.nowTextOf(path)
     return { now: now === undefined ? null : now, marks: this.host.settings().marks }
+  }
+
+  lockedWhy(path: string): string | null {
+    return this.host.locks.lockOf(path)?.why ?? null
+  }
+
+  /** What the explorer lets through while the Time Machine runs here; null while it does not. */
+  explorerPolicy(): ExplorerPolicy | null {
+    const session = this.session
+    const own = this.host.locks.ownLock
+    if (!session && !own) return null
+    const leave = session ? `The Time Machine shows ${scopeName(session.scope)}. Restore this version or abort first.` : null
+    return {
+      refuseOpen: (path) => (session && leave && !session.inScope(path) ? leave : null),
+      refuseChange: () => own?.why ?? leave,
+      dimOutside: session && session.scope.kind !== 'vault' ? session.scope : null
+    }
+  }
+
+  /**
+   * A file opened while the Time Machine runs: outside what it shows - by a link,
+   * the quick switcher, a search - the tab goes back to where it was (X4). A tab
+   * of its own that was open before is left as it is; the one before comes to
+   * the front again.
+   */
+  async opened(file: TFile | null): Promise<void> {
+    const session = this.session
+    const { workspace, vault } = this.host.app
+    if (!session || !file) return
+    const leaf = workspace.getMostRecentLeaf()
+    if (session.inScope(file.path)) {
+      this.lastOpened = leaf ? { file, leaf } : this.lastOpened
+      session.prioritize(file.path)
+      void session.fetchOnOpen(file.path)
+      return
+    }
+    new Notice(`The Time Machine shows ${scopeName(session.scope)}. Restore this version or abort first to open ${file.basename}.`)
+    if (!leaf) return
+    const last = this.lastOpened
+    let lastShown = false
+    if (last) workspace.iterateAllLeaves((each) => (lastShown ||= each === last.leaf))
+    if (last && lastShown && last.leaf !== leaf) {
+      workspace.setActiveLeaf(last.leaf, { focus: true })
+      return
+    }
+    if (last && vault.getAbstractFileByPath(last.file.path) instanceof TFile) await leaf.openFile(last.file)
+    else await leaf.setViewState({ type: 'empty' })
   }
 
   // --- opening ----------------------------------------------------------------------
@@ -136,7 +208,11 @@ export class TimeMachineControl implements PastEditorHost {
         if (scope.kind !== 'note') await this.host.openOverview()
         return
       }
-      new Notice(`The Time Machine shows ${scopeName(this.session.scope)}. Go back to now first.`)
+      new Notice(`The Time Machine shows ${scopeName(this.session.scope)}. Restore this version or abort first.`)
+      return
+    }
+    if (this.lock && !this.opening) {
+      new Notice('A restore from the Time Machine is still under way. Open it again once it is done.')
       return
     }
     if (this.opening || this.ending) return
@@ -156,11 +232,12 @@ export class TimeMachineControl implements PastEditorHost {
         vault: this.host.vault,
         choice: settings.ticks,
         includeBackups: settings.backups,
-        fileLimit: this.host.fileLimit()
+        fileLimit: this.host.fileLimit(),
+        marks: this.marksFor(scope)
       })
-      await this.backUpIfNeeded(session, modal)
+      if (!(await this.backUp((label) => modal.step(`Backing up on ${label}…`), (question) => modal.goOn(question, 'Show it anyway')))) throw new Cancelled()
       modal.step('Locking the vault on your other devices…')
-      const sealed = await prepared.seal.seal({ what: scopeName(scope), device: this.host.device(), nonce: lockNonce() })
+      const sealed = await prepared.seal.seal({ what: scopeName(scope), device: this.host.device(), nonce: lockNonce(), scope })
       const lock = await takeVaultLock(this.host.api, prepared.vaultId, 'preview', sealed, (why) => this.lockLost(why))
       this.lock = lock
       modal.step('Stopping the sync on this device…')
@@ -172,6 +249,12 @@ export class TimeMachineControl implements PastEditorHost {
       this.session = session
       this.files = files
       this.foreign = 0
+      const active = this.host.app.workspace.getActiveFile()
+      const leaf = this.host.app.workspace.getMostRecentLeaf()
+      this.lastOpened = active && leaf && session.inScope(active.path) ? { file: active, leaf } : null
+      const note = scope.kind === 'note' ? this.host.app.vault.getAbstractFileByPath(scope.path) : null
+      if (!this.lastOpened && leaf && note instanceof TFile) this.lastOpened = { file: note, leaf }
+      this.host.locks.set(true, { scope, why: `The Time Machine shows the past of ${scopeName(scope)} here, read-only. Restore this version or abort first.`, own: true })
       this.unwatchSession = session.onChange(() => this.refresh())
       modal.close()
       this.showUi(session)
@@ -182,6 +265,7 @@ export class TimeMachineControl implements PastEditorHost {
       modal.close()
       await this.lock?.release()
       this.lock = null
+      this.host.locks.set(true, null)
       // A journal of an earlier Time Machine may still wait: its files go back before the sync may start.
       if (stopped && (await this.recoverAtStart())) await this.host.startSync()
       else if (!stopped) this.holding = false
@@ -199,34 +283,39 @@ export class TimeMachineControl implements PastEditorHost {
     }
   }
 
+  /** The moments before the earlier rollbacks of a folder or the vault, as marks on the strip. */
+  private marksFor(scope: TimeMachineScope): Array<{ at: number; label: string }> {
+    if (scope.kind === 'note') return []
+    return this.host.rollbacks(scope.kind === 'folder' ? scope.path : '').map((record) => ({
+      at: record.startedAt - 1,
+      label: `before the rollback of ${new Date(record.startedAt).toLocaleString()}`
+    }))
+  }
+
   /**
-   * A fresh backup when the last one is older than the last change (V3): the
-   * past is shown from the files, and a backup is what the user wants there
-   * first. Without a backup server only the copy in the plugin folder.
+   * A backup on every backup server - before the past is shown, and before a
+   * restore. Nothing changed since the last one, the backup server says so at once
+   * (0.8.15). Failed, `ask` decides whether to go on; false: stop.
    */
-  private async backUpIfNeeded(session: TimeMachineSession, modal: StartModal): Promise<void> {
+  private async backUp(step: (label: string) => void, ask: (question: string) => Promise<boolean>): Promise<boolean | 'failed'> {
     const backups = this.host.backups()
-    if (!backups) return
-    const lastChange = session.latest?.last ?? session.positions.at(-2)?.tick?.last ?? 0
+    if (!backups) return true
+    let failed = false
     for (const server of backups.servers()) {
-      const times = await backups.backupTimes(server.routeId).catch(() => [] as number[])
-      if (times.length > 0 && Math.max(...times) >= lastChange) continue
-      modal.step(`Backing up on ${server.label}…`)
+      step(server.label)
       const outcome = await backups.backUpFresh(server.routeId)
       if (outcome.ok) continue
-      const go = await modal.goOn(
-        `The backup on ${server.label} did not go through (${outcome.error ?? 'no reason given'}). Show the past anyway? Your files come back from the copy in the plugin folder either way.`,
-        'Show it anyway'
+      failed = true
+      const go = await ask(
+        `The backup on ${server.label} did not go through (${outcome.error ?? 'no reason given'}). Go on anyway? A copy of what changes is kept in the plugin folder either way.`
       )
-      if (!go) throw new Cancelled()
+      if (!go) return false
     }
+    return failed ? 'failed' : true
   }
 
   private lockLost(why: string): void {
-    new Notice(
-      `The lock of the vault ended - ${why}. Your other devices sync again; this one shows the past until you go back to now.`,
-      12_000
-    )
+    new Notice(`The lock of the vault ended - ${why}. Your other devices sync again; this one shows the past until you abort or restore.`, 12_000)
   }
 
   /** Lifts the lock, from any device - for one that hangs. */
@@ -255,12 +344,15 @@ export class TimeMachineControl implements PastEditorHost {
     this.emit()
   }
 
-  /** A note or file opened: its content comes next, a large file now. */
-  opened(file: TFile | null): void {
+  /** An earlier rollback, chosen in the overview: the moment before it, shown - *Restore this version* undoes it. */
+  async showBeforeRollback(record: RollbackRecord): Promise<void> {
     const session = this.session
-    if (!session || !file) return
-    session.prioritize(file.path)
-    void session.fetchOnOpen(file.path)
+    if (!session || this.ending) return
+    if (!(await session.moveToMark(record.startedAt - 1))) {
+      new Notice('The moment before that rollback lies before the history the server keeps.')
+      return
+    }
+    this.emit()
   }
 
   /** A vault event while the past is shown: the Time Machine's own, or someone else's. */
@@ -273,7 +365,7 @@ export class TimeMachineControl implements PastEditorHost {
     this.foreign += 1
     if (this.foreign === 1) {
       new Notice(
-        `${scopeName(session.scope)} shows the past and is locked: what is changed in it now is put back when you go back to now, and what was written over the past is kept in the plugin folder.`,
+        `${scopeName(session.scope)} shows the past and is locked: what is changed in it now is put back when you abort, and what was written over the past is kept in the plugin folder.`,
         10_000
       )
     }
@@ -313,7 +405,7 @@ export class TimeMachineControl implements PastEditorHost {
 
   // --- leaving ----------------------------------------------------------------------
 
-  /** Every file back as it was, the sync on again. False while some file could not be put back. */
+  /** *Abort*: every file back as it was, the lock let go, the sync on again. False while some file could not be put back. */
   async backToNow(): Promise<boolean> {
     const session = this.session
     if (!session || this.ending) return !session
@@ -321,27 +413,40 @@ export class TimeMachineControl implements PastEditorHost {
     this.busy = 'Putting every file back…'
     this.refresh()
     try {
-      const report = await session.restore()
-      if (report.failed.length > 0) {
-        this.busy = null
-        this.refresh()
-        new RestoreFailedModal(this.host.app, report.failed, async () => {
-          this.ending = false
-          return this.backToNow()
-        }).open()
-        return false
-      }
-      await this.files?.finish()
-      await this.release(report)
+      const report = await this.putBack(session, async () => {
+        this.ending = false
+        return this.backToNow()
+      })
+      if (!report) return false
+      await this.letGo()
+      await this.host.startSync()
+      log.info('the Time Machine is closed: every file is back, the sync runs again')
+      new Notice(
+        report.aside.length > 0
+          ? `Aborted. ${report.aside.length} file(s) were written over while they showed the past; what was written lies in ${report.asideDir}.`
+          : 'Aborted: every file is as it was, and the sync runs again.',
+        report.aside.length > 0 ? 15_000 : 6_000
+      )
       return true
     } finally {
       this.ending = false
     }
   }
 
-  private async release(report: RestoreReport): Promise<void> {
-    await this.lock?.release()
-    this.lock = null
+  /**
+   * Every file back from its copy and the journal gone; the session closed, the
+   * lock still held. Null while some file could not be put back: the window that
+   * says so retries with `retry`.
+   */
+  private async putBack(session: TimeMachineSession, retry: () => Promise<boolean>): Promise<RestoreReport | null> {
+    const report = await session.restore()
+    if (report.failed.length > 0) {
+      this.busy = null
+      this.refresh()
+      new RestoreFailedModal(this.host.app, report.failed, retry).open()
+      return null
+    }
+    await this.files?.finish()
     this.unwatchSession?.()
     this.unwatchSession = null
     this.hideUi()
@@ -351,40 +456,81 @@ export class TimeMachineControl implements PastEditorHost {
     this.busy = null
     this.holding = false
     this.emit()
-    await this.host.startSync()
-    log.info('the Time Machine is closed: every file is back, the sync runs again')
-    new Notice(
-      report.aside.length > 0
-        ? `Back to now. ${report.aside.length} file(s) were written over while they showed the past; what was written lies in ${report.asideDir}.`
-        : 'Back to now: every file is as it was, and the sync runs again.',
-      report.aside.length > 0 ? 15_000 : 6_000
-    )
+    return report
   }
 
-  /** *Apply…*: back to now, then the rollback to the moment shown - its list, its backups, its gate. */
+  /** The lock let go, and with it the editors here and the other devices. */
+  private async letGo(): Promise<void> {
+    this.host.writeUnderLock(null)
+    await this.lock?.release()
+    this.lock = null
+    this.host.locks.set(true, null)
+    this.emit()
+  }
+
+  /**
+   * Out of the past with the vault still locked: every file back, the sync
+   * started, this device writing under the lock. False when that did not go
+   * through - the lock is let go then, unless files could not be put back.
+   */
+  private async leaveLocked(session: TimeMachineSession, why: string): Promise<boolean> {
+    this.ending = true
+    this.busy = 'Putting every file back…'
+    this.refresh()
+    try {
+      const report = await this.putBack(session, async () => {
+        this.ending = false
+        return this.backToNow()
+      })
+      if (!report) return false
+      this.host.locks.set(true, { scope: session.scope, why, own: true })
+      // Named before the sync connects, so nothing of it is sent unnamed and refused.
+      this.host.writeUnderLock(this.lock?.id ?? null)
+      await this.host.startSync()
+      if (await this.host.whenSyncing(SYNC_BACK_MS)) return true
+      await this.letGo()
+      new Notice('The sync did not start again in time. Nothing was restored; open the Time Machine again once it runs.')
+      return false
+    } finally {
+      this.ending = false
+    }
+  }
+
+  /** *Restore this version*: the note, or the folder or vault through the rollback's window. */
   private async apply(): Promise<void> {
     const session = this.session
     const position = session?.position
-    if (!session || !position?.tick) return
+    if (!session || !position?.tick || this.ending) return
     if (session.scope.kind === 'note') {
       await this.restoreVersion(session, position)
       return
     }
-    await this.applyMoment(session.folder, position.at)
+    // The rollback's window backs up itself, and asks when that fails.
+    if (!(await this.leaveLocked(session, `A rollback of ${scopeName(session.scope)} runs on this device.`))) return
+    this.host.applyAt(session.folder, position.at, { release: () => this.afterRestore('all') })
   }
 
-  /** An earlier rollback undone: the rollback to just before it began, in the same place. */
-  async undo(folder: string, startedAt: number): Promise<void> {
-    await this.applyMoment(folder, startedAt - 1)
+  /** Lets go of the lock once what was restored reached the server - or after a while, when it goes out afterwards. */
+  private async afterRestore(docIds: string[] | 'all'): Promise<void> {
+    if (!(await this.host.whenSent(docIds, SENT_MS))) log.warn('a restore had not reached the server when the lock was let go; it goes out now')
+    await this.letGo()
   }
 
-  private async applyMoment(folder: string, at: number): Promise<void> {
-    if (!(await this.backToNow())) return
-    if (!(await this.host.whenSyncing(SYNC_BACK_MS))) {
-      new Notice('The sync did not start again in time. Open the Time Machine again to apply once it runs.')
-      return
-    }
-    this.host.applyAt(folder, at)
+  /** The backup before a restore, while the past is still shown; null: stop. */
+  private async backUpFirst(): Promise<boolean | null> {
+    this.busy = 'Backing up first…'
+    this.refresh()
+    const outcome = await this.backUp(
+      (label) => {
+        this.busy = `Backing up on ${label}…`
+        this.refresh()
+      },
+      (question) => new ConfirmModal(this.host.app, 'The backup did not go through', question, 'Restore anyway').ask()
+    )
+    this.busy = null
+    this.refresh()
+    if (outcome === false) return null
+    return outcome === true && this.host.backups() !== null
   }
 
   private async restoreVersion(session: TimeMachineSession, position: Position): Promise<void> {
@@ -395,17 +541,7 @@ export class TimeMachineControl implements PastEditorHost {
       new Notice('Its text at that moment cannot be told.')
       return
     }
-    if (!(await this.backToNow())) return
-    if (!(await this.host.whenSyncing(SYNC_BACK_MS))) {
-      new Notice('The sync did not start again in time. Nothing was restored.')
-      return
-    }
-    try {
-      new Notice(await this.host.restoreNote(docId, path, text, position.at), 8_000)
-    } catch (error) {
-      log.error('restoring a version failed', error)
-      new Notice(`Restoring failed: ${error instanceof Error ? error.message : String(error)}`)
-    }
+    await this.restoreLocked(session, [docId], (backedUp) => this.host.restoreNote(docId, path, text, position.at, backedUp))
   }
 
   /** *Restore just this note* (or file), from the overview. */
@@ -413,26 +549,35 @@ export class TimeMachineControl implements PastEditorHost {
     const session = this.session
     const position = session?.position
     const path = item.pathThen
-    if (!session || !position?.tick || !path) return
+    if (!session || !position?.tick || !path || this.ending) return
     const text = item.kind === 'note' ? await session.noteTextAt(path) : null
     const content = item.kind === 'file' ? await session.fileDataAt(path) : null
     if ((item.kind === 'note' && text === null) || (item.kind === 'file' && !content)) {
       new Notice(`${path} at that moment cannot be read.`)
       return
     }
-    if (!(await this.backToNow())) return
-    if (!(await this.host.whenSyncing(SYNC_BACK_MS))) {
-      new Notice('The sync did not start again in time. Nothing was restored.')
-      return
-    }
+    await this.restoreLocked(session, item.kind === 'note' && item.id ? [item.id] : [], (backedUp) =>
+      item.kind === 'note'
+        ? this.host.restoreNote(item.id, path, text as string, position.at, backedUp)
+        : this.host.restoreFile(item, content as NonNullable<typeof content>, position.at, backedUp)
+    )
+  }
+
+  /** A backup, out of the past with the lock kept, `restore`, and the lock let go once it reached the server. */
+  private async restoreLocked(session: TimeMachineSession, docIds: string[], restore: (backedUp: boolean) => Promise<string>): Promise<void> {
+    const backedUp = await this.backUpFirst()
+    if (backedUp === null) return
+    if (!(await this.leaveLocked(session, `${scopeName(session.scope)} is being restored on this device.`))) return
+    let message: string | null = null
     try {
-      const message =
-        item.kind === 'note' ? await this.host.restoreNote(item.id, path, text as string, position.at) : await this.host.restoreFile(item, content as NonNullable<typeof content>, position.at)
-      new Notice(message, 8_000)
+      message = await restore(backedUp)
     } catch (error) {
-      log.error('restoring one note or file failed', error)
+      log.error('restoring from the Time Machine failed', error)
       new Notice(`Restoring failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      await this.afterRestore(docIds)
     }
+    if (message) new Notice(message, 8_000)
   }
 
   /** At a start of the plugin, before the sync: a past a crash left in the files goes back first. */
@@ -467,12 +612,14 @@ export class TimeMachineControl implements PastEditorHost {
 
   /** The plugin is unloading: back to now as far as it gets; the next start finishes it. */
   async unload(): Promise<void> {
-    if (!this.session) return
     const session = this.session
     this.hideUi()
     try {
-      const report = await session.restore()
-      if (report.failed.length === 0) await this.files?.finish()
+      if (session) {
+        const report = await session.restore()
+        if (report.failed.length === 0) await this.files?.finish()
+      }
+      this.host.writeUnderLock(null)
       await this.lock?.release()
     } catch (error) {
       log.error('putting the files back on unload failed; the next start does it', error)
@@ -502,29 +649,33 @@ export class TimeMachineControl implements PastEditorHost {
     )
     doc.body.addClass('connect-tm-active')
     const editors = doc.querySelector('.workspace-split.mod-root')
-    // Below the tabs, never in their row: on Windows the window's own buttons lie
-    // at the right end of it, over everything, and they hid *Back to now*. The
-    // editors of the top row move down by the bar's height, so it covers nothing.
+    // Below the tabs, never in their row: on Windows the window's own buttons lie at
+    // the right end of it, over everything, and they hid the way out (0.8.14). The
+    // timeline in a column of its own at the left: the right edge is the editors'
+    // scrollbar's. The editors of the top row move down by the bar's height, those
+    // of the left column right by the timeline's width - nothing is covered.
     const place = (): void => {
       const box = (editors ?? doc.body).getBoundingClientRect()
       let top = box.top
       const groups = editors ? Array.from(editors.querySelectorAll<HTMLElement>('.workspace-tabs')) : []
       for (const group of groups) {
-        const topRow = Math.abs(group.getBoundingClientRect().top - box.top) < 2
+        const groupBox = group.getBoundingClientRect()
+        const topRow = Math.abs(groupBox.top - box.top) < 2
         group.toggleClass('connect-tm-below-bar', topRow)
+        group.toggleClass('connect-tm-beside-strip', Math.abs(groupBox.left - box.left) < 2)
         const header = topRow ? group.querySelector<HTMLElement>(':scope > .workspace-tab-header-container') : null
         const headerBox = header?.getBoundingClientRect()
         if (headerBox && headerBox.height > 0) top = Math.max(top, headerBox.bottom)
       }
       const height = bar.el.offsetHeight
-      // The status bar floats over the editors' lower right corner, where *now* is.
+      // The status bar floats over the editors' lower right corner.
       const status = doc.querySelector<HTMLElement>('.status-bar')?.getBoundingClientRect()
-      const bottom = status && status.height > 0 ? Math.min(box.bottom, status.top) : box.bottom
+      const bottom = status && status.height > 0 && status.left < box.left + 80 ? Math.min(box.bottom, status.top) : box.bottom
       root.style.setProperty('--connect-tm-top', `${top}px`)
       root.style.setProperty('--connect-tm-right', `${Math.max(0, doc.documentElement.clientWidth - box.right)}px`)
       root.style.setProperty('--connect-tm-left', `${box.left}px`)
-      root.style.setProperty('--connect-tm-strip-top', `${top + height + 8}px`)
-      root.style.setProperty('--connect-tm-strip-height', `${Math.max(0, bottom - top - height - 16)}px`)
+      root.style.setProperty('--connect-tm-strip-top', `${top + height}px`)
+      root.style.setProperty('--connect-tm-strip-height', `${Math.max(0, bottom - top - height)}px`)
       doc.body.style.setProperty('--connect-tm-bar-height', `${height}px`)
     }
     const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place)
@@ -546,7 +697,7 @@ export class TimeMachineControl implements PastEditorHost {
     this.ui.root.remove()
     doc.body.removeClass('connect-tm-active')
     doc.body.style.removeProperty('--connect-tm-bar-height')
-    doc.querySelectorAll('.connect-tm-below-bar').forEach((group) => group.removeClass('connect-tm-below-bar'))
+    doc.querySelectorAll('.connect-tm-below-bar, .connect-tm-beside-strip').forEach((group) => group.removeClass('connect-tm-below-bar', 'connect-tm-beside-strip'))
     this.ui = null
   }
 
@@ -558,6 +709,7 @@ export class TimeMachineControl implements PastEditorHost {
       return latest && latest.changed > 0 ? `Now - last changed ${new Date(latest.last).toLocaleString()}` : 'Now'
     }
     if (position.backup) return `${session.describe(position)}`
+    if (position.mark) return `${session.describe(position)} - ${position.mark}`
     return `${session.describe(position)} - ${TimeMachineSession.changedText(position.tick, session.scope.kind === 'note')}`
   }
 
@@ -568,7 +720,7 @@ export class TimeMachineControl implements PastEditorHost {
     ui.strip.set(session.positions, session.place)
     const position = session.position
     const atTick = Boolean(position?.tick)
-    // Someone else's shared folder: its past can be looked at, only its owner applies it.
+    // Someone else's shared folder: its past can be looked at, only its owner restores it.
     const owner = session.folderOwner
     ui.bar.set({
       title: `Time Machine: ${scopeName(session.scope)}`,
@@ -577,9 +729,9 @@ export class TimeMachineControl implements PastEditorHost {
         ? owner
           ? `read-only - ${owner}'s folder: only ${owner} takes it back, for everyone`
           : 'read-only, the sync stopped here, the vault locked on your other devices'
-        : 'move along the timeline on the right',
+        : 'move along the timeline on the left',
       progress: session.progress ? `showing it: ${session.progress.done} of ${session.progress.of}` : null,
-      apply: !atTick || owner ? null : session.scope.kind === 'note' ? 'Restore this version' : 'Apply…',
+      restore: atTick && !owner,
       marks: this.host.settings().marks,
       ticks: this.host.settings().ticks,
       backups: this.host.backups() ? this.host.settings().backups : null,

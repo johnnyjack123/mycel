@@ -334,6 +334,21 @@ const options = {
 }
 const folder = vaultFolder(VAULT)
 
+/** The runner's options with every call of restic noted in `calls`, by the method that made it. */
+function counting(calls: string[]): typeof options {
+  const restic = new Proxy(options.restic, {
+    get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver) as unknown
+      if (typeof value !== 'function') return value
+      return (...args: unknown[]) => {
+        calls.push(String(key))
+        return (value as (...args: unknown[]) => unknown).apply(target, args)
+      }
+    }
+  })
+  return { ...options, restic }
+}
+
 /** Every note and file of a device's vault, as the backup should hold it below the vault's folder - the decrypted copy at its top (`prefix` ''). */
 function expectedVault(device: Device, prefix = `${folder}/`): Map<string, Buffer> {
   const expected = new Map<string, Buffer>()
@@ -441,17 +456,38 @@ try {
   }
 
   // --- nothing changed ---------------------------------------------------------------
-  const second = await runBackup(job(grant), options)
+  const secondCalls: string[] = []
+  const second = await runBackup(job(grant), counting(secondCalls))
   check(second.ok && second.fetched.rooms === 0 && second.fetched.blobs === 0, 'a run with nothing changed fetches nothing', second.fetched)
-  check(second.destinations.every((entry) => entry.filesUnchanged === true && entry.checked === 'quick'), 'and makes no new files snapshot', second.destinations)
+  check(
+    secondCalls.length === 0 &&
+      second.destinations.every((entry, i) => entry.unchanged === true && entry.notesSnapshot === first.destinations[i]?.notesSnapshot && entry.filesSnapshot === first.destinations[i]?.filesSnapshot),
+    'and does not start restic at all: the last snapshots hold the vault as it is (0.8.15)',
+    { secondCalls, destinations: second.destinations }
+  )
   check(second.trusted?.written === 0 && second.trusted.deleted === 0, 'and writes nothing into the trusted copy', second.trusted)
+  {
+    const dueCalls: string[] = []
+    const due = await runBackup(job(grant), { ...counting(dueCalls), checkMs: 0 })
+    check(
+      due.ok && dueCalls.includes('check') && due.destinations.every((entry) => entry.unchanged !== true && entry.checked === 'quick'),
+      "once the day's check of the repository is due, a run with nothing changed backs up and checks it",
+      { dueCalls, destinations: due.destinations }
+    )
+  }
 
   // --- a note changes, one is added ---------------------------------------------------
   await A1.vault.userWrite('Welcome.md', 'hello again\n')
   await A1.vault.userCreate('New.md', 'a new note\n')
   check(await eventually(() => A2.vault.text('Welcome.md') === 'hello again\n' && A2.vault.text('New.md') === 'a new note\n'), 'A edits a note and adds one')
-  const third = await runBackup(job(grant), options)
+  const thirdCalls: string[] = []
+  const third = await runBackup(job(grant), counting(thirdCalls))
   check(third.ok && third.fetched.rooms > 0 && third.fetched.rooms <= 4, 'only the rooms that changed are fetched', third.fetched)
+  check(
+    thirdCalls.includes('backupFolder') && thirdCalls.includes('ls') && !thirdCalls.includes('check') && third.destinations.every((entry) => entry.unchanged !== true),
+    'a change is backed up and its snapshot read back; the whole repository is checked once a day, not every run',
+    thirdCalls
+  )
   {
     const diff = restic(destinations[0].repository, destinations[0].password, ['diff', first.destinations[0]?.notesSnapshot ?? '', third.destinations[0]?.notesSnapshot ?? ''])
     const changed = diff.stdout

@@ -1581,9 +1581,18 @@ export class DocStore {
     return this.whenRoomSent(indexRoom(this.options.vaultId), timeoutMs)
   }
 
-  private async whenRoomSent(room: string, timeoutMs: number): Promise<boolean> {
+  /** The same for everything this device wrote: a rollback's notes, files and index. */
+  whenAllSent(timeoutMs: number): Promise<boolean> {
+    return this.whenSettled(() => this.socket.allSettled(), timeoutMs)
+  }
+
+  private whenRoomSent(room: string, timeoutMs: number): Promise<boolean> {
+    return this.whenSettled(() => this.socket.isSettled(room), timeoutMs)
+  }
+
+  private async whenSettled(settled: () => boolean, timeoutMs: number): Promise<boolean> {
     const until = Date.now() + timeoutMs
-    while (!this.socket.isSettled(room)) {
+    while (!settled()) {
       if (Date.now() >= until) return false
       await new Promise((resolve) => window.setTimeout(resolve, 100))
     }
