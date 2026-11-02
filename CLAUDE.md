@@ -314,10 +314,14 @@ keeps them, as offline, and sends them once a `vault-lock` notice says the lock 
 Only the connection that named the lock's id writes - a rollback's, or a restore from the
 Time Machine before it lets go (0.8.15; before, only under a rollback's). The lock
 seals what it covers (`LockPurpose.scope`: the vault, a folder, a note), and on the other
-devices that is read-only meanwhile (`history/EditLocks.ts`): typed into, a restore
-overwrote it. The lock lapses two minutes after its holder stopped renewing it, and any
-device of the account can lift it - its window, the lock in a note's header, the cloud's
-menu, *This device*. Other people in shared notes are not locked.
+devices that is read-only meanwhile (`history/EditLocks.ts`), a bar at the top of its
+editor saying so (0.8.16): typed into, a restore overwrote it. What is written all the same
+- the lock lifted, someone in a shared note - a restore keeps, merged against what the note
+said when the lock was taken (`DocStore.rewind`, 0.8.16). The lock lapses two minutes after
+its holder stopped renewing it, and any device of the account can lift it - its window, the
+editor's bar, the lock in a note's header, the cloud's menu, *This device*. Every reconnect
+asks whether it still holds: a device that was away when it ended never heard so, and sent
+nothing until a restart (0.8.16). Other people in shared notes are not locked.
 
 A file written because of another device's change carries the time that change was
 made (the author's time in the frame, `VaultSocket.applyingAuthorTs`), not the time it
@@ -504,7 +508,9 @@ people: whoever runs it can read the vaults on it.
   view. Import `Notice` from `notices.ts`, never from `obsidian`, or it is not kept. A
   notice with a button passes it as a `NoticeAction` (label, kind, data) and the plugin
   registers what the kind does (`notices.handle`): the button then works from the center
-  too, once, after a restart as well (0.8.15) - a closure would not survive one.
+  too, once, after a restart as well (0.8.15) - a closure would not survive one. A second
+  tab lists the account's rollbacks and restores, never cleared, each with *Undo…*, which
+  opens the Time Machine at the moment before it (0.8.16).
 - **The settings are in tabs** - Account, Contacts, Backups, This device, All
   devices; signed out only Account and This device.
 - **The settings tab is live** (`settings.ts` `refresh`): a change of the
@@ -671,7 +677,7 @@ the server lost it. Retention is account-wide; the owner's
 and uploads it; the server drops those frames only then, and keeps a member's
 join snapshot while it is still their starting point.
 
-**The Time Machine** (0.8.11, its second round 0.8.13, its third 0.8.15,
+**The Time Machine** (0.8.11, its second round 0.8.13, its third 0.8.15, its fourth 0.8.16,
 `docs/TIMEMACHINE.md`): the past of the vault, a folder or a note shown in the vault's own
 files - in the explorer and the normal editor, read-only - while the sync is stopped on
 this device and the vault locked on the others, what it shows read-only there too
@@ -680,7 +686,8 @@ timeline in a column of its own at the left of the editors (`history/Strip.ts`) 
 per tick - a version of a note, a change of a folder or the vault, as fine as chosen
 (every change, a minute, five, an hour, a day) -, each the state after it, the newest
 being *now*, a fixed distance apart and scrolling beyond what fits, a gap where a day
-begins; the moment before each earlier rollback a place of its own; and, behind a switch
+begins; the moment before each earlier rollback of exactly that place a place of its own,
+where the notification center's *Undo…* opens it; and, behind a switch
 kept on the device, the backups older than the history. A moment is written as its
 structure at once and its contents in the background, the note in front first; a note's
 editor marks its changes against now (`history/pastEditor.ts`); the overview beside the
@@ -735,7 +742,7 @@ npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-proces
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
-npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too), the vault lock, a restore under it, the editor read-only, a synced file's time, the notices — in-process server
+npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too), the vault lock, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by OBSIDIAN_CONNECT_RESTIC (where it lies here: docs/PROGRESS.md)
 # needs a server that lets tests create accounts:
@@ -765,8 +772,9 @@ Machine on screen (the timeline and its wave, the bar, the overview, the windows
 explorer and the editors showing the past, the editor's marks in live preview, Obsidian's
 own writes with a modification time; and since 0.8.15 the editors read-only in
 Obsidian's own editor, the explorer's guard against Obsidian's handlers, the tab going
-back, the editors moved aside for the bar and the timeline), the notification center, its
-bell and its buttons.
+back, the editors moved aside for the bar and the timeline; and since 0.8.16 the bar at the
+top of a locked note's editor in Obsidian's own editor), the notification center, its bell,
+its tabs and its buttons.
 
 ## Gotchas
 
