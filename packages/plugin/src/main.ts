@@ -11,7 +11,7 @@ import {
   type TAbstractFile
 } from 'obsidian'
 import * as Y from 'yjs'
-import { Notice, notices } from './notices.js'
+import { Notice, noticeWithAction, notices } from './notices.js'
 import {
   roomKind,
   settingsRoom,
@@ -26,7 +26,7 @@ import {
   type VaultLockInfo,
   type VaultLockNotice
 } from '@obsidian-connect/shared'
-import { bytes } from '@obsidian-connect/shared/crypto'
+import { bytes, randomBytes, toHex } from '@obsidian-connect/shared/crypto'
 import { ConnectApi, type HttpClient } from './account/api'
 import { judgePassword } from './account/password'
 import { probeServer, type ServerProbe } from './account/probe'
@@ -104,6 +104,9 @@ const FOLDER_SETTLE_MS = 2_000
 // A delete another device of the account made in a shared folder is left to it
 // this long - its decision travels a moment behind the delete itself.
 const FOLDER_DECIDE_MS = 30_000
+// What a rollback moved to the trash counts as its own this long: a shared folder
+// announces a delete once it settled, and a large rollback runs for a while.
+const TRASHED_BY_ROLLBACK_MS = 10 * 60 * 1000
 // Shared notes' files are compared with their lists this often, besides on every change.
 const SHARED_FILES_EVERY_MS = 60_000
 // A link no list names yet waits this long before this device lists its own file for it.
@@ -249,6 +252,14 @@ export default class ObsidianConnectPlugin extends Plugin {
   private explorerGuard: ExplorerGuard | null = null
   private refusedAt = 0
   private noticeBadge: HTMLElement | null = null
+  /** The notification center's list of rollbacks, drawn again when the account's settings change. */
+  private readonly rollbackListeners = new Set<() => void>()
+  /**
+   * Notes and files a rollback here moved to the trash, until when: in a shared
+   * folder that is a delete for everyone, whose notice then offers to undo the
+   * rollback rather than the delete alone.
+   */
+  private readonly trashedByRollback = new Map<string, number>()
 
   private unlocked: Unlocked | null = null
   private vault: OpenVault | null = null
@@ -335,10 +346,11 @@ export default class ObsidianConnectPlugin extends Plugin {
         this.renderNoteStatus()
       })
     )
-    // A lock taken or let go: the headers' locks and the explorer follow at once.
+    // A lock taken or let go: the headers' locks, the status and the explorer follow at once.
     this.register(
       this.editLocks.onChange(() => {
         this.noteStatusKey = ''
+        this.renderStatus()
         this.renderNoteStatus()
         this.explorerGuard?.refresh()
         this.settingTab?.refresh()
@@ -346,6 +358,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     )
     this.register(this.timeMachine.onChange(() => this.explorerGuard?.refresh()))
     this.register(notices.handle('folder-undelete', (data) => this.undoFolderDelete(data as DeletedBatch)))
+    this.register(notices.handle('rollback-undo', async (data) => this.undoRollback(data as string)))
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => this.noteMenu(menu, file)))
     this.registerEvent(
       this.app.workspace.on('editor-menu', (menu, _editor, info) => {
@@ -358,12 +371,13 @@ export default class ObsidianConnectPlugin extends Plugin {
     // Obsidian adds this to every Markdown editor and keeps it there across
     // file switches and mode changes.
     this.registerEditorExtension(this.editors.extension)
-    // A note showing its past: read-only, its changes against now marked. A locked note: read-only.
+    // A note showing its past: read-only, its changes against now marked. A locked note: read-only, and says so.
     this.registerEditorExtension(
       pastEditorExtension(
         {
           pastOf: (path) => this.timeMachine.pastOf(path),
           lockedWhy: (path) => this.editLocks.lockOf(path)?.why ?? null,
+          banner: (path) => this.lockBanner(path),
           onChange: (listener) => {
             const unwatchMachine = this.timeMachine.onChange(listener)
             const unwatchLocks = this.editLocks.onChange(listener)
@@ -386,12 +400,21 @@ export default class ObsidianConnectPlugin extends Plugin {
             const file = this.app.vault.getAbstractFileByPath(path)
             if (file instanceof TFile) void this.app.workspace.getLeaf(false).openFile(file)
           },
-          restore: (item) => void this.timeMachine.restoreItem(item),
-          rollbacks: (folder) => this.rollbackRecords(folder),
-          showBefore: (record) => void this.timeMachine.showBeforeRollback(record)
+          restore: (item) => void this.timeMachine.restoreItem(item)
         })
     )
-    this.registerView(NOTIFICATIONS_VIEW, (leaf) => new NotificationsView(leaf))
+    this.registerView(
+      NOTIFICATIONS_VIEW,
+      (leaf) =>
+        new NotificationsView(leaf, {
+          rollbacks: () => this.rollbackRecords(),
+          onRollbacks: (listener) => {
+            this.rollbackListeners.add(listener)
+            return () => this.rollbackListeners.delete(listener)
+          },
+          undo: (record) => void this.timeMachine.openBefore(record)
+        })
+    )
     this.addNotificationsRibbon()
 
     this.addRibbonIcon('refresh-cw', 'Obsidian Connect status', () => this.showStatus())
@@ -479,9 +502,42 @@ export default class ObsidianConnectPlugin extends Plugin {
     return { refuseOpen: () => null, refuseChange: (path) => (inLockScope(other.scope, path) ? other.why : null), dimOutside: null }
   }
 
-  /** The rollbacks made of a folder ('' for the vault: all of them), newest first - from the settings frozen while the sync is stopped. */
-  private rollbackRecords(folder: string): RollbackRecord[] {
-    return (this.accountSettings ?? this.frozenSettings)?.rollbacks().filter((record) => !folder || record.folder === folder) ?? []
+  /** Every rollback and restore of the account, newest first - from the settings frozen while the sync is stopped. */
+  private rollbackRecords(): RollbackRecord[] {
+    return (this.accountSettings ?? this.frozenSettings)?.rollbacks() ?? []
+  }
+
+  /** *Undo…* of a rollback's notice: the Time Machine at the moment before it. */
+  private async undoRollback(id: string): Promise<void> {
+    const record = this.rollbackRecords().find((each) => each.id === id)
+    if (!record) {
+      new Notice('That rollback is no longer listed: the last 50 are kept. Open the Time Machine and go to the moment before it.')
+      return
+    }
+    await this.timeMachine.openBefore(record)
+  }
+
+  /**
+   * The bar at the top of an editor showing a locked note - the lock in its
+   * header was missed (the user, 0.8.16). Not while this device shows the past:
+   * the Time Machine's own bar says it there.
+   */
+  private lockBanner(path: string): { text: string; unlock: (() => void) | null } | null {
+    const lock = this.editLocks.lockOf(path)
+    if (!lock || (lock.own && this.timeMachine.current)) return null
+    return lock.own
+      ? { text: lock.why, unlock: null }
+      : { text: this.lockSentence(), unlock: () => this.openLockModal() }
+  }
+
+  /** Another device's lock in a sentence: what it is for. */
+  private lockSentence(): string {
+    const other = this.otherLock
+    const device = other?.purpose?.device ?? 'another device of yours'
+    const what = other?.purpose?.what ?? 'the vault'
+    return other?.lock.kind === 'rollback'
+      ? `Read-only while ${device} rolls back ${what}.`
+      : `Read-only while the Time Machine on ${device} shows the past of ${what}.`
   }
 
   async onunload(): Promise<void> {
@@ -1110,6 +1166,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       this.attachments?.setOptions(this.attachmentOptions())
       // Changed on another device: an open settings tab shows it at once.
       if (remote) this.settingTab?.refresh()
+      for (const listener of this.rollbackListeners) listener()
     })
     this.unwatchSocket = socket.onStatus((status) => {
       this.status = status
@@ -1122,8 +1179,10 @@ export default class ObsidianConnectPlugin extends Plugin {
       else {
         void store.resume().then(() => this.editors.refresh())
         void this.resumeAttachments()
-        // What changed on the account while this device was away was not told to it.
+        // What changed on the account while this device was away was not told to it -
+        // a lock lifted meanwhile too: held, nothing written here went out again (0.8.16).
         void this.refreshAccount()
+        void this.checkVaultLock()
       }
     })
     const unwatchNotes = this.index.onChange(() => this.scheduleIndexApply())
@@ -1333,13 +1392,13 @@ export default class ObsidianConnectPlugin extends Plugin {
         for (const docId of docIds) if (!(await store.whenSent(docId, Math.max(0, until - Date.now())))) return false
         return store.whenIndexSent(Math.max(0, until - Date.now()))
       },
-      rollbacks: (folder) => this.rollbackRecords(folder),
+      rollbacks: () => this.rollbackRecords(),
       openOverview: () => this.openTimeMachineOverview(),
       closeOverview: () => {
         for (const leaf of this.app.workspace.getLeavesOfType(TIME_MACHINE_VIEW)) leaf.detach()
       },
       applyAt: (folder, at, lock) => this.applyAt(folder, at, lock),
-      restoreNote: (docId, path, text, at, backedUp) => this.restoreNoteFromPast(docId, path, text, at, backedUp),
+      restoreNote: (docId, path, text, at, backedUp, base) => this.restoreNoteFromPast(docId, path, text, at, backedUp, base),
       restoreFile: (item, content, at) => this.restoreFileFromPast(item, content, at)
     })
   }
@@ -1436,25 +1495,48 @@ export default class ObsidianConnectPlugin extends Plugin {
     new LocalOnlyModal(this.app, what, `${this.pluginDir()}/backups`, this.shared().backupRetentionDays, why).open()
   }
 
-  /** One note back to its text at a moment - the backup servers backed up first (`backedUp`); what it says now goes into the plugin folder. */
-  private async restoreNoteFromPast(docId: string, path: string, text: string, at: number, backedUp: boolean): Promise<string> {
+  /**
+   * One note back to its text at a moment - the backup servers backed up first
+   * (`backedUp`); what it says now goes into the plugin folder. Listed with the
+   * rollbacks, so the notification center undoes it (0.8.16); what was written
+   * in it after `base` is kept.
+   */
+  private async restoreNoteFromPast(
+    docId: string,
+    path: string,
+    text: string,
+    at: number,
+    backedUp: boolean,
+    base: string | null
+  ): Promise<{ text: string; undo: string | null }> {
     const store = this.store
     if (!store) throw new Error('the sync is not running')
     const moment = new Date(at).toLocaleString()
+    if (!docId) return { text: `${await store.createNote(path, text)} is back, from the backup of ${moment}.`, undo: null }
+    const settings = this.accountSettings
+    const record: RollbackRecord = { id: toHex(randomBytes(8)), startedAt: Date.now(), to: at, folder: store.entry(docId)?.path ?? path, kind: 'note', state: 'running', notes: 1, files: 0 }
+    settings?.setRollback(record)
     let message: string
-    if (!docId) {
-      message = `${await store.createNote(path, text)} is back, from the backup of ${moment}.`
-    } else if (store.entry(docId)?.deletedAt) {
-      const back = await store.reviveNote(docId, path)
-      await store.rollBackText(docId, text)
-      message = `${back ?? path} is back from the trash, as it was at ${moment}.`
-    } else {
-      // What it says now goes into a backup in the plugin folder first.
-      await store.restore(docId, text)
-      message = `${store.entry(docId)?.path ?? path} is back to ${moment}. That is a change like any other and can be undone.`
+    try {
+      if (store.entry(docId)?.deletedAt) {
+        const back = await store.reviveNote(docId, path)
+        await store.restoreFromPast(docId, text, null)
+        message = `${back ?? path} is back from the trash, as it was at ${moment}.`
+      } else {
+        // What it says now goes into a backup in the plugin folder first.
+        const outcome = await store.restoreFromPast(docId, text, base)
+        message =
+          outcome === 'merged'
+            ? `${store.entry(docId)?.path ?? path} is back to ${moment} - and what was written in it after the Time Machine locked it is kept, merged in.`
+            : `${store.entry(docId)?.path ?? path} is back to ${moment}.`
+      }
+    } catch (error) {
+      settings?.setRollback({ ...record, state: 'failed', finishedAt: Date.now(), error: error instanceof Error ? error.message : String(error) })
+      throw error
     }
+    settings?.setRollback({ ...record, folder: store.entry(docId)?.path ?? record.folder, state: 'done', finishedAt: Date.now() })
     if (!backedUp) this.localOnly('What the note said before', this.backupsOf() ? 'the backup server did not back up first' : 'there is no backup server')
-    return message
+    return { text: message, undo: record.id }
   }
 
   /** One file back to its content at a moment. */
@@ -1488,7 +1570,12 @@ export default class ObsidianConnectPlugin extends Plugin {
       adapter: this.app.vault.adapter,
       root: this.pluginDir(),
       isExcluded: (path) => store.isExcluded(path),
-      lock: locked ? async () => ({ release: async () => undefined }) : (folder) => this.lockForRollback(keys, folder)
+      lock: locked ? async () => ({ release: async () => undefined }) : (folder) => this.lockForRollback(keys, folder),
+      trashing: (ids) => {
+        // The shared folder's notice comes once its events settled, seconds later.
+        const until = Date.now() + TRASHED_BY_ROLLBACK_MS
+        for (const id of ids) this.trashedByRollback.set(id, until)
+      }
     })
   }
 
@@ -1793,16 +1880,13 @@ export default class ObsidianConnectPlugin extends Plugin {
     switch (news.kind) {
       case 'deleted': {
         const what = news.names.length === 1 ? `"${news.names[0]}" was` : `${news.names.length} notes were`
-        const fragment = document.createDocumentFragment()
-        fragment.createSpan({ text: `${what} deleted for everyone in "${name(news.folderPath)}" (${people(news.people)}). ` })
-        let notice: Notice | null = null
-        fragment.createEl('button', { text: 'Undo' }).addEventListener('click', () => {
-          notice?.hide()
-          const entry = notice?.entry
-          // Through the center's entry, so it is pressed once, wherever.
-          if (entry) void notices.act(entry).catch(() => undefined)
-        })
-        notice = new Notice(fragment, 15_000, { label: 'Undo', kind: 'folder-undelete', data: news.batch })
+        const said = `${what} deleted for everyone in "${name(news.folderPath)}" (${people(news.people)}).`
+        // A rollback's: undone with the rollback, from its own notice or the notification center (the user, 0.8.16).
+        const now = Date.now()
+        const ids = [...news.batch.docIds.map((note) => note.docId), ...news.batch.files.map((file) => file.file)]
+        const byRollback = ids.length > 0 && ids.every((id) => (this.trashedByRollback.get(id) ?? 0) > now)
+        if (byRollback) new Notice(`${said} The rollback did it - Rollbacks in the notification center undoes it.`, 10_000)
+        else noticeWithAction(said, 15_000, { label: 'Undo', kind: 'folder-undelete', data: news.batch })
         return
       }
       case 'moved-out':
@@ -2180,6 +2264,9 @@ export default class ObsidianConnectPlugin extends Plugin {
   statusLine(): string {
     if (this.timeMachine.current) return 'The Time Machine shows the past: the sync is stopped on this device until you restore a version or abort.'
     if (!this.store) return this.settings.syncEnabled ? 'Not syncing yet.' : 'Sync is off on this device.'
+    if (this.otherLock && this.status === 'connected') {
+      return `Vault "${this.vault?.name ?? ''}": locked by another device - what comes from it and the others arrives, what is written here waits until the lock ends. ${this.lockSentence()}`
+    }
     const label =
       this.status === 'connected' ? 'synced' : this.status === 'connecting' ? 'connecting' : 'offline'
     return `Vault "${this.vault?.name ?? ''}": ${label}, ${this.store.trackedCount()} notes`
@@ -2194,8 +2281,9 @@ export default class ObsidianConnectPlugin extends Plugin {
       this.statusBar.setText(this.settings.username ? '' : 'Connect: signed out')
       return
     }
+    // Receiving goes on under another device's lock; sending waits (0.8.16: it said "synced").
     const label =
-      this.status === 'connected' ? 'synced' : this.status === 'connecting' ? 'connecting' : 'offline'
+      this.status !== 'connected' ? (this.status === 'connecting' ? 'connecting' : 'offline') : this.otherLock ? 'locked - sending waits' : 'synced'
     const transfers = this.attachments?.activeTransfers()
     const moving = [transfers?.uploads ? `↑${transfers.uploads}` : '', transfers?.downloads ? `↓${transfers.downloads}` : '']
       .filter(Boolean)
@@ -2285,6 +2373,8 @@ export default class ObsidianConnectPlugin extends Plugin {
       shown.add(view)
       const share = view.file ? this.shareState(view.file) : null
       const locked = view.file ? this.editLocks.lockOf(view.file.path) : null
+      // Framed as well, in reading view too - the editor's bar is the editor's only (0.8.16).
+      view.containerEl.toggleClass('connect-locked-view', Boolean(view.file && this.lockBanner(view.file.path)))
       const text = locked?.why ?? (share?.readOnly ? share.text : null)
       const mark = this.readOnlyMarks.get(view)
       if (mark?.text === text) return
@@ -2304,6 +2394,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   private unmarkReadOnlyViews(): void {
     for (const mark of this.readOnlyMarks.values()) mark.el.remove()
     this.readOnlyMarks.clear()
+    this.app.workspace.containerEl.doc.querySelectorAll('.connect-locked-view').forEach((el) => el.removeClass('connect-locked-view'))
   }
 
   private showStatus(): void {

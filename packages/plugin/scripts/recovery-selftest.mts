@@ -339,7 +339,8 @@ try {
       const texts = history.versions().map((version) => history.textAt(version.seq))
       check(texts.includes('from anna\n') && texts[0] === 'from anna\nand more\n', 'with its whole history', texts)
     }
-    check(!existsSync(join(empty, 'users', A1.accountId)), "and A's data is gone from the server")
+    // The sweep writes P's fork first and deletes A's folder after it: P may have forked already.
+    check(await eventually(() => !existsSync(join(empty, 'users', A1.accountId)), 10_000), "and A's data is gone from the server")
 
     check(await P2.boot(), 'P2 comes back')
     check(

@@ -9,6 +9,7 @@ import {
   type TimesResponse
 } from '@obsidian-connect/shared'
 import { bytes, contentHash, fromUtf8 } from '@obsidian-connect/shared/crypto'
+import type { RollbackRecord } from '../sync/AccountSettings.js'
 import type { BackupSource } from '../sync/Rollback.js'
 import type { RoomCrypto } from '../sync/VaultSocket.js'
 import { NoteHistory } from './NoteHistory.js'
@@ -65,6 +66,26 @@ export function scopeName(scope: TimeMachineScope): string {
   if (scope.kind === 'vault') return 'the vault'
   const name = scope.path.slice(scope.path.lastIndexOf('/') + 1)
   return scope.kind === 'folder' ? `the folder ${name}` : `the note ${name.replace(/\.md$/, '')}`
+}
+
+/** What a rollback took back: the vault, a folder, or one note restored on its own. */
+export function recordScope(record: RollbackRecord): TimeMachineScope {
+  if (record.kind === 'note') return { kind: 'note', path: record.folder }
+  return record.folder ? { kind: 'folder', path: record.folder } : { kind: 'vault' }
+}
+
+/**
+ * The moments before the earlier rollbacks of exactly this place, as marks on its
+ * timeline. Only its own: shown in the vault, the moment before a folder's rollback
+ * restored the whole vault to it (the user, 0.8.16).
+ */
+export function rollbackMarks(records: RollbackRecord[], scope: TimeMachineScope): Array<{ at: number; label: string }> {
+  return records
+    .filter((record) => sameScope(recordScope(record), scope))
+    .map((record) => ({
+      at: record.startedAt - 1,
+      label: `before the ${record.kind === 'note' ? 'restore' : 'rollback'} of ${new Date(record.startedAt).toLocaleString()}`
+    }))
 }
 
 /** The backup servers, as far as the Time Machine reads them. */
@@ -286,15 +307,14 @@ export class TimeMachineSession {
       this.reach = timeline.reach
     }
     const positions: Position[] = ticks.map((tick) => ({ at: tick.at, tick }))
-    if (this.scope.kind !== 'note') {
-      for (const mark of this.options.marks ?? []) {
-        if (mark.at < this.reach) continue
-        const same = positions.find((position) => position.at === mark.at)
-        if (same) same.mark = mark.label
-        else positions.push({ at: mark.at, tick: { at: mark.at, from: mark.at, last: mark.at, changed: 0 }, mark: mark.label })
-      }
-      positions.sort((a, b) => a.at - b.at)
+    // A note's too since 0.8.16: its text at any moment is its history's.
+    for (const mark of this.options.marks ?? []) {
+      if (mark.at < this.reach) continue
+      const same = positions.find((position) => position.at === mark.at)
+      if (same) same.mark = mark.label
+      else positions.push({ at: mark.at, tick: { at: mark.at, from: mark.at, last: mark.at, changed: 0 }, mark: mark.label })
     }
+    positions.sort((a, b) => a.at - b.at)
     if (this.options.includeBackups && this.source.backups && this.reach > 0) positions.unshift(...(await this.backupPositions(this.source.backups, this.reach)))
     positions.push({ at: Number.POSITIVE_INFINITY, tick: null })
     this.positions = positions

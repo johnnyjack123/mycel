@@ -8,6 +8,38 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.16** (2026-11-02) - **the Time Machine's fourth round** (`docs/TIMEMACHINE.md`, the
+  user's try of 0.8.15). Plugin only.
+  - **The rollbacks in the notification center**, under a tab of their own, as the user drew
+    it: every rollback and every note restored from the Time Machine, on any device, the last
+    50, not cleared with the notices. *Undo…* opens the Time Machine of what it took back at
+    the moment before it, from anywhere; *Restore this version* there undoes it. A rollback's
+    notice carries the same *Undo…*. The overview's list of earlier rollbacks is gone: it
+    showed every rollback, a folder's in the vault's too, and undone from there the whole
+    vault went back.
+  - **A lock that ended while a device was away** stayed on there: the device asked only when
+    it started, and believing the vault locked it sent nothing until Obsidian restarted. Every
+    reconnect asks now (checked by putting the bug back).
+  - **What was written after the lock was taken is kept:** lifted on another device and typed
+    into there, the note's text was overwritten by the restore. A restore - of a note, or a
+    rollback's of each note - now takes back what the note said when the lock was taken and
+    merges in what came after, both kept where the two changed the same lines. With nothing
+    written meanwhile, the note is exactly the version chosen. The rollback's window names the
+    notes merged.
+  - **The timeline:** the moment shown is a thick bar in the accent on a band of its own, long
+    whatever the pointer does; the moments before earlier rollbacks are cyan and dashed - they
+    were purple, the accent of Obsidian's own theme, so the moment shown hid among them. Only
+    a place's own rollbacks are marked on it, a note's restores on a note's. The bar above says
+    what the colors mean.
+  - **Under another device's lock:** a bar at the top of a locked note's editor with the
+    reason and *Unlock…*, the view framed in reading mode too; the status bar says *locked -
+    sending waits* instead of *synced*.
+  - A rollback in a shared folder: the notes it moved to the trash get one notice that the
+    rollback did it, instead of an *Undo* per note.
+  - Tests: `test:timemachine` 89 (was 66), `test:rollback` 78 (was 72). `test:recovery`
+    waits for the sweep to delete a removed account's folder: the participant's fork is
+    written first, and CI checked in between.
+
 - **0.8.15** (2026-11-01) - **the Time Machine's third round** (`docs/TIMEMACHINE.md`,
   the user's first try of 0.8.13, X1 to X4 decided as recommended). Sync server, backup
   server and plugin; the sync server first.

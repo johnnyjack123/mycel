@@ -361,8 +361,10 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
     background-color 90ms;
 }
 
+/* The moment before an earlier rollback: cyan and dashed - the accent, which marks
+   the moment shown, is purple in Obsidian's own theme (0.8.16). */
 .connect-tm-bar.is-mark .connect-tm-bar-line {
-  background-color: var(--color-purple);
+  background: repeating-linear-gradient(90deg, var(--color-cyan) 0 4px, transparent 4px 6px);
 }
 
 .connect-tm-bar.is-backup .connect-tm-bar-line {
@@ -374,16 +376,70 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
 }
 
 .connect-tm-bar:hover .connect-tm-bar-line {
-  background-color: var(--text-normal);
+  background: var(--text-normal);
+}
+
+/* The moment shown: long and thick whatever the pointer does, on a band of its own. */
+.connect-tm-bar.is-current {
+  background-color: var(--background-modifier-hover);
 }
 
 .connect-tm-bar.is-current .connect-tm-bar-line {
-  height: 4px;
-  background-color: var(--interactive-accent);
+  width: max(40px, calc(var(--connect-tm-base) * var(--connect-tm-scale, 1)));
+  height: 6px;
+  border-radius: 3px;
+  background: var(--interactive-accent);
+  transform: none;
 }
 
 .connect-tm-strip:focus-visible .connect-tm-bar.is-current .connect-tm-bar-line {
   box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+}
+
+/* What the colors on the timeline mean, in the bar above. */
+.connect-tm-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  color: var(--text-muted);
+}
+
+.connect-tm-legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  border-radius: 1px;
+}
+
+.connect-tm-legend-swatch.is-mark {
+  background: repeating-linear-gradient(90deg, var(--color-cyan) 0 4px, transparent 4px 6px);
+}
+
+.connect-tm-legend-swatch.is-backup {
+  background-color: var(--color-orange);
+}
+
+/* A note locked by another device, or being restored here: framed, and a bar at the top of its editor. */
+.workspace-leaf-content.connect-locked-view > .view-content {
+  box-shadow: inset 0 0 0 2px rgba(var(--color-orange-rgb), 0.55);
+}
+
+.connect-lock-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4em 0.75em;
+  padding: 0.4em 0.75em;
+  border-bottom: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--color-orange);
+  background-color: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+}
+
+.connect-lock-banner-text {
+  flex: 1;
+  min-width: 12em;
 }
 
 /* The moment under the pointer, to the second. */
@@ -534,20 +590,29 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   word-break: break-word;
 }
 
-.connect-tm-rollbacks {
-  margin-top: 0.75em;
-}
-
-.connect-tm-rollback {
+/* The notification center: the notices, and the rollbacks under a tab of their own. */
+.connect-notices-tabs {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.25em 1em;
-  padding: 0.4em 0;
+  gap: 0.25em;
+  margin-bottom: 0.6em;
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-/* The notification center. */
+.connect-notices-tabs > .connect-notices-tab {
+  margin-bottom: -1px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--text-muted);
+}
+
+.connect-notices-tabs > .connect-notices-tab.is-active {
+  border-bottom-color: var(--interactive-accent);
+  color: var(--text-normal);
+}
+
 .connect-notices-head {
   display: flex;
   align-items: center;

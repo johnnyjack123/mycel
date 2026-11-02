@@ -19,6 +19,11 @@ export interface NoticeAction {
   data: unknown
   /** Done already, from the notice or from the center: not offered again. */
   done?: boolean
+  /**
+   * Opens something rather than doing it - *Undo…* of a rollback opens the Time
+   * Machine at the moment before it -, so it stays on offer after it was pressed.
+   */
+  again?: boolean
 }
 
 export interface NoticeEntry {
@@ -107,6 +112,10 @@ class NoticeLog {
     const action = entry.action
     const handler = action ? this.handlers.get(action.kind) : undefined
     if (!action || action.done || !handler) return
+    if (action.again) {
+      await handler(action.data)
+      return
+    }
     action.done = true
     this.scheduleSave()
     this.emit()
@@ -197,4 +206,18 @@ export class Notice extends ObsidianNotice {
     super(message as string, duration)
     this.entry = notices.add(text, action)
   }
+}
+
+/** A notice with its button, pressed through the center's entry - so it is pressed once, wherever. */
+export function noticeWithAction(text: string, duration: number, action: NoticeAction): Notice {
+  const fragment = document.createDocumentFragment()
+  fragment.createSpan({ text: `${text} ` })
+  let notice: Notice | null = null
+  fragment.createEl('button', { text: action.label }).addEventListener('click', () => {
+    notice?.hide()
+    const entry = notice?.entry
+    if (entry) void notices.act(entry).catch(() => undefined)
+  })
+  notice = new Notice(fragment, duration, action)
+  return notice
 }

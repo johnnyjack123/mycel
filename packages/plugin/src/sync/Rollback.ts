@@ -55,6 +55,8 @@ export interface NoteChange {
   /** Its text then, and on the server now. */
   textThen?: string
   textNow?: string
+  /** Its text when the vault was locked for the rollback: what was written after that is kept. */
+  textBase?: string
   /** Did not exist then: goes to the trash. */
   trash?: true
   /** In the trash now, there then: comes back. */
@@ -166,6 +168,8 @@ export interface RollbackOutcome {
   copied: Array<{ path: string; hash: string }>
   /** What could not be done as planned, and why. */
   problems: string[]
+  /** Notes written in after the lock was taken: what was written is kept, merged into the text then. */
+  merged: string[]
 }
 
 export interface RollbackDeps {
@@ -196,6 +200,12 @@ export interface RollbackDeps {
    * Throws while someone else holds the lock.
    */
   lock?: (folder: string) => Promise<{ release(): Promise<void> }>
+  /**
+   * The notes and files it is about to move to the trash, by id: in a shared
+   * folder that is a delete for everyone, and its notice offers to undo the
+   * rollback rather than the delete alone (0.8.16).
+   */
+  trashing?: (ids: string[]) => void
 }
 
 /** What the history planning knew of a note or file it could not reach, for a backup to fill in. */
@@ -279,14 +289,14 @@ export class Rollback {
    * and a backup where that does not reach; `progress` hears how far reading
    * the history got.
    */
-  async plan(to: number, folder = '', progress: (done: number, of: number) => void = () => undefined): Promise<RollbackPlan> {
+  async plan(to: number, folder = '', progress: (done: number, of: number) => void = () => undefined, lockedAt?: number): Promise<RollbackPlan> {
     const index = await RoomHistory.load(this.deps.api, indexRoom(this.deps.vaultId), this.deps.indexCrypto)
     if (!index.reaches(to)) {
       const fromBackup = await this.planFromBackup(to, folder)
       if (fromBackup) return fromBackup
       throw new IndexOutOfReach(index.reach)
     }
-    const { plan, unreached } = await this.planFromHistory(to, folder, index, progress)
+    const { plan, unreached } = await this.planFromHistory(to, folder, index, progress, lockedAt)
     if (unreached.size > 0) await this.fillFromBackup(plan, unreached)
     plan.notes.sort(byPath)
     plan.files.sort(byPath)
@@ -298,7 +308,8 @@ export class Rollback {
     to: number,
     folder: string,
     index: RoomHistory,
-    progress: (done: number, of: number) => void
+    progress: (done: number, of: number) => void,
+    lockedAt: number | undefined
   ): Promise<{ plan: RollbackPlan; unreached: Map<string, Unreached> }> {
     const { store, attachments } = this.deps
     const then = index.stateAt(to)
@@ -366,6 +377,8 @@ export class Rollback {
         if (change.pathNow === null) change.revive = true
         else if (change.pathNow !== change.pathThen) change.move = true
         if (textNow !== textThen) change.text = true
+        // By the authors' clocks, as everything here: what came after the lock is kept.
+        if (change.text && lockedAt !== undefined) change.textBase = textAt(lockedAt)
         if (change.revive || change.move || change.text) plan.notes.push({ ...change, textThen, textNow })
       } catch (error) {
         const reason = error instanceof ApiError && error.status === 404 ? 'the server has no history of it' : `its history could not be read: ${error instanceof Error ? error.message : String(error)}`
@@ -786,6 +799,7 @@ export class Rollback {
 
     // What did not exist then goes first: it frees the paths the rest comes back to.
     progress('Moving what came later to the trash…')
+    this.deps.trashing?.([...plan.notes.filter((note) => note.trash).map((note) => note.docId), ...plan.files.filter((file) => file.trash).map((file) => file.fileId)])
     for (const note of plan.notes) if (note.trash) await attempt(note.pathNow ?? note.docId, () => store.trashNote(note.docId))
     if (attachments) for (const file of plan.files) if (file.trash) await attempt(file.pathNow ?? file.fileId, () => attachments.trashFile(file.fileId))
 
@@ -847,10 +861,13 @@ export class Rollback {
 
     progress('Changing notes and files back…')
     let done = 0
+    const merged: string[] = []
     const changes = plan.notes.filter((note) => note.text && note.docId).length + plan.files.filter((file) => file.content).length
     for (const note of plan.notes) {
       if (!note.text || !note.docId) continue
-      await attempt(note.pathThen ?? note.docId, () => store.rollBackText(note.docId, note.textThen as string))
+      await attempt(note.pathThen ?? note.docId, async () => {
+        if ((await store.rollBackText(note.docId, note.textThen as string, note.textBase)) === 'merged') merged.push(note.pathThen ?? note.docId)
+      })
       done += 1
       progress(`Changing notes and files back… ${done} of ${changes}`)
     }
@@ -866,8 +883,10 @@ export class Rollback {
     const finished: RollbackRecord = { ...record, state: problems.length === 0 ? 'done' : 'failed', finishedAt: this.now }
     if (problems.length > 0) finished.error = `${problems.length} problem(s), e.g. ${problems[0]}`
     settings.setRollback(finished)
-    log.info(`rollback ${record.id}: ${finished.state}${problems.length > 0 ? `, ${problems.length} problem(s)` : ''}`)
-    return { record: finished, copy, copied, problems }
+    log.info(
+      `rollback ${record.id}: ${finished.state}${problems.length > 0 ? `, ${problems.length} problem(s)` : ''}${merged.length > 0 ? `, ${merged.length} note(s) written in since the lock merged` : ''}`
+    )
+    return { record: finished, copy, copied, problems, merged }
   }
 
   /**

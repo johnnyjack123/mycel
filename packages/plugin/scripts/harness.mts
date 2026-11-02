@@ -420,6 +420,11 @@ export class Device {
         void store.resume().then(() => this.editors.refresh())
         void attachments.resume()
         void this.refreshAccount()
+        // What main.ts's `checkVaultLock` does on a reconnect: a lock lifted while away was told to nobody here.
+        void this.api.vaultLock(openVault.vaultId).then(
+          ({ lock }) => this.followLock(lock),
+          () => undefined
+        )
       }
     })
     this.refs = [

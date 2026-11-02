@@ -716,8 +716,9 @@ front (`TimeMachineControl.opened`).
 column move right by its width, those of the top row down by the bar's height. A bar every
 26 px whatever their number, a 12 px gap where a day begins, scrolling beyond what fits (the
 wheel over it scrolls only it). The moment before each earlier rollback of the scope is a
-place of its own (`SessionOptions.marks`, drawn purple); a click on the rollback in the
-overview goes there (`TimeMachineSession.moveToMark`).
+place of its own (`SessionOptions.marks`, drawn purple - cyan and dashed since 0.8.16); a
+click on the rollback in the overview goes there (`TimeMachineSession.moveToMark`; from the
+notification center since 0.8.16).
 
 **Notices with a button** (`notices.ts`): the text is read before Obsidian takes the
 fragment's nodes into its own notice - read after, it was empty, and nothing was kept. A
@@ -733,3 +734,99 @@ button), `test:rooms` (the holder writes under a preview's lock), `test:backup` 
 nothing changed starts no restic, the day's check, a changed retention still forgets),
 `test:load` (the explorer's guard installed). Each fix of the editor and the notices was
 checked by putting the bug back.
+
+## The fourth round (0.8.16, the user's try of 0.8.15, 2026-11-02)
+
+What works, as the user found it: the lock, the restore taking effect at once, a folder's
+rollback, undoing a rollback from the moment before it, the explorer's guard and links, the
+timeline with many changes. What the user found, and asked for:
+
+- **Purple bars, and the moment shown hard to tell.** The moments before earlier rollbacks
+  were purple - and so is the accent that marks the moment shown, in Obsidian's own theme.
+  The moment shown is to be much larger: longer, thicker, and staying so.
+- **No *Undo* for a rollback in the notification center** - only, in a shared folder, one per
+  note the rollback deleted for everyone. The whole rollback is to be undoable instead.
+- **The earlier rollbacks in the overview listed every rollback**, a folder's in the vault's
+  too: undone from there, the whole vault went back. The user's design: a tab of the
+  notification center lists the rollbacks, not clearable, in place of that list; each opens
+  the Time Machine of what it took back, at the moment before it - without the Time Machine
+  having to be open first.
+- **A lock lifted while a device was offline was never learned there.** Asked: the device
+  asked only when it started, and the notice that the lock ended reached nobody while it
+  was away. Worse than it looked: while it believes the vault locked it sends nothing, so
+  nothing written there went out until Obsidian restarted.
+- **The other devices said *synced* under a lock.** Asked whether their sync is off: it is
+  not - what comes from the other devices and the people one shares with still arrives, and
+  what is written there waits, everywhere in the vault, not only in what is locked. The
+  server cannot tell the scope apart: it knows rooms, not paths.
+- **A locked note is to be marked in the editor** on the other devices; the lock in its
+  header went unnoticed.
+- **Lifted on another device and typed into there, the note's text was lost to the restore.**
+  Asked whether that is right: it was overwritten - kept only in the note's history and the
+  restoring device's backups.
+
+### Decided (the user, 2026-11-02)
+
+- **The rollbacks in the notification center**, under a tab of their own beside the notices,
+  as the user drew it. Every rollback and every note restored from the Time Machine, on any
+  device of the account, the last 50; clearing the notices leaves them. *Undo…* opens the
+  Time Machine of the vault, the folder or the note at the moment before - the overview's
+  list is gone. A rollback's notice carries the same *Undo…*.
+- **Undoing a rollback stays as built**: the moment before it, shown, and *Restore this
+  version* there.
+
+### Taken without asking (for the user to confirm on trying it)
+
+- **What was written after the lock was taken is kept.** A restore takes back what the note
+  said when the lock was taken and merges what came after into the text then, both kept
+  where the two changed the same lines - invariant 4's rule. The normal case, nothing
+  written, is exactly the version chosen. It covers the lock lifted on another device and
+  the people in a shared note, whom the lock never held.
+- ***Undo…*, not *Revoke*:** revoking is what ends a share in this plugin.
+- **The moment before a rollback is cyan and dashed**, the moment shown a thick bar in the
+  accent on a band of its own; the bar above says what the colors mean when they are there.
+- **A shared folder's per-note *Undo* is not offered for what this device's rollback
+  deleted:** the notice says the rollback did it and where it is undone.
+- **The bar in the editor** is CodeMirror's own panel, so nothing of the note is covered; the
+  view is framed in orange in the reading view too.
+
+### How it is built (0.8.16)
+
+**The rollbacks' tab** (`NotificationsView.ts`): `rollback:<id>` records of the account's
+settings, newest first, drawn again when the settings change. A note restored from the Time
+Machine writes one too (`kind: 'note'`, its path in `folder`, so a 0.8.15 device lists it by
+that and marks no folder with it); 50 are kept instead of 20. *Undo…* is
+`TimeMachineControl.openBefore`: the Time Machine of `recordScope(record)`, opened as from a
+menu, then moved to the mark at `startedAt - 1` - or there at once when it shows that place
+already. A rollback's notice and a note's restore notice carry it as a `NoticeAction` of kind
+`rollback-undo` that stays on offer (`again`), since it only opens something.
+
+**Marks** (`rollbackMarks`): only the records of exactly the place shown - the vault's own
+in the vault, a folder's own in the folder, a note's restores in the note; a note's timeline
+takes marks too now, its text at any moment being its history's.
+
+**What was written after the lock** (`DocStore.rewind`, behind `restoreFromPast` and
+`rollBackText`): the server's state waited for, what the note says backed up, and if it is
+not what it said when the lock was taken (`base`), `threeWayMerge(base, now, then)`. For a
+note, `base` is what the Time Machine took for now when it opened, read while the past is
+still shown (`TimeMachineSession.nowTextOf`); for a rollback, each note's text in its history
+at the moment the lock was taken (`HandedLock.lockedAt` into `Rollback.plan`, `textBase`), by
+the authors' clocks like everything else there. The rollback's window lists the notes merged.
+
+**A lock lifted while away**: every reconnect asks the server whether the vault is still
+locked (`checkVaultLock`), not only the start.
+
+**The other devices under a lock**: the status bar says *locked - sending waits*; *This
+device* says what arrives and what waits. A locked note's editor shows a bar at its top with
+the reason and *Unlock…* (`pastEditor.ts`, `showPanel`, one panel per bar so remote edits do
+not redraw it), its view framed; this device's own restore shows its reason the same way.
+
+**A rollback in a shared folder** tells main.ts what it is about to trash
+(`RollbackDeps.trashing`); the folder's delete notice for those, seconds later, offers no
+per-note *Undo*.
+
+Tested in `test:timemachine` (89 checks: the rollbacks' marks per place, a button that opens
+something offered again, the editor's bar kept under remote edits and gone with the lock, a
+restore keeping what was written after the lock was lifted, a device learning on reconnecting
+that the lock ended - checked by putting the bug back), `test:rollback` (a rollback's plan
+with the text at the lock, and what was written after it kept).

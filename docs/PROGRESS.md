@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-01 · **0.8.15: the Time Machine's third round, from the user's first try - Abort and Restore this version, a restore made under the lock until it reached the server, what is locked read-only in the editor on every device, the explorer and links kept inside what is shown, the timeline on the left with a fixed distance and scrolling, earlier rollbacks as moments on it, notices with a button kept in the center, a backup with nothing changed done at once. Next: the user tries it (sync server, then backup server, then the plugin); then 0.9's design.**_
+_Last updated: 2026-11-02 · **0.8.16: the Time Machine's fourth round, from the user's try of 0.8.15 - the rollbacks in a tab of the notification center, each with Undo… opening the Time Machine before it; a restore keeping what was written after the lock; a lock that ended while a device was away learned on reconnecting; the moment shown larger, the marks cyan; a bar in a locked note's editor; the status under a lock. Next: the user tries it (plugin only, item 14); then 0.9's design.**_
 
 ## Where we are
 
@@ -146,6 +146,21 @@ server reading folder notes. What is next:
    the note or folder shown; the timeline on the left with many changes, scrolling, the day
    gaps; an earlier rollback clicked in the overview; a delete for everyone's *Undo* from the
    bell; how long a backup takes now, and the steps the backup server's log names.
+14. The user tried 0.8.15 on 2026-11-02: the lock, the restore at once, a folder's rollback,
+   undoing it, the explorer's guard and links, a dense timeline all work. Found: the marks
+   purple like the moment shown, which was hard to see; no *Undo* for a rollback in the
+   center; the overview's rollbacks out of scope; a device offline while the lock ended stayed
+   locked (and sent nothing); *synced* under a lock; a locked note not marked in its editor;
+   typed after lifting the lock, lost to the restore. The user's design: a tab of rollbacks in
+   the notification center, each opening the Time Machine before it. Built as 0.8.16 (plugin
+   only; `docs/TIMEMACHINE.md`, "The fourth round", also what was taken without asking -
+   above all that a restore keeps what was written after the lock). To try: the moment shown
+   on the timeline, a rollback's mark (cyan, dashed) and the bar's legend; *Undo…* from the
+   center's *Rollbacks* tab, from outside the Time Machine, for a folder and a note; a
+   rollback in a shared folder (one notice, no per-note *Undo*); a device offline while the
+   lock is lifted, then online (it writes again at once); the status bar and the editor's bar
+   with *Unlock…* on another device under a lock; lifting the lock there and typing into the
+   note, then restoring - the typed text stays.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
@@ -189,11 +204,11 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing once `feat/time-machine-2` (0.8.13) is merged. Every branch of 0.8
+Nothing once `feat/time-machine-4` (0.8.16) is merged. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
 `fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`, `feat/time-machine`,
-`fix/time-machine-feedback`) is merged into `main`
+`fix/time-machine-feedback`, `feat/time-machine-2`, `feat/time-machine-3`) is merged into `main`
 and holds nothing `main` lacks; they are still on the remote - deleting them is the
 user's call, as with the earlier branches.
 
@@ -229,7 +244,15 @@ user's call, as with the earlier branches.
   file events, `file-open` fetching, memory with large files on a phone, the Time
   Machine on screen (0.8.13: the timeline and its wave, the bar, the overview, the
   explorer and editors showing the past, the marks in live preview, a large vault's
-  structure written per tick, the windows on the other devices), the bell.
+  structure written per tick, the windows on the other devices), the bell and its tabs,
+  the bar at the top of a locked note's editor in Obsidian's own editor (0.8.16).
+- Under another device's lock, what is written anywhere in the vault waits, not only in
+  what the lock covers: the server knows rooms, not paths. Letting the rest through would
+  need the lock to name its rooms (a note's own, a folder's notes and the index) - not
+  asked for.
+- A rollback's notes whose text then comes from a backup are restored without the text at
+  the lock: what was written into them after the lock is overwritten there (it stays in
+  the history and in the rollback's copy).
 - The Time Machine's ticks of a folder or the vault go by the server's minutes for edits
   (rounded down, by its clock) and by the authors' clocks for the rest, so an edit made
   in the minute a note moved into a folder can make a tick of that folder, and a tick
@@ -272,6 +295,12 @@ restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_win
 2026-10-15). `test:backup` needs
 `OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
+
+At 0.8.16, run 2026-11-02 on `feat/time-machine-4`: `typecheck` and `build` pass;
+`test:merge` 174, `test:load` 17, `test:rooms` 401, `test:sync` 31, `test:recovery` 72,
+`test:account` 52, `test:rollback` 78, `test:timemachine` 89, `test:backup` 231, and on
+a scratch server started fresh from 0.8.16 `test:socket` 19, `test:vault` 243,
+`test:folders` 121 - all pass.
 
 At 0.8.15, run 2026-11-01 on `feat/time-machine-3`: `typecheck` and `build` pass;
 `test:merge` 174, `test:load` 16, `test:rooms` 401, `test:sync` 31, `test:recovery` 72,
@@ -367,6 +396,11 @@ CLAUDE.md, Gotchas - `test:socket` and `test:vault` default to 1234, so always p
 ---
 
 ## Log
+
+### 2026-11-02
+- The user tried 0.8.15 and drew the rollbacks' tab: built as 0.8.16 on `feat/time-machine-4`
+  with what else they found (item 14). The lock that ended while a device was away was a
+  real bug - the device sent nothing until a restart -, checked by putting it back.
 
 ### 2026-11-01
 - The user's further try of the Time Machine: X1 to X4 proposed and decided as recommended,

@@ -323,6 +323,34 @@ try {
   )
   check(A1.vault.text('Welcome.md') === 'hello, outside the folder\n', 'and nothing outside it changes')
 
+  // --- written after the lock was taken: kept (0.8.16) -------------------------------------------------------
+  {
+    await A1.vault.userCreate('Lines/Lines.md', 'one\ntwo\nthree\n')
+    check(await eventually(() => A2.vault.text('Lines/Lines.md') === 'one\ntwo\nthree\n', 15_000), 'A writes a note of three lines')
+    await delay(300)
+    const T4 = Date.now()
+    await delay(300)
+    await A1.vault.userWrite('Lines/Lines.md', 'one\nTWO\nthree\n')
+    check(await eventually(() => A2.vault.text('Lines/Lines.md') === 'one\nTWO\nthree\n', 15_000), 'and changes it')
+    await delay(300)
+    // The Time Machine locks the vault here; the other device lifts the lock and writes on.
+    const lockedAt = Date.now()
+    await delay(300)
+    await A2.vault.userWrite('Lines/Lines.md', 'one\nTWO\nthree\nfour, after the lock\n')
+    check(await eventually(() => A1.vault.text('Lines/Lines.md') === 'one\nTWO\nthree\nfour, after the lock\n', 15_000), 'the other device writes after the lock was taken')
+    await delay(300)
+    const linesPlan = await A1.rollback.plan(T4, 'Lines', undefined, lockedAt)
+    const planned = linesPlan.notes.find((entry) => entry.pathNow === 'Lines/Lines.md')
+    check(planned?.textThen === 'one\ntwo\nthree\n' && planned.textBase === 'one\nTWO\nthree\n', 'the plan knows what the note said then and when the lock was taken', planned)
+    const kept = await A1.rollback.apply(linesPlan, { backups: [ok] })
+    check(
+      kept.merged.includes('Lines/Lines.md') && (await eventually(() => A1.vault.text('Lines/Lines.md') === 'one\ntwo\nthree\nfour, after the lock\n')),
+      'the rollback takes back what came before the lock and keeps what was written after it',
+      { merged: kept.merged, text: A1.vault.text('Lines/Lines.md') }
+    )
+    check(await eventually(() => A2.vault.text('Lines/Lines.md') === 'one\ntwo\nthree\nfour, after the lock\n', 15_000), 'everywhere')
+  }
+
   // --- the Time Machine after a restore ----------------------------------------------------------------------
   {
     const keys = A1.keys as NonNullable<typeof A1.keys>

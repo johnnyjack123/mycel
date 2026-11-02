@@ -1,5 +1,5 @@
 import { EditorState, Prec, StateEffect, StateField, type Extension, type Range, type Transaction } from '@codemirror/state'
-import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from '@codemirror/view'
+import { Decoration, EditorView, ViewPlugin, WidgetType, showPanel, type DecorationSet, type Panel, type ViewUpdate } from '@codemirror/view'
 import { lineDiff } from '@obsidian-connect/shared'
 
 // A note showing its past is shown in its own editor (`docs/TIMEMACHINE.md`,
@@ -8,7 +8,8 @@ import { lineDiff } from '@obsidian-connect/shared'
 // through between them. The editor never writes: the past is in the file, and
 // nothing of it may become an edit. A note that is locked - the Time Machine's
 // on this device, another device's on this one - is read-only the same way,
-// without marks (the third round).
+// without marks (the third round), and says so in a bar at its top: the lock
+// in the note's header alone went unnoticed (0.8.16).
 
 /** What an editor shows of the past: the note's text now (null: not there now), and whether changes are marked. */
 export interface PastShown {
@@ -16,11 +17,19 @@ export interface PastShown {
   marks: boolean
 }
 
+/** The bar at the top of a locked note's editor: why, and the way to lift another device's lock. */
+export interface LockBanner {
+  text: string
+  unlock: (() => void) | null
+}
+
 export interface PastEditorHost {
   /** For a file the Time Machine shows the past in, what to mark; null for any other. */
   pastOf(path: string): Promise<PastShown | null>
   /** Why a file may not be edited now; null when it may. */
   lockedWhy(path: string): string | null
+  /** The bar a locked file's editor shows; null for none. */
+  banner?(path: string): LockBanner | null
   onChange(listener: () => void): () => void
 }
 
@@ -29,6 +38,7 @@ export type PathOf = (state: EditorState) => { path: string } | null
 interface Shown {
   past: PastShown | null
   locked: string | null
+  banner: LockBanner | null
 }
 
 const setShown = StateEffect.define<Shown>()
@@ -79,10 +89,37 @@ function marksFor(now: string | null, then: string): DecorationSet {
   return Decoration.set(ranges, true)
 }
 
-const NOTHING: Shown = { past: null, locked: null }
+const NOTHING: Shown = { past: null, locked: null, banner: null }
 
 function readOnly(shown: Shown): boolean {
   return shown.past !== null || shown.locked !== null
+}
+
+// One panel per bar: a new constructor would make CodeMirror build the panel
+// again on every change of the note, flickering under remote edits.
+const panels = new WeakMap<LockBanner, () => Panel>()
+
+function panelOf(banner: LockBanner): () => Panel {
+  let make = panels.get(banner)
+  if (!make) {
+    make = () => {
+      const dom = document.createElement('div')
+      dom.className = 'connect-lock-banner'
+      const text = document.createElement('span')
+      text.className = 'connect-lock-banner-text'
+      text.textContent = banner.text
+      dom.append(text)
+      if (banner.unlock) {
+        const button = document.createElement('button')
+        button.textContent = 'Unlock…'
+        button.addEventListener('click', () => banner.unlock?.())
+        dom.append(button)
+      }
+      return { dom, top: true }
+    }
+    panels.set(banner, make)
+  }
+  return make
 }
 
 const shownField = StateField.define<Shown & { deco: DecorationSet }>({
@@ -97,14 +134,20 @@ const shownField = StateField.define<Shown & { deco: DecorationSet }>({
       }
     }
     if (!set && !transaction.docChanged) return value
-    return { past: shown.past, locked: shown.locked, deco: shown.past?.marks ? marksFor(shown.past.now, transaction.state.doc.toString()) : Decoration.none }
+    return {
+      past: shown.past,
+      locked: shown.locked,
+      banner: shown.banner,
+      deco: shown.past?.marks ? marksFor(shown.past.now, transaction.state.doc.toString()) : Decoration.none
+    }
   },
   provide: (field) => [
     // Block widgets may only come from a state field, not from a view plugin.
     EditorView.decorations.from(field, (value) => value.deco),
     // Both facets take the first value given, and Obsidian gives its own before a
     // plugin's: at the default precedence the note stayed editable (0.8.14).
-    Prec.highest([EditorState.readOnly.from(field, readOnly), EditorView.editable.from(field, (value) => !readOnly(value))])
+    Prec.highest([EditorState.readOnly.from(field, readOnly), EditorView.editable.from(field, (value) => !readOnly(value))]),
+    showPanel.from(field, (value) => (value.banner ? panelOf(value.banner) : null))
   ]
 })
 
@@ -126,7 +169,8 @@ const refuseTyping = EditorState.transactionFilter.of((transaction) => {
 
 function same(a: Shown, b: Shown): boolean {
   const past = a.past === b.past || (a.past !== null && b.past !== null && a.past.now === b.past.now && a.past.marks === b.past.marks)
-  return past && a.locked === b.locked
+  const banner = a.banner?.text === b.banner?.text && (a.banner?.unlock === null) === (b.banner?.unlock === null)
+  return past && banner && a.locked === b.locked
 }
 
 export function pastEditorExtension(host: PastEditorHost, pathOf: PathOf): Extension {
@@ -157,7 +201,7 @@ export function pastEditorExtension(host: PastEditorHost, pathOf: PathOf): Exten
         const path = pathOf(this.view.state)?.path ?? null
         const past = path ? await host.pastOf(path).catch(() => null) : null
         if (this.destroyed || ask !== this.asked || !this.view.dom.isConnected) return
-        const shown: Shown = { past, locked: path ? host.lockedWhy(path) : null }
+        const shown: Shown = { past, locked: path ? host.lockedWhy(path) : null, banner: path ? (host.banner?.(path) ?? null) : null }
         if (same(this.view.state.field(shownField, false) ?? NOTHING, shown)) return
         this.view.dispatch({ effects: setShown.of(shown) })
       }
