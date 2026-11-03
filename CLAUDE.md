@@ -29,8 +29,8 @@ the server in **`docs/SERVER.md`**. Where the work stands and what is next:
 running it in **`docs/BACKUP.md`**; sharing a folder and the small fixes of 0.8 in
 **`docs/PHASE7.md`**; the Time Machine (0.8.11, the user's decisions T1 to T8; its
 second round, 0.8.13, U1 to U5, V1 to V6, W1 to W3) in **`docs/TIMEMACHINE.md`**.
-A new milestone gets its design document (`docs/PHASE8.md` for 0.9) written with the
-user before it is built.
+A new milestone gets its design document written with the user before it is built: 0.9's
+is **`docs/PHASE8.md`** (drafted 2026-11-03, waiting for the user's decisions).
 
 ## Non-negotiable invariants
 

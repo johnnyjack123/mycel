@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-03 · **0.8.17: the notification center is called *Connect*. 0.8.16 tried (item 15); items 4 to 6 of its list still to try. Next: 0.9's design (`docs/PHASE8.md`), written with the user.**_
+_Last updated: 2026-11-03 · **0.8.17: the notification center is called *Connect*. 0.8.16 tried (item 15); items 4 to 6 of its list still to try. 0.9's design drafted in `docs/PHASE8.md` - waiting for the user's decisions (S1, S2, D1, L1, N1, N2, P1, P2, the order); nothing of it built.**_
 
 ## Where we are
 
@@ -166,7 +166,8 @@ server reading folder notes. What is next:
    the notification center titled *Connect* - 0.8.17. Asked whether *Undo…* backs up: it does,
    as every restore (the Time Machine backs up as it opens, again before *Restore this
    version*; a rollback keeps its copy in `rollbacks/` besides). What 0.8.16 took without
-   asking was not commented on. Next: 0.9's design.
+   asking was not commented on. 0.9's design drafted the same day (`docs/PHASE8.md`), with
+   what reading the code for it turned up (Known issues).
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no
@@ -245,6 +246,17 @@ user's call, as with the earlier branches.
 
 ## Known issues / debt
 
+- **Found while drafting 0.9 (2026-11-03, `docs/PHASE8.md`, each checked in the code; not
+  fixed yet):**
+  - A rotation of a shared note's or folder's key seals it to every member the server
+    lists, and for one who is no contact to the key the server gives - a server could
+    list itself and read on (S, finding 1). Proposed as the first fix of 0.9.
+  - The sync server never `fsync`s; a frame torn by a crash is never cut off and garbles
+    the next; a push during a compaction is written twice; a compaction writes the log
+    before its metadata; the CLI and the server can overwrite each other's
+    `accounts.json` (D).
+  - A note let go beyond `maxLoadedDocuments` may still hold an unsent change or be held
+    for recovery; reconnecting does not catch up notes let go (L).
 - **Only on a device** (untestable headless): menus, modals, the settings tab, the
   status bar marks, the header lock, `requestUrl` with binary bodies on mobile, binary
   file events, `file-open` fetching, memory with large files on a phone, the Time
