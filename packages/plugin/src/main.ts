@@ -419,7 +419,7 @@ export default class ObsidianConnectPlugin extends Plugin {
 
     this.addRibbonIcon('refresh-cw', 'Obsidian Connect status', () => this.showStatus())
     this.addCommand({ id: 'show-status', name: 'Show sync status', callback: () => this.showStatus() })
-    this.addCommand({ id: 'notifications', name: 'Show notifications', callback: () => void this.openNotifications() })
+    this.addCommand({ id: 'notifications', name: 'Open Connect: notifications and rollbacks', callback: () => void this.openNotifications() })
     this.addCommand({
       id: 'time-machine-note',
       name: 'Open the Time Machine for this note',
@@ -1688,7 +1688,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   // --- the notification center ------------------------------------------------------------
 
   private addNotificationsRibbon(): void {
-    const ribbon = this.addRibbonIcon('bell', 'Obsidian Connect notifications', () => void this.openNotifications())
+    const ribbon = this.addRibbonIcon('bell', 'Connect: notifications and rollbacks', () => void this.openNotifications())
     ribbon.addClass('connect-notices-ribbon')
     this.noticeBadge = ribbon.createSpan({ cls: 'connect-notices-badge' })
     const update = (): void => {
@@ -1885,7 +1885,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         const now = Date.now()
         const ids = [...news.batch.docIds.map((note) => note.docId), ...news.batch.files.map((file) => file.file)]
         const byRollback = ids.length > 0 && ids.every((id) => (this.trashedByRollback.get(id) ?? 0) > now)
-        if (byRollback) new Notice(`${said} The rollback did it - Rollbacks in the notification center undoes it.`, 10_000)
+        if (byRollback) new Notice(`${said} The rollback did it - Undo… under Rollbacks in Connect (the bell) takes it back.`, 10_000)
         else noticeWithAction(said, 15_000, { label: 'Undo', kind: 'folder-undelete', data: news.batch })
         return
       }

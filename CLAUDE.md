@@ -501,7 +501,8 @@ people: whoever runs it can read the vaults on it.
   plugin's menu for that file. Beside it a mark says whether the note is shared
   and whether only to read; a note shared to read only also gets a lock in the
   header of every view showing it - a phone has no status bar.
-- **The notification center** (`notices.ts`, `NotificationsView.ts`; 0.8.13): the
+- **The notification center** (`notices.ts`, `NotificationsView.ts`; 0.8.13), titled
+  *Connect* for the user since 0.8.17 - it holds more than notices: the
   plugin's `Notice` is its own subclass of Obsidian's, which also keeps each notice -
   when, the text, a failure or not, the note it names - in the plugin folder's
   `notices.json` (500, or 30 days). A bell in the ribbon counts the unseen and opens the

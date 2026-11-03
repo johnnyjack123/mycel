@@ -309,7 +309,7 @@ export class ApplyModal extends Modal {
     }
     contentEl.createEl('p', {
       cls: 'setting-item-description',
-      text: `What changed, as it was before, was copied into ${outcome.copy}; the copy goes once the backup server is found to hold the same. To undo the rollback: Rollbacks in the notification center (the bell), Undo… - it opens the Time Machine at the moment before it, and Restore this version there takes it back.`
+      text: `What changed, as it was before, was copied into ${outcome.copy}; the copy goes once the backup server is found to hold the same. To undo the rollback: Rollbacks in Connect (the bell), Undo… - it opens the Time Machine at the moment before it, and Restore this version there takes it back.`
     })
     new Setting(contentEl).addButton((button) => button.setButtonText('Close').setCta().onClick(() => this.close()))
   }

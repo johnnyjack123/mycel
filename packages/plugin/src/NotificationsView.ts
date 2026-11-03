@@ -6,7 +6,8 @@ import type { RollbackRecord } from './sync/AccountSettings.js'
 // day, the newest first - the notices that vanish after a few seconds, kept.
 // Beside it, under a tab of its own, every rollback and restore of the account,
 // which no clearing takes away: each opens the Time Machine of what it took
-// back, at the moment before it (the user, 0.8.16).
+// back, at the moment before it (the user, 0.8.16). Titled *Connect*, since it
+// holds more than notices (the user, 0.8.17).
 
 export const NOTIFICATIONS_VIEW = 'obsidian-connect-notifications'
 
@@ -61,7 +62,7 @@ export class NotificationsView extends ItemView {
   }
 
   getDisplayText(): string {
-    return 'Obsidian Connect notifications'
+    return 'Connect'
   }
 
   getIcon(): string {
@@ -174,7 +175,7 @@ export class NotificationsView extends ItemView {
   private renderRollbacks(el: HTMLElement): void {
     el.createEl('p', {
       cls: 'connect-notices-quiet',
-      text: 'Every rollback and every note restored from the Time Machine, on any of your devices - kept, the last 50. Undo… opens the Time Machine at the moment before it; Restore this version there takes it back.'
+      text: 'Every rollback and every note restored from the Time Machine, on any of your devices - kept, the last 50. Undo… opens the Time Machine at the moment before it; Restore this version there takes it back, backed up first like every restore.'
     })
     const records = this.host.rollbacks()
     if (records.length === 0) {

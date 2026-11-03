@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-02 · **0.8.16: the Time Machine's fourth round, from the user's try of 0.8.15 - the rollbacks in a tab of the notification center, each with Undo… opening the Time Machine before it; a restore keeping what was written after the lock; a lock that ended while a device was away learned on reconnecting; the moment shown larger, the marks cyan; a bar in a locked note's editor; the status under a lock. Next: the user tries it (plugin only, item 14); then 0.9's design.**_
+_Last updated: 2026-11-03 · **0.8.17: the notification center is called *Connect*. 0.8.16 tried (item 15); items 4 to 6 of its list still to try. Next: 0.9's design (`docs/PHASE8.md`), written with the user.**_
 
 ## Where we are
 
@@ -161,6 +161,12 @@ server reading folder notes. What is next:
    lock is lifted, then online (it writes again at once); the status bar and the editor's bar
    with *Unlock…* on another device under a lock; lifting the lock there and typing into the
    note, then restoring - the typed text stays.
+15. The user tried 0.8.16 on 2026-11-03 and went on without findings; not tried yet: a device
+   offline while the lock is lifted, the bars under a lock, typing after lifting it. Asked for:
+   the notification center titled *Connect* - 0.8.17. Asked whether *Undo…* backs up: it does,
+   as every restore (the Time Machine backs up as it opens, again before *Restore this
+   version*; a rollback keeps its copy in `rollbacks/` besides). What 0.8.16 took without
+   asking was not commented on. Next: 0.9's design.
 
 Open in 0.8.0, known: two notes created under one path in a folder at once on devices
 that knew different folder epochs get two ids and stay as `X.md` and `X 2.md` (no

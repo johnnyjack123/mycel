@@ -8,6 +8,10 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
+- **0.8.17** (2026-11-03) - **the notification center is called *Connect*** (the user: it holds
+  more than notifications now) - its tab, the bell's tooltip, the command (*Open Connect:
+  notifications and rollbacks*, the same id, so a hotkey stays) and every text that pointed to
+  it. The *Rollbacks* tab says that *Undo…* backs up first like every restore. Plugin only.
 - **0.8.16** (2026-11-02) - **the Time Machine's fourth round** (`docs/TIMEMACHINE.md`, the
   user's try of 0.8.15). Plugin only.
   - **The rollbacks in the notification center**, under a tab of their own, as the user drew
