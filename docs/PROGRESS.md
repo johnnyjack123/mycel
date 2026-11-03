@@ -295,7 +295,7 @@ user's call, as with the earlier branches.
   union)` for `Shared/Shared.md` - then the base did not move along some other way.
 - `test:folders`' checks "a file brought back from the trash is back for everyone in the
   folder" and "and the folder does not delete it again" failed in CI on `main` on
-  2026-10-29 and 2026-11-02 (passed on rerun, and locally): the owner restores
+  2026-10-29, 2026-11-02 and 2026-11-03 (passed on rerun, and locally): the owner restores
   `Projects/X/photo.png` from the trash while the delete of another of the account's
   devices is still being decided - the log shows "deleted for everyone in its shared
   folder" after "brought back for everyone". The delete-versus-restore race of
