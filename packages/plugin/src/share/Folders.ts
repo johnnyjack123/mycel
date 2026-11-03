@@ -1287,9 +1287,8 @@ export class Folders {
   /** The note's next key sealed for its own members. */
   private async sealForMembers(docId: string, members: string[], epoch: number, tie: FolderTie | null): Promise<Record<string, string>> {
     const keys: Record<string, string> = {}
-    for (const member of members) {
-      const sealed = await this.keys.sealEpochKeys(docId, [epoch], await this.sharing.publicKey(member), { epoch, tie })
-      keys[member] = sealed[String(epoch)] as string
+    for (const [member, key] of await this.sharing.memberKeys(members, { kind: 'note', docId })) {
+      keys[member] = (await this.keys.sealEpochKeys(docId, [epoch], key, { epoch, tie }))[String(epoch)] as string
     }
     return keys
   }
@@ -1486,7 +1485,7 @@ export class Folders {
     /** Whether the files its notes link outside it go along, as a shared note's do; unchanged when left out. */
     linkedFiles?: boolean
   ): Promise<void> {
-    const recipientKey = await this.sharing.publicKey(account)
+    const recipientKey = this.sharing.recipientKey(account)
     const folderId = await this.ownFolder(path)
     const opened = await this.ready(folderId)
     if (!opened) throw new Error('The server is not reachable.')
@@ -1557,10 +1556,10 @@ export class Folders {
 
   private async rotationFor(folderId: string, state: FolderStateResponse, leaving?: string): Promise<FolderRotation> {
     const epoch = state.epoch + 1
+    const staying = state.members.map((member) => member.account).filter((member) => member !== leaving)
     const keys: Record<string, string> = {}
-    for (const member of state.members) {
-      if (member.account === leaving) continue
-      keys[member.account] = (await this.keys.sealFolderKeys(folderId, [epoch], await this.sharing.publicKey(member.account)))[String(epoch)] as string
+    for (const [member, key] of await this.sharing.memberKeys(staying, { kind: 'folder', folderId })) {
+      keys[member] = (await this.keys.sealFolderKeys(folderId, [epoch], key))[String(epoch)] as string
     }
     const notes: Record<string, NoteRotation> = {}
     for (const note of state.notes ?? []) {
