@@ -8,6 +8,26 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.2** (2026-11-03) - **every note live** (`docs/PHASE8.md`, L). A device holds at most
+  *Documents kept in memory* notes open (500); a note beyond it heard of nothing until it was
+  opened or the next start, and its file stayed old. Now a note let go is **watched**: the
+  device names it to the server with the seq it knows (`watch`, protocol 6 - an older server
+  or plugin is refused with "update the server/plugin"), the server says `changed` when its log
+  is further on - at once, and whenever a frame lands - and the device opens it for a moment
+  the normal way (catch-up, the check of invariant 19, the file through the reconcile), at
+  most eight at once, and lets it go again when the limit needs the room. The server reads a
+  head it does not hold from the log's frame headers, once, and keeps it; nothing about the
+  content travels, and only for notes the account may read. Fixed on the way: **letting go no
+  longer drops a note whose change the server has not acknowledged** (it was stored, not sent,
+  until opened again, and the cloud said *synced*) **nor one held** for the user's decision;
+  **a note opened while it was being let go** waits for its database to close; **reconnecting
+  catches up the notes let go before** (the watch is named again). A note's cloud says
+  *waiting* while a change is on its way to a note let go. A shared note caught up this way has
+  its files compared again. Checked in `test:vault` (a device holding two of five notes open:
+  every change of another device reaches all five files, an unacknowledged change keeps its
+  note open, changes made while the connection was down arrive after it; the first and last
+  fail with watching taken out) and `test:rooms` (heads, access, after a restart).
+
 - **0.9.1** (2026-11-03) - **durable writes on the sync server** (`docs/PHASE8.md`, D; asked for
   by the user, 2026-10-18). Server only - the plugin's version moves along.
   - **A change is acknowledged once it is on the disk:** written, synced, and only then in the

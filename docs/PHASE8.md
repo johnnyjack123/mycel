@@ -382,3 +382,9 @@ touches a device.
   between processes, since the CLI never writes it; a failed write closes the pushing
   connection, so its device sends the frame again; a starting point waits for the device's own
   last change to be acknowledged. Not measured on the Pi yet.
+- **0.9.2** - L as proposed, with three simplifications: the seq a device last saw is kept in
+  memory only (every start still opens every note, L1, so it is never needed across a
+  restart); a note opened for a change is let go by the limit's LRU, not after half a minute;
+  a note opened this way announces presence as a note opened at the start always did - a
+  presence without a caret draws nothing. The regular comparison of shared notes with their
+  files stays (it opens each once a minute); a caught-up shared note is compared at once.

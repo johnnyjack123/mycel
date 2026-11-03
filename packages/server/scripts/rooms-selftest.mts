@@ -101,6 +101,9 @@ class Client implements RoomClient {
   sendNotify(kind: NotifyKind, _payload: Notice): void {
     this.messages.push({ type: 'notify', kind })
   }
+  sendChanged(room: string, headSeq: number): void {
+    this.messages.push({ type: 'changed', room, headSeq })
+  }
   close(code: number, reason: string): void {
     this.messages.push({ type: 'close', code, reason })
   }
@@ -1166,6 +1169,49 @@ try {
         rmSync(folder, { recursive: true, force: true })
       }
     }
+  }
+
+  // --- watching notes without holding them open (0.9.2, docs/PHASE8.md L) -------------------
+  {
+    const holder = new Client(alice, aliceVault.vaultId)
+    const watcher = new Client(alice, aliceVault.vaultId)
+    const stranger = new Client(dave, hexId())
+    for (const client of [holder, watcher, stranger]) hub.attach(client)
+    const watchedDoc = hexId()
+    const watchedRoom = `doc:${watchedDoc}`
+    await hub.subscribe(holder, watchedRoom, 0)
+    for (let ref = 1; ref <= 3; ref += 1) await hub.push(holder, watchedRoom, ref, 0, bytes(`w${ref}`))
+    holder.take()
+    const changed = (client: Client): Message[] => client.take().filter((m) => m.type === 'changed')
+    await hub.watch(watcher, [{ room: watchedRoom, seq: 1 }])
+    const behind = changed(watcher)
+    check(behind.length === 1 && behind[0]?.headSeq === 3, 'a device watching a note it knows up to #1 hears that the log is at #3', behind)
+    await hub.watch(watcher, [{ room: watchedRoom, seq: 3 }])
+    check(changed(watcher).length === 0, 'one that knows it all hears nothing')
+    await hub.push(holder, watchedRoom, 4, 0, bytes('w4'))
+    const landed = changed(watcher)
+    check(landed.length === 1 && landed[0]?.headSeq === 4 && landed[0].data === undefined, 'a frame landing is announced to who watches it - its seq, nothing of its content', landed)
+    check(changed(holder).length === 0, 'never to the connection that holds it open')
+    await hub.watch(stranger, [{ room: watchedRoom, seq: 0 }])
+    await hub.push(holder, watchedRoom, 5, 0, bytes('w5'))
+    check(changed(stranger).length === 0, 'nobody hears of a note they may not read')
+    changed(watcher)
+    hub.unwatch(watcher, [watchedRoom])
+    await hub.push(holder, watchedRoom, 6, 0, bytes('w6'))
+    check(changed(watcher).length === 0, 'unwatched, a note is quiet')
+    for (const client of [holder, watcher, stranger]) hub.detach(client)
+    await hub.shutdown()
+    hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts, contacts, new ForkStore(dataDir))
+    const later = new Client(alice, aliceVault.vaultId)
+    hub.attach(later)
+    await hub.watch(later, [{ room: watchedRoom, seq: 4 }, { room: `doc:${hexId()}`, seq: 0 }])
+    const afterRestart = changed(later)
+    check(
+      afterRestart.length === 1 && afterRestart[0]?.room === watchedRoom && afterRestart[0].headSeq === 6,
+      "after a restart the head comes from the log on disk, without loading the note; a room that does not exist says nothing",
+      afterRestart
+    )
+    hub.detach(later)
   }
 
   // --- import --------------------------------------------------------------------------------

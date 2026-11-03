@@ -1,9 +1,11 @@
-// Version 5: shared folders - rooms of kind `fld`, and a subscribe may name the
-// folder a new note is created in. Version 4: a subscribe says whether the room
-// may be created, and the server knows accounts only by id - no names, no salts
-// per name. Version 3: the server stores an ordered log of encrypted frames and
-// can no longer read a document. Version 2 relayed plaintext Yjs sync messages.
-export const PROTOCOL_VERSION = 5
+// Version 6: a device watches the notes it does not hold open (`watch`) and hears
+// when their logs move on (`changed`). Version 5: shared folders - rooms of kind
+// `fld`, and a subscribe may name the folder a new note is created in. Version 4:
+// a subscribe says whether the room may be created, and the server knows accounts
+// only by id - no names, no salts per name. Version 3: the server stores an
+// ordered log of encrypted frames and can no longer read a document. Version 2
+// relayed plaintext Yjs sync messages.
+export const PROTOCOL_VERSION = 6
 export const DEFAULT_SERVER_PORT = 1234
 
 export type ShareRole = 'read' | 'write'
@@ -161,6 +163,15 @@ export const MUX = {
    * under a lock of kind `rollback`.
    */
   holdLock: 5,
+  /**
+   * room (empty), varUint count, then per note varString room, varUint seq:
+   * notes this device knows up to `seq` and does not hold open. The server
+   * answers with `changed` for each whose log is further on, and again
+   * whenever a frame lands in one. Sent again, whole, after every reconnect.
+   */
+  watch: 6,
+  /** room (empty), varUint count, then varString room each: no longer watched - held open, or gone. */
+  unwatch: 7,
 
   // server -> client
   /** room, varUint seq, varUint ts, varUint epoch, varUint8Array ciphertext */
@@ -189,7 +200,9 @@ export const MUX = {
    * room, varUint ref - the push was refused because the vault is locked
    * (`docs/TIMEMACHINE.md`): the device keeps it and sends it once the lock ends.
    */
-  locked: 19
+  locked: 19,
+  /** room, varUint headSeq - a watched note's log reaches further than the device knows; no content. */
+  changed: 20
 } as const
 
 export type MuxMessage = (typeof MUX)[keyof typeof MUX]

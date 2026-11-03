@@ -1513,6 +1513,76 @@ try {
       await E2.shutdown()
     }
   }
+
+  // --- every note live, with a limit on the notes held open (0.9.2, docs/PHASE8.md L) ---------
+  {
+    const liam = `liam${run}`
+    const notes: Record<string, string> = Object.fromEntries(Array.from({ length: 5 }, (_value, index) => [`Live/N${index}.md`, `note ${index}\n`]))
+    const paths = Object.keys(notes)
+    const L1 = new Device(liam, true, notes)
+    const L2 = new Device(liam, false)
+    L2.maxLoaded = 2
+    let most = 0
+    const sampler = setInterval(() => {
+      most = Math.max(most, L2.store?.loadedCount() ?? 0)
+    }, 20)
+    try {
+      check(await L1.boot(), 'L1 starts with five notes')
+      check(await L2.boot(), 'a device holding two notes open at most starts')
+      check(await eventually(() => paths.every((path) => L2.vault.text(path) === notes[path]), 15_000), 'and has all five', L2.vault.paths())
+      check(await eventually(() => (L2.store?.loadedCount() ?? 99) <= 2), 'holding no more than two of them open', L2.store?.loadedCount())
+
+      most = 0
+      for (const path of paths) await L1.vault.userWrite(path, `${notes[path]}changed on L1\n`)
+      check(
+        await eventually(() => paths.every((path) => L2.vault.text(path) === `${notes[path]}changed on L1\n`), 20_000),
+        'another device changes all five: every change reaches the files - the notes let go too, not only when opened',
+        paths.map((path) => L2.vault.text(path))
+      )
+      check(most <= 2 + 8, 'with no more than the limit open, and those being caught up', most)
+      check(await eventually(() => (L2.store?.loadedCount() ?? 99) <= 2), 'and lets them go again')
+      {
+        const states = paths.map((path) => L2.store?.noteState(L2.vault.file(path) as never))
+        check(states.every((state) => state === 'synced'), "every note's cloud says synced, open or not", states)
+      }
+
+      // A change the server has not acknowledged keeps its note open.
+      const first = L2.index?.docIdForPath(paths[0] as string) as string
+      await L2.store?.handle(first)
+      const release = holdPushes(L2, 'doc:')
+      await L2.vault.userWrite(paths[0] as string, `${notes[paths[0] as string]}changed on L1\nunsent on L2\n`)
+      await delay(400)
+      for (const path of paths.slice(1)) await L2.store?.handle(L2.index?.docIdForPath(path) as string)
+      await delay(300)
+      check(L2.store?.isLoaded(first) === true, 'a note whose change the server has not acknowledged is not let go')
+      release()
+      check(
+        await eventually(() => L1.vault.text(paths[0] as string) === `${notes[paths[0] as string]}changed on L1\nunsent on L2\n`, 15_000),
+        'and its change goes out once the connection is back'
+      )
+
+      // Changes made while the connection was down, to notes let go before.
+      check(await eventually(() => (L2.store?.loadedCount() ?? 99) <= 2), 'L2 holds two notes again')
+      const socket = L2.socket as unknown as { connect(): void; reconnect(): void; ws: { close(): void } | null }
+      const connect = socket.connect.bind(socket)
+      socket.connect = () => undefined
+      socket.ws?.close()
+      const away = paths.filter((path) => !L2.store?.isLoaded(L2.index?.docIdForPath(path) as string))
+      for (const path of away) await L1.vault.userWrite(path, `written while L2 was away: ${path}\n`)
+      await delay(1_500)
+      socket.connect = connect
+      socket.reconnect()
+      check(
+        await eventually(() => away.every((path) => L2.vault.text(path) === `written while L2 was away: ${path}\n`), 20_000),
+        'changes made while the connection was down reach the notes let go before it, once it is back',
+        away.map((path) => L2.vault.text(path))
+      )
+    } finally {
+      clearInterval(sampler)
+      await L1.shutdown()
+      await L2.shutdown()
+    }
+  }
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {

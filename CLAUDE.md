@@ -313,6 +313,14 @@ before (`RoomLog.append`, 0.9.1; `headSeq` counts frames still being written,
 `writtenSeq` does not); every other file it writes through `server/src/durable.ts`.
 One server per data folder (`server.lock`), and `accounts.lock` between it and the CLI.
 
+**Every note live** (0.9.2): a device holds at most `maxLoadedDocuments` notes open; one it
+lets go (`DocStore.evict`, never with an unacknowledged change, never held) is **watched**
+(`VaultSocket.watch`, `MUX.watch`) with the seq it knows, the server answers `changed` when the
+log is further on and whenever a frame lands (`RoomHub.watch`, heads of notes it does not hold
+read from the log's headers once), and the device opens it for a moment the normal way
+(`DocStore.remoteChanged`, eight at once) and lets it go again when the limit needs the room.
+The watch is named again on every connection.
+
 While a vault is **locked** (`sync/VaultLock.ts`, `RoomHub.takeLock`; 0.8.13) the
 server answers the account's pushes into it with `locked` instead of `ack`; the device
 keeps them, as offline, and sends them once a `vault-lock` notice says the lock ended.
@@ -880,17 +888,6 @@ is listed in `docs/PROGRESS.md`, "Roadmap". (Recovery codes and 2FA: built in
 **The operator's backup (later).** The data directory as it is - ciphertext only -
 pulled with a dedicated, revocable backup token rather than an account. Moved out of
 0.7 by the user on 2026-10-15.
-
-**Every note live (0.9).** A device holds at most `maxLoadedDocuments` notes open
-(500 by default, a setting under *This device*); the others get another device's
-change only when opened or at the next start, and their files stay old until
-then. Raising the setting is the workaround (measured: about 6 to 32 KB of memory
-per loaded note of 3000 characters, plus an IndexedDB database and a subscription
-each). The fix, to be designed in 0.9, keeps memory bounded and still brings every
-change in: the device watches every note without loading it - only its room and
-last seq, no document -, the server announces new frames in a watched room, and
-the device loads that note briefly, catches up, writes its file and lets it go
-again (`evict`). A setting of 0 for "no limit" would only be the workaround.
 
 **Syncing plugins and their settings (wanted, optional, after 1.0.0).** Moved
 back by the user on 2026-10-14. Not through the

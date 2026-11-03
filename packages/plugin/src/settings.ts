@@ -1099,7 +1099,9 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Documents kept in memory')
-      .setDesc('Notes beyond this stop receiving live updates until opened again. Lower it on mobile.')
+      .setDesc(
+        'Notes held open at once. Every note stays live whatever it says: one beyond it is watched, and opened for a moment when another device changes it. Lower it on mobile to save memory.'
+      )
       .addText((text) =>
         text.setValue(String(settings.maxLoadedDocuments)).onChange(async (value) => {
           const parsed = Number.parseInt(value, 10)

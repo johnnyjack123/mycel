@@ -5,6 +5,7 @@ import {
   applyTextEdits,
   docRoom,
   indexRoom,
+  roomSubject,
   textEdits,
   threeWayMerge,
   type CollabUser,
@@ -76,6 +77,8 @@ export interface AcceptedShare {
 // Enough to hide the round trip per note, few enough not to flood the socket
 // or IndexedDB on a vault of thousands.
 const CONCURRENCY = 8
+// Beyond the limit with nothing to let go yet - every note still sending: tried again this much later.
+const EVICT_AGAIN_MS = 2_000
 // How long a write of ours is recognised when it comes back as a file event
 // or as Obsidian reloading an open editor.
 const OWN_WRITE_TTL_MS = 10_000
@@ -131,6 +134,17 @@ export class DocStore {
   /** Per note, when the changes its file has yet to show were made elsewhere; null when one was made here. */
   private readonly changedAt = new Map<string, number | null>()
   private readonly inFlight = new Map<string, Promise<DocHandle>>()
+  /** Notes being let go: opened again only once their database has written its cursor. */
+  private readonly closing = new Map<string, Promise<void>>()
+  /**
+   * Notes let go whose log moved on since (`MUX.changed`), being caught up -
+   * at most `CONCURRENCY` at once, the way the start does.
+   */
+  private readonly stale = new Set<string>()
+  private readonly catchingUp = new Set<string>()
+  private readonly refreshedListeners = new Set<(docId: string) => void>()
+  private unwatchChanged: (() => void) | null = null
+  private evictTimer: number | null = null
   // One file operation per document at a time. The scan, vault events, remote
   // changes and an editor binding all reach the same note concurrently, and
   // two reconciles interleaving on one note is how text gets applied twice.
@@ -411,6 +425,7 @@ export class DocStore {
   async start(): Promise<boolean> {
     await this.state.load()
     await this.registerIndex()
+    this.unwatchChanged ??= this.socket.onChanged((room) => this.remoteChanged(room))
     // Without the server's index we do not know which document a file belongs
     // to. Minting ids anyway would create a second document per note, so a
     // failure here has to stop the scan rather than guess.
@@ -460,6 +475,11 @@ export class DocStore {
 
   async stop(): Promise<void> {
     this.stopped = true
+    this.unwatchChanged?.()
+    this.unwatchChanged = null
+    this.refreshedListeners.clear()
+    if (this.evictTimer !== null) window.clearTimeout(this.evictTimer)
+    this.evictTimer = null
     for (const timer of this.writeTimers.values()) window.clearTimeout(timer)
     this.writeTimers.clear()
     this.changedAt.clear()
@@ -520,6 +540,10 @@ export class DocStore {
     }
 
     const creation = (async () => {
+      // Being let go: its database first writes its cursor, or the second
+      // opening read the one before and asked for frames it already had.
+      await this.closing.get(docId)
+      this.socket.unwatch(docRoom(docId))
       const handle = new DocHandle(
         docId,
         this.options.vaultId,
@@ -557,40 +581,114 @@ export class DocStore {
   }
 
   /**
-   * Releases the least recently used documents. They stop receiving live
-   * updates until touched again and catch up on the next load - the price of
-   * not holding a whole vault of CRDTs in memory at once.
+   * Releases the least recently used documents, to hold no more than the
+   * limit in memory. A note let go is watched instead (0.9.2): the server
+   * says when its log moves on, and it is caught up then (`remoteChanged`).
+   * Never one whose last change the server has not acknowledged - it would
+   * be stored here and not sent until opened again -, nor one held for the
+   * user's decision about a server that lost data.
    */
   private async evict(): Promise<void> {
     const limit = Math.max(this.options.maxLoadedDocuments, this.pinned.size + 1)
     if (this.handles.size <= limit) return
     const candidates = Array.from(this.handles.keys())
-      .filter(
-        (docId) =>
+      .filter((docId) => {
+        const room = docRoom(docId)
+        return (
           !this.pinned.has(docId) &&
           !this.inFlight.has(docId) &&
           !this.writeTimers.has(docId) &&
           !this.locks.has(docId) &&
-          !this.editorOwned.has(docId)
-      )
+          !this.editorOwned.has(docId) &&
+          !this.closing.has(docId) &&
+          this.socket.isSettled(room) &&
+          !this.socket.isHeld(room)
+        )
+      })
       .sort((a, b) => (this.lastUsed.get(a) ?? 0) - (this.lastUsed.get(b) ?? 0))
 
     for (const docId of candidates) {
       if (this.handles.size <= limit) break
-      await this.dropHandle(docId)
+      // Settled when it was picked; something may have been typed since.
+      const room = docRoom(docId)
+      if (!this.socket.isSettled(room) || this.socket.isHeld(room) || this.writeTimers.has(docId) || this.locks.has(docId)) continue
+      await this.dropHandle(docId, false, true)
+    }
+    // Notes still sending, or writing their files, are let go once they are done.
+    if (this.handles.size > limit && this.evictTimer === null && !this.stopped) {
+      this.evictTimer = window.setTimeout(() => {
+        this.evictTimer = null
+        void this.evict()
+      }, EVICT_AGAIN_MS)
     }
   }
 
-  private async dropHandle(docId: string, clearLocal = false): Promise<void> {
+  /** `watch`: the note was only let go for memory, and is watched from now on; otherwise it is gone. */
+  private async dropHandle(docId: string, clearLocal = false, watch = false): Promise<void> {
     const timer = this.writeTimers.get(docId)
     if (timer !== undefined) window.clearTimeout(timer)
     this.writeTimers.delete(docId)
     this.changedAt.delete(docId)
     const handle = this.handles.get(docId)
+    const room = docRoom(docId)
+    const seq = this.socket.lastSeqOf(room)
     this.handles.delete(docId)
     this.lastUsed.delete(docId)
     this.held.delete(docId)
-    await handle?.destroy(clearLocal)
+    if (!handle) {
+      if (!watch) this.socket.unwatch(room)
+      return
+    }
+    const closed = handle.destroy(clearLocal).finally(() => {
+      if (this.closing.get(docId) === closed) this.closing.delete(docId)
+    })
+    this.closing.set(docId, closed)
+    await closed
+    if (watch && !this.stopped && !this.handles.has(docId) && !this.inFlight.has(docId)) this.socket.watch(room, seq)
+    else if (!watch) this.socket.unwatch(room)
+  }
+
+  /**
+   * The log of a note this device let go moved on: it is caught up the normal
+   * way - loaded, its file reconciled (invariants 1, 7, 8 and 10 as ever) -
+   * and let go again once the limit needs the room.
+   */
+  private remoteChanged(room: string): void {
+    if (this.stopped || !this.ready || !room.startsWith('doc:')) return
+    const docId = roomSubject(room)
+    const entry = this.index.entry(docId)
+    if (!entry || entry.deletedAt || this.handles.has(docId) || this.inFlight.has(docId)) return
+    this.stale.add(docId)
+    this.catchUpStale()
+  }
+
+  private catchUpStale(): void {
+    while (!this.stopped && this.catchingUp.size < CONCURRENCY) {
+      const docId = Array.from(this.stale).find((candidate) => !this.catchingUp.has(candidate))
+      if (!docId) return
+      this.catchingUp.add(docId)
+      void this.catchUp(docId)
+        .catch((error: unknown) => log.error(`catching up ${this.index.pathFor(docId) ?? docId} failed`, error))
+        .finally(() => {
+          this.catchingUp.delete(docId)
+          this.stale.delete(docId)
+          this.catchUpStale()
+        })
+    }
+  }
+
+  private async catchUp(docId: string): Promise<void> {
+    const file = this.fileFor(docId)
+    if (file && this.tracks(file)) await this.syncFile(file)
+    else await this.handleFor(docId)
+    log.debug(`${this.index.pathFor(docId) ?? docId}: caught up after another device changed it`)
+    for (const listener of this.refreshedListeners) listener(docId)
+  }
+
+  /** A note let go was caught up because another device changed it - its shared files may have changed too. */
+  onRefreshed(listener: (docId: string) => void): () => void {
+    this.refreshedListeners.add(listener)
+    return () => this.refreshedListeners.delete(listener)
   }
 
   // --- a server that lost data or was rolled back ---------------------------------
@@ -1746,14 +1844,19 @@ export class DocStore {
     if (!this.socket.isSettled(room) || this.writeTimers.has(docId) || this.locks.has(docId) || this.inFlight.has(docId)) {
       return 'unsent'
     }
-    // Not loaded: it agreed with the server when it was, and nothing changed it since.
-    if (!this.handles.has(docId)) return this.agreed.has(docId) ? 'synced' : 'waiting'
+    // Not loaded: it agreed with the server when it was let go, everything sent;
+    // and the server says when its log moved on since (`stale`).
+    if (!this.handles.has(docId)) return this.agreed.has(docId) && !this.stale.has(docId) ? 'synced' : 'waiting'
     if (!this.socket.isSynced(room)) return 'waiting'
     return this.agreed.has(docId) || this.editorOwned.has(docId) ? 'synced' : 'unsent'
   }
 
   loadedCount(): number {
     return this.handles.size
+  }
+
+  isLoaded(docId: string): boolean {
+    return this.handles.has(docId)
   }
 
   trackedCount(): number {

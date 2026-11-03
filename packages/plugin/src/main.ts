@@ -1166,6 +1166,11 @@ export default class ObsidianConnectPlugin extends Plugin {
     // Editors bind as soon as the index is there, not after the whole vault
     // has been scanned: an open note is settled on its own, first.
     store.onReady(() => this.editors.refresh())
+    // A shared note caught up after another device changed it: its list of files may have moved.
+    store.onRefreshed((docId) => {
+      const entry = store.entry(docId)
+      if (entry?.shared || entry?.owner) this.sharedFiles?.schedule(docId)
+    })
     store.onLeave((docId) => void this.sharing?.leave(docId))
     store.onReview((review) => {
       void reviews.add(review).catch((error: unknown) => log.error(`keeping the review of ${review.path} failed`, error))

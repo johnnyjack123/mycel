@@ -51,6 +51,7 @@ import {
   RoomLog,
   flushAllWrites,
   frameTimesOf,
+  headSeqOf,
   loadAllMeta,
   roomDir,
   saveMetaOf,
@@ -85,6 +86,8 @@ export interface RoomClient {
   /** The push `ref` was refused because the vault is locked; the device keeps it. */
   sendLocked(room: string, ref: number): void
   sendNotify(kind: NotifyKind, payload: Notice): void
+  /** A note the connection watches has frames past what it knows (`MUX.changed`). */
+  sendChanged(room: string, headSeq: number): void
   /** Ends the connection; the device learns why from the close code. */
   close(code: number, reason: string): void
 }
@@ -172,6 +175,16 @@ export class RoomHub {
   private readonly locks = new Map<string, HeldLock>()
   private lockSweep: NodeJS.Timeout | null = null
   private lockWrites: Promise<unknown> = Promise.resolve()
+  /** room -> the connections watching it without holding it open (`MUX.watch`). */
+  private readonly watchers = new Map<string, Set<RoomClient>>()
+  /** connection -> the rooms it watches, forgotten with it. */
+  private readonly watching = new Map<RoomClient, Set<string>>()
+  /**
+   * The heads of rooms that are not loaded, read once from their logs and kept
+   * up as frames land and rooms close. They only ever grow: a read that raced a
+   * push can never lower one.
+   */
+  private readonly heads = new Map<string, number>()
   private readonly ready: Promise<void>
 
   constructor(
@@ -353,7 +366,9 @@ export class RoomHub {
     open.idleTimer = setTimeout(() => {
       if (open.subscribers.size > 0) return
       void open.log.flush().finally(() => {
-        if (open.subscribers.size === 0 && this.rooms.get(room) === open) this.rooms.delete(room)
+        if (open.subscribers.size !== 0 || this.rooms.get(room) !== open) return
+        this.noteHead(room, open.log.writtenSeq)
+        this.rooms.delete(room)
       })
     }, this.options.idleCloseMs ?? IDLE_CLOSE_MS)
     open.idleTimer.unref?.()
@@ -371,6 +386,80 @@ export class RoomHub {
       if (open.subscribers.delete(client) && open.subscribers.size === 0) this.scheduleIdle(room, open)
     }
     for (const lock of this.locks.values()) lock.holders.delete(client)
+    this.unwatch(client, Array.from(this.watching.get(client) ?? []))
+  }
+
+  // --- watching notes without holding them open (0.9.2, docs/PHASE8.md L) ---------
+  // A device holds only so many notes open; it watches the rest. It names each
+  // with the seq it knows and hears `changed` for every one the log passed - at
+  // once, and whenever a frame lands there. Nothing about the content, and only
+  // for notes the account may read.
+
+  private mayRead(meta: RoomMeta, account: string): boolean {
+    const access = this.access(meta, account)
+    return access !== null && access !== 'revoked'
+  }
+
+  private noteHead(room: string, seq: number): void {
+    this.heads.set(room, Math.max(this.heads.get(room) ?? 0, seq))
+  }
+
+  /** A note's head without loading it: the open log's, or else read once from the disk. */
+  private async watchedHead(meta: RoomMeta): Promise<number> {
+    const open = this.rooms.get(meta.room)
+    if (open) return open.log.writtenSeq
+    const known = this.heads.get(meta.room)
+    if (known !== undefined) return known
+    const read = await headSeqOf(this.options.dataDir, meta)
+    this.noteHead(meta.room, read)
+    return this.heads.get(meta.room) ?? read
+  }
+
+  async watch(client: RoomClient, entries: Array<{ room: string; seq: number }>): Promise<void> {
+    await this.ready
+    const due: Array<{ meta: RoomMeta; seq: number }> = []
+    for (const { room, seq } of entries) {
+      const meta = roomKind(room) === 'doc' ? this.metas.get(room) : undefined
+      if (!meta || !this.mayRead(meta, client.account)) continue
+      const rooms = this.watching.get(client) ?? new Set<string>()
+      rooms.add(room)
+      this.watching.set(client, rooms)
+      const clients = this.watchers.get(room) ?? new Set<RoomClient>()
+      clients.add(client)
+      this.watchers.set(room, clients)
+      due.push({ meta, seq })
+    }
+    for (const { meta, seq } of due) {
+      // Unwatched meanwhile - opened after all, or the connection went.
+      if (!this.watching.get(client)?.has(meta.room)) continue
+      const head = await this.watchedHead(meta)
+      if (head > seq && this.watching.get(client)?.has(meta.room)) client.sendChanged(meta.room, head)
+    }
+  }
+
+  unwatch(client: RoomClient, rooms: string[]): void {
+    const watched = this.watching.get(client)
+    for (const room of rooms) {
+      watched?.delete(room)
+      const clients = this.watchers.get(room)
+      clients?.delete(client)
+      if (clients?.size === 0) this.watchers.delete(room)
+    }
+    if (watched?.size === 0) this.watching.delete(client)
+  }
+
+  /** A frame landed: whoever watches the note without holding it hears so. */
+  private tellWatchers(open: OpenRoom, seq: number): void {
+    const room = open.log.meta.room
+    this.noteHead(room, seq)
+    for (const client of Array.from(this.watchers.get(room) ?? [])) {
+      if (open.subscribers.has(client)) continue
+      if (!this.mayRead(open.log.meta, client.account)) {
+        this.unwatch(client, [room])
+        continue
+      }
+      client.sendChanged(room, seq)
+    }
   }
 
   notify(account: string, kind: NotifyKind, payload: Notice): void {
@@ -629,6 +718,7 @@ export class RoomHub {
     }
     client.sendAck(room, ref, frame.seq)
     for (const subscriber of open.subscribers) if (subscriber !== client) subscriber.sendFrame(room, frame)
+    this.tellWatchers(open, frame.seq)
   }
 
   awareness(client: RoomClient, room: string, epoch: number, data: Uint8Array): void {
@@ -1652,6 +1742,7 @@ export class RoomHub {
     if (open.idleTimer) clearTimeout(open.idleTimer)
     this.rooms.delete(room)
     this.metas.delete(room)
+    this.heads.delete(room)
     this.forgetAttachments(meta)
     await open.log.remove()
     console.info(`[obsidian-connect] ${room} of ${account} purged, deleted longer ago than the retention`)
@@ -1829,6 +1920,7 @@ export class RoomHub {
     }
     this.rooms.delete(meta.room)
     this.metas.delete(meta.room)
+    this.heads.delete(meta.room)
     this.forgetAttachments(meta)
     for (const member of participants) {
       if (isFolder) this.notify(member, 'folder-removed', { folderId: roomSubject(meta.room), owner: meta.owner })
