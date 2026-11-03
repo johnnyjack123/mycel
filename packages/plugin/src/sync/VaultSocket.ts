@@ -21,6 +21,8 @@ const RECONNECT_BASE_MS = 1_000
 const RECONNECT_MAX_MS = 30_000
 // Keystrokes arriving this close together travel as one frame.
 const SEND_DELAY_MS = 40
+// Notes named per `watch` message.
+const WATCH_BATCH = 1_000
 
 /** Keys of one room, by epoch. Null: this device may not read that epoch. */
 export interface RoomCrypto {
@@ -173,6 +175,13 @@ export class VaultSocket {
   private locked = false
   /** The id of the rollback's lock this device holds, named to the server on every connection. */
   private lockId: string | null = null
+  /** Notes this device knows up to a seq and does not hold open (`MUX.watch`), named again on every connection. */
+  private readonly watched = new Map<string, number>()
+  /** Watched since the last message: sent together, a start lets go of hundreds of notes at once. */
+  private readonly toWatch = new Map<string, number>()
+  private readonly toUnwatch = new Set<string>()
+  private watchTimer: number | null = null
+  private readonly changedListeners = new Set<(room: string, headSeq: number) => void>()
 
   constructor(
     private readonly serverUrl: string,
@@ -220,6 +229,10 @@ export class VaultSocket {
       // Before anything is pushed: the server handles a connection's messages in order.
       if (this.lockId) this.sendHoldLock(this.lockId)
       for (const registration of this.registrations.values()) this.subscribe(registration)
+      // What changed in the notes let go while the connection was down is announced now.
+      this.toUnwatch.clear()
+      this.toWatch.clear()
+      this.sendWatch(Array.from(this.watched))
     }
     socket.onmessage = (event: MessageEvent) => {
       this.receive(new Uint8Array(event.data as ArrayBuffer))
@@ -381,6 +394,13 @@ export class VaultSocket {
     }
 
     const room = decoding.readVarString(decoder)
+    if (type === MUX.changed) {
+      const headSeq = decoding.readVarUint(decoder)
+      const known = this.watched.get(room)
+      if (known === undefined || headSeq <= known) return
+      for (const listener of this.changedListeners) listener(room, headSeq)
+      return
+    }
     const registration = this.registrations.get(room)
     if (!registration) return
 
@@ -701,6 +721,74 @@ export class VaultSocket {
     })
   }
 
+  // --- watching notes without holding them open (0.9.2) ---------------------------
+
+  /**
+   * Hears when the log of a note this device let go moves past `seq`. Only a
+   * hint: the note is caught up the normal way once it is opened again.
+   */
+  watch(room: string, seq: number): void {
+    this.watched.set(room, seq)
+    this.toUnwatch.delete(room)
+    this.toWatch.set(room, seq)
+    this.scheduleWatch()
+  }
+
+  /** Held open again, or gone: its subscription, if any, says the rest. */
+  unwatch(room: string): void {
+    if (!this.watched.delete(room)) return
+    this.toWatch.delete(room)
+    this.toUnwatch.add(room)
+    this.scheduleWatch()
+  }
+
+  isWatched(room: string): boolean {
+    return this.watched.has(room)
+  }
+
+  onChanged(listener: (room: string, headSeq: number) => void): () => void {
+    this.changedListeners.add(listener)
+    return () => this.changedListeners.delete(listener)
+  }
+
+  private scheduleWatch(): void {
+    if (this.watchTimer !== null) return
+    this.watchTimer = window.setTimeout(() => {
+      this.watchTimer = null
+      if (this.toUnwatch.size > 0) this.sendUnwatch(Array.from(this.toUnwatch))
+      if (this.toWatch.size > 0) this.sendWatch(Array.from(this.toWatch))
+      this.toUnwatch.clear()
+      this.toWatch.clear()
+    }, SEND_DELAY_MS)
+  }
+
+  private sendWatch(entries: Array<[string, number]>): void {
+    for (let start = 0; start < entries.length; start += WATCH_BATCH) {
+      const batch = entries.slice(start, start + WATCH_BATCH)
+      this.send((encoder) => {
+        encoding.writeVarUint(encoder, MUX.watch)
+        encoding.writeVarString(encoder, '')
+        encoding.writeVarUint(encoder, batch.length)
+        for (const [room, seq] of batch) {
+          encoding.writeVarString(encoder, room)
+          encoding.writeVarUint(encoder, seq)
+        }
+      })
+    }
+  }
+
+  private sendUnwatch(rooms: string[]): void {
+    for (let start = 0; start < rooms.length; start += WATCH_BATCH) {
+      const batch = rooms.slice(start, start + WATCH_BATCH)
+      this.send((encoder) => {
+        encoding.writeVarUint(encoder, MUX.unwatch)
+        encoding.writeVarString(encoder, '')
+        encoding.writeVarUint(encoder, batch.length)
+        for (const room of batch) encoding.writeVarString(encoder, room)
+      })
+    }
+  }
+
   // --- registrations -------------------------------------------------------------
 
   register(room: string, doc: Y.Doc, options: RoomOptions): Promise<void> {
@@ -873,6 +961,10 @@ export class VaultSocket {
     }
     for (const room of Array.from(this.registrations.keys())) this.unregister(room)
     this.statusListeners.clear()
+    this.changedListeners.clear()
+    if (this.watchTimer !== null) window.clearTimeout(this.watchTimer)
+    this.watchTimer = null
+    this.watched.clear()
     this.ws?.close()
     this.ws = null
   }

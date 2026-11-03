@@ -214,6 +214,24 @@ export function saveMetaOf(dataDir: string, meta: RoomMeta): Promise<void> {
 }
 
 /**
+ * The last seq of a room that is not loaded: its last whole frame on disk, or
+ * the snapshots and compaction beyond it. Read from the frames' headers.
+ */
+export async function headSeqOf(dataDir: string, meta: RoomMeta): Promise<number> {
+  const raw = await readOptional(join(roomDir(dataDir, meta), 'log.bin'))
+  let last = 0
+  let offset = 0
+  while (raw && offset + HEADER_BYTES <= raw.length) {
+    const end = offset + HEADER_BYTES + raw.readUInt32BE(offset + 20)
+    if (end > raw.length) break
+    last = Number(raw.readBigUInt64BE(offset))
+    offset = end
+  }
+  const snapshotHead = meta.snapshots.reduce((max, snapshot) => Math.max(max, snapshot.uptoSeq), 0)
+  return Math.max(last, meta.compactedUpTo, snapshotHead)
+}
+
+/**
  * When each frame of a room arrived, read from `log.bin` without its content
  * and without loading the room. Frames a snapshot folded in are left out.
  */

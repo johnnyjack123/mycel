@@ -8,6 +8,8 @@ import type { RoomClient, RoomHub } from './rooms.js'
 const WS_OPEN = 1
 const WS_CONNECTING = 0
 const PING_INTERVAL_MS = 30_000
+/** Far above any vault: notes named in one `watch` or `unwatch`. */
+const MAX_WATCHED = 200_000
 
 function send(ws: WebSocket, data: Uint8Array): void {
   if (ws.readyState !== WS_OPEN && ws.readyState !== WS_CONNECTING) return
@@ -152,6 +154,10 @@ class VaultConnection implements RoomClient {
     })
   }
 
+  sendChanged(room: string, headSeq: number): void {
+    this.message(MUX.changed, room, (encoder) => encoding.writeVarUint(encoder, headSeq))
+  }
+
   sendError(message: string): void {
     this.message(MUX.error, null, (encoder) => encoding.writeVarString(encoder, message))
   }
@@ -207,6 +213,23 @@ export function setupVaultConnection(ws: WebSocket, account: string, vaultId: st
         case MUX.holdLock:
           if (!hub.holdLock(connection, decoding.readVarString(decoder))) connection.sendError('no such lock')
           return
+        case MUX.watch: {
+          const count = Math.min(decoding.readVarUint(decoder), MAX_WATCHED)
+          const entries: Array<{ room: string; seq: number }> = []
+          for (let index = 0; index < count; index += 1) {
+            entries.push({ room: decoding.readVarString(decoder), seq: decoding.readVarUint(decoder) })
+          }
+          // Not waited for: reading heads from the disk after a restart must not hold up the connection.
+          void hub.watch(connection, entries).catch((error: unknown) => console.error('[obsidian-connect] watching failed', error))
+          return
+        }
+        case MUX.unwatch: {
+          const count = Math.min(decoding.readVarUint(decoder), MAX_WATCHED)
+          const rooms: string[] = []
+          for (let index = 0; index < count; index += 1) rooms.push(decoding.readVarString(decoder))
+          hub.unwatch(connection, rooms)
+          return
+        }
         default:
           connection.sendError(`unknown message type ${type}`)
       }

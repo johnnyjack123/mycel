@@ -182,6 +182,8 @@ export class Device {
   contacts: InstanceType<typeof Contacts> | null = null
   recovery: InstanceType<typeof Recovery> | null = null
   retentionDays = 30
+  /** How many notes the device holds open at most (`maxLoadedDocuments`). */
+  maxLoaded = 500
   /** How far a rollback trusts the server's clock; an hour unless a test says otherwise. */
   rollbackClockMarginMs: number | undefined = undefined
   /** What the user answers when the server turns out to have other data. */
@@ -293,7 +295,7 @@ export class Device {
         user,
         excludeGlobs: [],
         conflictMarkers: true,
-        maxLoadedDocuments: 500,
+        maxLoadedDocuments: this.maxLoaded,
         syncTimeoutMs: 4_000,
         writeDebounceMs: 150
       },
@@ -407,6 +409,11 @@ export class Device {
 
     // What main.ts wires up.
     store.onReady(() => this.editors.refresh())
+    // What main.ts does when a note let go was caught up.
+    store.onRefreshed((docId) => {
+      const entry = store.entry(docId)
+      if (entry?.shared || entry?.owner) sharedFiles.schedule(docId)
+    })
     store.onLeave((docId) => void sharing.leave(docId))
     store.onReview((review) => this.reviews.push(review))
     const applyIndex = (): void => {

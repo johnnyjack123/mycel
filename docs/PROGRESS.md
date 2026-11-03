@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-03 · **0.9 under way (`docs/PHASE8.md`, the user's decisions of 2026-11-03 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable. Next L (every note live), S (signatures), *Replace all keys*. The name waits for the user (Mycel recommended); the audit goes to a separate agent; publishing comes last.**_
+_Last updated: 2026-11-03 · **0.9 under way (`docs/PHASE8.md`, the user's decisions of 2026-11-03 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live. Next S (signatures), *Replace all keys*. The name waits for the user (Mycel recommended); the audit goes to a separate agent; publishing comes last.**_
 
 ## Where we are
 
@@ -49,8 +49,9 @@ an opinion on their two names, *Seemless* and *Mycel* (given: Mycel). Publishing
    `LICENSE.md`. Merged, CI green, both images published.
 2. **0.9.1** - D: durable writes on the sync server, the vault lock over a restart (D1)
    (`feat/durable-writes`). Not measured on the Pi yet: how long a push takes with a sync
-   per frame on its SD card.
-3. **0.9.2** - L: every note live (`watch`), the eviction fixes.
+   per frame on its SD card. Its first CI run failed (`test:backup`, CHANGELOG); fixed on
+   `main` (`f2ccd0d`), CI green, both images published.
+3. **0.9.2** - L: every note live (`watch`), the eviction fixes (`feat/live-notes`).
 4. **0.9.3** - S-a and S-b: signing keys, signed sealed keys and member lists, signed frames.
 5. **0.9.4** - S2: *Replace all keys*.
 6. N once the user named it; then the audit agent; P last.
@@ -227,7 +228,7 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing once `feat/durable-writes` (0.9.1) is merged; `feat/seal-pinned-only` (0.9.0) is. Every branch of 0.8
+Nothing once `feat/live-notes` (0.9.2) is merged; `feat/seal-pinned-only` (0.9.0) and `feat/durable-writes` (0.9.1) are. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
 `fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`, `feat/time-machine`,
@@ -271,8 +272,8 @@ user's call, as with the earlier branches.
     the next; a push during a compaction is written twice; a compaction writes the log
     before its metadata; the CLI and the server can overwrite each other's
     `accounts.json` (D)~~ - fixed in 0.9.1.
-  - A note let go beyond `maxLoadedDocuments` may still hold an unsent change or be held
-    for recovery; reconnecting does not catch up notes let go (L).
+  - ~~A note let go beyond `maxLoadedDocuments` may still hold an unsent change or be held
+    for recovery; reconnecting does not catch up notes let go (L)~~ - fixed in 0.9.2.
 - **Only on a device** (untestable headless): menus, modals, the settings tab, the
   status bar marks, the header lock, `requestUrl` with binary bodies on mobile, binary
   file events, `file-open` fetching, memory with large files on a phone, the Time
@@ -298,9 +299,11 @@ user's call, as with the earlier branches.
   0.8.13 a file another device's change wrote carries that change's time, which leaves
   only an editor open on two devices at a minute's edge (Obsidian saves it with its own
   time). With that plugin, its minimum minutes between saves at 5 closes even that.
-- Notes beyond `maxLoadedDocuments` (500) get no live updates until opened or the next
-  start (0.9). Raising the setting is the workaround: about 6 to 32 KB per loaded note
-  of 3000 characters, plus an IndexedDB database and a subscription each.
+- Every start still opens every note once (L1, not in 0.9 - the user left it to the
+  recommendation): a vault of thousands of notes takes minutes to start. A start that skips
+  notes whose file and log did not move would need the scan to trust mtime and size.
+- Shared notes are still compared with their files once a minute (`SharedFiles.scheduleAll`),
+  which opens each: beyond `maxLoadedDocuments` shared notes, they go in and out of memory.
 - Signing out does not replace the account secret; frames are authenticated by the
   note's key, not signed per author (both 0.9).
 - The plugin id contains "obsidian", which the community directory refuses (0.9).
