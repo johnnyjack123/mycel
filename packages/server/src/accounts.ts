@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { createDurable, ensureDir, withFileLock, writeDurable } from './durable.js'
 import type {
   AccountBundle,
   PasswordChangeRequest,
@@ -210,25 +211,40 @@ export class AccountStore {
     return data
   }
 
-  private async save(data: AccountFile): Promise<void> {
-    await mkdir(this.dataDir, { recursive: true })
-    const temp = `${this.file}.${process.pid}.tmp`
-    await writeFile(temp, JSON.stringify(data, null, 2))
-    await rename(temp, this.file)
+  private async save(data: AccountFile, json: string): Promise<void> {
+    await ensureDir(this.dataDir)
+    await writeDurable(this.file, json)
     this.cache = { mtimeMs: (await stat(this.file)).mtimeMs, data }
   }
 
-  /** Read, change, write - one at a time within this process. */
+  /**
+   * Read, change, write - one at a time within this process, and under
+   * `accounts.lock` against the admin CLI, which changes the same file: each
+   * read it, changed it and wrote it back, and one could undo the other - an
+   * invitation gone, a removed account back without its mark. A change that
+   * changes nothing - most 2FA attempts, most backup logins - writes nothing.
+   */
   private update<T>(mutate: (data: AccountFile) => T | Promise<T>): Promise<T> {
     const run = this.writes.then(async () => {
-      this.cache = null
-      const data = structuredClone(await this.load())
-      const result = await mutate(data)
-      await this.save(data)
-      return result
+      await ensureDir(this.dataDir)
+      return withFileLock(join(this.dataDir, 'accounts.lock'), async () => {
+        this.cache = null
+        const loaded = await this.load()
+        const before = JSON.stringify(loaded, null, 2)
+        const data = structuredClone(loaded)
+        const result = await mutate(data)
+        const after = JSON.stringify(data, null, 2)
+        if (after !== before) await this.save(data, after)
+        return result
+      })
     })
     this.writes = run.catch(() => undefined)
     return run
+  }
+
+  /** Waits for the writes this process queued. */
+  flush(): Promise<unknown> {
+    return this.writes
   }
 
   /**
@@ -246,11 +262,9 @@ export class AccountStore {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
       const serverId = randomBytes(16).toString('hex')
-      await mkdir(this.dataDir, { recursive: true })
-      await writeFile(file, JSON.stringify({ serverId }, null, 2), { flag: 'wx' }).catch(async (error: NodeJS.ErrnoException) => {
-        // Another process made it first; theirs counts.
-        if (error.code !== 'EEXIST') throw error
-      })
+      await ensureDir(this.dataDir)
+      // Whole or not at all; another process that made it first counts.
+      await createDurable(file, JSON.stringify({ serverId }, null, 2))
       const kept = JSON.parse(await readFile(file, 'utf8')) as { serverId: string }
       return kept.serverId
     })()

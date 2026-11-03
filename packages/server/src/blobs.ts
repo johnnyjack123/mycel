@@ -1,6 +1,7 @@
-import { mkdir, open, readFile, readdir, rename, rm, stat, truncate, unlink, writeFile } from 'node:fs/promises'
+import { open, readFile, readdir, rename, rm, stat, truncate, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, blobChunkCount, isHexId, type BlobInfo, type BlobListResponse } from '@obsidian-connect/shared'
+import { appendDurable, ensureDir, syncDir, writeDurable } from './durable.js'
 
 // The encrypted contents of a vault's files. The server cannot read them: it
 // keeps them, says whether it has them, and lets go of them when their owner
@@ -77,11 +78,6 @@ async function list(dir: string): Promise<string[]> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
     throw error
   }
-}
-
-async function writeAtomic(path: string, data: string): Promise<void> {
-  await writeFile(`${path}.tmp`, data)
-  await rename(`${path}.tmp`, path)
 }
 
 function blobIdOf(value: unknown): string {
@@ -172,7 +168,7 @@ export class BlobStore {
       const dir = this.dir(account, vault)
       const done = await this.meta(account, vault, id)
       if (done) {
-        await writeAtomic(join(dir, `${id}.json`), JSON.stringify({ ...done, touchedAt: Date.now() } satisfies BlobMeta))
+        await writeDurable(join(dir, `${id}.json`), JSON.stringify({ ...done, touchedAt: Date.now() } satisfies BlobMeta))
         return { complete: true, count: done.count, received: done.count, size: done.size }
       }
 
@@ -188,9 +184,9 @@ export class BlobStore {
       }
       if (!pending) {
         if (index !== 0) throw new BlobError(409, 'the upload has to start over')
-        await mkdir(uploads, { recursive: true })
+        await ensureDir(uploads)
         await writeFile(partPath, new Uint8Array(0))
-        await writeAtomic(metaPath, JSON.stringify({ count, startedAt: Date.now() } satisfies UploadMeta))
+        await writeDurable(metaPath, JSON.stringify({ count, startedAt: Date.now() } satisfies UploadMeta))
         pending = { count, received: 0 }
       }
       if (index < pending.received) return { complete: false, count, received: pending.received, size: pending.received * CHUNK_CIPHER }
@@ -209,17 +205,14 @@ export class BlobStore {
 
       // A crash in the middle of an append leaves a torn chunk; it goes.
       if (((await sizeOf(partPath)) ?? 0) !== stored) await truncate(partPath, stored)
-      const handle = await open(partPath, 'a')
-      try {
-        await handle.write(data)
-      } finally {
-        await handle.close()
-      }
+      // On the disk before it is acknowledged: the device does not send an acknowledged chunk again.
+      await appendDurable(partPath, data, false)
       if (!last) return { complete: false, count, received: index + 1, size }
 
       await rename(partPath, join(dir, id))
+      await syncDir(dir)
       const now = Date.now()
-      await writeAtomic(join(dir, `${id}.json`), JSON.stringify({ size, count, createdAt: now, touchedAt: now } satisfies BlobMeta))
+      await writeDurable(join(dir, `${id}.json`), JSON.stringify({ size, count, createdAt: now, touchedAt: now } satisfies BlobMeta))
       await unlink(metaPath).catch(() => undefined)
       await this.addUsage(account, size)
       return { complete: true, count, received: count, size }
@@ -297,7 +290,7 @@ export class BlobStore {
       const there = await this.serial(`${account}/${vault}/${value}`, async () => {
         const meta = await this.meta(account, vault, value)
         if (!meta) return false
-        await writeAtomic(join(this.dir(account, vault), `${value}.json`), JSON.stringify({ ...meta, touchedAt: now } satisfies BlobMeta))
+        await writeDurable(join(this.dir(account, vault), `${value}.json`), JSON.stringify({ ...meta, touchedAt: now } satisfies BlobMeta))
         return true
       })
       if (there) touched.push(value)

@@ -1,6 +1,7 @@
-import { appendFile, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
+import { readFile, readdir, rm, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isHexId, roomKind, roomSubject, type FolderTie, type ShareRole } from '@obsidian-connect/shared'
+import { appendDurable, ensureDir, truncateDurable, writeDurable } from './durable.js'
 
 // One room on disk: `meta.json` with who may do what, `log.bin` with the
 // frames, and `snap-<uptoSeq>.bin` for each snapshot still needed. The server
@@ -79,6 +80,8 @@ export interface RoomFolder {
 }
 
 const HEADER_BYTES = 8 + 8 + 4 + 4
+// Far above anything a socket carries: a length beyond it is garbage, not a frame.
+const MAX_FRAME_BYTES = 256 * 1024 * 1024
 
 function encodeFrame(frame: Frame): Buffer {
   const header = Buffer.alloc(HEADER_BYTES)
@@ -89,7 +92,13 @@ function encodeFrame(frame: Frame): Buffer {
   return Buffer.concat([header, Buffer.from(frame.data)])
 }
 
-function decodeFrames(buffer: Buffer): Frame[] {
+/**
+ * The whole frames at the start of a log, and how many bytes they take. Frames
+ * follow one another seq by seq; whatever does not - a frame torn by a crash
+ * mid-append, the garbage a power cut leaves at the end of a file - ends the
+ * log there.
+ */
+export function decodeFrames(buffer: Buffer): { frames: Frame[]; bytes: number } {
   const frames: Frame[] = []
   let offset = 0
   while (offset + HEADER_BYTES <= buffer.length) {
@@ -98,13 +107,18 @@ function decodeFrames(buffer: Buffer): Frame[] {
     const epoch = buffer.readUInt32BE(offset + 16)
     const length = buffer.readUInt32BE(offset + 20)
     const end = offset + HEADER_BYTES + length
-    // A torn tail can only come from a crash mid-append. Every complete frame
-    // before it stays readable.
-    if (end > buffer.length) break
+    if (length > MAX_FRAME_BYTES || end > buffer.length || seq < 1 || !Number.isSafeInteger(seq)) break
+    const previous = frames[frames.length - 1]
+    // Before 0.9.1 a push during a compaction was written twice; the second copy is the same frame.
+    if (previous && seq === previous.seq) {
+      offset = end
+      continue
+    }
+    if (previous && seq !== previous.seq + 1) break
     frames.push({ seq, ts, epoch, data: new Uint8Array(buffer.subarray(offset + HEADER_BYTES, end)) })
     offset = end
   }
-  return frames
+  return { frames, bytes: offset }
 }
 
 async function readOptional(path: string): Promise<Buffer | null> {
@@ -114,12 +128,6 @@ async function readOptional(path: string): Promise<Buffer | null> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error
   }
-}
-
-async function writeAtomic(path: string, data: string | Uint8Array): Promise<void> {
-  const temp = `${path}.tmp`
-  await writeFile(temp, data)
-  await rename(temp, path)
 }
 
 const USERS = 'users'
@@ -159,6 +167,11 @@ function queueWrite<T>(dir: string, room: string, task: () => Promise<T>): Promi
   return run
 }
 
+/** Every room's queued writes, open or not - what shutting down waits for. */
+export async function flushAllWrites(): Promise<void> {
+  while (writeQueues.size > 0) await Promise.all(Array.from(writeQueues.values()))
+}
+
 async function list(dir: string): Promise<string[]> {
   try {
     return await readdir(dir)
@@ -195,8 +208,8 @@ export function saveMetaOf(dataDir: string, meta: RoomMeta): Promise<void> {
   const dir = roomDir(dataDir, meta)
   const json = JSON.stringify(meta, null, 2)
   return queueWrite(dir, meta.room, async () => {
-    await mkdir(dir, { recursive: true })
-    await writeAtomic(join(dir, 'meta.json'), json)
+    await ensureDir(dir)
+    await writeDurable(join(dir, 'meta.json'), json)
   })
 }
 
@@ -221,30 +234,66 @@ export async function frameTimesOf(dataDir: string, meta: RoomMeta): Promise<Arr
 }
 
 export class RoomLog {
+  /** Frames handed to `append` and not on the disk yet. */
+  private pending = 0
+  /** A write failed and could not be undone: the bytes after `bytes` are not to be trusted. */
+  private damaged = false
+
   private constructor(
     private readonly dir: string,
     readonly meta: RoomMeta,
-    /** In seq order. Only frames after `compactedUpTo`. */
-    readonly frames: Frame[]
+    /** In seq order. Only frames after `compactedUpTo`, and only once they are on the disk. */
+    readonly frames: Frame[],
+    /** How long `log.bin` is: its whole frames, nothing after them. */
+    private bytes: number
   ) {}
 
+  private get logFile(): string {
+    return join(this.dir, 'log.bin')
+  }
+
+  /**
+   * Reads the log, and cuts off whatever follows its last whole frame: a frame
+   * torn by a crash stayed in the file, and the next one appended behind it
+   * was read through the torn one's length - garbage from there on.
+   */
   static async load(dataDir: string, meta: RoomMeta): Promise<RoomLog> {
     const dir = roomDir(dataDir, meta)
-    const raw = await readOptional(join(dir, 'log.bin'))
-    const frames = raw ? decodeFrames(raw).filter((frame) => frame.seq > meta.compactedUpTo) : []
-    return new RoomLog(dir, meta, frames)
+    const file = join(dir, 'log.bin')
+    const raw = await readOptional(file)
+    const { frames, bytes } = raw ? decodeFrames(raw) : { frames: [], bytes: 0 }
+    if (raw && bytes < raw.length) {
+      console.warn(`[obsidian-connect] ${meta.room}: ${raw.length - bytes} byte(s) at the end of its log are no whole frame; cut off`)
+      await truncateDurable(file, bytes)
+    }
+    return new RoomLog(
+      dir,
+      meta,
+      frames.filter((frame) => frame.seq > meta.compactedUpTo),
+      bytes
+    )
   }
 
   static async create(dataDir: string, meta: RoomMeta): Promise<RoomLog> {
-    const log = new RoomLog(roomDir(dataDir, meta), meta, [])
+    const log = new RoomLog(roomDir(dataDir, meta), meta, [], 0)
     await log.saveMeta()
     return log
   }
 
-  get headSeq(): number {
+  /** The last seq whose frame is on the disk - or folded into a snapshot. What a reader is given. */
+  get writtenSeq(): number {
     const last = this.frames[this.frames.length - 1]
     const snapshotHead = this.meta.snapshots.reduce((max, snapshot) => Math.max(max, snapshot.uptoSeq), 0)
     return Math.max(last?.seq ?? 0, this.meta.compactedUpTo, snapshotHead)
+  }
+
+  /**
+   * The head counting frames still being written: what a starting point, a
+   * compaction or an epoch has to reach. A frame under the old epoch landing
+   * after a new one began could not be read by whoever starts there.
+   */
+  get headSeq(): number {
+    return this.writtenSeq + this.pending
   }
 
   /** Serialized, so appends and rewrites never interleave on disk. */
@@ -252,26 +301,64 @@ export class RoomLog {
     return queueWrite(this.dir, this.meta.room, task)
   }
 
+  private writeMeta(): Promise<void> {
+    return writeDurable(join(this.dir, 'meta.json'), JSON.stringify(this.meta, null, 2))
+  }
+
   saveMeta(): Promise<void> {
     const meta = JSON.stringify(this.meta, null, 2)
     return this.queue(async () => {
-      await mkdir(this.dir, { recursive: true })
-      await writeAtomic(join(this.dir, 'meta.json'), meta)
+      await ensureDir(this.dir)
+      await writeDurable(join(this.dir, 'meta.json'), meta)
     })
   }
 
-  /** Assigns the next seq and stores the frame. Resolves once it is on disk. */
-  append(epoch: number, data: Uint8Array, ts = Date.now()): Promise<Frame> {
-    const frame: Frame = { seq: this.headSeq + 1, ts, epoch, data }
-    this.frames.push(frame)
-    const first = this.meta.oldestFrameTs === null
-    if (first) this.meta.oldestFrameTs = ts
+  /**
+   * Stores a frame and resolves once it is on the disk - only then is it
+   * acknowledged, and only then can anyone read it: a frame read before a
+   * crash took it away came back under the same seq with other content.
+   */
+  async append(epoch: number, data: Uint8Array, ts = Date.now()): Promise<Frame> {
+    const [frame] = await this.appendAll(epoch, [data], ts)
+    return frame as Frame
+  }
+
+  /** Several frames at once, with one sync - a detached note's history. */
+  appendAll(epoch: number, datas: Uint8Array[], ts = Date.now()): Promise<Frame[]> {
+    this.pending += datas.length
     return this.queue(async () => {
-      await mkdir(this.dir, { recursive: true })
-      await appendFile(join(this.dir, 'log.bin'), encodeFrame(frame))
-      if (first) await writeAtomic(join(this.dir, 'meta.json'), JSON.stringify(this.meta, null, 2))
-      return frame
+      try {
+        // Numbered as they are written: a write that failed leaves no gap.
+        const first = this.writtenSeq + 1
+        const frames = datas.map((data, index): Frame => ({ seq: first + index, ts, epoch, data }))
+        const encoded = Buffer.concat(frames.map(encodeFrame))
+        await ensureDir(this.dir)
+        if (this.damaged) await this.repair()
+        try {
+          await appendDurable(this.logFile, encoded, this.bytes === 0)
+        } catch (error) {
+          await this.repair().catch(() => {
+            this.damaged = true
+          })
+          throw error
+        }
+        this.bytes += encoded.length
+        this.frames.push(...frames)
+        if (this.meta.oldestFrameTs === null) {
+          this.meta.oldestFrameTs = ts
+          await this.writeMeta()
+        }
+        return frames
+      } finally {
+        this.pending -= datas.length
+      }
     })
+  }
+
+  /** Cuts the log back to its whole frames after a write that failed partway. */
+  private async repair(): Promise<void> {
+    await truncateDurable(this.logFile, this.bytes)
+    this.damaged = false
   }
 
   private snapshotFile(uptoSeq: number): string {
@@ -285,34 +372,40 @@ export class RoomLog {
   /** A member's starting point: the note at `uptoSeq`, under the epoch they start in. */
   addJoinSnapshot(uptoSeq: number, epoch: number, data: Uint8Array): Promise<void> {
     return this.queue(async () => {
-      await mkdir(this.dir, { recursive: true })
-      await writeAtomic(this.snapshotFile(uptoSeq), data)
+      await ensureDir(this.dir)
+      await writeDurable(this.snapshotFile(uptoSeq), data)
       this.meta.snapshots = this.meta.snapshots.filter((snapshot) => snapshot.uptoSeq !== uptoSeq)
       this.meta.snapshots.push({ uptoSeq, ts: Date.now(), epoch, kind: 'join' })
-      await writeAtomic(join(this.dir, 'meta.json'), JSON.stringify(this.meta, null, 2))
+      await this.writeMeta()
     })
   }
 
   /**
    * Replaces every frame up to `uptoSeq` with the owner's snapshot of that
-   * state. The frames are only dropped once the snapshot is on disk, and a
-   * member's join snapshot survives while its point lies after this one.
+   * state, a member's join snapshot surviving while its point lies after this
+   * one. In the order a crash anywhere between survives: the snapshot, then
+   * the metadata naming it - loading drops the frames it folded in from then
+   * on -, then the log without them. Written from the frames on the disk: the
+   * appends queued before it are, and no later one is yet.
    */
   compact(uptoSeq: number, epoch: number, data: Uint8Array): Promise<void> {
     return this.queue(async () => {
-      await mkdir(this.dir, { recursive: true })
-      await writeAtomic(this.snapshotFile(uptoSeq), data)
+      await ensureDir(this.dir)
+      await writeDurable(this.snapshotFile(uptoSeq), data)
 
       const kept = this.frames.filter((frame) => frame.seq > uptoSeq)
-      await writeAtomic(join(this.dir, 'log.bin'), Buffer.concat(kept.map(encodeFrame)))
-      this.frames.splice(0, this.frames.length, ...kept)
-
       const superseded = this.meta.snapshots.filter((snapshot) => snapshot.uptoSeq < uptoSeq)
       this.meta.snapshots = this.meta.snapshots.filter((snapshot) => snapshot.uptoSeq > uptoSeq)
       this.meta.snapshots.push({ uptoSeq, ts: Date.now(), epoch, kind: 'compaction' })
       this.meta.compactedUpTo = uptoSeq
       this.meta.oldestFrameTs = kept[0]?.ts ?? null
-      await writeAtomic(join(this.dir, 'meta.json'), JSON.stringify(this.meta, null, 2))
+      await this.writeMeta()
+
+      const log = Buffer.concat(kept.map(encodeFrame))
+      await writeDurable(this.logFile, log)
+      this.bytes = log.length
+      this.damaged = false
+      this.frames.splice(0, this.frames.length, ...kept)
 
       for (const snapshot of superseded) {
         await unlink(this.snapshotFile(snapshot.uptoSeq)).catch(() => undefined)

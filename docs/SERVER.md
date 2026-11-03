@@ -59,6 +59,20 @@ The sync server only relays to it (`/relay`) and hands it a read-only key.
 the server's id, which is part of every account's salt: a server with another id opens
 no account, even with the right name and password.
 
+**What the server answered for is on the disk** (0.9.1): a change is acknowledged to a
+device only once it is synced to the disk, not merely handed to the operating system - on
+an SD card a power cut otherwise lost changes the device had already let go of. Every
+other file is written whole under another name and renamed. Beside the data:
+
+- `server.lock` - the one server running on this folder, kept fresh every ten seconds. A
+  second server on the same folder does not start; one left by a server that was killed
+  is waited out (half a minute) and taken over, so a restart right after a crash just
+  takes a little longer.
+- `accounts.lock` - for a moment, while the server or the CLI changes `accounts.json`: the
+  CLI waits for the server and the server for the CLI, so neither undoes the other.
+- `locks.json` - the vaults locked by the Time Machine on a device: a lock outlives a
+  restart of the server for as long as its lease, two minutes, unless its device renews it.
+
 ## `.env`
 
 A template sits in `docs/server.env`:

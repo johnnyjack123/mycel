@@ -372,3 +372,13 @@ touches a device.
   `AGPL-3.0-or-later`. The user asked whether they may still run a closed instance
   themselves: yes, a licence binds those who receive the code, not its author (with code
   others contributed, theirs needs their consent).
+
+## Built
+
+- **0.9.0** - S finding 1 (above).
+- **0.9.1** - D as proposed, D1 included (`server/src/durable.ts`, `RoomLog`). Beyond the
+  proposal: a frame the old compaction bug wrote twice is read once rather than taken for the
+  end of the log, so the user's existing data loses nothing; `contacts.json` takes no lock
+  between processes, since the CLI never writes it; a failed write closes the pushing
+  connection, so its device sends the frame again; pushes are acknowledged without holding up
+  the connection's other messages. Not measured on the Pi yet.

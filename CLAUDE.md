@@ -307,7 +307,11 @@ note does not survive a real vault. The server holds an **ordered log of
 ciphertext frames** per room and fans them out; it has no `Y.Doc`. A client
 subscribes with the last seq it applied and gets a snapshot if needed, the
 frames after it and `caughtUp`; it sends `push(ref, epoch, data)` and keeps the
-payload until `ack`. See `MUX` in `shared/protocol.ts` and `VaultSocket`.
+payload until `ack`. See `MUX` in `shared/protocol.ts` and `VaultSocket`. The
+server acknowledges a frame only once it is synced to the disk, and nobody reads it
+before (`RoomLog.append`, 0.9.1; `headSeq` counts frames still being written,
+`writtenSeq` does not); every other file it writes through `server/src/durable.ts`.
+One server per data folder (`server.lock`), and `accounts.lock` between it and the CLI.
 
 While a vault is **locked** (`sync/VaultLock.ts`, `RoomHub.takeLock`; 0.8.13) the
 server answers the account's pushes into it with `locked` instead of `ack`; the device
@@ -319,7 +323,8 @@ devices that is read-only meanwhile (`history/EditLocks.ts`), a bar at the top o
 editor saying so (0.8.16): typed into, a restore overwrote it. What is written all the same
 - the lock lifted, someone in a shared note - a restore keeps, merged against what the note
 said when the lock was taken (`DocStore.rewind`, 0.8.16). The lock lapses two minutes after
-its holder stopped renewing it, and any device of the account can lift it - its window, the
+its holder stopped renewing it - kept in the server's `locks.json`, it outlives a restart of
+the server for that long (0.9.1) -, and any device of the account can lift it - its window, the
 editor's bar, the lock in a note's header, the cloud's menu, *This device*. Every reconnect
 asks whether it still holds: a device that was away when it ended never heard so, and sent
 nothing until a restart (0.8.16). Other people in shared notes are not locked.

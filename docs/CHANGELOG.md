@@ -8,6 +8,35 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.1** (2026-11-03) - **durable writes on the sync server** (`docs/PHASE8.md`, D; asked for
+  by the user, 2026-10-18). Server only - the plugin's version moves along.
+  - **A change is acknowledged once it is on the disk:** written, synced, and only then in the
+    room's log in memory, acknowledged and sent to the others. Before, an acknowledgement meant
+    the operating system had it - a power cut on the Pi lost frames the device had already
+    dropped from its outbox. A frame nobody could read before it was written can no longer come
+    back under its seq with another content after a crash, and a write that failed leaves
+    nothing behind in memory or in the file (cut back to the last whole frame, the connection
+    closed so the device sends it again). A sync per push does not hold up the connection's
+    other rooms.
+  - **A frame torn by a crash is cut off** when the log is read - frames follow seq by seq;
+    whatever does not ends the log. Before, the next push was appended behind it and the room
+    read as garbage from there on (checked by putting the bug back). A frame written twice by
+    the next bug is read once.
+  - **A push during a compaction was written twice**; a compaction now writes snapshot,
+    metadata, log - in the order a crash between them survives - from what is on the disk.
+  - **Every other file** (metadata, snapshots, forks, blobs and their chunks, accounts,
+    contacts) is synced before its rename and its folder after; `server.json` - every salt
+    depends on it - is created whole or not at all.
+  - **The CLI and the server no longer overwrite each other's `accounts.json`** - an
+    invitation made with the CLI during a sign-in could vanish, a removed account come back
+    (checked by putting the bug back). A change that changes nothing writes nothing: most 2FA
+    attempts and backup logins wrote the whole file.
+  - **One server per data folder** (`server.lock`); shutting down waits for every write.
+  - **The vault lock outlives a restart of the server** (D1, `locks.json`) for as long as its
+    lease. Checked in `test:rooms` (a torn frame and the push after it, a push during a
+    compaction, a crash between its steps, the lock over a restart, the CLI and the server at
+    once, a second server).
+
 - **0.9.0** (2026-11-03) - **a key is sealed only to a pinned key** (`docs/PHASE8.md`, S finding
   1). When a note or folder moved to a new epoch, the owner's device sealed the new key to
   every member the server listed, and for one who was no contact it took the key the server
