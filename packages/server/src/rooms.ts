@@ -1254,7 +1254,7 @@ export class RoomHub {
     if (request.epoch !== meta.epoch) throw new HubError(409, 'encrypt it under the current epoch')
     const uptoSeq = request.uptoSeq
     if (!Number.isInteger(uptoSeq) || uptoSeq < 1 || uptoSeq < (meta.epochSince ?? 0) || uptoSeq > open.log.headSeq) {
-      throw new HubError(409, 'the starting point does not fit the log; try again')
+      throw new HubError(409, `the starting point (#${uptoSeq}) does not fit the log (epoch from #${meta.epochSince ?? 0}, head #${open.log.headSeq}); try again`)
     }
     await open.log.addJoinSnapshot(uptoSeq, request.epoch, fromBase64(request.data, 'the snapshot'))
   }

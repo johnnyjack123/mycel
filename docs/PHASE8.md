@@ -380,5 +380,5 @@ touches a device.
   proposal: a frame the old compaction bug wrote twice is read once rather than taken for the
   end of the log, so the user's existing data loses nothing; `contacts.json` takes no lock
   between processes, since the CLI never writes it; a failed write closes the pushing
-  connection, so its device sends the frame again; pushes are acknowledged without holding up
-  the connection's other messages. Not measured on the Pi yet.
+  connection, so its device sends the frame again; a starting point waits for the device's own
+  last change to be acknowledged. Not measured on the Pi yet.

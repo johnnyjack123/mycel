@@ -262,9 +262,10 @@ export class Sharing {
           for (const [member, key] of memberKeys) {
             rotationKeys[member] = (await this.keys.sealEpochKeys(docId, [epoch], key, next))[String(epoch)] as string
           }
-          // The note as far as the server's log goes. The server refuses it
-          // when frames arrived meanwhile, and the loop tries again once they
-          // are in.
+          // The note as far as the server's log goes - this device's own last
+          // change acknowledged first. The server refuses it when frames
+          // arrived meanwhile, and the loop tries again once they are in.
+          await this.store.whenSent(docId, this.options.syncTimeoutMs)
           const raw = await this.keys.noteKeyUnder(docId, epoch, tie)
           if (!raw) throw new Error('The key of the shared folder is not here yet.')
           const key = await aesKey(raw)

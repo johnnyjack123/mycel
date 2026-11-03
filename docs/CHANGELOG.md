@@ -16,8 +16,11 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
     dropped from its outbox. A frame nobody could read before it was written can no longer come
     back under its seq with another content after a crash, and a write that failed leaves
     nothing behind in memory or in the file (cut back to the last whole frame, the connection
-    closed so the device sends it again). A sync per push does not hold up the connection's
-    other rooms.
+    closed so the device sends it again). The first build acknowledged without holding up the
+    connection's next message; its CI run failed in `test:backup` (a folder shared without
+    history right after a note was created there: the owner's starting point never reached
+    the epoch's start within the retries), so a connection's messages are handled in order
+    again, and a starting point waits for this device's own last change to be acknowledged.
   - **A frame torn by a crash is cut off** when the log is read - frames follow seq by seq;
     whatever does not ends the log. Before, the next push was appended behind it and the room
     read as garbage from there on (checked by putting the bug back). A frame written twice by

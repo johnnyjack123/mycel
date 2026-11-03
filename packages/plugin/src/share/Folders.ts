@@ -1277,6 +1277,9 @@ export class Folders {
   private async startingPoint(docId: string, epoch: number, tie: FolderTie | null): Promise<{ uptoSeq: number; data: string }> {
     const handle = await this.store.handle(docId)
     if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs))) throw new Error('The server is not reachable.')
+    // What this device sent last is counted by the server before its seq comes
+    // back: the starting point reaches it only once it is acknowledged.
+    await this.store.whenSent(docId, this.options.syncTimeoutMs)
     const raw = await this.keys.noteKeyUnder(docId, epoch, tie)
     if (!raw) throw new Error('The key of the shared folder is not here yet.')
     const state = packFrame(Date.now(), Y.encodeStateAsUpdate(handle.doc))
