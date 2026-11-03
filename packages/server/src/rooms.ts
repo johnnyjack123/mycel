@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { rm, stat } from 'node:fs/promises'
+import { readFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   CLOSE_SIGNED_OUT,
@@ -46,8 +46,10 @@ import {
 import { isAccountId, type AccountStore } from './accounts.js'
 import type { ContactStore } from './contacts.js'
 import type { FolderKept, ForkStore } from './forks.js'
+import { writeDurable } from './durable.js'
 import {
   RoomLog,
+  flushAllWrites,
   frameTimesOf,
   loadAllMeta,
   roomDir,
@@ -108,7 +110,12 @@ interface OpenRoom {
   idleTimer: NodeJS.Timeout | null
 }
 
-/** A vault's lock (`docs/TIMEMACHINE.md`). Kept in memory: a restart ends it. */
+/**
+ * A vault's lock (`docs/TIMEMACHINE.md`). Kept in `locks.json` as well (0.9.1):
+ * a restart of the server ended it, and the other devices wrote again while
+ * the Time Machine still showed the past. It lasts until its lease runs out,
+ * unless its holder renews it once the server is back.
+ */
 interface HeldLock {
   id: string
   info: VaultLockInfo
@@ -133,6 +140,8 @@ export const LOCK_LEASE_MS = 2 * 60_000
 const LOCK_SWEEP_MS = 10_000
 const LOCK_KINDS: readonly VaultLockKind[] = ['preview', 'rollback']
 const SEALED_MAX = 4_096
+/** A frame could not be stored; the device reconnects and sends it again. */
+const CLOSE_WRITE_FAILED = 1011
 
 function toBase64(data: Uint8Array): string {
   return Buffer.from(data).toString('base64')
@@ -162,6 +171,7 @@ export class RoomHub {
   /** `account/vault` -> the vault's lock. */
   private readonly locks = new Map<string, HeldLock>()
   private lockSweep: NodeJS.Timeout | null = null
+  private lockWrites: Promise<unknown> = Promise.resolve()
   private readonly ready: Promise<void>
 
   constructor(
@@ -170,12 +180,57 @@ export class RoomHub {
     private readonly contacts: ContactStore,
     private readonly forks: ForkStore
   ) {
-    this.ready = loadAllMeta(options.dataDir).then((metas) => {
-      for (const meta of metas) {
-        this.metas.set(meta.room, meta)
-        for (const key of meta.attachments ?? []) this.markAttached(key, meta.room, true)
-      }
-    })
+    this.ready = Promise.all([
+      loadAllMeta(options.dataDir).then((metas) => {
+        for (const meta of metas) {
+          this.metas.set(meta.room, meta)
+          for (const key of meta.attachments ?? []) this.markAttached(key, meta.room, true)
+        }
+      }),
+      this.loadLocks()
+    ]).then(() => undefined)
+  }
+
+  /** Resolves once every room's metadata and the kept vault locks are read. */
+  started(): Promise<void> {
+    return this.ready
+  }
+
+  private get locksFile(): string {
+    return join(this.options.dataDir, 'locks.json')
+  }
+
+  /** The locks the server held when it stopped, as long as their leases last. */
+  private async loadLocks(): Promise<void> {
+    let stored: Record<string, { id: string; info: VaultLockInfo }>
+    try {
+      stored = JSON.parse(await readFile(this.locksFile, 'utf8')) as typeof stored
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      console.error('[obsidian-connect] the vault locks kept before the restart could not be read; none is held', error)
+      return
+    }
+    const now = Date.now()
+    for (const [key, lock] of Object.entries(stored)) {
+      if (this.locks.has(key) || typeof lock?.id !== 'string' || !(lock.info?.expiresAt > now)) continue
+      this.locks.set(key, { id: lock.id, info: lock.info, holders: new Set() })
+    }
+    if (this.locks.size > 0) this.startLockSweep()
+  }
+
+  private saveLocks(): void {
+    const stored: Record<string, { id: string; info: VaultLockInfo }> = {}
+    for (const [key, lock] of this.locks) stored[key] = { id: lock.id, info: lock.info }
+    const json = JSON.stringify(stored, null, 2)
+    this.lockWrites = this.lockWrites
+      .then(() => writeDurable(this.locksFile, json))
+      .catch((error: unknown) => console.error('[obsidian-connect] keeping the vault locks failed', error))
+  }
+
+  private startLockSweep(): void {
+    if (this.lockSweep) return
+    this.lockSweep = setInterval(() => this.sweepLocks(), LOCK_SWEEP_MS)
+    this.lockSweep.unref?.()
   }
 
   private markAttached(key: string, room: string, attached: boolean): void {
@@ -364,6 +419,7 @@ export class RoomHub {
     const key = this.lockKey(account, vaultId)
     if (this.locks.get(key) !== lock) return
     this.locks.delete(key)
+    this.saveLocks()
     this.notify(account, 'vault-lock', { vaultId, lock: null })
     if (this.locks.size === 0 && this.lockSweep) {
       clearInterval(this.lockSweep)
@@ -398,10 +454,8 @@ export class RoomHub {
       holders: new Set()
     }
     this.locks.set(this.lockKey(account, vaultId), lock)
-    if (!this.lockSweep) {
-      this.lockSweep = setInterval(() => this.sweepLocks(), LOCK_SWEEP_MS)
-      this.lockSweep.unref?.()
-    }
+    this.saveLocks()
+    this.startLockSweep()
     this.notify(account, 'vault-lock', { vaultId, lock: lock.info })
     return { id: lock.id, ...lock.info }
   }
@@ -411,6 +465,7 @@ export class RoomHub {
     const lock = this.lockOf(account, vaultId)
     if (!lock || lock.id !== id) throw new HubError(404, 'the lock ended')
     lock.info = { ...lock.info, expiresAt: Date.now() + LOCK_LEASE_MS }
+    this.saveLocks()
     return lock.info
   }
 
@@ -508,7 +563,8 @@ export class RoomHub {
       if (snapshot && snapshotData) client.sendSnapshot(room, snapshot.uptoSeq, snapshot.epoch, snapshotData)
       const frames = snapshot ? open.log.frames.filter((frame) => frame.seq > after && frame.seq >= access.fromSeq) : fresh.frames
       for (const frame of frames) client.sendFrame(room, frame)
-      client.sendCaughtUp(room, open.log.headSeq, open.log.meta.epoch, this.tieOf(room, open.log.meta.epoch))
+      // Frames still being written reach the subscriber once they are on the disk.
+      client.sendCaughtUp(room, open.log.writtenSeq, open.log.meta.epoch, this.tieOf(room, open.log.meta.epoch))
       open.subscribers.add(client)
       if (open.idleTimer) clearTimeout(open.idleTimer)
       open.idleTimer = null
@@ -559,7 +615,15 @@ export class RoomHub {
       client.sendRekey(room, open.log.meta.epoch, this.tieOf(room, open.log.meta.epoch))
       return
     }
-    const frame = await open.log.append(epoch, data)
+    let frame: Frame
+    try {
+      frame = await open.log.append(epoch, data)
+    } catch (error) {
+      // Not acknowledged, so the device still has it: it sends it again once it is back.
+      console.error(`[obsidian-connect] ${room}: a frame could not be written; the connection is closed so its device sends it again`, error)
+      client.close(CLOSE_WRITE_FAILED, 'the server could not store a change')
+      return
+    }
     if (this.options.logUpdates) {
       console.info(`[obsidian-connect] ${room}: #${frame.seq} ${data.length}B -> ${open.subscribers.size - 1} peer(s)`)
     }
@@ -716,7 +780,7 @@ export class RoomHub {
     const frames = part.frames.filter((frame) => readable(frame.epoch))
     const snapshot = part.snapshot && readable(part.snapshot.epoch) ? part.snapshot : null
     const epoch = meta.epoch
-    const headSeq = open.log.headSeq
+    const headSeq = open.log.writtenSeq
     const summary: ForkSummary = { docId: roomSubject(meta.room), owner: meta.owner, reason, endedAt: now }
     return async () => {
       const log = await this.logResponse(open, { snapshot, frames }, epoch, headSeq)
@@ -1494,11 +1558,11 @@ export class RoomHub {
     if (from !== undefined && Number.isInteger(from) && from >= access.fromSeq && from > meta.compactedUpTo) {
       const start = open.log.frames.findIndex((frame) => frame.seq === from)
       if (start >= 0) {
-        const response = await this.logResponse(open, { snapshot: null, frames: open.log.frames.slice(start) }, meta.epoch, open.log.headSeq)
+        const response = await this.logResponse(open, { snapshot: null, frames: open.log.frames.slice(start) }, meta.epoch, open.log.writtenSeq)
         return { ...response, from }
       }
     }
-    return this.logResponse(open, this.readablePart(open, access), meta.epoch, open.log.headSeq)
+    return this.logResponse(open, this.readablePart(open, access), meta.epoch, open.log.writtenSeq)
   }
 
   // --- backups -------------------------------------------------------------------
@@ -1610,8 +1674,8 @@ export class RoomHub {
     if (open.log.meta.owner !== account) throw new HubError(409, 'the room already exists')
     for (const frame of frames) {
       if (frame.epoch !== 0) throw new HubError(400, 'a new room starts in epoch 0')
-      await open.log.append(0, fromBase64(frame.data, 'a frame'))
     }
+    if (frames.length > 0) await open.log.appendAll(0, frames.map((frame) => fromBase64(frame.data, 'a frame')))
     return open.log.headSeq
   }
 
@@ -1772,11 +1836,16 @@ export class RoomHub {
     }
   }
 
+  /** Waits for every write: the rooms' - open or not -, the forks', the accounts' and contacts'. */
   async shutdown(): Promise<void> {
-    for (const open of this.rooms.values()) {
-      if (open.idleTimer) clearTimeout(open.idleTimer)
-      await open.log.flush()
-    }
+    for (const open of this.rooms.values()) if (open.idleTimer) clearTimeout(open.idleTimer)
+    if (this.lockSweep) clearInterval(this.lockSweep)
+    this.lockSweep = null
+    await flushAllWrites()
+    await this.forks.flush()
+    await this.accounts.flush()
+    await this.contacts.flush()
+    await this.lockWrites
     this.rooms.clear()
   }
 }

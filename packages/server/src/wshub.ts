@@ -194,7 +194,12 @@ export function setupVaultConnection(ws: WebSocket, account: string, vaultId: st
         case MUX.push: {
           const ref = decoding.readVarUint(decoder)
           const epoch = decoding.readVarUint(decoder)
-          await hub.push(connection, room, ref, epoch, decoding.readVarUint8Array(decoder))
+          // Not waited for: the frame is placed in its room's log at once, in
+          // order, and acknowledged once it is on the disk - a sync per push
+          // must not hold up this connection's other rooms.
+          void hub.push(connection, room, ref, epoch, decoding.readVarUint8Array(decoder)).catch((error: unknown) => {
+            console.error('[obsidian-connect] a push failed', error)
+          })
           return
         }
         case MUX.awareness: {

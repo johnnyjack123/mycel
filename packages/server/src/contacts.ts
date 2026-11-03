@@ -1,8 +1,9 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { InboxItem } from '@obsidian-connect/shared'
 import { AccountError, isAccountId } from './accounts.js'
+import { ensureDir, writeDurable } from './durable.js'
 
 // Who may share with whom. Two accounts become contacts when one redeems a
 // one-time code the other made; the server only checks the redemption against
@@ -69,20 +70,28 @@ export class ContactStore {
     return data
   }
 
+  /** Read, change, write, one at a time. Only the server writes this file - the CLI never does - so no lock between processes. */
   private update<T>(mutate: (data: ContactFile) => T | Promise<T>): Promise<T> {
     const run = this.writes.then(async () => {
       this.cache = null
-      const data = structuredClone(await this.load())
+      const loaded = await this.load()
+      const before = JSON.stringify(loaded, null, 2)
+      const data = structuredClone(loaded)
       const result = await mutate(data)
-      await mkdir(this.dataDir, { recursive: true })
-      const temp = `${this.file}.${process.pid}.tmp`
-      await writeFile(temp, JSON.stringify(data, null, 2))
-      await rename(temp, this.file)
+      const after = JSON.stringify(data, null, 2)
+      if (after === before) return result
+      await ensureDir(this.dataDir)
+      await writeDurable(this.file, after)
       this.cache = { mtimeMs: (await stat(this.file)).mtimeMs, data }
       return result
     })
     this.writes = run.catch(() => undefined)
     return run
+  }
+
+  /** Waits for the writes queued so far. */
+  flush(): Promise<unknown> {
+    return this.writes
   }
 
   addCode(owner: string, codeId: unknown, redeemHash: unknown, expiresAt: unknown, now = Date.now()): Promise<void> {

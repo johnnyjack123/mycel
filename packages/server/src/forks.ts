@@ -1,6 +1,7 @@
-import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
+import { readFile, readdir, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isHexId, type ForkResponse, type ForkSummary, type LogResponse } from '@obsidian-connect/shared'
+import { ensureDir, writeDurable } from './durable.js'
 
 // What a participant could read of a note when its share ended, kept until
 // one of their devices has made it a note of its own. It lives in the
@@ -35,12 +36,6 @@ async function list(dir: string): Promise<string[]> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
     throw error
   }
-}
-
-async function writeAtomic(path: string, data: string): Promise<void> {
-  const temp = `${path}.tmp`
-  await writeFile(temp, data)
-  await rename(temp, path)
 }
 
 export class ForkStore {
@@ -97,7 +92,7 @@ export class ForkStore {
   }
 
   private saveRecord(account: string, record: ForkRecord): Promise<void> {
-    return writeAtomic(this.recordFile(account, record.docId), JSON.stringify(record, null, 2))
+    return writeDurable(this.recordFile(account, record.docId), JSON.stringify(record, null, 2))
   }
 
   /**
@@ -110,9 +105,9 @@ export class ForkStore {
     const record: ForkRecord = { ...summary, keys, held: true }
     if (folder) record.folder = folder
     await this.queue(async () => {
-      await mkdir(this.dir(account), { recursive: true })
+      await ensureDir(this.dir(account))
       // The history first: a record saying it is held must never point at nothing.
-      await writeAtomic(this.logFile(account, summary.docId), JSON.stringify(log))
+      await writeDurable(this.logFile(account, summary.docId), JSON.stringify(log))
       await this.saveRecord(account, record)
       this.of(account).set(summary.docId, record)
     })

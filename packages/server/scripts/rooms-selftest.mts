@@ -5,7 +5,7 @@
 //   npm run test:rooms
 import { createHash, randomBytes } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SignJWT } from 'jose'
@@ -19,7 +19,8 @@ import { createHttpApp } from '../src/http.js'
 import { ForkStore } from '../src/forks.js'
 import { AddressGuard, paced } from '../src/throttle.js'
 import { totpCode } from '../src/totp.js'
-import type { Frame } from '../src/log.js'
+import { takeServerLock } from '../src/durable.js'
+import { decodeFrames, type Frame } from '../src/log.js'
 import { Relay } from '../src/relay.js'
 import { HubError, RoomHub, type RoomClient } from '../src/rooms.js'
 
@@ -1028,6 +1029,144 @@ try {
     restarted
   )
   check((await hub.members(alice, docId)).members.map((member) => member.account).join() === carol, 'and who has access')
+
+  // --- durable writes (0.9.1, docs/PHASE8.md D) -----------------------------------------------
+  {
+    const restart = async (): Promise<void> => {
+      await hub.shutdown()
+      hub = new RoomHub({ dataDir, idleCloseMs: 50 }, accounts, contacts, new ForkStore(dataDir))
+      await hub.started()
+    }
+    const framesOf = async (roomName: string): Promise<Message[]> => {
+      const reader = new Client(alice, aliceVault.vaultId)
+      hub.attach(reader)
+      await hub.subscribe(reader, roomName, 0)
+      hub.detach(reader)
+      return reader.take().filter((m) => m.type === 'frame' || m.type === 'snapshot')
+    }
+    const writer = new Client(alice, aliceVault.vaultId)
+    hub.attach(writer)
+    const tornDoc = hexId()
+    const tornRoom = `doc:${tornDoc}`
+    const tornLog = join(dataDir, 'users', alice, aliceVault.vaultId, 'notes', tornDoc, 'log.bin')
+    await hub.subscribe(writer, tornRoom, 0)
+    await hub.push(writer, tornRoom, 1, 0, bytes('one'))
+    await hub.push(writer, tornRoom, 2, 0, bytes('two'))
+    const whole = readFileSync(tornLog).length
+    hub.detach(writer)
+    await restart()
+    // A crash in the middle of an append: a header that promises more than follows.
+    const torn = Buffer.alloc(24 + 3)
+    torn.writeBigUInt64BE(3n, 0)
+    torn.writeBigUInt64BE(BigInt(Date.now()), 8)
+    torn.writeUInt32BE(1_000, 20)
+    appendFileSync(tornLog, torn)
+    await restart()
+    check(
+      (await framesOf(tornRoom)).map((m) => m.data).join() === 'one,two' && readFileSync(tornLog).length === whole,
+      'a frame torn by a crash is cut off when the log is read, the whole ones kept'
+    )
+    const again = new Client(alice, aliceVault.vaultId)
+    hub.attach(again)
+    await hub.subscribe(again, tornRoom, 0)
+    await hub.push(again, tornRoom, 3, 0, bytes('three'))
+    check(again.take().some((m) => m.type === 'ack' && m.seq === 3), 'the next push takes the next seq')
+    hub.detach(again)
+    await restart()
+    check((await framesOf(tornRoom)).map((m) => m.data).join() === 'one,two,three', 'and is read back after the next restart - not swallowed by the torn one')
+
+    // A push while a compaction runs was written twice: once by the rewrite, once by its own append.
+    const busyDoc = hexId()
+    const busyRoom = `doc:${busyDoc}`
+    const busyLog = join(dataDir, 'users', alice, aliceVault.vaultId, 'notes', busyDoc, 'log.bin')
+    const busy = new Client(alice, aliceVault.vaultId)
+    hub.attach(busy)
+    await hub.subscribe(busy, busyRoom, 0)
+    for (let ref = 1; ref <= 3; ref += 1) await hub.push(busy, busyRoom, ref, 0, bytes(`f${ref}`))
+    const compacting = hub.snapshot(alice, busyRoom, { uptoSeq: 2, epoch: 0, data: Buffer.from('upto2').toString('base64') })
+    const during = hub.push(busy, busyRoom, 4, 0, bytes('f4'))
+    await Promise.all([compacting, during])
+    const onDisk = decodeFrames(readFileSync(busyLog)).frames.map((frame) => frame.seq)
+    check(onDisk.join() === '3,4', 'a push during a compaction is on disk once', onDisk)
+    hub.detach(busy)
+
+    // A crash between a compaction's steps: snapshot and metadata written, the log not yet.
+    await restart()
+    {
+      const stepDoc = hexId()
+      const stepRoom = `doc:${stepDoc}`
+      const stepLog = join(dataDir, 'users', alice, aliceVault.vaultId, 'notes', stepDoc, 'log.bin')
+      const stepper = new Client(alice, aliceVault.vaultId)
+      hub.attach(stepper)
+      await hub.subscribe(stepper, stepRoom, 0)
+      for (let ref = 1; ref <= 3; ref += 1) await hub.push(stepper, stepRoom, ref, 0, bytes(`s${ref}`))
+      const uncompacted = readFileSync(stepLog)
+      await hub.snapshot(alice, stepRoom, { uptoSeq: 2, epoch: 0, data: Buffer.from('upto2').toString('base64') })
+      hub.detach(stepper)
+      await restart()
+      writeFileSync(stepLog, uncompacted)
+      await restart()
+      const read = await framesOf(stepRoom)
+      check(
+        read[0]?.type === 'snapshot' && read[0].data === 'upto2' && read.filter((m) => m.type === 'frame').map((m) => m.data).join() === 's3',
+        'a crash after the metadata, before the log was rewritten, reads as the compaction it was',
+        read
+      )
+      const next = new Client(alice, aliceVault.vaultId)
+      hub.attach(next)
+      await hub.subscribe(next, stepRoom, 0)
+      await hub.push(next, stepRoom, 4, 0, bytes('s4'))
+      check(next.take().some((m) => m.type === 'ack' && m.seq === 4), 'and the log goes on from its head')
+      hub.detach(next)
+    }
+
+    // The vault lock outlives a restart of the server (D1), as long as its lease.
+    {
+      const vault = aliceVault.vaultId
+      const lock = hub.takeLock(alice, vault, { kind: 'preview', sealed: 'c2VhbGVk' })
+      await restart()
+      const holder = new Client(alice, vault)
+      hub.attach(holder)
+      check(hub.currentLock(alice, vault)?.kind === 'preview' && hub.holdLock(holder, lock.id), 'a vault lock outlives a restart of the server, its holder still holding it by its id')
+      hub.releaseLock(alice, vault, lock.id)
+      hub.detach(holder)
+      await restart()
+      check(hub.currentLock(alice, vault) === null, 'and once released, it stays released')
+    }
+
+    // The admin CLI and the server change accounts.json at once.
+    {
+      const cli = new AccountStore(dataDir)
+      const invitesBefore = await accounts.invites()
+      await Promise.all(Array.from({ length: 12 }, (_value, index) => (index % 2 === 0 ? accounts : cli).invite()))
+      check((await accounts.invites()) === invitesBefore + 12 && (await cli.invites()) === invitesBefore + 12, 'the CLI and the server writing accounts.json at once lose nothing', {
+        before: invitesBefore,
+        after: await accounts.invites()
+      })
+      check(!existsSync(join(dataDir, 'accounts.lock')), 'and leave no lock behind')
+    }
+
+    // One server per data folder.
+    {
+      const folder = mkdtempSync(join(tmpdir(), 'oc-server-lock-'))
+      try {
+        const first = await takeServerLock(folder, 20, 200)
+        check((await status(() => takeServerLock(folder, 20, 200))) !== 200, 'a second server on the same data folder does not start')
+        await first.release()
+        const second = await takeServerLock(folder, 20, 200)
+        await second.release()
+        check(true, 'once the first let go, it does')
+        writeFileSync(join(folder, 'server.lock'), 'left behind\n')
+        const old = new Date(Date.now() - 60_000)
+        utimesSync(join(folder, 'server.lock'), old, old)
+        const third = await takeServerLock(folder, 20, 200)
+        await third.release()
+        check(true, 'a lock left by a server that stopped without letting go is taken over')
+      } finally {
+        rmSync(folder, { recursive: true, force: true })
+      }
+    }
+  }
 
   // --- import --------------------------------------------------------------------------------
   const copy = `doc:${hexId()}`

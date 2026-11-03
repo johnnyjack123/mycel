@@ -7,6 +7,7 @@ import { AccountStore, sessionOf } from './accounts.js'
 import { TokenService, type TokenSession } from './auth.js'
 import { BlobStore } from './blobs.js'
 import { ContactStore } from './contacts.js'
+import { ensureDir, takeServerLock } from './durable.js'
 import { ForkStore } from './forks.js'
 import type { ServerConfig } from './config.js'
 import { createHttpApp } from './http.js'
@@ -34,6 +35,8 @@ export interface StartOptions {
   now?: () => number
   /** Failed sign-ins an address may have within 15 minutes. */
   maxFailures?: number
+  /** How often `server.lock` is kept fresh, and when it counts as left behind. */
+  serverLock?: { beatMs: number; staleMs: number }
 }
 
 const VAULT_PREFIX = '/vault/'
@@ -47,6 +50,8 @@ function reject(socket: Duplex, status: string): void {
 }
 
 export async function startServer(config: ServerConfig, options: StartOptions = {}): Promise<RunningServer> {
+  await ensureDir(config.dataDir)
+  const serverLock = await takeServerLock(config.dataDir, options.serverLock?.beatMs, options.serverLock?.staleMs)
   const tokens = new TokenService(config.jwtSecret, config.accessTokenTtlSeconds)
   const accounts = new AccountStore(config.dataDir)
   const contacts = new ContactStore(config.dataDir)
@@ -146,7 +151,14 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
   if (config.insecureSecret) {
     app.log.warn('OBSIDIAN_CONNECT_JWT_SECRET is not set; tokens use a built-in secret. Set it before exposing the server.')
   }
-  await app.listen({ host: config.host, port: config.port })
+  // The rooms and the vault locks kept over the restart, before anyone asks.
+  await hub.started()
+  try {
+    await app.listen({ host: config.host, port: config.port })
+  } catch (error) {
+    await serverLock.release()
+    throw error
+  }
   const port = (app.server.address() as AddressInfo).port
   app.log.info(`Obsidian Connect server is listening on ${config.host}:${port} (registration: ${config.registration})`)
   sweep()
@@ -163,6 +175,7 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
       relayWss.close()
       await app.close()
       await hub.shutdown()
+      await serverLock.release()
     }
   }
 }
