@@ -30,7 +30,8 @@ running it in **`docs/BACKUP.md`**; sharing a folder and the small fixes of 0.8 
 **`docs/PHASE7.md`**; the Time Machine (0.8.11, the user's decisions T1 to T8; its
 second round, 0.8.13, U1 to U5, V1 to V6, W1 to W3) in **`docs/TIMEMACHINE.md`**.
 A new milestone gets its design document written with the user before it is built: 0.9's
-is **`docs/PHASE8.md`** (drafted 2026-11-03, waiting for the user's decisions).
+is **`docs/PHASE8.md`** (decided 2026-11-03; being built, its order in `docs/PROGRESS.md`).
+Licence: AGPL-3.0-or-later (`LICENSE.md`, the user, 2026-11-03).
 
 ## Non-negotiable invariants
 
@@ -560,9 +561,12 @@ adds the note to its own index under the share folder.
   fingerprint of its creator's key. The code yields a redeem key (the server
   keeps its hash) and a MAC key that never leaves a device, so the server can
   pass the sealed names back and forth but not forge them. Keys are taken from
-  the contact list, never fetched again from the server when sealing. The
-  server refuses a share with anyone else. Removing a contact ends every share
-  between the two.
+  the contact list, never from the server - it has no route for anyone's key. A
+  member the server lists who is no contact stops the rotation that would seal a
+  key to them (`Sharing.memberKeys`, 0.9.0) and is asked about over everything
+  (`UnknownMembersModal`): a server listing a member of its own would otherwise
+  receive every later key. The server refuses a share with anyone else.
+  Removing a contact ends every share between the two.
 Presence (cursors, selections) follows from a note being shared: the `shared`
 flag on the index entry, and `DocHandle` only registers awareness while it is
 set. Syncing your own devices never shows a caret: a note nobody else is in

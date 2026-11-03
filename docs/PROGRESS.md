@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-03 · **0.8.17: the notification center is called *Connect*. 0.8.16 tried (item 15); items 4 to 6 of its list still to try. 0.9's design drafted in `docs/PHASE8.md` - waiting for the user's decisions (S1, S2, D1, L1, N1, N2, P1, P2, the order); nothing of it built.**_
+_Last updated: 2026-11-03 · **0.9 under way (`docs/PHASE8.md`, the user's decisions of 2026-11-03 there): 0.9.0 seals keys only to pinned keys. Next D (durable writes), L (every note live), S (signatures), *Replace all keys*. The name waits for the user (Mycel recommended); the audit goes to a separate agent; publishing comes last.**_
 
 ## Where we are
 
@@ -38,6 +38,20 @@ folder, opening the decrypted copy as a vault.
   old local server: never touch either (CLAUDE.md, Gotchas).
 
 ## Next step
+
+**Milestone 0.9: hardening** (`docs/PHASE8.md`; the user's answers of 2026-11-03 are in its
+"Decided" section). The user left S1, S2, D1, L1 and the order to the recommendations, asked
+for no backward compatibility ("noch läuft das nicht in Production"), gave the audit (A) to a
+separate agent with fresh context, chose AGPL-3.0 and wants the rename (N) only after hearing
+an opinion on their two names, *Seemless* and *Mycel* (given: Mycel). Publishing (P) last.
+
+1. **0.9.0** - S finding 1: keys sealed only to pinned keys (`feat/seal-pinned-only`),
+   `LICENSE.md`.
+2. **0.9.1** - D: durable writes on the sync server, the vault lock over a restart (D1).
+3. **0.9.2** - L: every note live (`watch`), the eviction fixes.
+4. **0.9.3** - S-a and S-b: signing keys, signed sealed keys and member lists, signed frames.
+5. **0.9.4** - S2: *Replace all keys*.
+6. N once the user named it; then the audit agent; P last.
 
 **Milestone 0.8: sharing a folder, and the small fixes** (`docs/PHASE7.md`, signed off
 2026-10-22; the decisions E0 to E8, the order of work at its end).
@@ -211,7 +225,7 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing once `feat/time-machine-4` (0.8.16) is merged. Every branch of 0.8
+Nothing once `feat/seal-pinned-only` (0.9.0) is merged. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
 `fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`, `feat/time-machine`,
@@ -248,9 +262,9 @@ user's call, as with the earlier branches.
 
 - **Found while drafting 0.9 (2026-11-03, `docs/PHASE8.md`, each checked in the code; not
   fixed yet):**
-  - A rotation of a shared note's or folder's key seals it to every member the server
+  - ~~A rotation of a shared note's or folder's key seals it to every member the server
     lists, and for one who is no contact to the key the server gives - a server could
-    list itself and read on (S, finding 1). Proposed as the first fix of 0.9.
+    list itself and read on (S, finding 1)~~ - fixed in 0.9.0.
   - The sync server never `fsync`s; a frame torn by a crash is never cut off and garbles
     the next; a push during a compaction is written twice; a compaction writes the log
     before its metadata; the CLI and the server can overwrite each other's

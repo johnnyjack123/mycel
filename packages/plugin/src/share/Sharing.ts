@@ -52,6 +52,34 @@ export interface SharingOptions {
   folderEpoch?: (folderId: string) => Promise<number>
   /** Whether this account's share of a folder is over; the folder announces that for its notes. */
   folderOver?: (folderId: string) => boolean
+  /**
+   * Whether the account's settings - its contacts - have come from the server
+   * since the start; false when they did not arrive in time. Without it the
+   * contacts on the device are taken as all there are.
+   */
+  contactsReady?: () => Promise<boolean>
+  /** The server listed members who are not contacts: said in a window over everything. */
+  unknownMembers?: (accounts: string[], place: MemberPlace) => void
+}
+
+/** A note or a folder of this account's, whose members a new key is sealed to. */
+export type MemberPlace = { kind: 'note'; docId: string } | { kind: 'folder'; folderId: string }
+
+/**
+ * The server listed members who are not contacts. Sharing adds contacts
+ * only, and removing a contact ends every share between the two, so such a
+ * member comes from the server - or from a contact removed whose shares did
+ * not all end. Nothing is sealed for them, and so nothing moves.
+ */
+export class UnknownMembersError extends Error {
+  constructor(
+    readonly accounts: string[],
+    readonly place: MemberPlace
+  ) {
+    super(
+      `The server lists ${accounts.length === 1 ? 'someone' : `${accounts.length} people`} as member who ${accounts.length === 1 ? 'is' : 'are'} not one of your contacts; nothing was sealed for them.`
+    )
+  }
 }
 
 const STALE_RETRIES = 5
@@ -77,7 +105,7 @@ export class Sharing {
     private readonly keys: KeyRing,
     private readonly store: DocStore,
     private readonly options: SharingOptions,
-    private readonly contacts: Contacts | null = null
+    private readonly contacts: Contacts
   ) {}
 
   get accountId(): string {
@@ -86,13 +114,13 @@ export class Sharing {
 
   /** What this account calls someone. */
   nameOf(account: string): string {
-    return this.contacts?.name(account) ?? account.slice(0, 8)
+    return this.contacts.name(account)
   }
 
   /** The name of a contact; null for an account this one does not know. */
   knownName(account: string): string | null {
     // `Contacts.name` falls back to the id for anyone else.
-    return this.contacts?.isContact(account) ? this.contacts.name(account) : null
+    return this.contacts.isContact(account) ? this.contacts.name(account) : null
   }
 
   members(docId: string): Promise<ShareMembersResponse> {
@@ -110,16 +138,33 @@ export class Sharing {
     return { folder, epoch: await this.options.folderEpoch(folder) }
   }
 
+  /** The key of someone a note or folder is shared with now: pinned when the contact was made. */
+  recipientKey(account: string): Bytes {
+    const pinned = this.contacts.publicKey(account)
+    if (!pinned) throw new Error('Notes are shared with contacts only. Add them under Settings → Obsidian Connect → Contacts first.')
+    return pinned
+  }
+
   /**
-   * The key pinned when the contact was made. Only someone who is a member
-   * without being a contact - which sharing does not allow - falls back to
-   * what the server says, so a rotation can still seal for everyone who stays.
+   * The pinned keys of everyone the server lists in a note or folder, for a
+   * key about to be sealed to them. Never the server's word for a key: a
+   * member it made up, given a key of its own, would receive every later key
+   * and read the share. So anyone not a contact - once the contacts are
+   * surely here - stops the whole rotation before anything is sealed.
    */
-  async publicKey(account: string): Promise<Bytes> {
-    const pinned = this.contacts?.publicKey(account)
-    if (pinned) return pinned
-    log.warn(`${account} is not a contact; using the key the server has for them`)
-    return fromBase64((await this.api.accountKey(account)).publicKey)
+  async memberKeys(accounts: string[], place: MemberPlace): Promise<Map<string, Bytes>> {
+    const strangers = (): string[] => accounts.filter((account) => !this.contacts.isContact(account))
+    if (strangers().length > 0 && this.options.contactsReady && !(await this.options.contactsReady())) {
+      throw new Error('Your contacts have not arrived from the server yet. Try again once it is reachable.')
+    }
+    const unknown = strangers()
+    if (unknown.length > 0) {
+      const where = place.kind === 'note' ? (this.store.entry(place.docId)?.path ?? place.docId) : `the folder ${place.folderId}`
+      log.error(`${where}: the server lists ${unknown.map((account) => account.slice(0, 8)).join(', ')} as member, not a contact; nothing sealed`)
+      this.options.unknownMembers?.(unknown, place)
+      throw new UnknownMembersError(unknown, place)
+    }
+    return new Map(accounts.map((account) => [account, this.contacts.publicKey(account) as Bytes]))
   }
 
   /**
@@ -185,10 +230,7 @@ export class Sharing {
     const entry = this.store.entry(docId)
     if (!entry || entry.deletedAt) throw new Error('This note is not synced yet.')
     if (entry.owner) throw new Error(`Only ${this.nameOf(entry.owner)} can share this note.`)
-    if (this.contacts && !this.contacts.isContact(account)) {
-      throw new Error('Notes are shared with contacts only. Add them under Settings → Obsidian Connect → Contacts first.')
-    }
-    const recipientKey = await this.publicKey(account)
+    const recipientKey = this.recipientKey(account)
     const handle = await this.store.handle(docId)
     // Without the room's current state there is nothing to hand over, and
     // without it on the server there is no room to share yet.
@@ -213,12 +255,12 @@ export class Sharing {
           const epoch = members.epoch + 1
           const tie = await this.nextTie(docId)
           const next = { epoch, tie }
+          const others = members.members.map((member) => member.account).filter((member) => member !== account)
+          const memberKeys = await this.memberKeys(others, { kind: 'note', docId })
           const rotationKeys: Record<string, string> = {}
           rotationKeys[account] = (await this.keys.sealEpochKeys(docId, [epoch], recipientKey, next))[String(epoch)] as string
-          for (const member of members.members) {
-            if (member.account === account) continue
-            const sealed = await this.keys.sealEpochKeys(docId, [epoch], await this.publicKey(member.account), next)
-            rotationKeys[member.account] = sealed[String(epoch)] as string
+          for (const [member, key] of memberKeys) {
+            rotationKeys[member] = (await this.keys.sealEpochKeys(docId, [epoch], key, next))[String(epoch)] as string
           }
           // The note as far as the server's log goes. The server refuses it
           // when frames arrived meanwhile, and the loop tries again once they
@@ -287,11 +329,10 @@ export class Sharing {
     const members = await this.api.members(docId)
     const epoch = members.epoch + 1
     const tie = await this.nextTie(docId)
+    const staying = members.members.map((member) => member.account).filter((member) => member !== account)
     const keys: Record<string, string> = {}
-    for (const member of members.members) {
-      if (member.account === account) continue
-      const sealed = await this.keys.sealEpochKeys(docId, [epoch], await this.publicKey(member.account), { epoch, tie })
-      keys[member.account] = sealed[String(epoch)] as string
+    for (const [member, key] of await this.memberKeys(staying, { kind: 'note', docId })) {
+      keys[member] = (await this.keys.sealEpochKeys(docId, [epoch], key, { epoch, tie }))[String(epoch)] as string
     }
     const rotation: Rotation = { epoch, keys }
     if (tie) rotation.folderEpoch = tie.epoch

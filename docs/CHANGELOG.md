@@ -6,6 +6,21 @@ verified. `docs/PROGRESS.md` holds only the current state.
 "Checked by putting the bug back" means: the old behaviour was restored in the source,
 the suite run, the new checks seen failing (and nothing else), the fix restored.
 
+## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
+
+- **0.9.0** (2026-11-03) - **a key is sealed only to a pinned key** (`docs/PHASE8.md`, S finding
+  1). When a note or folder moved to a new epoch, the owner's device sealed the new key to
+  every member the server listed, and for one who was no contact it took the key the server
+  gave: a server that listed a member of its own would have received every later key, and
+  read the share. Now every key comes from the contact list; a member who is not a contact -
+  once the contacts are surely here, the settings caught up - stops the whole rotation before
+  anything is sealed (`Sharing.memberKeys`), and a window over everything says so and offers
+  to take that member out (`UnknownMembersModal`), with the reason kept in the notification
+  center. The server's route that handed out anyone's public key by account id is gone - the
+  plugin was its only reader. Checked in `test:folders` (a revocation with a member the
+  owner's device no longer knows stops, the folder keeps its epoch, the window is asked
+  for). The licence: AGPL-3.0-or-later, in `LICENSE.md` (the user). Plugin and server.
+
 ## 0.8 - sharing a folder (from 2026-10-22, spec `docs/PHASE7.md`)
 
 - **0.8.17** (2026-11-03) - **the notification center is called *Connect*** (the user: it holds

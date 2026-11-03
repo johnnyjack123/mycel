@@ -20,7 +20,6 @@ import {
   type BlobPurgeResponse,
   type BlobTouchResponse,
   type BlobUsageResponse,
-  type AccountKeyResponse,
   type AuthConfigResponse,
   type ChangedResponse,
   type TimesResponse,
@@ -82,10 +81,6 @@ import { AddressGuard, paced } from './throttle.js'
 
 interface RoomParams {
   room: string
-}
-
-interface AccountParams {
-  accountId: string
 }
 
 interface DocParams {
@@ -494,16 +489,6 @@ export function createHttpApp(
     if (!accountId) return undefined
     const body = (request.body ?? {}) as Partial<CreateVaultRequest>
     return accounts.addVault(accountId, body.vaultId, body.sealedName, body.wrappedKey)
-  })
-
-  app.get<{ Params: AccountParams }>(`${API.accounts}/:accountId/key`, async (request, reply) => {
-    const accountId = await user(request, reply)
-    if (!accountId) return undefined
-    const wanted = request.params.accountId
-    const account = isAccountId(wanted) ? await accounts.get(wanted) : undefined
-    if (!account) return reply.code(404).send({ error: 'no such account' })
-    const response: AccountKeyResponse = { accountId: account.accountId, publicKey: account.publicKey }
-    return response
   })
 
   // --- contacts ------------------------------------------------------------------

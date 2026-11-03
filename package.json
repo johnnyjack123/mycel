@@ -1,6 +1,6 @@
 {
   "name": "obsidian-connect",
-  "version": "0.8.17",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "End-to-end encrypted CRDT (Yjs) synchronization and live collaboration for Obsidian vaults.",
@@ -36,5 +36,6 @@
   },
   "engines": {
     "node": ">=22"
-  }
+  },
+  "license": "AGPL-3.0-or-later"
 }

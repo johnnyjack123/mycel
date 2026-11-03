@@ -1,8 +1,8 @@
 # Phase 8 - hardening and a security audit (0.9)
 
-A draft for the user to decide, written 2026-11-03 after 0.8.17. Nothing in it is built
-before the user decided. 0.9 is hardening only (the user, 2026-10-25): no new features,
-the roadmap's items in `docs/PROGRESS.md`, "Roadmap":
+Written 2026-11-03 after 0.8.17 as a draft; the user decided the same day (below, "Decided").
+0.9 is hardening only (the user, 2026-10-25): no new features, the roadmap's items in
+`docs/PROGRESS.md`, "Roadmap":
 
 - **D** - durable writes on the sync server (asked for by the user, 2026-10-18).
 - **L** - every note live without all of them in memory.
@@ -345,3 +345,30 @@ touches a device.
 - **N1** - the name and id. **N2** - the server side renamed too.
 - **P1** - publish, and when. **P2** - the licence.
 - The order above.
+
+## Decided (the user, 2026-11-03)
+
+- **S finding 1 at once, as 0.9.0** - built: `Sharing.memberKeys` seals only to pinned keys,
+  a member who is no contact stops the rotation, `UnknownMembersModal` says so over
+  everything and offers to take that member out (one at a time: the server's revocation
+  names one account, so with two strangers neither can go - which no removed contact
+  explains, and the window says to distrust the server). The route that gave anyone's public
+  key by account id is gone.
+- **No backward compatibility** ("noch läuft das nicht in Production"): what changes the
+  protocol changes it cleanly - the protocol version moves, an older device or server is
+  refused - instead of carrying both ways for a while. S-b's compatibility plan is dropped.
+- **S1, S2, D1, L1 and the order: as recommended** ("Entscheide du bei S, welche Variante die
+  bessere ist") - (c) with (a) first; *Replace all keys* in 0.9; the vault lock over a
+  restart; no faster start in 0.9; the order of work above.
+- **A, the review, goes to a separate agent with fresh context**, after the rest is built.
+- **N:** "Connect" is too common. The user's two favourites from an AI's list, *Seemless* and
+  *Mycel*; asked for an opinion before deciding. Given: *Mycel* - unique (no plugin of that
+  name among 9873; *Cerebro Mycelium* is a graph animation), the picture fits (a network
+  under the ground connecting separate plants), the description in the directory says what
+  it does. *Seemless* reads as a misspelling of *seamless*, which is a common adjective (42
+  descriptions in the directory, two plugins named *Seamless ...*) and Grubhub's registered
+  mark. The rename waits for the user's choice.
+- **P:** publishing comes at the very end. **P2: AGPL-3.0** - `LICENSE.md`, every package
+  `AGPL-3.0-or-later`. The user asked whether they may still run a closed instance
+  themselves: yes, a licence binds those who receive the code, not its author (with code
+  others contributed, theirs needs their consent).

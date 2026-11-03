@@ -2,7 +2,6 @@ import {
   API,
   type AcceptRequest,
   type AccountBundle,
-  type AccountKeyResponse,
   type AttachBlobsRequest,
   type AuthConfigResponse,
   type BackupKeyCreated,
@@ -207,11 +206,6 @@ export class ConnectApi {
 
   createVault(request: CreateVaultRequest): Promise<VaultRecord> {
     return this.call('POST', API.vaults, request)
-  }
-
-  /** Someone's public key as the server has it. Contacts pin it; until then it is the server's word. */
-  accountKey(accountId: string): Promise<AccountKeyResponse> {
-    return this.call('GET', `${API.accounts}/${encodeURIComponent(accountId)}/key`)
   }
 
   addContactCode(request: ContactCodeRequest): Promise<unknown> {

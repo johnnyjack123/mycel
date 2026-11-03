@@ -230,8 +230,6 @@ export const API = {
    * of the account.
    */
   vaults: '/vaults',
-  /** `/accounts/:accountId/key`: someone's public key, by account id. */
-  accounts: '/accounts',
   contacts: '/contacts',
   shares: '/shares',
   /** Shared folders: sharing, notes joining and leaving, revoking, ending. */

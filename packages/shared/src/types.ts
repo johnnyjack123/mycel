@@ -693,11 +693,6 @@ export interface PasswordChangeRequest {
   wrappedAccountSecret: string
 }
 
-export interface AccountKeyResponse {
-  accountId: string
-  publicKey: string
-}
-
 // --- sharing -------------------------------------------------------------------
 
 /** A move to a new epoch, sealed for everyone who keeps access. */

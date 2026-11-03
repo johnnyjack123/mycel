@@ -58,7 +58,8 @@ import { IncomingModal } from './share/IncomingModal'
 import { ShareModal } from './share/ShareModal'
 import { linkedNotes, linkedOutside } from './share/LinkedNotes'
 import { Contacts, type OpenCode } from './share/Contacts'
-import { Sharing } from './share/Sharing'
+import { Sharing, type MemberPlace } from './share/Sharing'
+import { UnknownMembersModal } from './share/UnknownMembersModal'
 import { SharedFiles } from './share/SharedFiles'
 import { AccountSettings, DEFAULT_SHARED_SETTINGS, type Contact, type RollbackRecord, type SharedSettings } from './sync/AccountSettings'
 import { AttachmentIndex } from './sync/AttachmentIndex'
@@ -280,6 +281,8 @@ export default class ObsidianConnectPlugin extends Plugin {
   private settingsCursor: LocalCursor | null = null
   private sharing: Sharing | null = null
   private folders: Folders | null = null
+  /** Notes and folders whose unknown members are being asked about right now. */
+  private readonly unknownMembersShown = new Set<string>()
   private readonly folderMarks = new FolderMarks()
   private sharedFiles: SharedFiles | null = null
   private contacts: Contacts | null = null
@@ -1105,7 +1108,13 @@ export default class ObsidianConnectPlugin extends Plugin {
         syncTimeoutMs: this.settings.syncTimeoutMs,
         autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1,
         folderEpoch: (folderId) => folders.currentEpoch(folderId),
-        folderOver: (folderId) => folders.over(folderId)
+        folderOver: (folderId) => folders.over(folderId),
+        contactsReady: () =>
+          Promise.race([
+            socket.whenSynced(settingsRoom(vault.vaultId)).then(() => true),
+            delay(this.settings.syncTimeoutMs).then(() => false)
+          ]),
+        unknownMembers: (accounts, place) => this.showUnknownMembers(accounts, place)
       },
       this.contacts
     )
@@ -1870,6 +1879,36 @@ export default class ObsidianConnectPlugin extends Plugin {
       live.filter(({ folder }) => !folder.owner).map(({ folder }) => folder.path),
       live.filter(({ folder }) => folder.owner).map(({ folder }) => folder.path)
     )
+  }
+
+  /**
+   * The server listed members of a share who are not contacts, and nothing
+   * was sealed for them: said over everything, once per note or folder while
+   * its window is open, and kept in the notification center.
+   */
+  private showUnknownMembers(accounts: string[], place: MemberPlace): void {
+    const key = place.kind === 'note' ? `note:${place.docId}` : `folder:${place.folderId}`
+    if (this.unknownMembersShown.has(key)) return
+    this.unknownMembersShown.add(key)
+    const where =
+      place.kind === 'note'
+        ? (this.store?.entry(place.docId)?.path ?? place.docId)
+        : (this.index?.folder(place.folderId)?.path ?? place.folderId)
+    new Notice(`Obsidian Connect: "${where}" could not move to a new key - the server lists someone in it who is not one of your contacts, and nothing was sealed for them.`, 10_000)
+    new UnknownMembersModal(this.app, {
+      where,
+      kind: place.kind,
+      accounts,
+      remove: (account) => {
+        if (place.kind === 'note') {
+          if (!this.sharing) throw new Error('Sign in first.')
+          return this.sharing.revoke(place.docId, account)
+        }
+        if (!this.folders) throw new Error('Sign in first.')
+        return this.folders.revoke(place.folderId, account)
+      },
+      closed: () => this.unknownMembersShown.delete(key)
+    }).open()
   }
 
   /** What shared folders have to say, as a notice; a delete for everyone offers to undo it. */

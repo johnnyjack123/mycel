@@ -174,6 +174,8 @@ export class Device {
   outsideAnswer: 'end' | 'back' | null = null
   /** What this device said about shared folders, oldest first. */
   readonly folderNews: Array<{ kind: string; batch?: unknown; [key: string]: unknown }> = []
+  /** Members the server listed who are not contacts, as the window over everything would name them. */
+  readonly unknownMembers: Array<{ accounts: string[]; place: { kind: string } }> = []
   compactor: InstanceType<typeof Compactor> | null = null
   trash: InstanceType<typeof Trash> | null = null
   settings: InstanceType<typeof AccountSettings> | null = null
@@ -335,7 +337,13 @@ export class Device {
         syncTimeoutMs: 4_000,
         autoAccept: () => true,
         folderEpoch: (id): Promise<number> => folders.currentEpoch(id),
-        folderOver: (id): boolean => folders.over(id)
+        folderOver: (id): boolean => folders.over(id),
+        contactsReady: () =>
+          Promise.race([socket.whenSynced(settingsRoom(openVault.vaultId)).then(() => true), delay(4_000).then(() => false)]),
+        // What main.ts's window says.
+        unknownMembers: (accounts, place) => {
+          this.unknownMembers.push({ accounts, place })
+        }
       },
       contacts
     )

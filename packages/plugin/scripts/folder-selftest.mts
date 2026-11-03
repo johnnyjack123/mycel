@@ -12,6 +12,7 @@ const { Notice } = await import('obsidian')
 const { docRoom } = await import('@obsidian-connect/shared')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
+const { UnknownMembersError } = await import('../src/share/Sharing.js')
 
 const serverUrl = process.argv[2] ?? process.env.OBSIDIAN_CONNECT_URL ?? 'ws://localhost:1234'
 useServer(serverUrl)
@@ -477,6 +478,37 @@ try {
     const noteEnds = (): number => Notice.shown.filter((notice) => notice.startsWith('The share of "')).length
     const noteEndsBefore = noteEnds()
     const folderEndsBefore = Q.folderNews.filter((news) => news.kind === 'ended').length
+
+    // A member who is no contact - one the server made up, or a contact removed whose
+    // shares did not all end - is never sealed a key: the rotation does not happen (0.9.0).
+    {
+      const settings = O1.settings as NonNullable<typeof O1.settings>
+      const piaContact = settings.contact(P1.accountId)
+      settings.setContact(P1.accountId, null)
+      const before = await O1.api.folderState(folderId)
+      const refused = await O1.folders?.revoke(folderId, Q.accountId).then(
+        () => null,
+        (error: unknown) => error
+      )
+      check(
+        refused instanceof UnknownMembersError && refused.accounts.join() === P1.accountId && refused.place.kind === 'folder',
+        'a rotation for a folder whose member is no contact stops before anything is sealed',
+        refused
+      )
+      const after = await O1.api.folderState(folderId)
+      check(
+        after.epoch === before.epoch && after.members.some((member) => member.account === Q.accountId),
+        'and nothing moved: the folder keeps its key, the revocation waits',
+        { before: before.epoch, after: after.epoch }
+      )
+      check(
+        O1.unknownMembers.some((asked) => asked.accounts.join() === P1.accountId && asked.place.kind === 'folder'),
+        'the owner is told, over everything',
+        O1.unknownMembers
+      )
+      settings.setContact(P1.accountId, piaContact)
+    }
+
     await O1.folders?.revoke(folderId, Q.accountId)
     check(
       await eventually(() => {
