@@ -1024,6 +1024,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.vault = vault
     const keys = new KeyRing(vault, unlocked, this.api, this.secrets)
     this.keys = keys
+    // A key sealed by a contact opens only with their signature, checked against their pinned signing key.
+    keys.setSigners((account) => this.contacts?.resolveSigningKey(account) ?? Promise.resolve(null))
 
     const root = this.pluginDir()
     this.state = new StateStore(this.app.vault.adapter, root)
@@ -2221,6 +2223,10 @@ export default class ObsidianConnectPlugin extends Plugin {
       void this.processContacts()
       return
     }
+    if (kind === 'contact-key') {
+      void this.contacts?.pinSigningKeys().catch((error: unknown) => log.warn('fetching the contacts’ signing keys failed', error))
+      return
+    }
     if (kind === 'contact-removed') {
       this.contacts?.forget((payload as ContactNotice).account)
       this.settingTab?.refresh()
@@ -2254,6 +2260,29 @@ export default class ObsidianConnectPlugin extends Plugin {
       }
     } catch (error) {
       log.warn('reading the contact inbox failed', error)
+    }
+    await this.exchangeSigningKeys()
+  }
+
+  /**
+   * Signing keys between contacts (0.9.3): this account's vouched for to every
+   * contact that has not seen it, theirs pinned once their word checks out.
+   * After a new contact, and on every start.
+   */
+  private async exchangeSigningKeys(): Promise<void> {
+    const contacts = this.contacts
+    if (!contacts || !this.unlocked) return
+    try {
+      if (!this.unlocked.signing) await this.session.ensureSigningKey(this.unlocked)
+      if (this.unlocked.signing) await contacts.attestAll(this.unlocked.signing.publicKey)
+      await contacts.pinSigningKeys()
+      // Once per vault: the keys sealed before 0.9.3, sealed anew and signed.
+      const settings = this.accountSettings
+      if (this.unlocked.signing && this.sharing && this.folders && settings && settings.keysResealedAt() === null) {
+        if (await this.sharing.resealAll(this.folders.ownFolderIds())) settings.setKeysResealedAt(Date.now())
+      }
+    } catch (error) {
+      log.warn('exchanging signing keys with contacts failed', error)
     }
   }
 

@@ -32,6 +32,7 @@ import {
   type NotifyKind,
   type RevokeRequest,
   type RoleRequest,
+  type SealedEpochsResponse,
   type ShareMembersResponse,
   type Notice,
   type ShareRequest,
@@ -367,6 +368,11 @@ export class RoomHub {
       if (open.subscribers.size > 0) return
       void open.log.flush().finally(() => {
         if (open.subscribers.size !== 0 || this.rooms.get(room) !== open) return
+        // Someone came, pushed and went while it flushed: their frame is still being written.
+        if (!open.log.idle) {
+          this.scheduleIdle(room, open)
+          return
+        }
         this.noteHead(room, open.log.writtenSeq)
         this.rooms.delete(room)
       })
@@ -769,6 +775,48 @@ export class RoomHub {
     if (!meta.folder) return
     const folder = this.metas.get(folderRoom(meta.folder.id))
     if (folder) meta.ties = { ...meta.ties, [String(epoch)]: { folder: meta.folder.id, epoch: folder.epoch } }
+  }
+
+  /** A note or folder of the caller's own, for what only its owner does. */
+  private async ownedRoom(owner: string, room: string): Promise<OpenRoom> {
+    const kind = roomKind(room)
+    if ((kind !== 'doc' && kind !== 'fld') || !isHexId(roomSubject(room))) throw new HubError(400, 'only notes and folders are shared')
+    const open = await this.require(room)
+    if (open.log.meta.owner !== owner) throw new HubError(403, 'only the owner can do that')
+    return open
+  }
+
+  /** Which epochs each member holds a key of - for the owner, to seal exactly those anew (0.9.3). */
+  async sealedEpochs(owner: string, room: string): Promise<SealedEpochsResponse> {
+    const meta = (await this.ownedRoom(owner, room)).log.meta
+    const members: Record<string, number[]> = {}
+    for (const account of Object.keys(meta.members)) {
+      members[account] = Object.keys(meta.sealedKeys[account] ?? {})
+        .map(Number)
+        .sort((a, b) => a - b)
+    }
+    return { room, members }
+  }
+
+  /**
+   * The owner's keys sealed anew, now signed. Only a key a member holds
+   * already is replaced: resealing gives nobody an epoch they did not have.
+   */
+  async reseal(owner: string, room: string, keys: unknown): Promise<void> {
+    const open = await this.ownedRoom(owner, room)
+    const meta = open.log.meta
+    if (!keys || typeof keys !== 'object') throw new HubError(400, 'the keys are missing')
+    const replaced: Array<[string, string, string]> = []
+    for (const [account, epochs] of Object.entries(keys as Record<string, unknown>)) {
+      if (!meta.members[account] || !epochs || typeof epochs !== 'object') throw new HubError(400, `${account} is not a member`)
+      for (const [epoch, sealed] of Object.entries(epochs as Record<string, unknown>)) {
+        if (typeof meta.sealedKeys[account]?.[epoch] !== 'string') throw new HubError(400, `${account} holds no key of epoch ${epoch}`)
+        if (typeof sealed !== 'string' || sealed.length === 0 || sealed.length > SEALED_MAX) throw new HubError(400, 'not a sealed key')
+        replaced.push([account, epoch, sealed])
+      }
+    }
+    for (const [account, epoch, sealed] of replaced) meta.sealedKeys[account] = { ...meta.sealedKeys[account], [epoch]: sealed }
+    await open.log.saveMeta()
   }
 
   /** The folder epoch a note's epoch derives its key from, if it spent that epoch in a folder. */

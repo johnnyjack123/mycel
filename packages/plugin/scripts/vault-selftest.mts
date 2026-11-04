@@ -12,7 +12,7 @@ import { check, delay, Device, eventually, failures, useServer } from './harness
 // Imported after the harness set up the DOM; CodeMirror reads it at module scope.
 const { Notice } = await import('obsidian')
 const { BLOB_CHUNK_BYTES, docRoom, indexRoom } = await import('@obsidian-connect/shared')
-const { contentHash } = await import('@obsidian-connect/shared/crypto')
+const { contentHash, epochKeyContext, randomBytes, seal } = await import('@obsidian-connect/shared/crypto')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
 const { landingTitle, linkedNotes } = await import('../src/share/LinkedNotes.js')
@@ -966,6 +966,24 @@ try {
       C.vault.paths()
     )
     check(C.vault.paths().join(',') === 'Shared/Together.md', "and nothing else from A's vault", C.vault.paths())
+
+    // A key without the owner's signature is not taken (0.9.3) - one a server
+    // made up, or one sealed before signing keys -, and the owner's device seals
+    // the keys of its shares anew, signed, once.
+    {
+      const sealedFor = (await A.api.sealedEpochs(room)).members[C.accountId] ?? []
+      const epoch = sealedFor[sealedFor.length - 1] as number
+      const ownersKey = await (A.keys as InstanceType<typeof KeyRing>).noteKey(docId, epoch)
+      const keyOfC = (): Promise<Uint8Array | null> => (C.keys as InstanceType<typeof KeyRing>).noteKey(docId, epoch, { owned: false })
+      check(Buffer.from((await keyOfC()) ?? []).equals(Buffer.from(ownersKey ?? [1])), "C opens the key A sealed to her, A's signature on it")
+      const madeUp = await seal(C.unlocked?.publicKey as Uint8Array<ArrayBuffer>, randomBytes(32), epochKeyContext(room, epoch))
+      await A.api.reseal({ room, keys: { [C.accountId]: { [String(epoch)]: madeUp } } })
+      C.keys?.forgetShared(docId)
+      check((await keyOfC()) === null, 'a key without the owner’s signature is refused')
+      check((await A.sharing?.resealAll([])) === true, "A's device seals the keys of its shares anew")
+      C.keys?.forgetShared(docId)
+      check(Buffer.from((await keyOfC()) ?? []).equals(Buffer.from(ownersKey ?? [1])), 'and C opens them again')
+    }
 
     {
       const history = new NoteHistory(C.api, room, (C.keys as InstanceType<typeof KeyRing>).sharedDocCrypto(docId), HISTORY_GAP_MS)

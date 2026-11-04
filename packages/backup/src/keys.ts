@@ -9,6 +9,7 @@ import {
   folderKeys,
   fromBase64,
   importPrivateKey,
+  splitSealed,
   unpackFrame,
   unseal,
   vaultKeys,
@@ -81,19 +82,24 @@ export class VaultKeys {
     const sealed = cached.sealed[String(epoch)]
     if (!sealed) return null
     if (kind === 'fld') {
-      return this.cached(`${cached.room}#${epoch}`, async () =>
-        folderKeys.room(await unseal(this.privateKey, this.publicKey, sealed, epochKeyContext(cached.room, epoch)))
-      )
+      return this.cached(`${cached.room}#${epoch}`, async () => folderKeys.room(await this.unsealKey(sealed, epochKeyContext(cached.room, epoch))))
     }
-    return this.cached(`${cached.room}#${epoch}`, () =>
-      unseal(this.privateKey, this.publicKey, sealed, epochKeyContext(cached.room, epoch))
-    )
+    return this.cached(`${cached.room}#${epoch}`, () => this.unsealKey(sealed, epochKeyContext(cached.room, epoch)))
   }
 
   private async sealedFolderKey(cached: CachedRoom, folder: string, epoch: number): Promise<Bytes | null> {
     const sealed = cached.folderKeys?.[folder]?.[String(epoch)]
     if (!sealed) return null
-    return unseal(this.privateKey, this.publicKey, sealed, epochKeyContext(folderRoom(folder), epoch))
+    return this.unsealKey(sealed, epochKeyContext(folderRoom(folder), epoch))
+  }
+
+  /**
+   * A key sealed to the account. Its sealer's signature (0.9.3) is the devices'
+   * to check, against the contacts they pinned; the backup server reads the
+   * vault as the account's devices left it and holds no contact list.
+   */
+  private unsealKey(value: string, context: string): Promise<Bytes> {
+    return unseal(this.privateKey, this.publicKey, splitSealed(value)?.sealed ?? value, context)
   }
 
   /**

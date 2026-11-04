@@ -38,6 +38,7 @@ export interface RecoveryDecision {
 }
 
 const RECOVERY_KEY = 'recovery'
+const RESEALED_KEY = 'keysResealed'
 
 /** Someone this account shares with. Their key is pinned when the contact is made. */
 export interface Contact {
@@ -48,6 +49,10 @@ export interface Contact {
   localName?: string
   publicKey: string
   addedAt: number
+  /** Their signing key (0.9.3), pinned once their attestation checked out against `publicKey`. */
+  signingKey?: string
+  /** The signing key of this account it last attested to them - attested again when that changes. */
+  attested?: string
 }
 
 /** A code this account handed out; its secret opens the redemption. */
@@ -167,6 +172,19 @@ export class AccountSettings {
 
   decideRecovery(decision: RecoveryDecision): void {
     this.doc.transact(() => this.map.set(RECOVERY_KEY, decision), 'local')
+  }
+
+  /**
+   * When this vault's shares had their keys sealed anew and signed (0.9.3) -
+   * once, by whichever device of the account got there first.
+   */
+  keysResealedAt(): number | null {
+    const value = this.map.get(RESEALED_KEY)
+    return typeof value === 'number' ? value : null
+  }
+
+  setKeysResealedAt(at: number): void {
+    this.doc.transact(() => this.map.set(RESEALED_KEY, at), 'local')
   }
 
   /** What a backup server reads for its route, as it writes it down too. */

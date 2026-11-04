@@ -1,5 +1,6 @@
 import type { InboxItem } from '@obsidian-connect/shared'
 import {
+  attestationMac,
   contactContext,
   contactKeys,
   contactMac,
@@ -42,6 +43,8 @@ export type ContactApi = Pick<
   | 'contactInbox'
   | 'contactInboxDone'
   | 'removeContact'
+  | 'attest'
+  | 'attestations'
 >
 
 /** A code handed out and not redeemed yet. */
@@ -68,6 +71,8 @@ interface Introduction {
 }
 
 const CODE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000
+// The attestations are fetched again for a contact's missing signing key at most this often.
+const PIN_AGAIN_MS = 2_000
 
 function introductionText(kind: 'request' | 'reply', codeId: string, intro: Omit<Introduction, 'mac'>): string {
   return `${kind}|${codeId}|${intro.account}|${intro.publicKey}|${intro.name}`
@@ -78,6 +83,9 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 export class Contacts {
+  private pinning: Promise<number> | null = null
+  private pinnedAt = 0
+
   constructor(
     private readonly api: ContactApi,
     private readonly me: Me,
@@ -103,6 +111,90 @@ export class Contacts {
   publicKey(accountId: string): Bytes | null {
     const contact = this.settings.contact(accountId)
     return contact ? fromBase64(contact.publicKey) : null
+  }
+
+  /** A contact's signing key, pinned through their attestation; null while none checked out. */
+  signingKey(accountId: string): Bytes | null {
+    const key = this.settings.contact(accountId)?.signingKey
+    return key ? fromBase64(key) : null
+  }
+
+  /**
+   * The signing key, fetching the attestations once when it is not pinned
+   * yet - a contact made a moment ago, or one whose device only now reached
+   * 0.9.3. Not more than once in a while: a stranger's would be asked for again
+   * and again otherwise.
+   */
+  async resolveSigningKey(accountId: string): Promise<Bytes | null> {
+    const pinned = this.signingKey(accountId)
+    if (pinned || !this.isContact(accountId)) return pinned
+    if (Date.now() - this.pinnedAt > PIN_AGAIN_MS) {
+      this.pinning ??= this.pinSigningKeys()
+        .catch((error: unknown) => {
+          log.warn('fetching the contacts’ signing keys failed', error)
+          return 0
+        })
+        .finally(() => {
+          this.pinning = null
+          this.pinnedAt = Date.now()
+        })
+      await this.pinning
+    }
+    return this.signingKey(accountId)
+  }
+
+  /**
+   * This account's signing key, vouched for to every contact that has not
+   * seen it yet: a MAC under the secret the two pinned sealing keys share.
+   * Returns how many were told.
+   */
+  async attestAll(signingPublicKey: Bytes): Promise<number> {
+    const encoded = toBase64(signingPublicKey)
+    let told = 0
+    for (const contact of this.settings.contacts()) {
+      if (contact.attested === encoded) continue
+      const mac = await attestationMac(this.me.privateKey, fromBase64(contact.publicKey), this.me.accountId, contact.accountId, signingPublicKey)
+      try {
+        await this.api.attest({ to: contact.accountId, signingPublicKey: encoded, mac })
+      } catch (error) {
+        log.warn(`telling ${contact.accountId.slice(0, 8)} this account's signing key failed`, error)
+        continue
+      }
+      const current = this.settings.contact(contact.accountId)
+      if (current) this.settings.setContact(contact.accountId, { ...current, attested: encoded })
+      told += 1
+    }
+    if (told > 0) log.info(`signing key told to ${told} contact(s)`)
+    return told
+  }
+
+  /**
+   * Pins the signing keys contacts vouched for, each checked against their
+   * pinned sealing key: only they or this account could have made the MAC,
+   * and this account did not. Returns how many were pinned or changed.
+   */
+  async pinSigningKeys(): Promise<number> {
+    const { attestations } = await this.api.attestations()
+    let pinned = 0
+    for (const attestation of attestations) {
+      const contact = this.settings.contact(attestation.from)
+      if (!contact || attestation.to !== this.me.accountId || contact.signingKey === attestation.signingPublicKey) continue
+      const expected = await attestationMac(
+        this.me.privateKey,
+        fromBase64(contact.publicKey),
+        attestation.from,
+        this.me.accountId,
+        fromBase64(attestation.signingPublicKey)
+      )
+      if (!sameMac(expected, attestation.mac)) {
+        log.error(`${attestation.from.slice(0, 8)}: a signing key that is not theirs came from the server; not taken`)
+        continue
+      }
+      this.settings.setContact(attestation.from, { ...contact, signingKey: attestation.signingPublicKey })
+      pinned += 1
+    }
+    if (pinned > 0) log.info(`${pinned} contact(s)' signing key pinned`)
+    return pinned
   }
 
   isContact(accountId: string): boolean {

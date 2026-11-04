@@ -388,3 +388,15 @@ touches a device.
   a note opened this way announces presence as a note opened at the start always did - a
   presence without a caret draws nothing. The regular comparison of shared notes with their
   files stays (it opens each once a minute); a caught-up shared note is compared at once.
+- **0.9.3** - S-a, made concrete: the signing key is random, wrapped under
+  `HKDF(account secret)` and kept in the account bundle (`POST /account/signing-key` sets it
+  once) - a password change or recovery re-wraps only the secret, as before. Attestations go
+  through the server (`/contacts/attest`, `/contacts/attestations`), checked against the
+  pinned sealing key; a contact's signing key is fetched on demand when a signature needs it.
+  A signed sealed key is `sealed.signer.signature`; the signer must be this account or a
+  pinned contact - not checked to be the room's owner, which the key ring does not know: the
+  server alone can make no signature, so finding 2 is closed; a contact colluding with the
+  server is left to S-b. The roster of roles is not signed here - S-b brings the writers'
+  certificates. The backup server does not check signatures. Keys sealed before are sealed
+  anew from the server's record of which epochs each member holds (trusting it once, at the
+  change - it cannot add epochs, the reseal route refuses that).

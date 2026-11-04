@@ -155,7 +155,9 @@ try {
     kdfVersion: 1,
     publicKey: b64(65),
     wrappedPrivateKey: b64(64),
-    wrappedAccountSecret: b64(48)
+    wrappedAccountSecret: b64(48),
+    signingPublicKey: b64(65),
+    wrappedSigningKey: b64(64)
   })
 
   const serverId = await accounts.serverId()
@@ -387,6 +389,25 @@ try {
   }
   await contacts.pair(alice, bob)
   await contacts.pair(alice, carol)
+
+  // --- signing keys (0.9.3) ----------------------------------------------------------------
+  {
+    const signingPublicKey = b64(65)
+    const mac = 'ab'.repeat(32)
+    check(
+      (await status(() => accounts.setSigningKey(bob, b64(65), b64(64)))) === 409,
+      'an account that has a signing key keeps it: a token alone does not replace it'
+    )
+    check((await status(() => contacts.attest(alice, dave, signingPublicKey, mac))) === 403, 'a signing key is vouched for to contacts only')
+    check((await status(() => contacts.attest(alice, bob, signingPublicKey, 'not a mac'))) === 400, 'and with a MAC')
+    await contacts.attest(alice, bob, signingPublicKey, mac)
+    const forBob = await contacts.attestationsFor(bob)
+    check(
+      forBob.length === 1 && forBob[0]?.from === alice && forBob[0].signingPublicKey === signingPublicKey && forBob[0].mac === mac,
+      'the contact finds it, as it was given'
+    )
+    check((await contacts.attestationsFor(carol)).length === 0, 'nobody else does')
+  }
 
   // --- blobs: the encrypted contents of attachments -------------------------------------
   {
@@ -822,6 +843,16 @@ try {
   check(bobCatchUp[0]?.type === 'frame' && bobCatchUp[0].seq === 1, 'with history, the recipient gets every frame', bobCatchUp)
   check((await hub.keys(bob, room)).keys['0'] === 'k0', 'and the keys sealed to them')
   check(Object.keys((await hub.keys(alice, room)).keys).length === 0, 'the owner needs no sealed keys')
+  // Sealing anew, signed (0.9.3): only what each member holds, only by the owner.
+  check((await status(() => hub.sealedEpochs(bob, room))) === 403, "only the owner asks which epochs the members hold")
+  check((await hub.sealedEpochs(alice, room)).members[bob]?.join() === '0', 'the owner learns which epochs a member holds')
+  check(
+    (await status(() => hub.reseal(alice, room, { [bob]: { '1': 'more' } }))) === 400,
+    'sealing anew gives nobody an epoch they did not hold'
+  )
+  check((await status(() => hub.reseal(bob, room, { [bob]: { '0': 'mine' } }))) === 403, 'and only the owner seals anew')
+  await hub.reseal(alice, room, { [bob]: { '0': 'k0 signed' } })
+  check((await hub.keys(bob, room)).keys['0'] === 'k0 signed', "a key sealed anew replaces the member's")
   await hub.push(bobDevice, room, 1, 0, bytes('from bob'))
   check(bobDevice.take()[0]?.type === 'ack' && a1.take()[0]?.data === 'from bob', 'a writer pushes, the owner receives')
   a2.take()
@@ -943,7 +974,7 @@ try {
       'with every frame they could read, and nothing written after the revocation',
       kept.log?.frames.map((frame) => frame.seq)
     )
-    check(kept.keys['0'] === 'k0' && kept.keys['1'] === 'b1' && !kept.keys['2'], 'and the keys they held')
+    check(kept.keys['0'] === 'k0 signed' && kept.keys['1'] === 'b1' && !kept.keys['2'], 'and the keys they held')
     check((await status(() => hub.fork(carol, docId))) === 404, 'nobody else gets it')
     const target = hexId()
     check((await hub.forkDone(bob, docId, target)) === target, 'a device says where the note carries on')

@@ -8,6 +8,35 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.3** (2026-11-04) - **signed keys** (`docs/PHASE8.md`, S-a; protocol 7). A server could
+  hand a member of a share a key of its own, sealed to them, and frames under it: nothing told
+  them the owner had not sealed it. Now every account has a **signing key** (ECDSA P-256, made
+  at registration, or by the first device of an older account; wrapped under a key from the
+  account secret, so a password change or a recovery leaves it as it is). Contacts learn it
+  from an **attestation**: a MAC under the secret their two pinned sealing keys share, which
+  only the two of them can make - no new friend code, for contacts old and new. Every key the
+  owner seals for a note or folder carries **the owner's signature** over room, epoch,
+  recipient and the sealed box; a device opens only a key signed by itself or by a contact
+  whose signing key it pinned, and asks the server again once when the one it kept does not
+  hold. **Keys sealed before** are sealed anew and signed once per vault by the owner's first
+  device on 0.9.3, for exactly the epochs each member holds (`GET /keys/:room/sealed`,
+  `POST /keys/:room/reseal`; the server refuses any epoch a member did not hold). Sharing
+  vouches for the signing key to the recipient first, so a contact made a moment before can
+  check the key at once. A frame there was no key for no longer lets the frames after it move
+  the cursor past it: the room is caught up again a little later, three times at most.
+  Checked in `test:merge` (signatures, a box swapped under one, attestations), `test:rooms`
+  (the routes) and `test:vault` (a key the server swapped for one without the owner's
+  signature is refused; sealed anew, it opens again). The backup server reads signed keys
+  without checking the signature - it holds no contact list. A contact's attestation is
+  announced as `contact-key`, which reads only the attestations: announced as `contact`, every
+  device of the other account read its contact inbox again on each one.
+  Also: **a room let go while a frame was still being written** - someone subscribed, pushed and
+  left while the room was being closed for being idle - was read again from the disk before
+  that frame was there; its next frame took a seq already used, and the epoch it moved to
+  started after a frame it never knew (`test:folders` once: "the starting point does not fit
+  the log", seen in 0.9.1's CI too). A room is let go only once nothing is being written, and
+  loading one waits for what its predecessor still writes.
+
 - **0.9.2** (2026-11-03) - **every note live** (`docs/PHASE8.md`, L). A device holds at most
   *Documents kept in memory* notes open (500); a note beyond it heard of nothing until it was
   opened or the next start, and its file stayed old. Now a note let go is **watched**: the

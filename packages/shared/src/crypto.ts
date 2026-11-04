@@ -166,6 +166,8 @@ export async function derivePasswordKeys(
  */
 export const accountKeys = {
   vaultWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect vault-wrap'),
+  /** Wraps the account's signing key (0.9.3): a password change or a recovery re-wraps the secret only. */
+  signingWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect signing-wrap'),
   vaultName: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect vault-name'),
   /** The same on every device of the account, and meaningless to everyone else. */
   vaultId: async (secret: Bytes, vaultName: string): Promise<string> =>
@@ -343,6 +345,118 @@ export async function unseal(
   )
   const key = await sealingKey(shared, ephemeralRaw, ownPublicKey)
   return decrypt(key, data.slice(P256_PUBLIC_BYTES), `seal:${context}`)
+}
+
+// --- signing (0.9.3, docs/PHASE8.md S) -----------------------------------------------
+//
+// Every account has a signing key pair besides its sealing one: ECDSA P-256,
+// which every WebCrypto has. The owner of a note or folder signs each key it
+// seals, so a server that hands someone a key of its own - and frames under it -
+// is caught: the signature is missing or not the owner's.
+
+const ECDSA = { name: 'ECDSA', namedCurve: 'P-256' } as const
+const ECDSA_SIGN = { name: 'ECDSA', hash: 'SHA-256' } as const
+
+export interface SigningKeys {
+  /** Uncompressed P-256 point, 65 bytes. */
+  publicKey: Bytes
+  /** PKCS#8. Only ever stored wrapped. */
+  privateKey: Bytes
+}
+
+export async function generateSigningKeys(): Promise<SigningKeys> {
+  const pair = await crypto.subtle.generateKey(ECDSA, true, ['sign', 'verify'])
+  return {
+    publicKey: new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey)),
+    privateKey: new Uint8Array(await crypto.subtle.exportKey('pkcs8', pair.privateKey))
+  }
+}
+
+export function importSigningKey(pkcs8: Bytes): Promise<CryptoKey> {
+  return crypto.subtle.importKey('pkcs8', pkcs8, ECDSA, false, ['sign'])
+}
+
+const verifyKeys = new Map<string, Promise<CryptoKey>>()
+
+function importVerifyKey(raw: Bytes): Promise<CryptoKey> {
+  const id = toBase64(raw)
+  let key = verifyKeys.get(id)
+  if (!key) {
+    key = crypto.subtle.importKey('raw', raw, ECDSA, false, ['verify'])
+    verifyKeys.set(id, key)
+    key.catch(() => verifyKeys.delete(id))
+  }
+  return key
+}
+
+/** A signature over `message`, base64 - 64 bytes, r and s. */
+export async function sign(privateKey: CryptoKey, message: string | Bytes): Promise<string> {
+  const data = typeof message === 'string' ? utf8(message) : message
+  return toBase64(new Uint8Array(await crypto.subtle.sign(ECDSA_SIGN, privateKey, data)))
+}
+
+/** False for a wrong signature, and for a key or signature that is no such thing. */
+export async function verifySignature(publicKey: Bytes, message: string | Bytes, signature: string): Promise<boolean> {
+  try {
+    const data = typeof message === 'string' ? utf8(message) : message
+    return await crypto.subtle.verify(ECDSA_SIGN, await importVerifyKey(publicKey), fromBase64(signature), data)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The MAC by which an account vouches for its signing key to one contact:
+ * under the secret their two pinned sealing keys share (static Diffie-Hellman).
+ * Only the two of them can make it, and the contact did not - so the other
+ * one did. A contact made before signing keys existed learns the key this way,
+ * with no new friend code; one made since, too.
+ */
+export async function attestationMac(
+  privateKey: CryptoKey,
+  theirPublicKey: Bytes,
+  from: string,
+  to: string,
+  signingPublicKey: Bytes
+): Promise<string> {
+  const shared = await crypto.subtle.deriveBits({ name: 'ECDH', public: await importPublicKey(theirPublicKey) }, privateKey, 256)
+  const key = await hkdf(new Uint8Array(shared), 'obsidian-connect key-attest')
+  return toHex(await hmac(key, `signing-key|${from}|${to}|${toBase64(signingPublicKey)}`))
+}
+
+/** What the owner signs for a key it seals: which room and epoch, for whom, and the sealed box itself. */
+async function sealedKeyMessage(room: string, epoch: number, recipient: string, sealed: string): Promise<string> {
+  return `sealed-key|${room}|${epoch}|${recipient}|${toHex(await sha256(utf8(sealed)))}`
+}
+
+/** A sealed key with its sealer's signature: `sealed.signer.signature`. */
+export async function signSealed(
+  signingKey: CryptoKey,
+  signer: string,
+  room: string,
+  epoch: number,
+  recipient: string,
+  sealed: string
+): Promise<string> {
+  return `${sealed}.${signer}.${await sign(signingKey, await sealedKeyMessage(room, epoch, recipient, sealed))}`
+}
+
+export interface SignedSealed {
+  sealed: string
+  signer: string
+  signature: string
+}
+
+/** The parts of a signed sealed key; null for one without a signature. */
+export function splitSealed(value: string): SignedSealed | null {
+  const parts = value.split('.')
+  if (parts.length !== 3) return null
+  const [sealed, signer, signature] = parts as [string, string, string]
+  return sealed && /^[0-9a-f]{32}$/.test(signer) && signature ? { sealed, signer, signature } : null
+}
+
+export async function verifySealed(signerPublicKey: Bytes, room: string, epoch: number, recipient: string, value: SignedSealed): Promise<boolean> {
+  return verifySignature(signerPublicKey, await sealedKeyMessage(room, epoch, recipient, value.sealed), value.signature)
 }
 
 // --- frames ------------------------------------------------------------------------

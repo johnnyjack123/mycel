@@ -278,6 +278,9 @@ export class RoomLog {
   static async load(dataDir: string, meta: RoomMeta): Promise<RoomLog> {
     const dir = roomDir(dataDir, meta)
     const file = join(dir, 'log.bin')
+    // A room let go a moment ago may still be writing: read what it wrote, not
+    // what was there before - or the next frame here takes a seq it already used.
+    while (writeQueues.has(dir)) await writeQueues.get(dir)
     const raw = await readOptional(file)
     const { frames, bytes } = raw ? decodeFrames(raw) : { frames: [], bytes: 0 }
     if (raw && bytes < raw.length) {
@@ -312,6 +315,11 @@ export class RoomLog {
    */
   get headSeq(): number {
     return this.writtenSeq + this.pending
+  }
+
+  /** Nothing being written: the room can be let go without losing what is under way. */
+  get idle(): boolean {
+    return this.pending === 0 && !writeQueues.has(this.dir)
   }
 
   /** Serialized, so appends and rewrites never interleave on disk. */

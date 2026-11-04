@@ -20,7 +20,12 @@ import {
   type BlobPurgeResponse,
   type BlobTouchResponse,
   type BlobUsageResponse,
+  type AttestRequest,
+  type AttestationsResponse,
   type AuthConfigResponse,
+  type ResealRequest,
+  type SealedEpochsResponse,
+  type SigningKeyRequest,
   type ChangedResponse,
   type TimesResponse,
   type CompactableResponse,
@@ -491,6 +496,14 @@ export function createHttpApp(
     return accounts.addVault(accountId, body.vaultId, body.sealedName, body.wrappedKey)
   })
 
+  // Set once, by the first device of the account on 0.9.3; refused when there is one.
+  app.post(`${API.account}/signing-key`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    const body = (request.body ?? {}) as Partial<SigningKeyRequest>
+    return accounts.setSigningKey(accountId, body.signingPublicKey, body.wrappedSigningKey)
+  })
+
   // --- contacts ------------------------------------------------------------------
 
   app.post(`${API.contacts}/codes`, async (request, reply) => {
@@ -553,6 +566,21 @@ export function createHttpApp(
     const accountId = await user(request, reply)
     if (!accountId) return undefined
     return { contacts: await contacts.contactsOf(accountId) }
+  })
+
+  app.post(`${API.contacts}/attest`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    const body = (request.body ?? {}) as Partial<AttestRequest>
+    await contacts.attest(accountId, body.to, body.signingPublicKey, body.mac)
+    hub.notify(body.to as string, 'contact-key', { account: accountId })
+    return { ok: true }
+  })
+
+  app.get(`${API.contacts}/attestations`, async (request, reply): Promise<AttestationsResponse | undefined> => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return { attestations: await contacts.attestationsFor(accountId) }
   })
 
   app.post(`${API.contacts}/remove`, async (request, reply) => {
@@ -708,6 +736,20 @@ export function createHttpApp(
     const accountId = await user(request, reply)
     if (!accountId) return undefined
     await hub.startSnapshot(accountId, request.params.room, request.body as StartSnapshotRequest)
+    return { ok: true }
+  })
+
+  // The owner's: which epochs each member holds a key of, and those keys sealed anew and signed (0.9.3).
+  app.get<{ Params: RoomParams }>(`${API.keys}/:room/sealed`, async (request, reply): Promise<SealedEpochsResponse | undefined> => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return hub.sealedEpochs(accountId, request.params.room)
+  })
+
+  app.post<{ Params: RoomParams }>(`${API.keys}/:room/reseal`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    await hub.reseal(accountId, request.params.room, ((request.body ?? {}) as Partial<ResealRequest>).keys)
     return { ok: true }
   })
 
