@@ -246,6 +246,8 @@ export interface RegisterRequest {
   wrappedAccountSecret: string
   /** The account's recovery code, made with it. A server from before 0.6 ignores it. */
   recovery?: RecoveryRecord
+  signingPublicKey: string
+  wrappedSigningKey: string
 }
 
 /** Makes or replaces the account's recovery code. */
@@ -312,6 +314,19 @@ export interface AccountBundle {
   totp?: boolean
   /** The account's backup keys. Absent from a server before 0.7. */
   backupKeys?: BackupKeyInfo[]
+  /**
+   * The account's signing key (0.9.3): its public half, and its private half
+   * wrapped under a key from the account secret. Absent until a device of the
+   * account made one.
+   */
+  signingPublicKey?: string
+  wrappedSigningKey?: string
+}
+
+/** The account's signing key, set once by the first device of 0.9.3 (`POST /account/signing-key`). */
+export interface SigningKeyRequest {
+  signingPublicKey: string
+  wrappedSigningKey: string
 }
 
 // --- backup keys -------------------------------------------------------------------
@@ -782,6 +797,8 @@ export type NotifyKind =
   | 'share-removed'
   | 'contact'
   | 'contact-removed'
+  /** A contact vouched for its signing key (0.9.3): only the attestations are read again, not the inbox. */
+  | 'contact-key'
   | 'account-changed'
   | 'folder-added'
   | 'folder-changed'
@@ -1074,6 +1091,47 @@ export interface InboxResponse {
 export interface ContactsResponse {
   /** Account ids this account is connected with, as far as the server knows. */
   contacts: string[]
+}
+
+/**
+ * An account vouching for its signing key to one contact (0.9.3): a MAC under
+ * the secret their pinned sealing keys share (`attestationMac`). The server
+ * passes it on; it cannot make one.
+ */
+export interface Attestation {
+  from: string
+  to: string
+  signingPublicKey: string
+  mac: string
+  at: number
+}
+
+export interface AttestRequest {
+  to: string
+  signingPublicKey: string
+  mac: string
+}
+
+export interface AttestationsResponse {
+  /** Those addressed to the caller. */
+  attestations: Attestation[]
+}
+
+/**
+ * The owner's own record of which epochs each member of a room holds a key
+ * of, and the keys sealed anew and signed for exactly those (0.9.3): keys
+ * sealed before signing keys existed are replaced once.
+ */
+export interface SealedEpochsResponse {
+  room: string
+  /** member -> the epochs the server keeps a key of for them. */
+  members: Record<string, number[]>
+}
+
+export interface ResealRequest {
+  room: string
+  /** member -> epoch -> the key sealed anew. Only epochs the member holds already. */
+  keys: Record<string, Record<string, string>>
 }
 
 // --- keys and log ----------------------------------------------------------------

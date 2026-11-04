@@ -50,6 +50,9 @@ export interface StoredAccount {
   totp?: StoredTotp
   /** Backup keys, by id: each reads one vault for a backup server. */
   backupKeys?: Record<string, StoredBackupKey>
+  /** The signing key (0.9.3): public, and private wrapped under a key from the account secret. */
+  signingPublicKey?: string
+  wrappedSigningKey?: string
 }
 
 export interface StoredBackupKey {
@@ -298,7 +301,13 @@ export class AccountStore {
     if (!Number.isInteger(request.kdfVersion) || request.kdfVersion < 1) {
       return Promise.reject(new AccountError(400, 'unknown key derivation version'))
     }
-    if (!decoded(request.publicKey, 65) || !decoded(request.wrappedPrivateKey, 16) || !decoded(request.wrappedAccountSecret, 16)) {
+    if (
+      !decoded(request.publicKey, 65) ||
+      !decoded(request.wrappedPrivateKey, 16) ||
+      !decoded(request.wrappedAccountSecret, 16) ||
+      !decoded(request.signingPublicKey, 65) ||
+      !decoded(request.wrappedSigningKey, 16)
+    ) {
       return Promise.reject(new AccountError(400, 'incomplete key material'))
     }
     let recovery: StoredRecovery | null
@@ -326,6 +335,8 @@ export class AccountStore {
         publicKey: request.publicKey as string,
         wrappedPrivateKey: request.wrappedPrivateKey as string,
         wrappedAccountSecret: request.wrappedAccountSecret as string,
+        signingPublicKey: request.signingPublicKey as string,
+        wrappedSigningKey: request.wrappedSigningKey as string,
         vaults: {}
       }
       if (recovery) setRecoveryIn(data, account, recovery)
@@ -634,9 +645,31 @@ export class AccountStore {
     })
   }
 
+  /**
+   * An account made before 0.9.3 gets its signing key from its first device
+   * on 0.9.3. Once only: a token alone must not replace it. Whoever had the
+   * token first could set one - which no contact takes, since the key reaches
+   * them with a MAC only the account's sealing key can make.
+   */
+  setSigningKey(accountId: string, signingPublicKey: unknown, wrappedSigningKey: unknown): Promise<AccountBundle> {
+    if (!decoded(signingPublicKey, 65) || !decoded(wrappedSigningKey, 16)) {
+      return Promise.reject(new AccountError(400, 'incomplete key material'))
+    }
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account) throw new AccountError(401, 'sign in again')
+      if (account.signingPublicKey) throw new AccountError(409, 'the account has a signing key')
+      account.signingPublicKey = signingPublicKey as string
+      account.wrappedSigningKey = wrappedSigningKey as string
+      return this.bundle(account)
+    })
+  }
+
   bundle(account: StoredAccount): AccountBundle {
     return {
       accountId: account.accountId,
+      signingPublicKey: account.signingPublicKey,
+      wrappedSigningKey: account.wrappedSigningKey,
       kdfVersion: account.kdfVersion,
       publicKey: account.publicKey,
       wrappedPrivateKey: account.wrappedPrivateKey,

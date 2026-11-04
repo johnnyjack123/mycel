@@ -23,6 +23,9 @@ const RECONNECT_MAX_MS = 30_000
 const SEND_DELAY_MS = 40
 // Notes named per `watch` message.
 const WATCH_BATCH = 1_000
+// A room with a frame there was no key for is caught up again this much later, times the tries.
+const STALL_RETRY_MS = 2_000
+const STALL_TRIES = 3
 
 /** Keys of one room, by epoch. Null: this device may not read that epoch. */
 export interface RoomCrypto {
@@ -154,6 +157,9 @@ interface Registration {
   /** How many were present when last logged; presence is logged when that changes. */
   present: number
   dead: boolean
+  /** Waiting to catch up again after a frame there was no key for (`stall`). */
+  stalled: boolean
+  stalls: number
   onDocUpdate: (update: Uint8Array, origin: unknown) => void
   onAwarenessUpdate: (changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void
 }
@@ -532,6 +538,26 @@ export class VaultSocket {
     }
   }
 
+  /**
+   * A frame there was no key for - one sealed by a contact whose signing key
+   * was not pinned yet, say: nothing after it is applied either, and the room
+   * is caught up again a little later. Applied anyway, the frames after it
+   * moved the cursor past it and it was never asked for again. Given up after
+   * a few tries, as before: an epoch this device may not read must not hold
+   * up the rest.
+   */
+  private stall(registration: Registration): void {
+    if (registration.stalled || registration.stalls >= STALL_TRIES) return
+    registration.stalled = true
+    registration.stalls += 1
+    window.setTimeout(() => {
+      registration.stalled = false
+      if (this.registrations.get(registration.room) !== registration || !this.connected || registration.dead) return
+      log.info(`${registration.room}: catching up again for a frame there was no key for`)
+      this.subscribe(registration)
+    }, STALL_RETRY_MS * registration.stalls)
+  }
+
   private async open(registration: Registration, epoch: number, data: Uint8Array, aad: string): Promise<Uint8Array | null> {
     const crypto = registration.options.crypto
     const key = await crypto.key(epoch)
@@ -557,10 +583,15 @@ export class VaultSocket {
     this.checkVerification(registration, seq, hash)
     // The catch-up and the live stream can overlap by a frame or two, and the
     // catch-up starts one frame early on purpose.
-    if (seq <= cursor.lastSeq) return
+    if (seq <= cursor.lastSeq || registration.stalled) return
     const plaintext = await this.open(registration, epoch, data, frameAad(registration.room, epoch))
+    if (registration.dead) return
     // Unreadable: leave lastSeq where it is, so the next catch-up brings it again.
-    if (!plaintext || registration.dead) return
+    if (!plaintext) {
+      this.stall(registration)
+      return
+    }
+    registration.stalls = 0
     const frame = unpackFrame(plaintext)
     log.debug(`${registration.room}: frame #${seq}, ${frame.update.length} B, epoch ${epoch}`)
     this.applyRemote(registration.doc, frame.update, frame.authorTs)
@@ -816,6 +847,8 @@ export class VaultSocket {
       sendTimer: null,
       present: 0,
       dead: false,
+      stalled: false,
+      stalls: 0,
       onDocUpdate: (update, origin) => {
         // What this socket applied came from the server already.
         if (origin === this || registration.options.readOnly) return

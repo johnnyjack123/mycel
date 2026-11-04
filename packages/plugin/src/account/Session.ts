@@ -20,7 +20,9 @@ import {
   fromBase64,
   fromUtf8,
   generateIdentity,
+  generateSigningKeys,
   importPrivateKey,
+  importSigningKey,
   newRecoverySecret,
   normalizeName,
   randomBytes,
@@ -58,6 +60,12 @@ export interface Unlocked {
   /** Random, made at registration, kept under the master key; vault ids, names and keys come from it. */
   accountSecret: Bytes
   bundle: AccountBundle
+  /**
+   * The account's signing key (0.9.3), wrapped under a key from the account
+   * secret. Null on a device that started offline for an account that has
+   * none yet: it is made once the server is reachable (`ensureSigningKey`).
+   */
+  signing: { privateKey: CryptoKey; publicKey: Bytes } | null
 }
 
 export interface OpenVault {
@@ -77,6 +85,7 @@ const ACCOUNT_SECRET = 'account-secret'
 const RECOVERY_PRIVATE_KEY = 'recovery-private-key'
 const RECOVERY_ACCOUNT_SECRET = 'recovery-account-secret'
 const VAULT_KEY = 'vault'
+const SIGNING_KEY = 'signing-key'
 // A sign-out close this soon after the device's own request moved the session
 // generation was that request's: the token it brought holds.
 const OWN_MOVE_MS = 10_000
@@ -214,6 +223,7 @@ export class Session {
     const identity = await generateIdentity()
     const accountSecret = randomBytes(32)
     const recovery = await this.newRecovery(identity.privateKey, accountSecret)
+    const signing = await this.newSigningKey(accountSecret)
     const response = await this.api.register({
       invite: invite?.trim() || undefined,
       loginKey: toBase64(keys.loginKey),
@@ -221,7 +231,8 @@ export class Session {
       publicKey: toBase64(identity.publicKey),
       wrappedPrivateKey: await wrapSecret(keys.masterKey, identity.privateKey, PRIVATE_KEY),
       wrappedAccountSecret: await wrapSecret(keys.masterKey, accountSecret, ACCOUNT_SECRET),
-      recovery: recovery.record
+      recovery: recovery.record,
+      ...signing
     })
     const unlocked = await this.adopt(response, keys.masterKey, name, serverId)
     return { unlocked, recoveryCode: response.account.recovery ? recovery.code : null }
@@ -454,10 +465,12 @@ export class Session {
   }
 
   private async adopt(response: SessionResponse, masterKey: Bytes, username: string, serverId: string): Promise<Unlocked> {
-    const unlocked = await this.unlockWith(response.account, masterKey, username)
+    const opened = await this.unlockWith(response.account, masterKey, username)
     await this.onToken(response.token, username)
+    // With the token in place: an account from before 0.9.3 gets its signing key now.
+    const unlocked = await this.ensureSigningKey(opened)
     this.secrets.save(MASTER, toBase64(masterKey))
-    this.secrets.save(BUNDLE, JSON.stringify(response.account))
+    this.secrets.save(BUNDLE, JSON.stringify(unlocked.bundle))
     this.secrets.save(NAME, username)
     this.secrets.save(SERVER, JSON.stringify({ address: this.serverUrl(), serverId }))
     return unlocked
@@ -466,7 +479,57 @@ export class Session {
   private async unlockWith(bundle: AccountBundle, masterKey: Bytes, username: string): Promise<Unlocked> {
     const privateKey = await importPrivateKey(await unwrapSecret(masterKey, bundle.wrappedPrivateKey, PRIVATE_KEY))
     const accountSecret = await unwrapSecret(masterKey, bundle.wrappedAccountSecret, ACCOUNT_SECRET)
-    return { accountId: bundle.accountId, username, publicKey: fromBase64(bundle.publicKey), privateKey, masterKey, accountSecret, bundle }
+    const unlocked: Unlocked = {
+      accountId: bundle.accountId,
+      username,
+      publicKey: fromBase64(bundle.publicKey),
+      privateKey,
+      masterKey,
+      accountSecret,
+      bundle,
+      signing: await this.openSigningKey(bundle, accountSecret)
+    }
+    return unlocked
+  }
+
+  /** A new signing key, wrapped under a key from the account secret. */
+  private async newSigningKey(accountSecret: Bytes): Promise<{ signingPublicKey: string; wrappedSigningKey: string }> {
+    const keys = await generateSigningKeys()
+    return {
+      signingPublicKey: toBase64(keys.publicKey),
+      wrappedSigningKey: await wrapSecret(await accountKeys.signingWrap(accountSecret), keys.privateKey, SIGNING_KEY)
+    }
+  }
+
+  private async openSigningKey(bundle: AccountBundle, accountSecret: Bytes): Promise<Unlocked['signing']> {
+    if (!bundle.signingPublicKey || !bundle.wrappedSigningKey) return null
+    const pkcs8 = await unwrapSecret(await accountKeys.signingWrap(accountSecret), bundle.wrappedSigningKey, SIGNING_KEY)
+    return { privateKey: await importSigningKey(pkcs8), publicKey: fromBase64(bundle.signingPublicKey) }
+  }
+
+  /**
+   * An account from before 0.9.3 gets its signing key here, from whichever of
+   * its devices is first: the server keeps the first one, and the others take
+   * that. Offline, the device goes on without one until it can ask.
+   */
+  async ensureSigningKey(unlocked: Unlocked): Promise<Unlocked> {
+    if (unlocked.signing) return unlocked
+    let bundle: AccountBundle
+    try {
+      bundle = await this.api.setSigningKey(await this.newSigningKey(unlocked.accountSecret))
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 409) return unlocked
+      try {
+        bundle = await this.api.account()
+      } catch {
+        return unlocked
+      }
+    }
+    this.secrets.save(BUNDLE, JSON.stringify(bundle))
+    // In place: the key ring and everything else holding this account sign from now on.
+    unlocked.bundle = bundle
+    unlocked.signing = await this.openSigningKey(bundle, unlocked.accountSecret)
+    return unlocked
   }
 
   /**
@@ -493,13 +556,15 @@ export class Session {
       // Unreachable: carry on with the cached bundle.
     }
     if (!bundle) return null
+    let unlocked: Unlocked
     try {
-      return await this.unlockWith(bundle, masterKey, username)
+      unlocked = await this.unlockWith(bundle, masterKey, username)
     } catch {
       // The password was changed on another device; this master key is stale.
       this.forget()
       return null
     }
+    return this.ensureSigningKey(unlocked)
   }
 
   /** The names of the account's vaults, decrypted here. */

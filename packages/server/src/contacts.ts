@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { InboxItem } from '@obsidian-connect/shared'
+import type { Attestation, InboxItem } from '@obsidian-connect/shared'
 import { AccountError, isAccountId } from './accounts.js'
 import { ensureDir, writeDurable } from './durable.js'
 
@@ -26,10 +26,12 @@ interface ContactFile {
   /** "a|b" with a < b -> since. */
   pairs: Record<string, number>
   inbox: Record<string, InboxItem[]>
+  /** "from|to" -> from's word for its signing key, to that contact. */
+  attestations: Record<string, Attestation>
 }
 
 function empty(): ContactFile {
-  return { codes: {}, pairs: {}, inbox: {} }
+  return { codes: {}, pairs: {}, inbox: {}, attestations: {} }
 }
 
 function pairKey(a: string, b: string): string {
@@ -203,8 +205,30 @@ export class ContactStore {
       const key = pairKey(a, b)
       if (!data.pairs[key]) return false
       delete data.pairs[key]
+      delete data.attestations[`${a}|${b}`]
+      delete data.attestations[`${b}|${a}`]
       return true
     })
+  }
+
+  /**
+   * Keeps an account's word for its signing key to one contact (0.9.3). The
+   * server can only pass it on: the MAC is under a secret it does not have.
+   */
+  attest(from: string, to: unknown, signingPublicKey: unknown, mac: unknown, now = Date.now()): Promise<void> {
+    if (!isAccountId(to)) return Promise.reject(new AccountError(400, 'not an account id'))
+    if (typeof signingPublicKey !== 'string' || Buffer.from(signingPublicKey, 'base64').length !== 65) {
+      return Promise.reject(new AccountError(400, 'not a signing key'))
+    }
+    if (typeof mac !== 'string' || !/^[0-9a-f]{64}$/.test(mac)) return Promise.reject(new AccountError(400, 'not a MAC'))
+    return this.update((data) => {
+      if (!data.pairs[pairKey(from, to)]) throw new AccountError(403, 'not a contact')
+      data.attestations[`${from}|${to}`] = { from, to, signingPublicKey, mac, at: now }
+    })
+  }
+
+  async attestationsFor(account: string): Promise<Attestation[]> {
+    return Object.values((await this.load()).attestations).filter((attestation) => attestation.to === account)
   }
 
   /** Everything of an account that is being removed. */
@@ -220,6 +244,9 @@ export class ContactStore {
       }
       for (const [id, code] of Object.entries(data.codes)) if (code.owner === account) delete data.codes[id]
       delete data.inbox[account]
+      for (const [key, attestation] of Object.entries(data.attestations)) {
+        if (attestation.from === account || attestation.to === account) delete data.attestations[key]
+      }
       return former
     })
   }

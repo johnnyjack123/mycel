@@ -10,11 +10,14 @@ import {
   fromBase64,
   fromUtf8,
   seal,
+  signSealed,
+  splitSealed,
   titleContext,
   toBase64,
   unseal,
   utf8,
   vaultKeys,
+  verifySealed,
   type Bytes
 } from '@obsidian-connect/shared/crypto'
 import type { RoomCrypto } from '../sync/VaultSocket.js'
@@ -33,6 +36,12 @@ const TIES_PREFIX = 'obsidian-connect:ties:'
 interface KnownTies {
   ties: Record<string, FolderTie | null>
   upTo: number
+}
+
+/** Someone a key is sealed to: their account, and their sealing key as pinned. */
+export interface Recipient {
+  account: string
+  publicKey: Bytes
 }
 
 /** How a note's keys are found. */
@@ -62,6 +71,8 @@ export class KeyRing {
   private blobIdKey: Promise<Bytes> | null = null
   /** Whether a shared folder is one of this vault's own; set once the vault index is there. */
   private ownsFolder: (folderId: string) => boolean = () => false
+  /** A contact's signing key, pinned through their attestation; null for anyone else. */
+  private signerKey: (account: string) => Promise<Bytes | null> = async () => null
 
   constructor(
     private readonly vault: OpenVault,
@@ -75,6 +86,52 @@ export class KeyRing {
     this.ownsFolder = owns
   }
 
+  /** Where the signing keys of contacts come from: the contact list, fetching their attestations when one is missing. */
+  setSigners(resolve: (account: string) => Promise<Bytes | null>): void {
+    this.signerKey = resolve
+  }
+
+  /**
+   * A key sealed to this account, opened only with its sealer's signature
+   * (0.9.3): this account's own, or a contact's whose signing key is pinned.
+   * A server handing out a key of its own - and frames under it - would
+   * otherwise have this device read what it wrote as the owner's.
+   */
+  private async openSealed(room: string, epoch: number, value: string): Promise<Bytes | null> {
+    const signed = splitSealed(value)
+    if (!signed) {
+      log.warn(`${room}: the key of epoch ${epoch} carries no signature; not taken`)
+      return null
+    }
+    const signerKey = signed.signer === this.account.accountId ? (this.account.signing?.publicKey ?? null) : await this.signerKey(signed.signer)
+    if (!signerKey) {
+      log.warn(`${room}: the key of epoch ${epoch} was sealed by ${signed.signer.slice(0, 8)}, whose signing key this account does not know`)
+      return null
+    }
+    if (!(await verifySealed(signerKey, room, epoch, this.account.accountId, signed))) {
+      log.error(`${room}: the signature on the key of epoch ${epoch} does not hold; not taken`)
+      return null
+    }
+    return unseal(this.account.privateKey, this.account.publicKey, signed.sealed, epochKeyContext(room, epoch))
+  }
+
+  /** A sealed epoch key of `room`: the one kept here, or - when that does not open - the server's, which the owner may have sealed anew. */
+  private async sealedKeyOf(room: string, epoch: number): Promise<Bytes | null> {
+    const kept = this.sealed(room)[String(epoch)]
+    const opened = kept ? await this.openSealed(room, epoch, kept) : null
+    if (opened) return opened
+    const fetched = (await this.fetchSealed(room))[String(epoch)]
+    return fetched && fetched !== kept ? this.openSealed(room, epoch, fetched) : null
+  }
+
+  /** A key sealed for `recipient`, signed by this account as the one who sealed it. */
+  private async sealFor(room: string, epoch: number, recipient: Recipient, key: Bytes): Promise<string> {
+    const signing = this.account.signing
+    if (!signing) throw new Error('This device has no signing key yet. Try again once the server is reachable.')
+    const sealed = await seal(recipient.publicKey, key, epochKeyContext(room, epoch))
+    return signSealed(signing.privateKey, this.account.accountId, room, epoch, recipient.account, sealed)
+  }
+
   get username(): string {
     return this.account.username
   }
@@ -85,6 +142,11 @@ export class KeyRing {
 
   get accountId(): string {
     return this.account.accountId
+  }
+
+  /** This account's signing key, public half; null on a device that has not got it yet. */
+  get signingPublicKey(): Bytes | null {
+    return this.account.signing?.publicKey ?? null
   }
 
   /** A note's id in this vault: stable on every device, unguessable elsewhere. */
@@ -163,11 +225,7 @@ export class KeyRing {
     } else if (owned) {
       return vaultKeys.doc(this.vault.key, docId, epoch)
     }
-    const room = docRoom(docId)
-    let sealed = this.sealed(room)[String(epoch)]
-    if (!sealed) sealed = (await this.fetchSealed(room))[String(epoch)]
-    if (!sealed) return null
-    return unseal(this.account.privateKey, this.account.publicKey, sealed, epochKeyContext(room, epoch))
+    return this.sealedKeyOf(docRoom(docId), epoch)
   }
 
   /** The raw key of one epoch of a note this vault owns. */
@@ -224,17 +282,13 @@ export class KeyRing {
         const folderEpoch = folder?.epochs[String(epoch)]
         const sealedFolderKey = folderEpoch === undefined ? undefined : folder?.keys[String(folderEpoch)]
         if (folder && folderEpoch !== undefined && sealedFolderKey) {
-          const folderKey = await unseal(
-            this.account.privateKey,
-            this.account.publicKey,
-            sealedFolderKey,
-            epochKeyContext(folderRoom(folder.id), folderEpoch)
-          )
-          return aesKey(await folderKeys.doc(folderKey, docId, epoch))
+          const folderKey = await this.openSealed(folderRoom(folder.id), folderEpoch, sealedFolderKey)
+          return folderKey ? aesKey(await folderKeys.doc(folderKey, docId, epoch)) : null
         }
         const known = sealed[String(epoch)] ?? this.sealed(room)[String(epoch)]
         if (!known) return null
-        return aesKey(await unseal(this.account.privateKey, this.account.publicKey, known, epochKeyContext(room, epoch)))
+        const raw = await this.openSealed(room, epoch, known)
+        return raw ? aesKey(raw) : null
       }
     }
   }
@@ -266,11 +320,7 @@ export class KeyRing {
 
   private async makeFolderKey(folderId: string, epoch: number): Promise<Bytes | null> {
     if (this.ownsFolder(folderId)) return vaultKeys.folder(this.vault.key, folderId, epoch)
-    const room = folderRoom(folderId)
-    let sealed = this.sealed(room)[String(epoch)]
-    if (!sealed) sealed = (await this.fetchSealed(room))[String(epoch)]
-    if (!sealed) return null
-    return unseal(this.account.privateKey, this.account.publicKey, sealed, epochKeyContext(room, epoch))
+    return this.sealedKeyOf(folderRoom(folderId), epoch)
   }
 
   /** The folder room's own keys. */
@@ -293,14 +343,14 @@ export class KeyRing {
     return folderKey ? folderKeys.ids(folderKey) : null
   }
 
-  /** A folder epoch's key sealed for someone it is shared with. */
-  async sealFolderKeys(folderId: string, epochs: number[], recipientPublicKey: Bytes): Promise<Record<string, string>> {
+  /** A folder epoch's key sealed for someone it is shared with, signed. */
+  async sealFolderKeys(folderId: string, epochs: number[], recipient: Recipient): Promise<Record<string, string>> {
     const room = folderRoom(folderId)
     const sealed: Record<string, string> = {}
     for (const epoch of epochs) {
       const key = await this.folderKey(folderId, epoch)
       if (!key) throw new Error(`no key for epoch ${epoch} of the folder`)
-      sealed[String(epoch)] = await seal(recipientPublicKey, key, epochKeyContext(room, epoch))
+      sealed[String(epoch)] = await this.sealFor(room, epoch, recipient, key)
     }
     return sealed
   }
@@ -419,7 +469,7 @@ export class KeyRing {
   async sealEpochKeys(
     docId: string,
     epochs: number[],
-    recipientPublicKey: Bytes,
+    recipient: Recipient,
     next?: { epoch: number; tie: FolderTie | null }
   ): Promise<Record<string, string>> {
     const room = docRoom(docId)
@@ -430,7 +480,7 @@ export class KeyRing {
           ? await this.noteKeyUnder(docId, epoch, next.tie)
           : await this.noteKey(docId, epoch, { owned: true, folder: true })
       if (!key) throw new Error(`no key for epoch ${epoch} of ${docId}`)
-      sealed[String(epoch)] = await seal(recipientPublicKey, key, epochKeyContext(room, epoch))
+      sealed[String(epoch)] = await this.sealFor(room, epoch, recipient, key)
     }
     return sealed
   }

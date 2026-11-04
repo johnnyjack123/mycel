@@ -4,6 +4,7 @@ import * as Y from 'yjs'
 import {
   NOTE_SHARE_FIELD,
   docRoom,
+  folderRoom,
   frameAad,
   roomSubject,
   snapshotAad,
@@ -27,7 +28,7 @@ import {
   type Bytes
 } from '@obsidian-connect/shared/crypto'
 import { ApiError, type ConnectApi } from '../account/api.js'
-import type { KeyRing } from '../account/KeyRing.js'
+import type { KeyRing, Recipient } from '../account/KeyRing.js'
 import type { DocStore } from '../sync/DocStore.js'
 import { entryKey, type HistoryEntry } from '../sync/History.js'
 import type { Contacts } from './Contacts.js'
@@ -139,10 +140,23 @@ export class Sharing {
   }
 
   /** The key of someone a note or folder is shared with now: pinned when the contact was made. */
-  recipientKey(account: string): Bytes {
+  recipientKey(account: string): Recipient {
     const pinned = this.contacts.publicKey(account)
     if (!pinned) throw new Error('Notes are shared with contacts only. Add them under Settings → Obsidian Connect → Contacts first.')
-    return pinned
+    return { account, publicKey: pinned }
+  }
+
+  /**
+   * Someone about to receive keys, after this account vouched for its signing
+   * key to them: a contact made a moment ago would otherwise get keys whose
+   * signature it cannot check yet, and refuse them.
+   */
+  async recipient(account: string): Promise<Recipient> {
+    const recipient = this.recipientKey(account)
+    const signing = this.keys.signingPublicKey
+    if (!signing) throw new Error('This device has no signing key yet. Try again once the server is reachable.')
+    await this.contacts.attestAll(signing)
+    return recipient
   }
 
   /**
@@ -152,7 +166,7 @@ export class Sharing {
    * and read the share. So anyone not a contact - once the contacts are
    * surely here - stops the whole rotation before anything is sealed.
    */
-  async memberKeys(accounts: string[], place: MemberPlace): Promise<Map<string, Bytes>> {
+  async memberKeys(accounts: string[], place: MemberPlace): Promise<Map<string, Recipient>> {
     const strangers = (): string[] => accounts.filter((account) => !this.contacts.isContact(account))
     if (strangers().length > 0 && this.options.contactsReady && !(await this.options.contactsReady())) {
       throw new Error('Your contacts have not arrived from the server yet. Try again once it is reachable.')
@@ -164,7 +178,54 @@ export class Sharing {
       this.options.unknownMembers?.(unknown, place)
       throw new UnknownMembersError(unknown, place)
     }
-    return new Map(accounts.map((account) => [account, this.contacts.publicKey(account) as Bytes]))
+    return new Map(accounts.map((account) => [account, { account, publicKey: this.contacts.publicKey(account) as Bytes }]))
+  }
+
+  /**
+   * Once per vault (0.9.3): the keys its shares hold, sealed before signing
+   * keys existed, sealed anew and signed - for exactly the epochs each member
+   * holds as the server keeps them, so nobody gains history. Members' devices
+   * take only signed keys from then on. False when something is left for the
+   * next start: a room not reachable, a device without its signing key yet.
+   */
+  async resealAll(folderIds: string[]): Promise<boolean> {
+    let complete = true
+    let resealed = 0
+    const rooms: Array<{ room: string; seal: (epochs: number[], recipient: Recipient) => Promise<Record<string, string>> }> = [
+      ...this.store
+        .allEntries()
+        .filter(({ entry }) => !entry.deletedAt && !entry.owner && (entry.shared || entry.folder))
+        .map(({ docId }) => ({ room: docRoom(docId), seal: (epochs: number[], recipient: Recipient) => this.keys.sealEpochKeys(docId, epochs, recipient) })),
+      ...folderIds.map((folderId) => ({
+        room: folderRoom(folderId),
+        seal: (epochs: number[], recipient: Recipient) => this.keys.sealFolderKeys(folderId, epochs, recipient)
+      }))
+    ]
+    for (const { room, seal } of rooms) {
+      try {
+        const { members } = await this.api.sealedEpochs(room)
+        const keys: Record<string, Record<string, string>> = {}
+        for (const [member, epochs] of Object.entries(members)) {
+          const publicKey = this.contacts.publicKey(member)
+          if (epochs.length === 0) continue
+          // Sealed to nobody this account does not know - `memberKeys` says the same at the next rotation.
+          if (!publicKey) {
+            log.warn(`${room}: ${member.slice(0, 8)} is no contact; their keys are not sealed anew`)
+            continue
+          }
+          keys[member] = await seal(epochs, { account: member, publicKey })
+        }
+        if (Object.keys(keys).length === 0) continue
+        await this.api.reseal({ room, keys })
+        resealed += 1
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) continue
+        complete = false
+        log.warn(`${room}: sealing its keys anew failed; tried again at the next start`, error)
+      }
+    }
+    if (resealed > 0) log.info(`the keys of ${resealed} shared note(s) and folder(s) sealed anew, signed`)
+    return complete
   }
 
   /**
@@ -230,12 +291,12 @@ export class Sharing {
     const entry = this.store.entry(docId)
     if (!entry || entry.deletedAt) throw new Error('This note is not synced yet.')
     if (entry.owner) throw new Error(`Only ${this.nameOf(entry.owner)} can share this note.`)
-    const recipientKey = this.recipientKey(account)
+    const recipientKey = await this.recipient(account)
     const handle = await this.store.handle(docId)
     // Without the room's current state there is nothing to hand over, and
     // without it on the server there is no room to share yet.
     if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs))) throw new Error('The server is not reachable.')
-    const title = await this.keys.sealTitle(docId, landing || titleOf(entry.path), recipientKey)
+    const title = await this.keys.sealTitle(docId, landing || titleOf(entry.path), recipientKey.publicKey)
     const room = docRoom(docId)
 
     for (let attempt = 0; ; attempt += 1) {

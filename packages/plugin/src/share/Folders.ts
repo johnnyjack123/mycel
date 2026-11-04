@@ -335,6 +335,14 @@ export class Folders {
     return this.index.liveFolders().find(({ folder }) => folder.path === path) ?? null
   }
 
+  /** The shared folders this vault owns. */
+  ownFolderIds(): string[] {
+    return this.index
+      .liveFolders()
+      .filter(({ folder }) => !folder.owner)
+      .map(({ folderId }) => folderId)
+  }
+
   mayWrite(folder: VaultFolder): boolean {
     return !folder.owner || folder.role === 'write'
   }
@@ -1488,7 +1496,7 @@ export class Folders {
     /** Whether the files its notes link outside it go along, as a shared note's do; unchanged when left out. */
     linkedFiles?: boolean
   ): Promise<void> {
-    const recipientKey = this.sharing.recipientKey(account)
+    const recipientKey = await this.sharing.recipient(account)
     const folderId = await this.ownFolder(path)
     const opened = await this.ready(folderId)
     if (!opened) throw new Error('The server is not reachable.')
@@ -1507,7 +1515,7 @@ export class Folders {
       const published = await this.files.publishAll(folderId, opened.index, path, (file) => attachments.isExcluded(file))
       if (published > 0) log.info(`${path}: ${published} file(s) went into the shared folder`)
     }
-    const title = await this.keys.sealTitle(folderId, opened.index.name || baseName(path), recipientKey)
+    const title = await this.keys.sealTitle(folderId, opened.index.name || baseName(path), recipientKey.publicKey)
     if (withHistory) {
       await this.retrying(async () => {
         const state = await this.api.folderState(folderId)

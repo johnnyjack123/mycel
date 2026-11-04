@@ -231,6 +231,7 @@ export class Device {
     this.accountId = unlocked.accountId
     const openVault = await this.session.openVault(unlocked, VAULT)
     const keys = new KeyRing(openVault, unlocked, this.api, this.secrets)
+    keys.setSigners((account) => this.contacts?.resolveSigningKey(account) ?? Promise.resolve(null))
     const vault = this.vault
     // Leaves showing files that are not notes - a canvas, a PDF - as far as
     // attachments care: which file each one shows.
@@ -246,7 +247,16 @@ export class Device {
     const socket = new VaultSocket(serverUrl, openVault.vaultId, () => this.token ?? '', {
       notify: (kind, payload) => {
         // Caught, as main.ts's `processContacts` does: the next notice reads the inbox again.
-        if (kind === 'contact') void this.contacts?.processInbox().catch(() => undefined)
+        if (kind === 'contact') {
+          const contacts = this.contacts
+          void contacts
+            ?.processInbox()
+            .then(async () => {
+              if (unlocked.signing) await contacts.attestAll(unlocked.signing.publicKey)
+              await contacts.pinSigningKeys()
+            })
+            .catch(() => undefined)
+        } else if (kind === 'contact-key') void this.contacts?.pinSigningKeys().catch(() => undefined)
         else if (kind === 'contact-removed') this.contacts?.forget((payload as { account: string }).account)
         // What main.ts's `refreshAccount` does.
         else if (kind === 'account-changed') void this.refreshAccount()
@@ -484,6 +494,12 @@ export class Device {
     }
     if (started) {
       await contacts.processInbox()
+      // What main.ts's `exchangeSigningKeys` does.
+      if (unlocked.signing) await contacts.attestAll(unlocked.signing.publicKey)
+      await contacts.pinSigningKeys()
+      if (unlocked.signing && settings.keysResealedAt() === null && (await sharing.resealAll(folders.ownFolderIds()))) {
+        settings.setKeysResealedAt(Date.now())
+      }
       await sharing.checkEnded()
       await sharing.checkIncoming()
       await folders.checkIncoming()

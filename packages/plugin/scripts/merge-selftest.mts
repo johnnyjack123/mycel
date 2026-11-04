@@ -299,6 +299,42 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(await rejects(() => e2e.unseal(bobPrivate, bob.publicKey, box, 'epoch:doc:x#1')), 'and for nobody else')
   check(await rejects(() => e2e.unseal(alicePrivate, alice.publicKey, box, 'epoch:doc:x#2')), 'and only as what it was sealed for')
 
+  // Signing keys (0.9.3): the owner signs what it seals, contacts vouch for their keys.
+  {
+    const owner = await e2e.generateSigningKeys()
+    const ownerSigning = await e2e.importSigningKey(owner.privateKey)
+    const aliceId = 'a'.repeat(32)
+    const ownerId = 'b'.repeat(32)
+    const signed = await e2e.signSealed(ownerSigning, ownerId, 'doc:x', 1, aliceId, box)
+    const parts = e2e.splitSealed(signed)
+    check(parts?.sealed === box && parts.signer === ownerId, 'a signed sealed key names its sealer')
+    check(parts !== null && (await e2e.verifySealed(owner.publicKey, 'doc:x', 1, aliceId, parts)), "and the owner's signature holds")
+    check(
+      parts !== null &&
+        !(await e2e.verifySealed(owner.publicKey, 'doc:x', 2, aliceId, parts)) &&
+        !(await e2e.verifySealed(owner.publicKey, 'doc:y', 1, aliceId, parts)) &&
+        !(await e2e.verifySealed(owner.publicKey, 'doc:x', 1, ownerId, parts)),
+      'for that room, that epoch and that recipient only'
+    )
+    const other = await e2e.generateSigningKeys()
+    check(parts !== null && !(await e2e.verifySealed(other.publicKey, 'doc:x', 1, aliceId, parts)), "nobody else's key makes it hold")
+    const swapped = e2e.splitSealed(`${await e2e.seal(alice.publicKey, randomBytes(32), 'epoch:doc:x#1')}.${ownerId}.${parts?.signature ?? ''}`)
+    check(swapped !== null && !(await e2e.verifySealed(owner.publicKey, 'doc:x', 1, aliceId, swapped)), 'a box swapped under the signature is caught')
+    check(e2e.splitSealed(box) === null, 'a key sealed without a signature is told apart')
+
+    const signing = await e2e.generateSigningKeys()
+    const forBob = await e2e.attestationMac(alicePrivate, bob.publicKey, aliceId, ownerId, signing.publicKey)
+    const checkedByBob = await e2e.attestationMac(bobPrivate, alice.publicKey, aliceId, ownerId, signing.publicKey)
+    check(forBob === checkedByBob, "a contact's word for its signing key checks out with the other's pinned key")
+    const carol = await e2e.generateIdentity()
+    const byStranger = await e2e.attestationMac(await e2e.importPrivateKey(carol.privateKey), bob.publicKey, aliceId, ownerId, signing.publicKey)
+    check(byStranger !== checkedByBob, 'and nobody else can make it')
+    check(
+      (await e2e.attestationMac(bobPrivate, alice.publicKey, aliceId, ownerId, other.publicKey)) !== forBob,
+      'nor carry it over to another key'
+    )
+  }
+
   const vaultKey = randomBytes(32)
   const id = await e2e.deriveDocId(vaultKey, 'Notes/Plan.md', 0)
   check(id === (await e2e.deriveDocId(vaultKey, 'Notes/Plan.md', 0)) && /^[0-9a-f]{32}$/.test(id), 'note ids are derived, 128-bit hex')

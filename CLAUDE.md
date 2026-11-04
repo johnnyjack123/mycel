@@ -573,7 +573,15 @@ adds the note to its own index under the share folder.
   `server/src/contacts.ts`), which travels outside the server and carries the
   fingerprint of its creator's key. The code yields a redeem key (the server
   keeps its hash) and a MAC key that never leaves a device, so the server can
-  pass the sealed names back and forth but not forge them. Keys are taken from
+  pass the sealed names back and forth but not forge them. **Signing keys**
+  (0.9.3): every account has an ECDSA P-256 key besides its sealing one, wrapped
+  under a key from the account secret; contacts pin it through an attestation - a
+  MAC under the secret their pinned sealing keys share (`attestationMac`,
+  `Contacts.attestAll`/`pinSigningKeys`). Every key sealed to a member carries
+  its sealer's signature (`sealed.signer.signature`, `KeyRing.sealFor`/`openSealed`):
+  a device opens only keys signed by itself or a pinned contact - a server handing
+  out a key of its own is caught. Keys sealed before 0.9.3 are sealed anew once per
+  vault (`Sharing.resealAll`). Keys are taken from
   the contact list, never from the server - it has no route for anyone's key. A
   member the server lists who is no contact stops the rotation that would seal a
   key to them (`Sharing.memberKeys`, 0.9.0) and is asked about over everything

@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-03 · **0.9 under way (`docs/PHASE8.md`, the user's decisions of 2026-11-03 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live. Next S (signatures), *Replace all keys*. The name waits for the user (Mycel recommended); the audit goes to a separate agent; publishing comes last.**_
+_Last updated: 2026-11-03 · **0.9 under way (`docs/PHASE8.md`, the user's decisions of 2026-11-03 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members. Next S-b (signed frames), *Replace all keys*. The name waits for the user (Mycel recommended); the audit goes to a separate agent; publishing comes last.**_
 
 ## Where we are
 
@@ -51,10 +51,13 @@ an opinion on their two names, *Seemless* and *Mycel* (given: Mycel). Publishing
    (`feat/durable-writes`). Not measured on the Pi yet: how long a push takes with a sync
    per frame on its SD card. Its first CI run failed (`test:backup`, CHANGELOG); fixed on
    `main` (`f2ccd0d`), CI green, both images published.
-3. **0.9.2** - L: every note live (`watch`), the eviction fixes (`feat/live-notes`).
-4. **0.9.3** - S-a and S-b: signing keys, signed sealed keys and member lists, signed frames.
-5. **0.9.4** - S2: *Replace all keys*.
-6. N once the user named it; then the audit agent; P last.
+3. **0.9.2** - L: every note live (`watch`), the eviction fixes (`feat/live-notes`). Merged,
+   CI green, both images published.
+4. **0.9.3** - S-a: signing keys, attestations between contacts, signed sealed keys, the
+   one-time resealing (`feat/signatures`).
+5. **0.9.4** - S-b: signed frames, writers' certificates.
+6. **0.9.5** - S2: *Replace all keys*.
+7. N once the user named it; then the audit agent; P last.
 
 **Milestone 0.8: sharing a folder, and the small fixes** (`docs/PHASE7.md`, signed off
 2026-10-22; the decisions E0 to E8, the order of work at its end).
@@ -228,7 +231,7 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing once `feat/live-notes` (0.9.2) is merged; `feat/seal-pinned-only` (0.9.0) and `feat/durable-writes` (0.9.1) are. Every branch of 0.8
+Nothing once `feat/signatures` (0.9.3) is merged; `feat/seal-pinned-only` (0.9.0), `feat/durable-writes` (0.9.1) and `feat/live-notes` (0.9.2) are. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
 `fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`, `feat/time-machine`,

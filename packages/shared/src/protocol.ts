@@ -1,11 +1,13 @@
-// Version 6: a device watches the notes it does not hold open (`watch`) and hears
+// Version 7: keys sealed to members carry their sealer's signature, and every
+// account has a signing key its contacts pin. Version 6: a device watches the
+// notes it does not hold open (`watch`) and hears
 // when their logs move on (`changed`). Version 5: shared folders - rooms of kind
 // `fld`, and a subscribe may name the folder a new note is created in. Version 4:
 // a subscribe says whether the room may be created, and the server knows accounts
 // only by id - no names, no salts per name. Version 3: the server stores an
 // ordered log of encrypted frames and can no longer read a document. Version 2
 // relayed plaintext Yjs sync messages.
-export const PROTOCOL_VERSION = 6
+export const PROTOCOL_VERSION = 7
 export const DEFAULT_SERVER_PORT = 1234
 
 export type ShareRole = 'read' | 'write'
