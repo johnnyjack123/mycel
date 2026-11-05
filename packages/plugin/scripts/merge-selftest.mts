@@ -333,6 +333,45 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
       (await e2e.attestationMac(bobPrivate, alice.publicKey, aliceId, ownerId, other.publicKey)) !== forBob,
       'nor carry it over to another key'
     )
+
+    // Signed frames (0.9.4): the author signs inside the encryption; a writer carries the owner's certificate.
+    const update = utf8('a change')
+    const byOwner = e2e.unpackFrame(await e2e.packSignedFrame(ownerSigning, 'doc:x', 3, ownerId, null, 1_790_000_000_000, update))
+    check(
+      byOwner.signed?.author === ownerId && byOwner.authorTs === 1_790_000_000_000 && e2e.toHex(byOwner.update) === e2e.toHex(update),
+      'a signed frame names its author and keeps clock and change'
+    )
+    check(await e2e.verifyFrame(owner.publicKey, 'doc:x', 3, byOwner), "the owner's frame holds under the owner's key")
+    check(
+      !(await e2e.verifyFrame(owner.publicKey, 'doc:x', 4, byOwner)) && !(await e2e.verifyFrame(owner.publicKey, 'doc:y', 3, byOwner)),
+      'in that room and epoch only'
+    )
+    check(!(await e2e.verifyFrame(owner.publicKey, 'doc:x', 3, { ...byOwner, update: utf8('another change') })), 'and with that change only')
+    const writer = await e2e.generateSigningKeys()
+    const writerSigning = await e2e.importSigningKey(writer.privateKey)
+    const certSignature = e2e.fromBase64(await e2e.signWriterCert(ownerSigning, 'doc:x', 3, aliceId, writer.publicKey))
+    const cert = { signingKey: writer.publicKey, signature: certSignature }
+    const byWriter = e2e.unpackFrame(await e2e.packSignedFrame(writerSigning, 'doc:x', 3, aliceId, cert, 1, update))
+    check(
+      byWriter.signed?.cert !== null &&
+        (await e2e.verifyWriterCert(owner.publicKey, 'doc:x', 3, aliceId, byWriter.signed?.cert as typeof cert)) &&
+        (await e2e.verifyFrame(writer.publicKey, 'doc:x', 3, byWriter)),
+      "a writer's frame carries the owner's certificate, and holds under the key it names"
+    )
+    check(
+      !(await e2e.verifyWriterCert(owner.publicKey, 'doc:x', 4, aliceId, cert)) &&
+        !(await e2e.verifyWriterCert(owner.publicKey, 'doc:x', 3, ownerId, cert)) &&
+        !(await e2e.verifyWriterCert(owner.publicKey, 'doc:x', 3, aliceId, { ...cert, signingKey: other.publicKey })),
+      'a certificate is for that writer, that key and that epoch only'
+    )
+    check(e2e.unpackFrame(e2e.packFrame(5, update)).signed === null, 'a frame from before signatures is told apart')
+    const mark = await e2e.signLegacyMark(ownerSigning, 'doc:x', 41)
+    check(
+      (await e2e.verifyLegacyMark(owner.publicKey, 'doc:x', mark)) === 41 &&
+        (await e2e.verifyLegacyMark(owner.publicKey, 'doc:y', mark)) === null &&
+        (await e2e.verifyLegacyMark(owner.publicKey, 'doc:x', mark.replace(/^41/, '99'))) === null,
+      "the owner's mark for unsigned frames holds for that room and seq only"
+    )
   }
 
   const vaultKey = randomBytes(32)

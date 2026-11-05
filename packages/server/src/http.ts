@@ -23,6 +23,7 @@ import {
   type AttestRequest,
   type AttestationsResponse,
   type AuthConfigResponse,
+  type LegacyMarkRequest,
   type ResealRequest,
   type SealedEpochsResponse,
   type SigningKeyRequest,
@@ -744,6 +745,13 @@ export function createHttpApp(
     const accountId = await user(request, reply)
     if (!accountId) return undefined
     return hub.sealedEpochs(accountId, request.params.room)
+  })
+
+  app.post<{ Params: RoomParams }>(`${API.keys}/:room/mark`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    await hub.setLegacyMark(accountId, request.params.room, ((request.body ?? {}) as Partial<LegacyMarkRequest>).mark)
+    return { ok: true }
   })
 
   app.post<{ Params: RoomParams }>(`${API.keys}/:room/reseal`, async (request, reply) => {

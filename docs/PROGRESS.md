@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-03 · **0.9 under way (`docs/PHASE8.md`, the user's decisions of 2026-11-03 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members. Next S-b (signed frames), *Replace all keys*. The name waits for the user (Mycel recommended); the audit goes to a separate agent; publishing comes last.**_
+_Last updated: 2026-11-03 · **0.9 under way (`docs/PHASE8.md`, the user's decisions of 2026-11-03 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame. Next *Replace all keys*. The name waits for the user (Mycel recommended); the audit goes to a separate agent; publishing comes last.**_
 
 ## Where we are
 
@@ -54,8 +54,8 @@ an opinion on their two names, *Seemless* and *Mycel* (given: Mycel). Publishing
 3. **0.9.2** - L: every note live (`watch`), the eviction fixes (`feat/live-notes`). Merged,
    CI green, both images published.
 4. **0.9.3** - S-a: signing keys, attestations between contacts, signed sealed keys, the
-   one-time resealing (`feat/signatures`).
-5. **0.9.4** - S-b: signed frames, writers' certificates.
+   one-time resealing (`feat/signatures`). Merged, CI green, both images published.
+5. **0.9.4** - S-b: signed frames, writers' certificates, legacy marks (`feat/signed-frames`).
 6. **0.9.5** - S2: *Replace all keys*.
 7. N once the user named it; then the audit agent; P last.
 
@@ -231,7 +231,7 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing once `feat/signatures` (0.9.3) is merged; `feat/seal-pinned-only` (0.9.0), `feat/durable-writes` (0.9.1) and `feat/live-notes` (0.9.2) are. Every branch of 0.8
+Nothing once `feat/signed-frames` (0.9.4) is merged; `feat/seal-pinned-only` (0.9.0), `feat/durable-writes` (0.9.1), `feat/live-notes` (0.9.2) and `feat/signatures` (0.9.3) are. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
 `fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`, `feat/time-machine`,
@@ -307,8 +307,9 @@ user's call, as with the earlier branches.
   notes whose file and log did not move would need the scan to trust mtime and size.
 - Shared notes are still compared with their files once a minute (`SharedFiles.scheduleAll`),
   which opens each: beyond `maxLoadedDocuments` shared notes, they go in and out of memory.
-- Signing out does not replace the account secret; frames are authenticated by the
-  note's key, not signed per author (both 0.9).
+- Signing out does not replace the account secret (*Replace all keys*, 0.9.5). Frames are
+  signed per author since 0.9.4; the Time Machine's and the history view's replays and the
+  backup server do not check the signatures - they read what the server holds, as before.
 - The plugin id contains "obsidian", which the community directory refuses (0.9).
 - `test:recovery`'s check "carries on in the same note, and what it wrote while away
   reaches P1" failed on 2026-10-16 and 2026-10-23: a race in the fork on return, fixed

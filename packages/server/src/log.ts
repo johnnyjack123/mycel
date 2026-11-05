@@ -68,6 +68,8 @@ export interface RoomMeta {
    * its owner still reads those epochs.
    */
   ties?: Record<string, FolderTie>
+  /** The owner's signed word up to which seq the log may hold unsigned frames (0.9.4). */
+  legacyMark?: string
 }
 
 /** A note's place in a shared folder, as the server keeps it. */

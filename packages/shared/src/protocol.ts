@@ -1,4 +1,6 @@
-// Version 7: keys sealed to members carry their sealer's signature, and every
+// Version 8: every frame of a note or folder is signed by its author, inside the
+// encryption, with the owner's certificate for anyone else who writes. Version 7:
+// keys sealed to members carry their sealer's signature, and every
 // account has a signing key its contacts pin. Version 6: a device watches the
 // notes it does not hold open (`watch`) and hears
 // when their logs move on (`changed`). Version 5: shared folders - rooms of kind
@@ -7,7 +9,7 @@
 // only by id - no names, no salts per name. Version 3: the server stores an
 // ordered log of encrypted frames and can no longer read a document. Version 2
 // relayed plaintext Yjs sync messages.
-export const PROTOCOL_VERSION = 7
+export const PROTOCOL_VERSION = 8
 export const DEFAULT_SERVER_PORT = 1234
 
 export type ShareRole = 'read' | 'write'

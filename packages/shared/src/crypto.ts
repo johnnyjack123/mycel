@@ -83,6 +83,12 @@ export function toHex(data: Uint8Array): string {
   return Array.from(data, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
+export function fromHex(text: string): Bytes {
+  const out = new Uint8Array(text.length >> 1)
+  for (let i = 0; i < out.length; i += 1) out[i] = Number.parseInt(text.slice(i * 2, i * 2 + 2), 16)
+  return out
+}
+
 // --- derivation --------------------------------------------------------------------
 
 export async function sha256(data: Bytes): Promise<Bytes> {
@@ -429,30 +435,39 @@ async function sealedKeyMessage(room: string, epoch: number, recipient: string, 
   return `sealed-key|${room}|${epoch}|${recipient}|${toHex(await sha256(utf8(sealed)))}`
 }
 
-/** A sealed key with its sealer's signature: `sealed.signer.signature`. */
+/**
+ * A sealed key with its sealer's signature: `sealed.signer.signature`, and for
+ * someone who may write (0.9.4) `.cert` - the owner's word that they may, over
+ * the room and epoch and their signing key (`writerCertMessage`).
+ */
 export async function signSealed(
   signingKey: CryptoKey,
   signer: string,
   room: string,
   epoch: number,
   recipient: string,
-  sealed: string
+  sealed: string,
+  cert?: string
 ): Promise<string> {
-  return `${sealed}.${signer}.${await sign(signingKey, await sealedKeyMessage(room, epoch, recipient, sealed))}`
+  const signed = `${sealed}.${signer}.${await sign(signingKey, await sealedKeyMessage(room, epoch, recipient, sealed))}`
+  return cert ? `${signed}.${cert}` : signed
 }
 
 export interface SignedSealed {
   sealed: string
   signer: string
   signature: string
+  /** The owner's signature letting the recipient write, base64; absent for a reader. */
+  cert?: string
 }
 
 /** The parts of a signed sealed key; null for one without a signature. */
 export function splitSealed(value: string): SignedSealed | null {
   const parts = value.split('.')
-  if (parts.length !== 3) return null
-  const [sealed, signer, signature] = parts as [string, string, string]
-  return sealed && /^[0-9a-f]{32}$/.test(signer) && signature ? { sealed, signer, signature } : null
+  if (parts.length !== 3 && parts.length !== 4) return null
+  const [sealed, signer, signature, cert] = parts as [string, string, string, string | undefined]
+  if (!sealed || !/^[0-9a-f]{32}$/.test(signer) || !signature) return null
+  return cert ? { sealed, signer, signature, cert } : { sealed, signer, signature }
 }
 
 export async function verifySealed(signerPublicKey: Bytes, room: string, epoch: number, recipient: string, value: SignedSealed): Promise<boolean> {
@@ -460,8 +475,21 @@ export async function verifySealed(signerPublicKey: Bytes, room: string, epoch: 
 }
 
 // --- frames ------------------------------------------------------------------------
+//
+// A frame's plaintext - the same for a snapshot - is the author's clock and the Yjs
+// update. Since 0.9.4 it also names its author and carries their signature over
+// room, epoch, clock and update, inside the encryption: the server sees no
+// author, and cannot take the signature off. Someone writing in a room they do
+// not own adds the owner's word that they may write there - a writer's
+// certificate: the owner's signature over the room (or folder), the epoch, the
+// writer and the writer's signing key - so everyone in the room can check them,
+// contacts of theirs or not.
 
-/** The plaintext of a log frame: the author's clock, then the Yjs update. */
+const SIGNED_FRAME = 2
+const ACCOUNT_BYTES = 16
+const SIGNATURE_BYTES = 64
+
+/** The plaintext of a log frame from before 0.9.4: the author's clock, then the Yjs update. */
 export function packFrame(authorTs: number, update: Uint8Array): Bytes {
   const out = new Uint8Array(8 + update.length)
   new DataView(out.buffer).setFloat64(0, authorTs)
@@ -469,9 +497,100 @@ export function packFrame(authorTs: number, update: Uint8Array): Bytes {
   return out
 }
 
-export function unpackFrame(data: Uint8Array): { authorTs: number; update: Bytes } {
+/** The owner's word that `account`, with this signing key, may write in a room or folder in one epoch. */
+export interface WriterCert {
+  signingKey: Bytes
+  /** The owner's signature (`writerCertMessage`). */
+  signature: Bytes
+}
+
+export interface FrameSignature {
+  /** The author's account id. */
+  author: string
+  /** Absent for the room's owner, who needs none. */
+  cert: WriterCert | null
+  signature: Bytes
+}
+
+export interface OpenedFrame {
+  authorTs: number
+  update: Bytes
+  /** Null for a frame from before 0.9.4. */
+  signed: FrameSignature | null
+}
+
+function frameMessage(room: string, epoch: number, authorTs: number, author: string, update: Uint8Array): Bytes {
+  return concat(utf8(`frame|${room}|${epoch}|${authorTs}|${author}|`), update)
+}
+
+/** What an owner signs to let someone write: the room or folder, its epoch, who, and with which key. */
+export function writerCertMessage(scopeRoom: string, scopeEpoch: number, account: string, signingKey: Uint8Array): string {
+  return `writer|${scopeRoom}|${scopeEpoch}|${account}|${toBase64(signingKey)}`
+}
+
+export async function signWriterCert(ownerKey: CryptoKey, scopeRoom: string, scopeEpoch: number, account: string, signingKey: Bytes): Promise<string> {
+  return sign(ownerKey, writerCertMessage(scopeRoom, scopeEpoch, account, signingKey))
+}
+
+export function verifyWriterCert(ownerPublicKey: Bytes, scopeRoom: string, scopeEpoch: number, account: string, cert: WriterCert): Promise<boolean> {
+  return verifySignature(ownerPublicKey, writerCertMessage(scopeRoom, scopeEpoch, account, cert.signingKey), toBase64(cert.signature))
+}
+
+/** A frame's plaintext, signed by its author; `cert` for anyone but the room's owner. */
+export async function packSignedFrame(
+  signingKey: CryptoKey,
+  room: string,
+  epoch: number,
+  author: string,
+  cert: WriterCert | null,
+  authorTs: number,
+  update: Uint8Array
+): Promise<Bytes> {
+  const signature = fromBase64(await sign(signingKey, frameMessage(room, epoch, authorTs, author, update)))
+  const head = new Uint8Array(1 + 8 + ACCOUNT_BYTES + 1)
+  head[0] = SIGNED_FRAME
+  new DataView(head.buffer).setFloat64(1, authorTs)
+  head.set(fromHex(author), 9)
+  head[9 + ACCOUNT_BYTES] = cert ? 1 : 0
+  return concat(head, ...(cert ? [cert.signingKey, cert.signature] : []), signature, update)
+}
+
+/** A frame's plaintext, either form; throws for one that is neither. */
+export function unpackFrame(data: Uint8Array): OpenedFrame {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-  return { authorTs: view.getFloat64(0), update: bytes(data.subarray(8)) }
+  if (data[0] !== SIGNED_FRAME) return { authorTs: view.getFloat64(0), update: bytes(data.subarray(8)), signed: null }
+  const authorTs = view.getFloat64(1)
+  const author = toHex(data.subarray(9, 9 + ACCOUNT_BYTES))
+  let offset = 9 + ACCOUNT_BYTES + 1
+  let cert: WriterCert | null = null
+  if (data[9 + ACCOUNT_BYTES] === 1) {
+    cert = { signingKey: bytes(data.subarray(offset, offset + P256_PUBLIC_BYTES)), signature: bytes(data.subarray(offset + P256_PUBLIC_BYTES, offset + P256_PUBLIC_BYTES + SIGNATURE_BYTES)) }
+    offset += P256_PUBLIC_BYTES + SIGNATURE_BYTES
+  }
+  const signature = bytes(data.subarray(offset, offset + SIGNATURE_BYTES))
+  if (signature.length !== SIGNATURE_BYTES) throw new Error('a signed frame that ends early')
+  return { authorTs, update: bytes(data.subarray(offset + SIGNATURE_BYTES)), signed: { author, cert, signature } }
+}
+
+/** Whether a signed frame's signature holds under `publicKey` - the owner's, or the one its certificate names. */
+export function verifyFrame(publicKey: Bytes, room: string, epoch: number, frame: OpenedFrame): Promise<boolean> {
+  if (!frame.signed) return Promise.resolve(false)
+  return verifySignature(publicKey, frameMessage(room, epoch, frame.authorTs, frame.signed.author, frame.update), toBase64(frame.signed.signature))
+}
+
+/**
+ * The owner's word up to which seq a room's log may hold frames without
+ * signatures - those written before 0.9.4. Signed, so the server cannot move it.
+ */
+export async function signLegacyMark(ownerKey: CryptoKey, room: string, seq: number): Promise<string> {
+  return `${seq}.${await sign(ownerKey, `legacy|${room}|${seq}`)}`
+}
+
+export async function verifyLegacyMark(ownerPublicKey: Bytes, room: string, mark: string): Promise<number | null> {
+  const [seqText, signature] = mark.split('.')
+  const seq = Number(seqText)
+  if (!Number.isSafeInteger(seq) || seq < 0 || !signature) return null
+  return (await verifySignature(ownerPublicKey, `legacy|${room}|${seq}`, signature)) ? seq : null
 }
 
 // --- blobs -------------------------------------------------------------------------

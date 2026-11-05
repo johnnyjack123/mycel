@@ -581,7 +581,13 @@ adds the note to its own index under the share folder.
   its sealer's signature (`sealed.signer.signature`, `KeyRing.sealFor`/`openSealed`):
   a device opens only keys signed by itself or a pinned contact - a server handing
   out a key of its own is caught. Keys sealed before 0.9.3 are sealed anew once per
-  vault (`Sharing.resealAll`). Keys are taken from
+  vault (`Sharing.resealAll`). **Signed frames** (0.9.4): every frame and snapshot of
+  a note or folder carries its author and signature inside the encryption
+  (`packSignedFrame`, `KeyRing.packFor`/`checkFrame`, `RoomCrypto.pack`/`check`);
+  anyone but the owner adds the owner's writer's certificate, which comes with their
+  sealed key (`sealed.signer.signature.cert`) and follows the owner's own record of
+  roles (`AccountSettings.shareRole`); made a reader, the note or folder moves to a new
+  epoch. Unsigned frames pass only up to the owner's signed legacy mark. Keys are taken from
   the contact list, never from the server - it has no route for anyone's key. A
   member the server lists who is no contact stops the rotation that would seal a
   key to them (`Sharing.memberKeys`, 0.9.0) and is asked about over everything

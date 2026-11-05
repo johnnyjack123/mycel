@@ -449,7 +449,7 @@ export class Folders {
     this.open.set(folderId, opened)
     this.fresh.add(folderId)
     this.socket.register(folderRoom(folderId), index.doc, {
-      crypto: this.keys.folderRoomCrypto(folderId),
+      crypto: this.keys.folderRoomCrypto(folderId, folder.owner ?? null),
       cursor,
       create: !folder.owner,
       readOnly: !this.mayWrite(folder)
@@ -1290,15 +1290,17 @@ export class Folders {
     await this.store.whenSent(docId, this.options.syncTimeoutMs)
     const raw = await this.keys.noteKeyUnder(docId, epoch, tie)
     if (!raw) throw new Error('The key of the shared folder is not here yet.')
-    const state = packFrame(Date.now(), Y.encodeStateAsUpdate(handle.doc))
+    const state = await this.keys.packAsOwner(docRoom(docId), epoch, Date.now(), Y.encodeStateAsUpdate(handle.doc))
     const data = await encrypt(await aesKey(raw), state, snapshotAad(docRoom(docId), epoch))
     return { uptoSeq: handle.lastSeq, data: toBase64(data) }
   }
 
-  /** The note's next key sealed for its own members. */
+  /** The note's next key sealed for its own members - with certificates for its writers, their roles asked for once. */
   private async sealForMembers(docId: string, members: string[], epoch: number, tie: FolderTie | null): Promise<Record<string, string>> {
     const keys: Record<string, string> = {}
-    for (const [member, key] of await this.sharing.memberKeys(members, { kind: 'note', docId })) {
+    const roles = members.length > 0 ? new Map((await this.api.members(docId)).members.map((member) => [member.account, member.role])) : new Map()
+    const withRoles = members.map((account) => ({ account, role: roles.get(account) }))
+    for (const [member, key] of await this.sharing.memberKeys(withRoles, { kind: 'note', docId })) {
       keys[member] = (await this.keys.sealEpochKeys(docId, [epoch], key, { epoch, tie }))[String(epoch)] as string
     }
     return keys
@@ -1496,7 +1498,7 @@ export class Folders {
     /** Whether the files its notes link outside it go along, as a shared note's do; unchanged when left out. */
     linkedFiles?: boolean
   ): Promise<void> {
-    const recipientKey = await this.sharing.recipient(account)
+    const recipientKey = await this.sharing.recipient(account, role)
     const folderId = await this.ownFolder(path)
     const opened = await this.ready(folderId)
     if (!opened) throw new Error('The server is not reachable.')
@@ -1510,6 +1512,9 @@ export class Folders {
       done += 1
       progress(done, total)
     }
+    // What the folder and its notes hold from before signatures is vouched for, before anyone else reads it.
+    await this.sharing.ensureMark(folderRoom(folderId))
+    for (const note of (await this.api.folderState(folderId)).notes ?? []) await this.sharing.ensureMark(docRoom(note.docId))
     if (this.files && this.attachments) {
       const attachments = this.attachments
       const published = await this.files.publishAll(folderId, opened.index, path, (file) => attachments.isExcluded(file))
@@ -1539,6 +1544,7 @@ export class Folders {
         await this.api.shareFolder({ folderId, account, role, withHistory: false, title, keys })
       })
     }
+    this.sharing.recordRole(folderRoom(folderId), account, role)
     log.info(`${path}: shared with ${account} to ${role}, ${withHistory ? 'with' : 'without'} history`)
   }
 
@@ -1567,7 +1573,7 @@ export class Folders {
 
   private async rotationFor(folderId: string, state: FolderStateResponse, leaving?: string): Promise<FolderRotation> {
     const epoch = state.epoch + 1
-    const staying = state.members.map((member) => member.account).filter((member) => member !== leaving)
+    const staying = state.members.filter((member) => member.account !== leaving)
     const keys: Record<string, string> = {}
     for (const [member, key] of await this.sharing.memberKeys(staying, { kind: 'folder', folderId })) {
       keys[member] = (await this.keys.sealFolderKeys(folderId, [epoch], key))[String(epoch)] as string
@@ -1612,18 +1618,34 @@ export class Folders {
     const epoch = this.socket.epochOf(room)
     const key = await this.keys.folderRoomCrypto(folderId).key(epoch)
     if (!key) throw new Error('The key of the shared folder is not here yet.')
-    const state = packFrame(Date.now(), Y.encodeStateAsUpdate(opened.index.doc))
+    const state = await this.keys.packAsOwner(room, epoch, Date.now(), Y.encodeStateAsUpdate(opened.index.doc))
     const data = await encrypt(key, state, snapshotAad(room, epoch))
     await this.api.startSnapshot(room, { epoch, uptoSeq: this.socket.lastSeqOf(room), data: toBase64(data) })
   }
 
   async revoke(folderId: string, account: string): Promise<void> {
     await this.rotate(folderId, account)
+    this.sharing.recordRole(folderRoom(folderId), account, null)
     log.info(`${this.index.folder(folderId)?.path ?? folderId}: access of ${account} revoked`)
   }
 
+  /**
+   * Made a writer: a certificate for the folder's current epoch with their
+   * key. Made a reader: the folder moves to a new epoch, so the certificate
+   * they hold stops counting (0.9.4).
+   */
   async setRole(folderId: string, account: string, role: ShareRole): Promise<void> {
     await this.api.setFolderRole(folderId, { account, role })
+    const room = folderRoom(folderId)
+    this.sharing.recordRole(room, account, role)
+    if (role === 'read') {
+      await this.rotate(folderId)
+      return
+    }
+    const state = await this.api.folderState(folderId)
+    const recipient = (await this.sharing.memberKeys([{ account, role }], { kind: 'folder', folderId })).get(account)
+    if (!recipient) return
+    await this.api.reseal({ room, keys: { [account]: await this.keys.sealFolderKeys(folderId, [state.epoch], recipient) } })
   }
 
   members(folderId: string): Promise<FolderStateResponse> {

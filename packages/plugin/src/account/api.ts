@@ -233,6 +233,10 @@ export class ConnectApi {
     return this.call('POST', `${API.keys}/${encodeURIComponent(request.room)}/reseal`, request)
   }
 
+  setLegacyMark(room: string, mark: string): Promise<unknown> {
+    return this.call('POST', `${API.keys}/${encodeURIComponent(room)}/mark`, { mark })
+  }
+
   addContactCode(request: ContactCodeRequest): Promise<unknown> {
     return this.call('POST', `${API.contacts}/codes`, request)
   }

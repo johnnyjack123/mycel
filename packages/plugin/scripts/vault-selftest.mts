@@ -11,8 +11,10 @@ import { check, delay, Device, eventually, failures, useServer } from './harness
 
 // Imported after the harness set up the DOM; CodeMirror reads it at module scope.
 const { Notice } = await import('obsidian')
-const { BLOB_CHUNK_BYTES, docRoom, indexRoom } = await import('@obsidian-connect/shared')
-const { contentHash, epochKeyContext, randomBytes, seal } = await import('@obsidian-connect/shared/crypto')
+const { BLOB_CHUNK_BYTES, MUX, docRoom, frameAad, indexRoom } = await import('@obsidian-connect/shared')
+const { aesKey, contentHash, encrypt, epochKeyContext, packFrame, packSignedFrame, randomBytes, seal } = await import('@obsidian-connect/shared/crypto')
+const Y = await import('yjs')
+const encoding = await import('lib0/encoding')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
 const { landingTitle, linkedNotes } = await import('../src/share/LinkedNotes.js')
@@ -983,6 +985,50 @@ try {
       check((await A.sharing?.resealAll([])) === true, "A's device seals the keys of its shares anew")
       C.keys?.forgetShared(docId)
       check(Buffer.from((await keyOfC()) ?? []).equals(Buffer.from(ownersKey ?? [1])), 'and C opens them again')
+    }
+
+    // Every frame is signed by its author (0.9.4): a member posing as the owner, or
+    // writing without the owner's certificate, is not taken - even by a server that
+    // let the frame through.
+    {
+      const epoch = C.socket?.epochOf(room) ?? 0
+      const raw = await (C.keys as InstanceType<typeof KeyRing>).noteKey(docId, epoch, { owned: false })
+      const signing = C.unlocked?.signing
+      const pushRaw = async (plaintext: Uint8Array<ArrayBuffer>): Promise<void> => {
+        const data = await encrypt(await aesKey(raw as Uint8Array<ArrayBuffer>), plaintext, frameAad(room, epoch))
+        const encoder = encoding.createEncoder()
+        encoding.writeVarUint(encoder, MUX.push)
+        encoding.writeVarString(encoder, room)
+        encoding.writeVarUint(encoder, 900_000 + Math.floor(Math.random() * 1_000))
+        encoding.writeVarUint(encoder, epoch)
+        encoding.writeVarUint8Array(encoder, data)
+        ;(C.socket as unknown as { ws: { send(data: Uint8Array): void } }).ws.send(encoding.toUint8Array(encoder))
+      }
+      const insert = (text: string): Uint8Array => {
+        const doc = new Y.Doc()
+        doc.getText('content').insert(0, text)
+        return Y.encodeStateAsUpdate(doc)
+      }
+      if (raw && signing) {
+        await pushRaw(await packSignedFrame(signing.privateKey, room, epoch, A.accountId, null, Date.now(), insert('POSING AS ALICE ')))
+        await pushRaw(await packSignedFrame(signing.privateKey, room, epoch, C.accountId, null, Date.now(), insert('NO CERTIFICATE ')))
+        await pushRaw(packFrame(Date.now(), insert('UNSIGNED ')))
+      }
+      check(Boolean(raw && signing), 'C holds the key and her signing key')
+      await delay(1_500)
+      check(
+        !['POSING AS ALICE', 'NO CERTIFICATE', 'UNSIGNED'].some((text) => (A.docText('Together.md') ?? '').includes(text)),
+        "a frame signed as someone else, one without the owner's certificate and one without a signature are not taken",
+        A.docText('Together.md')
+      )
+      await C.vault.userWrite('Shared/Together.md', 'shared text\nsigned by carol\n')
+      check(
+        await eventually(() => A.vault.text('Together.md') === 'shared text\nsigned by carol\n'),
+        'while what C writes, signed and certified, still reaches A',
+        A.vault.text('Together.md')
+      )
+      await A.vault.userWrite('Together.md', 'shared text\n')
+      check(await eventually(() => C.vault.text('Shared/Together.md') === 'shared text\n'), 'and the note goes on as it was')
     }
 
     {
