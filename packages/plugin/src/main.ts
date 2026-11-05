@@ -1074,7 +1074,8 @@ export default class ObsidianConnectPlugin extends Plugin {
       this.storeOptions(),
       {
         indexCrypto: keys.indexCrypto(),
-        docCrypto: (docId, entry) => keys.noteCrypto(docId, { owned: !entry?.owner, folder: Boolean(entry?.folder) }),
+        docCrypto: (docId, entry) =>
+          keys.noteCrypto(docId, { owned: !entry?.owner, folder: Boolean(entry?.folder), owner: () => this.index?.entry(docId)?.owner ?? null }),
         roomFolder: (docId, entry) => this.folders?.roomFolder(docId, entry) ?? null
       },
       openIndexedDb,
@@ -1116,7 +1117,11 @@ export default class ObsidianConnectPlugin extends Plugin {
             socket.whenSynced(settingsRoom(vault.vaultId)).then(() => true),
             delay(this.settings.syncTimeoutMs).then(() => false)
           ]),
-        unknownMembers: (accounts, place) => this.showUnknownMembers(accounts, place)
+        unknownMembers: (accounts, place) => this.showUnknownMembers(accounts, place),
+        roles: {
+          get: (room, account) => accountSettings.shareRole(room, account),
+          set: (room, account, role) => accountSettings.setShareRole(room, account, role)
+        }
       },
       this.contacts
     )

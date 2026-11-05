@@ -61,6 +61,14 @@ export interface SharingOptions {
   contactsReady?: () => Promise<boolean>
   /** The server listed members who are not contacts: said in a window over everything. */
   unknownMembers?: (accounts: string[], place: MemberPlace) => void
+  /**
+   * This account's own record of who may write where (0.9.4): writers'
+   * certificates follow it, the server's word only where it holds nothing.
+   */
+  roles?: {
+    get(room: string, account: string): ShareRole | null
+    set(room: string, account: string, role: ShareRole | null): void
+  }
 }
 
 /** A note or a folder of this account's, whose members a new key is sealed to. */
@@ -149,14 +157,46 @@ export class Sharing {
   /**
    * Someone about to receive keys, after this account vouched for its signing
    * key to them: a contact made a moment ago would otherwise get keys whose
-   * signature it cannot check yet, and refuse them.
+   * signature it cannot check yet, and refuse them. One who may write gets a
+   * writer's certificate with them.
    */
-  async recipient(account: string): Promise<Recipient> {
+  async recipient(account: string, role: ShareRole): Promise<Recipient> {
     const recipient = this.recipientKey(account)
     const signing = this.keys.signingPublicKey
     if (!signing) throw new Error('This device has no signing key yet. Try again once the server is reachable.')
     await this.contacts.attestAll(signing)
-    return recipient
+    return this.withCert(recipient, role)
+  }
+
+  /** One who may write gets the owner's certificate, over the signing key their attestation pinned. */
+  private async withCert(recipient: Recipient, role: ShareRole): Promise<Recipient> {
+    if (role !== 'write') return recipient
+    const signingKey = await this.contacts.resolveSigningKey(recipient.account)
+    if (!signingKey) {
+      log.warn(`${recipient.account.slice(0, 8)} may write, but their signing key is not known yet: no certificate until it is`)
+      return recipient
+    }
+    return { ...recipient, writer: { signingKey } }
+  }
+
+  /** Who may write in a room of this account's: its own record first, the server's word where it has none. */
+  roleOf(room: string, account: string, serverRole?: ShareRole): ShareRole {
+    return this.options.roles?.get(room, account) ?? serverRole ?? 'read'
+  }
+
+  recordRole(room: string, account: string, role: ShareRole | null): void {
+    this.options.roles?.set(room, account, role)
+  }
+
+  /**
+   * The owner's word that a room's unsigned frames up to now are from before
+   * signatures (0.9.4): set before anyone else reads them - the moment it is
+   * shared, or joins a shared folder. Once per room.
+   */
+  async ensureMark(room: string): Promise<void> {
+    const state = await this.api.sealedEpochs(room)
+    if (state.marked || state.headSeq === undefined) return
+    await this.api.setLegacyMark(room, await this.keys.signLegacyMark(room, state.headSeq))
   }
 
   /**
@@ -166,7 +206,8 @@ export class Sharing {
    * and read the share. So anyone not a contact - once the contacts are
    * surely here - stops the whole rotation before anything is sealed.
    */
-  async memberKeys(accounts: string[], place: MemberPlace): Promise<Map<string, Recipient>> {
+  async memberKeys(members: Array<{ account: string; role?: ShareRole }>, place: MemberPlace): Promise<Map<string, Recipient>> {
+    const accounts = members.map((member) => member.account)
     const strangers = (): string[] => accounts.filter((account) => !this.contacts.isContact(account))
     if (strangers().length > 0 && this.options.contactsReady && !(await this.options.contactsReady())) {
       throw new Error('Your contacts have not arrived from the server yet. Try again once it is reachable.')
@@ -178,7 +219,13 @@ export class Sharing {
       this.options.unknownMembers?.(unknown, place)
       throw new UnknownMembersError(unknown, place)
     }
-    return new Map(accounts.map((account) => [account, { account, publicKey: this.contacts.publicKey(account) as Bytes }]))
+    const room = place.kind === 'note' ? docRoom(place.docId) : folderRoom(place.folderId)
+    const keys = new Map<string, Recipient>()
+    for (const { account, role } of members) {
+      const pinned: Recipient = { account, publicKey: this.contacts.publicKey(account) as Bytes }
+      keys.set(account, await this.withCert(pinned, this.roleOf(room, account, role)))
+    }
+    return keys
   }
 
   /**
@@ -203,9 +250,9 @@ export class Sharing {
     ]
     for (const { room, seal } of rooms) {
       try {
-        const { members } = await this.api.sealedEpochs(room)
+        const state = await this.api.sealedEpochs(room)
         const keys: Record<string, Record<string, string>> = {}
-        for (const [member, epochs] of Object.entries(members)) {
+        for (const [member, epochs] of Object.entries(state.members)) {
           const publicKey = this.contacts.publicKey(member)
           if (epochs.length === 0) continue
           // Sealed to nobody this account does not know - `memberKeys` says the same at the next rotation.
@@ -213,8 +260,12 @@ export class Sharing {
             log.warn(`${room}: ${member.slice(0, 8)} is no contact; their keys are not sealed anew`)
             continue
           }
-          keys[member] = await seal(epochs, { account: member, publicKey })
+          // A writer from before gets their certificate now, on the server's word where this account recorded nothing.
+          keys[member] = await seal(epochs, await this.withCert({ account: member, publicKey }, this.roleOf(room, member, state.roles?.[member])))
         }
+        // What its log held before signatures is vouched for, before anyone reads it again - a note
+        // of a shared folder too, which its members read through the folder.
+        if (!state.marked && state.headSeq !== undefined) await this.api.setLegacyMark(room, await this.keys.signLegacyMark(room, state.headSeq))
         if (Object.keys(keys).length === 0) continue
         await this.api.reseal({ room, keys })
         resealed += 1
@@ -291,13 +342,15 @@ export class Sharing {
     const entry = this.store.entry(docId)
     if (!entry || entry.deletedAt) throw new Error('This note is not synced yet.')
     if (entry.owner) throw new Error(`Only ${this.nameOf(entry.owner)} can share this note.`)
-    const recipientKey = await this.recipient(account)
+    const recipientKey = await this.recipient(account, role)
     const handle = await this.store.handle(docId)
     // Without the room's current state there is nothing to hand over, and
     // without it on the server there is no room to share yet.
     if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs))) throw new Error('The server is not reachable.')
     const title = await this.keys.sealTitle(docId, landing || titleOf(entry.path), recipientKey.publicKey)
     const room = docRoom(docId)
+    // Its history so far is this account's, from before signatures: vouched for before anyone else reads it.
+    await this.ensureMark(room)
 
     for (let attempt = 0; ; attempt += 1) {
       const members = await this.api.members(docId)
@@ -316,7 +369,7 @@ export class Sharing {
           const epoch = members.epoch + 1
           const tie = await this.nextTie(docId)
           const next = { epoch, tie }
-          const others = members.members.map((member) => member.account).filter((member) => member !== account)
+          const others = members.members.filter((member) => member.account !== account)
           const memberKeys = await this.memberKeys(others, { kind: 'note', docId })
           const rotationKeys: Record<string, string> = {}
           rotationKeys[account] = (await this.keys.sealEpochKeys(docId, [epoch], recipientKey, next))[String(epoch)] as string
@@ -330,7 +383,7 @@ export class Sharing {
           const raw = await this.keys.noteKeyUnder(docId, epoch, tie)
           if (!raw) throw new Error('The key of the shared folder is not here yet.')
           const key = await aesKey(raw)
-          const state = packFrame(Date.now(), Y.encodeStateAsUpdate(handle.doc))
+          const state = await this.keys.packAsOwner(room, epoch, Date.now(), Y.encodeStateAsUpdate(handle.doc))
           const snapshot = await encrypt(key, state, snapshotAad(room, epoch))
           const rotation: Rotation = { epoch, keys: rotationKeys, snapshot: { uptoSeq: handle.lastSeq, data: toBase64(snapshot) } }
           if (tie) rotation.folderEpoch = tie.epoch
@@ -345,6 +398,7 @@ export class Sharing {
         throw error
       }
     }
+    this.recordRole(room, account, role)
     this.store.share(docId, true)
     if (withAttachments !== undefined && !handle.pristine) setAttachmentsShared(handle.doc, withAttachments)
     log.info(
@@ -391,7 +445,7 @@ export class Sharing {
     const members = await this.api.members(docId)
     const epoch = members.epoch + 1
     const tie = await this.nextTie(docId)
-    const staying = members.members.map((member) => member.account).filter((member) => member !== account)
+    const staying = members.members.filter((member) => member.account !== account)
     const keys: Record<string, string> = {}
     for (const [member, key] of await this.memberKeys(staying, { kind: 'note', docId })) {
       keys[member] = (await this.keys.sealEpochKeys(docId, [epoch], key, { epoch, tie }))[String(epoch)] as string
@@ -399,6 +453,7 @@ export class Sharing {
     const rotation: Rotation = { epoch, keys }
     if (tie) rotation.folderEpoch = tie.epoch
     await this.api.revoke({ docId, account, rotation })
+    this.recordRole(docRoom(docId), account, null)
     log.info(`${this.store.entry(docId)?.path ?? docId}: access of ${account} revoked, now epoch ${epoch}`)
     // Nobody left to see a caret.
     if (Object.keys(keys).length === 0) this.store.share(docId, false)
@@ -413,8 +468,25 @@ export class Sharing {
     }
   }
 
+  /**
+   * Changes what someone may do. Made a writer, they get a certificate for
+   * the current epoch with their key; made a reader, the note moves to a new
+   * epoch - the certificate they hold for the current one would let them go
+   * on writing, and nobody could tell (0.9.4).
+   */
   async setRole(docId: string, account: string, role: ShareRole): Promise<void> {
+    const room = docRoom(docId)
+    if (role === 'read') {
+      this.recordRole(room, account, 'read')
+      await this.share(docId, account, 'read', false)
+      return
+    }
     await this.api.setRole({ docId, account, role })
+    this.recordRole(room, account, role)
+    const { epoch } = await this.api.members(docId)
+    const recipient = await this.withCert(this.recipientKey(account), role)
+    const sealed = await this.keys.sealEpochKeys(docId, [epoch], recipient)
+    await this.api.reseal({ room, keys: { [account]: sealed } })
   }
 
   async incoming(): Promise<IncomingShare[]> {
@@ -635,11 +707,19 @@ export class Sharing {
   /** What the server kept, decrypted with the keys it kept alongside. */
   private async readKept(docId: string, kept: ForkResponse): Promise<HistoryEntry[]> {
     const room = docRoom(docId)
-    const crypto = this.keys.endedDocCrypto(docId, kept.keys, kept.folder)
-    const open = async (epoch: number, data: string, aad: string): Promise<HistoryEntry | null> => {
+    const crypto = this.keys.endedDocCrypto(docId, kept.keys, kept.folder, { owner: kept.owner, legacyMark: kept.log?.legacyMark ?? null })
+    // Only what the live note would have taken: a frame no writer signed does not become this account's own.
+    const open = async (kind: 'frame' | 'snapshot', seq: number, epoch: number, data: string, aad: string): Promise<HistoryEntry | null> => {
       try {
         const key = await crypto.key(epoch)
-        return key ? unpackFrame(await decrypt(key, fromBase64(data), aad)) : null
+        if (!key) return null
+        const change = unpackFrame(await decrypt(key, fromBase64(data), aad))
+        const verdict = (await crypto.check?.(kind, seq, epoch, change)) ?? 'ok'
+        if (verdict !== 'ok') {
+          log.warn(`${docId}: a kept ${kind} #${seq} is not signed by someone who could write there; left out`)
+          return null
+        }
+        return change
       } catch (error) {
         log.warn(`a kept change of ${docId} could not be read`, error)
         return null
@@ -648,11 +728,11 @@ export class Sharing {
     const changes: HistoryEntry[] = []
     const snapshot = kept.log?.snapshot
     if (snapshot) {
-      const change = await open(snapshot.epoch, snapshot.data, snapshotAad(room, snapshot.epoch))
+      const change = await open('snapshot', snapshot.uptoSeq, snapshot.epoch, snapshot.data, snapshotAad(room, snapshot.epoch))
       if (change) changes.push(change)
     }
     for (const frame of kept.log?.frames ?? []) {
-      const change = await open(frame.epoch, frame.data, frameAad(room, frame.epoch))
+      const change = await open('frame', frame.seq, frame.epoch, frame.data, frameAad(room, frame.epoch))
       if (change) changes.push(change)
     }
     return changes

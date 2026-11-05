@@ -788,14 +788,17 @@ export class RoomHub {
 
   /** Which epochs each member holds a key of - for the owner, to seal exactly those anew (0.9.3). */
   async sealedEpochs(owner: string, room: string): Promise<SealedEpochsResponse> {
-    const meta = (await this.ownedRoom(owner, room)).log.meta
+    const open = await this.ownedRoom(owner, room)
+    const meta = open.log.meta
     const members: Record<string, number[]> = {}
-    for (const account of Object.keys(meta.members)) {
+    const roles: Record<string, ShareRole> = {}
+    for (const [account, member] of Object.entries(meta.members)) {
       members[account] = Object.keys(meta.sealedKeys[account] ?? {})
         .map(Number)
         .sort((a, b) => a - b)
+      roles[account] = member.role
     }
-    return { room, members }
+    return { room, members, roles, headSeq: open.log.headSeq, marked: Boolean(meta.legacyMark) }
   }
 
   /**
@@ -1646,7 +1649,19 @@ export class RoomHub {
     const meta = open.log.meta
     const response: KeysResponse = { room, epoch: meta.epoch, keys: access.owner ? {} : { ...meta.sealedKeys[account] } }
     if (meta.ties) response.ties = { ...meta.ties }
+    if (meta.legacyMark) response.legacyMark = meta.legacyMark
     return response
+  }
+
+  /**
+   * The owner's word up to which seq the room's log may hold unsigned frames
+   * (0.9.4). Signed by the owner: the server keeps it and cannot move it.
+   */
+  async setLegacyMark(owner: string, room: string, mark: unknown): Promise<void> {
+    const open = await this.ownedRoom(owner, room)
+    if (typeof mark !== 'string' || !/^\d+\.[A-Za-z0-9+/=]{40,200}$/.test(mark)) throw new HubError(400, 'not a mark')
+    open.log.meta.legacyMark = mark
+    await open.log.saveMeta()
   }
 
   /** What someone with `access` may read: a starting snapshot and the frames after it. */
@@ -1677,6 +1692,7 @@ export class RoomHub {
       room: open.log.meta.room,
       epoch,
       headSeq,
+      ...(open.log.meta.legacyMark ? { legacyMark: open.log.meta.legacyMark } : {}),
       snapshot:
         snapshot && snapshotData
           ? { uptoSeq: snapshot.uptoSeq, ts: snapshot.ts, epoch: snapshot.epoch, data: toBase64(snapshotData) }

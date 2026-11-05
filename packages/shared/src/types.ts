@@ -1126,6 +1126,12 @@ export interface SealedEpochsResponse {
   room: string
   /** member -> the epochs the server keeps a key of for them. */
   members: Record<string, number[]>
+  /** member -> role, as the server keeps it. */
+  roles?: Record<string, ShareRole>
+  /** The room's head, frames still being written included. */
+  headSeq?: number
+  /** Whether the owner already set a legacy mark. */
+  marked?: boolean
 }
 
 export interface ResealRequest {
@@ -1147,6 +1153,16 @@ export interface KeysResponse {
    * Every epoch up to `epoch` not named here is the note's own.
    */
   ties?: Record<string, FolderTie>
+  /**
+   * The owner's word up to which seq the log may hold frames without
+   * signatures (0.9.4): `seq.signature`, signed by the owner (`signLegacyMark`).
+   */
+  legacyMark?: string
+}
+
+/** The owner sets a room's legacy mark (`POST /keys/:room/mark`). */
+export interface LegacyMarkRequest {
+  mark: string
 }
 
 /** A note epoch spent in a shared folder: its key derives from that folder epoch's key. */
@@ -1181,6 +1197,8 @@ export interface LogResponse {
    * whole readable part, snapshot and all.
    */
   from?: number
+  /** The owner's signed word up to which seq the log holds unsigned frames (0.9.4) - kept with a fork too. */
+  legacyMark?: string
 }
 
 export interface SnapshotRequest {

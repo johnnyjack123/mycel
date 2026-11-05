@@ -400,3 +400,13 @@ touches a device.
   certificates. The backup server does not check signatures. Keys sealed before are sealed
   anew from the server's record of which epochs each member holds (trusting it once, at the
   change - it cannot add epochs, the reseal route refuses that).
+- **0.9.4** - S-b, made concrete: instead of an owner-signed member list, each writer carries
+  the owner's certificate in every frame (signing key and signature, 129 bytes) - so members
+  who are no contacts of each other can check each other, and no roster has to be kept in
+  step. Roles for certificates come from the owner's own record (`role:` in the settings
+  document), the server's word only for shares from before. A reader made from a writer: the
+  room moves to a new epoch (`Sharing.setRole` shares again without history; a folder rotates).
+  Frames from before 0.9.4: an owner-signed legacy mark per room, set when it is shared or
+  joins a shared folder's share, and once for existing shares. Not checked: the Time Machine's
+  and the history view's replays (they read what the server holds, as before) and the backup
+  server. The replay or drop of a frame within an epoch (finding 4) stays as described.

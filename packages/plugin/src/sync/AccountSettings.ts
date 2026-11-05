@@ -5,7 +5,8 @@ import {
   SETTINGS_FIELD,
   backupSettingsText,
   type BackupServerSetting,
-  type BackupTaskSetting
+  type BackupTaskSetting,
+  type ShareRole
 } from '@obsidian-connect/shared'
 
 // Settings that must be the same on every device of an account travel in a
@@ -38,7 +39,9 @@ export interface RecoveryDecision {
 }
 
 const RECOVERY_KEY = 'recovery'
-const RESEALED_KEY = 'keysResealed'
+// Sealed anew with writers' certificates and logs marked (0.9.4); 0.9.3 kept its own key, done again here.
+const RESEALED_KEY = 'keysResealed2'
+const ROLE_KEY = 'role:'
 
 /** Someone this account shares with. Their key is pinned when the contact is made. */
 export interface Contact {
@@ -175,8 +178,9 @@ export class AccountSettings {
   }
 
   /**
-   * When this vault's shares had their keys sealed anew and signed (0.9.3) -
-   * once, by whichever device of the account got there first.
+   * When this vault's shares had their keys sealed anew, signed and with the
+   * writers' certificates, and their logs marked (0.9.4) - once, by whichever
+   * device of the account got there first.
    */
   keysResealedAt(): number | null {
     const value = this.map.get(RESEALED_KEY)
@@ -185,6 +189,21 @@ export class AccountSettings {
 
   setKeysResealedAt(at: number): void {
     this.doc.transact(() => this.map.set(RESEALED_KEY, at), 'local')
+  }
+
+  /**
+   * Who may write in a note or folder of this account's, as this account
+   * decided it (0.9.4): the writers' certificates are issued by this record,
+   * not by the server's word - which could make a reader a writer at the next
+   * rotation. Null where nothing was recorded (shares from before).
+   */
+  shareRole(room: string, account: string): ShareRole | null {
+    const value = this.map.get(`${ROLE_KEY}${room}|${account}`)
+    return value === 'read' || value === 'write' ? value : null
+  }
+
+  setShareRole(room: string, account: string, role: ShareRole | null): void {
+    this.put(`${ROLE_KEY}${room}|${account}`, role)
   }
 
   /** What a backup server reads for its route, as it writes it down too. */

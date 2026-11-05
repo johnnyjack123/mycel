@@ -311,7 +311,7 @@ export class Device {
       },
       {
         indexCrypto: keys.indexCrypto(),
-        docCrypto: (docId, entry) => keys.noteCrypto(docId, { owned: !entry?.owner, folder: Boolean(entry?.folder) }),
+        docCrypto: (docId, entry) => keys.noteCrypto(docId, { owned: !entry?.owner, folder: Boolean(entry?.folder), owner: () => index.entry(docId)?.owner ?? null }),
         roomFolder: (docId, entry) => this.folders?.roomFolder(docId, entry) ?? null
       },
       this.locals.open,
@@ -355,6 +355,10 @@ export class Device {
         // What main.ts's window says.
         unknownMembers: (accounts, place) => {
           this.unknownMembers.push({ accounts, place })
+        },
+        roles: {
+          get: (room, account) => settings.shareRole(room, account),
+          set: (room, account, role) => settings.setShareRole(room, account, role)
         }
       },
       contacts

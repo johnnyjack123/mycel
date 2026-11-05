@@ -8,6 +8,30 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.4** (2026-11-04) - **signed frames** (`docs/PHASE8.md`, S-b; protocol 8). A frame named no
+  author: everyone holding a note's key could write what every other holder took - a reader
+  through a server that let them, a writer as someone else. Now every frame and snapshot of a
+  note or folder is **signed by its author inside the encryption** (the server sees no author
+  and cannot take the signature off). Whoever is not the room's owner adds the owner's
+  **writer's certificate** - the owner's signature over the room or folder, the epoch, the
+  writer and the writer's signing key - which comes with the key sealed to them; a reader gets
+  none. A device takes a frame only when its author is the owner, or carries such a
+  certificate, and the signature holds; snapshots and starting points only from the owner. A
+  frame that fails is dropped (logged as an error), one whose key is not known yet waits and
+  the room is caught up again. The owner issues certificates by its **own record of roles**
+  (in the account's settings), not by the server's word; made a reader, a member's note or
+  folder moves to a new epoch, so the certificate they held stops counting; made a writer, they
+  get one for the current epoch. **Frames from before** pass up to the owner's signed **legacy
+  mark** (`POST /keys/:room/mark`), set once per room before anyone else reads it - when it is
+  shared or its folder is, and once for the shares of 0.9.3 by the owner's first device on
+  0.9.4 (with the writers' certificates). A share that ends keeps only what passes (the fork
+  checks the kept log the same way), and the owner's compaction folds in only what passes.
+  A writer whose certificate has not come yet keeps what it writes until it has one. Every
+  frame grows by about 90 bytes (the owner's) or 220 (a writer's). Checked in `test:merge`
+  (signatures, certificates, marks) and `test:vault` (a member's frame signed as the owner,
+  one without a certificate, one unsigned: none reaches the owner, nor the member's own copy
+  when the share ends, while what she writes properly does).
+
 - **0.9.3** (2026-11-04) - **signed keys** (`docs/PHASE8.md`, S-a; protocol 7). A server could
   hand a member of a share a key of its own, sealed to them, and frames under it: nothing told
   them the owner had not sealed it. Now every account has a **signing key** (ECDSA P-256, made
