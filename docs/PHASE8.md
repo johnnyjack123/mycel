@@ -465,4 +465,17 @@ touches a device.
   for a note), so a new writer's certificate is in the key before the server lets them write.
   The Time Machine's and the history view's replays check signatures now; the backup server
   still does not (`docs/PROGRESS.md`, known issues). Protocol 9.
-- **S2 is not built yet** - 0.9.6, as decided on 2026-11-05.
+- **0.9.6** - S2 as decided on 2026-11-05, made concrete. The draft's "every note moved to a
+  new epoch, the old keys kept under the new" became **writing every room anew in place**:
+  nothing on the server opens with a key from before, no chain of old keys is kept, and a
+  device's cursor knows its log by what the frames say (author, time, change) instead of their
+  ciphertext, so the rewrite is no other log. Rooms others write in move to a new epoch at the
+  same moment. The vault keeps its id (found by its sealed name). What the vaults need of the
+  keys before - the account secret, the old vault keys, the old signing key's public half -
+  stays in the bundle, wrapped under a key from the new secret, until a device of the account
+  finished; any device signing in carries it on. Files: every content the index names
+  uploaded anew under the new key, every other content of the store purged. Contacts: the
+  server's `contact-replaced` makes their devices trust nothing in the account's name and seal
+  nothing to it; a new friend code confirms the new keys, and their device reseals and rotates
+  what it shares with the account. Backup servers are taken off first, their tasks kept for
+  the next invitation.

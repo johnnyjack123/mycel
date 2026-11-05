@@ -216,6 +216,8 @@ export const API = {
   login: '/auth/login',
   refresh: '/auth/refresh',
   password: '/auth/password',
+  /** Replaces every key of the account (`docs/PHASE8.md`, S2); `/done` once its vaults are written anew. */
+  replaceKeys: '/auth/replace',
   /** With a recovery code: the second wrapping, then `/commit` with a new name and password. */
   recover: '/auth/recover',
   account: '/account',

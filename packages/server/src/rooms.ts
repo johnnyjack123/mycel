@@ -32,8 +32,11 @@ import {
   type NotifyKind,
   type RevokeRequest,
   type RoleRequest,
+  type OwnedRoom,
+  type RewriteRequest,
   type RotateRequest,
   type SealedEpochsResponse,
+  type WholeLogResponse,
   type ShareMembersResponse,
   type Notice,
   type ShareRequest,
@@ -143,7 +146,7 @@ const ROLES: readonly ShareRole[] = ['read', 'write']
 /** A lock not renewed for this long lapses: its device crashed or lost its connection. */
 export const LOCK_LEASE_MS = 2 * 60_000
 const LOCK_SWEEP_MS = 10_000
-const LOCK_KINDS: readonly VaultLockKind[] = ['preview', 'rollback']
+const LOCK_KINDS: readonly VaultLockKind[] = ['preview', 'rollback', 'replace']
 const SEALED_MAX = 4_096
 /** A frame could not be stored; the device reconnects and sends it again. */
 const CLOSE_WRITE_FAILED = 1011
@@ -1840,6 +1843,125 @@ export class RoomHub {
     }
     if (frames.length > 0) await open.log.appendAll(0, frames.map((frame) => fromBase64(frame.data, 'a frame')))
     return open.log.headSeq
+  }
+
+  // --- replacing the owner's keys (`docs/PHASE8.md`, S2) --------------------------
+  // Every room the account owns is written anew in place - every frame at its
+  // seq and in its epoch, every snapshot, every key a member holds - under the
+  // keys that replaced the old ones; nothing on the server opens with those any
+  // more. A room others may write in moves on to a new epoch at the same moment.
+
+  /** Every room the account owns in a vault: its index, its settings, its notes, its shared folders. */
+  async ownedRooms(account: string, vaultId: string): Promise<OwnedRoom[]> {
+    await this.ready
+    const rooms: OwnedRoom[] = []
+    for (const meta of this.metas.values()) {
+      if (meta.owner === account && meta.vaultId === vaultId) rooms.push({ room: meta.room, rewrittenBy: meta.rewrittenBy ?? null })
+    }
+    return rooms
+  }
+
+  /** Everything a room of the caller's holds. */
+  async wholeLog(account: string, room: string): Promise<WholeLogResponse> {
+    const open = await this.require(room)
+    const meta = open.log.meta
+    if (meta.owner !== account) throw new HubError(403, 'only the owner can do that')
+    await open.log.flush()
+    const snapshots: WholeLogResponse['snapshots'] = []
+    for (const info of meta.snapshots) {
+      const data = await open.log.readSnapshot(info)
+      if (data) snapshots.push({ uptoSeq: info.uptoSeq, epoch: info.epoch, data: toBase64(data) })
+    }
+    const keys: Record<string, number[]> = {}
+    for (const [holder, sealed] of Object.entries(meta.sealedKeys)) {
+      keys[holder] = Object.keys(sealed)
+        .map(Number)
+        .sort((a, b) => a - b)
+    }
+    const response: WholeLogResponse = {
+      room,
+      epoch: meta.epoch,
+      headSeq: open.log.headSeq,
+      frames: open.log.frames.map((frame) => ({ seq: frame.seq, epoch: frame.epoch, data: toBase64(frame.data) })),
+      snapshots,
+      keys,
+      members: Object.keys(meta.members),
+      rewrittenBy: meta.rewrittenBy ?? null
+    }
+    if (meta.ties) response.ties = { ...meta.ties }
+    if (meta.folder) response.folder = meta.folder.id
+    return response
+  }
+
+  /**
+   * A room of the caller's written anew, under the vault lock the caller holds
+   * and for the replacement under way. Refused when anything moved since it
+   * was read. A room anyone else may write in - its members', its folder's -
+   * moves on to a new epoch before anything is awaited (invariant 16): a push
+   * under a key from before is answered with `rekey` from then on.
+   */
+  async rewrite(account: string, room: string, request: RewriteRequest): Promise<void> {
+    const open = await this.require(room)
+    const meta = open.log.meta
+    if (meta.owner !== account) throw new HubError(403, 'only the owner can do that')
+    const replacing = (await this.accounts.get(account))?.replacing
+    if (!replacing || replacing.id !== request.replacement) throw new HubError(409, 'no such replacement under way')
+    const lock = this.lockOf(account, meta.vaultId)
+    if (!lock || lock.id !== request.lockId) throw new HubError(409, 'the vault is not locked for this')
+
+    const snapshots = new Map<number, Uint8Array>()
+    for (const snapshot of request.snapshots ?? []) snapshots.set(snapshot.uptoSeq, fromBase64(snapshot.data, 'a snapshot'))
+    for (const seq of snapshots.keys()) {
+      if (!meta.snapshots.some((info) => info.uptoSeq === seq)) throw new HubError(400, 'a snapshot the room does not have')
+    }
+    for (const info of meta.snapshots) {
+      if (!snapshots.has(info.uptoSeq) && (await open.log.readSnapshot(info)) !== null) throw new HubError(400, 'every snapshot is written anew')
+    }
+    const frames = new Map<number, Uint8Array>()
+    for (const frame of request.frames ?? []) frames.set(frame.seq, fromBase64(frame.data, 'a frame'))
+    const keys = request.keys ?? {}
+    const holders = Object.keys(meta.sealedKeys)
+    if (Object.keys(keys).length !== holders.length) throw new HubError(400, 'every key a member holds is sealed anew, and no other')
+    for (const holder of holders) {
+      const held = Object.keys(meta.sealedKeys[holder] ?? {})
+      const given = keys[holder]
+      const sealedAnew = (epoch: string): boolean => {
+        const sealed = given?.[epoch]
+        return typeof sealed === 'string' && sealed.length > 0 && sealed.length <= SEALED_MAX
+      }
+      if (!given || Object.keys(given).length !== held.length || !held.every(sealedAnew)) {
+        throw new HubError(400, 'every key a member holds is sealed anew, and no other')
+      }
+    }
+    const others = Object.keys(meta.members).length > 0 || meta.folder !== undefined
+    const rotation = request.rotation
+    if (others && !rotation) throw new HubError(400, 'a room others write in moves on to a new epoch')
+    if (rotation) {
+      for (const member of Object.keys(meta.members)) {
+        const sealed = rotation.keys?.[member]
+        if (typeof sealed !== 'string' || sealed.length === 0 || sealed.length > SEALED_MAX) throw new HubError(400, `the new key for ${member} is missing`)
+      }
+    }
+
+    // From here on nothing is awaited until the epoch moved.
+    if (open.log.headSeq !== request.headSeq || meta.epoch !== request.epoch) throw new HubError(409, 'the room moved on; read it again')
+    if (frames.size !== open.log.frames.length || open.log.frames.some((frame) => !frames.has(frame.seq))) {
+      throw new HubError(400, 'every frame is written anew, and nothing else')
+    }
+    if (rotation) {
+      if (rotation.epoch !== meta.epoch + 1) throw new HubError(409, 'the room moved to another epoch; read it again')
+      this.checkFolderEpoch(meta, rotation.folderEpoch)
+      this.moveEpoch(meta, rotation.epoch)
+    }
+    for (const holder of holders) meta.sealedKeys[holder] = { ...keys[holder] }
+    if (rotation) {
+      for (const member of Object.keys(meta.members)) {
+        meta.sealedKeys[member] = { ...meta.sealedKeys[member], [String(rotation.epoch)]: rotation.keys[member] as string }
+      }
+    }
+    meta.rewrittenBy = request.replacement
+    await open.log.rewrite(frames, snapshots)
+    if (rotation) this.rekeyAll(open)
   }
 
   /** The caller's rooms of one vault that hold frames older than `before`. */

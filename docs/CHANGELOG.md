@@ -8,6 +8,42 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.6** (2026-11-05) - ***Replace all keys*** (`docs/PHASE8.md`, S2, as the user decided
+  on 2026-11-05). A new password signs every other device out, but whoever had the keys
+  before could still read what they got of the notes. A button in the account's settings now
+  replaces **every key**: the password, the account secret, the identity (sealing and signing
+  key), every vault's key, the recovery code - on the server in one step (`POST
+  /auth/replace`), every other device signed out and every backup key ended. Then **every
+  room the account owns is written anew in place** (`GET /log/:room/whole`, `POST
+  /log/:room/rewrite`, under a vault lock of kind `replace`): every frame at its seq and in
+  its epoch, every snapshot, every key a member holds sealed anew - the account's own frames
+  signed with the new key, a writer's keeping their signature under a new certificate,
+  anything no signature holds for an empty change; a room others write in moves on to a new
+  epoch with it, so nothing under a key from before is taken any more. **Every file is
+  uploaded anew** under the new key and the content before purged (without the 10 minutes'
+  grace, for the replacement under way only). The account secret before stays, wrapped under
+  a key from the new one, until the vaults are written anew (`KeyReplacement` in the bundle):
+  whichever device of the account gets there next carries it on, a room already written anew
+  is marked (`rewrittenBy`), a room a crash left half written is read with both kinds of keys.
+  A vault keeps its id: devices find it by its sealed name now. **A device knows a log by what
+  its frames say**, not by their ciphertext (author, time, change - only a key holder can make
+  them): written anew, the log is still the one it knew, and a frame it cannot open yet
+  confirms nothing and refutes nothing (`unreadable`: nothing sent, caught up again later)
+  instead of holding the note for the user. **Contacts:** the server tells them
+  (`contact-replaced`); their devices then seal nothing to the account and take nothing in its
+  name until a **new friend code** confirmed the new keys - redeemed either way, it replaces
+  the pinned ones, and their device seals what it shares with the account anew and moves it to
+  a new epoch (`Sharing.renewFor`, `Folders.renewFor`; kept in the settings until done, by
+  whichever device). Keys sealed to a key the account no longer has, or ones whose owner
+  sealed them anew, are asked for again instead of failing the room. **Backup servers** are
+  taken off before (their pairing lay in settings the keys before opened); their task is kept
+  and carried on by the next one invited. Checked in `test:replace` (new): two devices and a
+  contact, a shared note both ways, a shared folder, a file - nothing of a note opens with the
+  keys before afterwards, everything with the new; history, the old password and recovery code,
+  the second device signing in, nobody asked whether the server lost data, the contact paused
+  and then confirming, both ways, the folder; and a replacement that broke off right after the
+  server's step, carried on by the other device. `test:rooms` checks the routes.
+
 - **0.9.5** (2026-11-05) - **a clean slate** (protocol 9). Nothing runs in production yet, and
   the user will start once afresh (the user, 2026-11-05): every path that only served data
   or devices from before is gone, and a server, device or backup server of 0.9.5 reads

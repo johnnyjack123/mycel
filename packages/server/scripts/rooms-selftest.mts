@@ -854,6 +854,51 @@ try {
     await rotate(alice, 1, { [bob]: 'k1' })
     const held = await hub.keys(bob, turningRoom)
     check(held.epoch === 1 && held.keys['0'] === 'k0' && held.keys['1'] === 'k1', 'everyone keeps what they held and gets the new key', held)
+
+    // A room is written anew only for the replacement under way, and under the vault lock.
+    const whole = await hub.wholeLog(alice, turningRoom)
+    check((await status(() => hub.wholeLog(bob, turningRoom))) === 403, 'only its owner reads a room whole')
+    check(whole.frames.length === 0 && whole.members.join() === bob && whole.keys[bob]?.join() === '0,1', 'with who holds which epoch', whole)
+    const rewrite = { replacement: 'ab'.repeat(16), lockId: 'none', headSeq: whole.headSeq, epoch: whole.epoch, frames: [], snapshots: [], keys: {} }
+    check((await status(() => hub.rewrite(alice, turningRoom, rewrite))) === 409, 'a room is not written anew without a replacement of the keys under way')
+  }
+
+  // --- replacing every key of an account ---------------------------------------------------
+  {
+    const zoeKeys = keyMaterial()
+    const zoe = (await accounts.register(zoeKeys, 'open')).accountId
+    await accounts.addVault(zoe, hexId(), b64(32), b64(48))
+    const vaultId = Object.keys((await accounts.get(zoe))?.vaults ?? {})[0] as string
+    const fresh = keyMaterial()
+    const request = (loginKey: string, vaults: Record<string, { sealedName: string; wrappedKey: string }>) => ({
+      loginKey,
+      newLoginKey: fresh.loginKey,
+      kdfVersion: 1,
+      publicKey: fresh.publicKey,
+      wrappedPrivateKey: fresh.wrappedPrivateKey,
+      wrappedAccountSecret: fresh.wrappedAccountSecret,
+      signingPublicKey: fresh.signingPublicKey,
+      wrappedSigningKey: fresh.wrappedSigningKey,
+      recovery: { recoveryKey: b64(32), wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) },
+      vaults,
+      replacing: { id: 'cd'.repeat(16), startedAt: 0, wrappedSecret: b64(48), signingPublicKey: zoeKeys.signingPublicKey, vaults: { [vaultId]: b64(48) } }
+    })
+    const vaults = { [vaultId]: { sealedName: b64(32), wrappedKey: b64(48) } }
+    check((await status(() => accounts.replaceKeys(zoe, request(b64(32), vaults)))) === 403, 'replacing the keys needs the current password')
+    check((await status(() => accounts.replaceKeys(zoe, request(zoeKeys.loginKey, {})))) === 400, 'and every vault of the account its new key')
+    const sessionsBefore = sessionOf((await accounts.get(zoe)) as StoredAccount)
+    const replaced = await accounts.replaceKeys(zoe, request(zoeKeys.loginKey, vaults))
+    check(
+      replaced.publicKey === fresh.publicKey && replaced.signingPublicKey === fresh.signingPublicKey && sessionOf(replaced) === sessionsBefore + 1,
+      'every key is replaced at once, and every device signed out'
+    )
+    check(accounts.bundle(replaced).replacing?.id === 'cd'.repeat(16), 'what the vaults need of the keys before stays until they are written anew')
+    check((await accounts.login(zoeKeys.loginKey)) === null && (await accounts.login(fresh.loginKey))?.accountId === zoe, 'only the new password signs in')
+    check((await status(() => accounts.replaceKeys(zoe, request(fresh.loginKey, vaults)))) === 409, 'and no second replacement begins meanwhile')
+    await accounts.finishReplacement(zoe, 'ef'.repeat(16))
+    check((await accounts.get(zoe))?.replacing !== undefined, 'another replacement id ends nothing')
+    await accounts.finishReplacement(zoe, 'cd'.repeat(16))
+    check((await accounts.get(zoe))?.replacing === undefined, 'its own ends it')
   }
 
   // --- sharing without history ---------------------------------------------------

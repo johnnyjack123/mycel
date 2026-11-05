@@ -4,11 +4,13 @@ import { join } from 'node:path'
 import { createDurable, ensureDir, withFileLock, writeDurable } from './durable.js'
 import type {
   AccountBundle,
+  KeyReplacement,
   PasswordChangeRequest,
   RecoverCommitRequest,
   RecoveryRecord,
   RegisterRequest,
   RegistrationMode,
+  ReplaceKeysRequest,
   VaultRecord
 } from '@obsidian-connect/shared'
 import { TOTP_SECRET_BYTES, totpMatch } from './totp.js'
@@ -53,6 +55,8 @@ export interface StoredAccount {
   /** The signing key: public, and private wrapped under a key from the account secret. */
   signingPublicKey: string
   wrappedSigningKey: string
+  /** A replacement of every key under way (`replaceKeys`). */
+  replacing?: KeyReplacement
 }
 
 export interface StoredBackupKey {
@@ -663,7 +667,107 @@ export class AccountStore {
       totp: Boolean(account.totp),
       backupKeys: Object.entries(account.backupKeys ?? {})
         .map(([id, key]) => ({ id, vaultId: key.vaultId, label: key.label, createdAt: key.createdAt, lastUsedAt: key.lastUsedAt }))
-        .sort((a, b) => a.createdAt - b.createdAt)
+        .sort((a, b) => a.createdAt - b.createdAt),
+      replacing: account.replacing ?? null
     }
+  }
+
+  /**
+   * Every key of the account at once (`docs/PHASE8.md`, S2): password,
+   * account secret, identity, signing key, recovery code, every vault's key.
+   * Needs the current password, signs out every device and ends every backup
+   * key, as a password change does. What the devices need of the keys before
+   * is kept with it, wrapped under the new secret, until one of them has
+   * written the vaults anew (`finishReplacement`). One at a time.
+   */
+  replaceKeys(accountId: string, request: ReplaceKeysRequest, now = Date.now()): Promise<StoredAccount> {
+    const current = decoded(request.loginKey, 32)
+    const next = decoded(request.newLoginKey, 32)
+    if (!current || !next) return Promise.reject(new AccountError(400, 'the login keys are missing'))
+    if (!Number.isInteger(request.kdfVersion) || request.kdfVersion < 1) {
+      return Promise.reject(new AccountError(400, 'unknown key derivation version'))
+    }
+    if (
+      !decoded(request.publicKey, 65) ||
+      !decoded(request.wrappedPrivateKey, 16) ||
+      !decoded(request.wrappedAccountSecret, 16) ||
+      !decoded(request.signingPublicKey, 65) ||
+      !decoded(request.wrappedSigningKey, 16)
+    ) {
+      return Promise.reject(new AccountError(400, 'incomplete key material'))
+    }
+    const replacing = request.replacing
+    if (
+      !replacing ||
+      typeof replacing.id !== 'string' ||
+      !HEX_ID.test(replacing.id) ||
+      !decoded(replacing.wrappedSecret, 16) ||
+      !decoded(replacing.signingPublicKey, 65) ||
+      !replacing.vaults ||
+      typeof replacing.vaults !== 'object'
+    ) {
+      return Promise.reject(new AccountError(400, 'what the replacement needs of the keys before is missing'))
+    }
+    let recovery: StoredRecovery
+    try {
+      recovery = recoveryOf(request.recovery, now)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account || account.loginHash !== loginHash(current)) throw new AccountError(403, 'the current password is wrong')
+      if (account.replacing) throw new AccountError(409, 'the keys are being replaced already')
+      if (request.signingPublicKey === account.signingPublicKey || request.publicKey === account.publicKey) {
+        throw new AccountError(400, 'those are the keys from before')
+      }
+      const vaults = request.vaults ?? {}
+      const ids = Object.keys(account.vaults)
+      if (Object.keys(vaults).length !== ids.length || Object.keys(replacing.vaults).length !== ids.length) {
+        throw new AccountError(400, 'every vault of the account needs its new key and its key before')
+      }
+      for (const id of ids) {
+        const vault = vaults[id]
+        if (!vault || !decoded(vault.sealedName, 16) || !decoded(vault.wrappedKey, 16) || !decoded(replacing.vaults[id], 16)) {
+          throw new AccountError(400, 'every vault of the account needs its new key and its key before')
+        }
+      }
+      const hash = loginHash(next)
+      if (data.logins[hash] && data.logins[hash] !== accountId) throw new AccountError(409, 'choose another name or password')
+      delete data.logins[account.loginHash]
+      data.logins[hash] = accountId
+      account.loginHash = hash
+      account.kdfVersion = request.kdfVersion
+      account.publicKey = request.publicKey
+      account.wrappedPrivateKey = request.wrappedPrivateKey
+      account.wrappedAccountSecret = request.wrappedAccountSecret
+      account.signingPublicKey = request.signingPublicKey
+      account.wrappedSigningKey = request.wrappedSigningKey
+      for (const id of ids) {
+        const vault = vaults[id] as { sealedName: string; wrappedKey: string }
+        account.vaults[id] = { ...(account.vaults[id] as StoredVault), sealedName: vault.sealedName, wrappedKey: vault.wrappedKey }
+      }
+      setRecoveryIn(data, account, recovery)
+      account.replacing = {
+        id: replacing.id,
+        startedAt: now,
+        wrappedSecret: replacing.wrappedSecret,
+        signingPublicKey: replacing.signingPublicKey,
+        vaults: Object.fromEntries(ids.map((id) => [id, replacing.vaults[id] as string]))
+      }
+      account.sessions = sessionOf(account) + 1
+      dropBackupKeys(data, account)
+      return account
+    })
+  }
+
+  /** The vaults are written anew: what the replacement kept of the keys before goes. */
+  finishReplacement(accountId: string, id: unknown): Promise<StoredAccount> {
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account) throw new AccountError(401, 'unknown account')
+      if (account.replacing && account.replacing.id === id) delete account.replacing
+      return account
+    })
   }
 }

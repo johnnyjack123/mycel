@@ -207,6 +207,31 @@ export class ContactStore {
     })
   }
 
+  /**
+   * An account replaced every key. Its open codes carry the old identity's
+   * fingerprint, and what waits in an inbox to or from it was sealed with the
+   * old keys - an introduction from before taken now would pin them again. All
+   * of it goes; returns its contacts, to be told.
+   */
+  replaced(account: string): Promise<string[]> {
+    return this.update((data) => {
+      for (const [id, code] of Object.entries(data.codes)) if (code.owner === account && !code.usedBy) delete data.codes[id]
+      delete data.inbox[account]
+      for (const [to, items] of Object.entries(data.inbox)) {
+        const kept = items.filter((item) => item.from !== account)
+        if (kept.length === 0) delete data.inbox[to]
+        else data.inbox[to] = kept
+      }
+      const contacts: string[] = []
+      for (const key of Object.keys(data.pairs)) {
+        const [a, b] = key.split('|') as [string, string]
+        if (a === account) contacts.push(b)
+        else if (b === account) contacts.push(a)
+      }
+      return contacts
+    })
+  }
+
   /** Everything of an account that is being removed. */
   forget(account: string): Promise<string[]> {
     return this.update((data) => {

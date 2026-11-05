@@ -8,7 +8,7 @@ import {
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
 import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, type FolderTie, type Notice, type NotifyKind } from '@obsidian-connect/shared'
-import { bytes, decrypt, encrypt, sha256, toHex, unpackFrame, type Bytes, type OpenedFrame } from '@obsidian-connect/shared/crypto'
+import { bytes, concat, decrypt, encrypt, sha256, toHex, unpackFrame, utf8, type Bytes, type OpenedFrame } from '@obsidian-connect/shared/crypto'
 import type { HistoryEntry } from './History.js'
 import { log } from '../log.js'
 
@@ -138,13 +138,23 @@ export interface SocketHandlers {
   locked?(): void
 }
 
-type Verification = 'none' | 'pending' | 'match' | 'mismatch'
+/** `unreadable`: the frame to compare came, but no key opened it - the log is neither confirmed nor refuted. */
+type Verification = 'none' | 'pending' | 'match' | 'mismatch' | 'unreadable'
 
 async function fingerprint(data: Uint8Array): Promise<string> {
   return toHex(await sha256(bytes(data))).slice(0, 32)
 }
 
-/** The folder epoch a `caughtUp` or `rekey` says the room's epoch belongs to; a server before shared folders says nothing. */
+/**
+ * What a frame says - its author, its time and its change -, by which the
+ * cursor knows it again: not its ciphertext, which replacing an account's keys
+ * writes anew. Only a key holder can make it, so a server cannot fake it.
+ */
+function frameContent(frame: OpenedFrame): Uint8Array {
+  return concat(utf8(`${frame.author}|${frame.authorTs}|`), frame.update)
+}
+
+/** The folder epoch a `caughtUp` or `rekey` says the room's epoch belongs to; none: the note's own. */
 function readTie(decoder: decoding.Decoder): FolderTie | null {
   if (!decoding.hasContent(decoder)) return null
   const folder = decoding.readVarString(decoder)
@@ -450,6 +460,14 @@ export class VaultSocket {
           registration.options.crypto.learn?.(epoch, tie)
           const cursor = registration.options.cursor
           const verify = registration.verify
+          if (verify.state === 'unreadable') {
+            // No key opened the frame the cursor ends at - the owner replaced
+            // theirs, say, and has not sealed the new ones to this account
+            // yet. Whether the log is the one this device knew is not known:
+            // nothing is sent, and the room is caught up again once a key comes.
+            log.info(`${registration.room}: the frame at #${verify.seq} does not open yet; waiting for its key`)
+            return
+          }
           if (verify.state === 'pending' || verify.state === 'mismatch') {
             // The frame the cursor ends at is gone or different. Everything the
             // server has is fetched and merged in - nothing local is dropped -
@@ -517,6 +535,14 @@ export class VaultSocket {
           // A push under the old epoch was refused and will never be
           // acknowledged; send it again under the new one.
           registration.inflight = null
+          // A new epoch often comes with keys this device lacked: what it could
+          // not open before is asked for again, before anything after it moves
+          // the cursor past it.
+          if (registration.stalls > 0 || registration.verify.state === 'unreadable') {
+            registration.stalls = 0
+            this.subscribe(registration)
+            return
+          }
           this.scheduleSend(registration)
         })
         return
@@ -555,6 +581,22 @@ export class VaultSocket {
   }
 
   /**
+   * Every room that met a frame there was no key for, caught up again: keys
+   * may have come - a contact who replaced theirs was confirmed again.
+   */
+  retryStalled(): number {
+    let retried = 0
+    for (const registration of this.registrations.values()) {
+      if (registration.dead || (registration.stalls === 0 && registration.verify.state !== 'unreadable')) continue
+      registration.stalls = 0
+      registration.stalled = false
+      if (this.connected) this.subscribe(registration)
+      retried += 1
+    }
+    return retried
+  }
+
+  /**
    * A frame there was no key for - one sealed by a contact whose signing key
    * was not pinned yet, say: nothing after it is applied either, and the room
    * is caught up again a little later. Applied anyway, the frames after it
@@ -574,40 +616,56 @@ export class VaultSocket {
     }, STALL_RETRY_MS * registration.stalls)
   }
 
+  /**
+   * The plaintext, or null when no key this device has opens it - one that
+   * has not come yet, or one its owner replaced: the room is caught up again
+   * then, and nothing is taken for another log.
+   */
   private async open(registration: Registration, epoch: number, data: Uint8Array, aad: string): Promise<Uint8Array | null> {
     const crypto = registration.options.crypto
-    const key = await crypto.key(epoch)
+    const key = await crypto.key(epoch).catch(() => null)
     if (!key) {
       log.error(`no key for ${registration.room} epoch ${epoch}`)
       return null
     }
     try {
       return await decrypt(key, data, aad)
-    } catch (error) {
+    } catch {
       // The note spent that epoch in a shared folder this device has not heard
-      // of yet: its key is the folder's, not the note's own.
-      if (!crypto.refresh || !(await crypto.refresh())) throw error
-      const again = await crypto.key(epoch)
-      if (!again) return null
-      return decrypt(again, data, aad)
+      // of yet, or its owner sealed its keys anew: asked again once.
+      const changed = crypto.refresh ? await crypto.refresh().catch(() => false) : false
+      const again = changed ? await crypto.key(epoch).catch(() => null) : null
+      if (again) {
+        try {
+          return await decrypt(again, data, aad)
+        } catch {
+          // Falls through.
+        }
+      }
+      log.warn(`${registration.room}: something under epoch ${epoch} does not open with the key this device has`)
+      return null
     }
   }
 
   private async applyFrame(registration: Registration, seq: number, epoch: number, data: Uint8Array): Promise<void> {
     const cursor = registration.options.cursor
-    const hash = await fingerprint(data)
-    this.checkVerification(registration, seq, hash)
+    const verify = registration.verify
+    const comparing = verify.state === 'pending' && seq === verify.seq
     // The catch-up and the live stream can overlap by a frame or two, and the
-    // catch-up starts one frame early on purpose.
-    if (seq <= cursor.lastSeq || registration.stalled) return
+    // catch-up starts one frame early on purpose: that one is only compared.
+    if ((seq <= cursor.lastSeq && !comparing) || registration.stalled) return
     const plaintext = await this.open(registration, epoch, data, frameAad(registration.room, epoch))
     if (registration.dead) return
     // Unreadable: leave lastSeq where it is, so the next catch-up brings it again.
     if (!plaintext) {
+      if (comparing) verify.state = 'unreadable'
       this.stall(registration)
       return
     }
     const frame = unpackFrame(plaintext)
+    const hash = await fingerprint(frame ? frameContent(frame) : plaintext)
+    this.checkVerification(registration, seq, hash)
+    if (seq <= cursor.lastSeq) return
     const verdict = frame ? await registration.options.crypto.check('frame', seq, epoch, frame) : 'forged'
     if (registration.dead) return
     if (verdict === 'unknown') {
@@ -647,7 +705,6 @@ export class VaultSocket {
   }
 
   private async applySnapshot(registration: Registration, uptoSeq: number, epoch: number, data: Uint8Array): Promise<void> {
-    const hash = `snapshot:${await fingerprint(data)}`
     const verify = registration.verify
     // Folded up to or past where this device stood: the frames it knew are
     // inside, and can no longer be compared one by one. Folded exactly at its
@@ -661,11 +718,17 @@ export class VaultSocket {
     // data. A server restored from a backup hands back its snapshot as it was.
     const reKeyed = uptoSeq === verify.seq && verify.hash?.startsWith('snapshot:') === true && epoch !== registration.options.cursor.epoch
     const folded = uptoSeq > verify.seq || (uptoSeq === verify.seq && !verify.hash?.startsWith('snapshot:')) || reKeyed
-    if (verify.state === 'pending' && folded) verify.state = 'match'
-    else this.checkVerification(registration, uptoSeq, hash)
     const plaintext = await this.open(registration, epoch, data, snapshotAad(registration.room, epoch))
-    if (!plaintext || registration.dead) return
-    const snapshot = unpackFrame(plaintext)
+    if (registration.dead) return
+    const snapshot = plaintext ? unpackFrame(plaintext) : null
+    const hash = plaintext ? `snapshot:${await fingerprint(snapshot ? frameContent(snapshot) : plaintext)}` : null
+    if (verify.state === 'pending' && folded) verify.state = 'match'
+    else if (hash) this.checkVerification(registration, uptoSeq, hash)
+    else if (verify.state === 'pending' && uptoSeq === verify.seq) verify.state = 'unreadable'
+    if (!plaintext || !hash) {
+      this.stall(registration)
+      return
+    }
     const verdict = snapshot ? await registration.options.crypto.check('snapshot', uptoSeq, epoch, snapshot) : 'forged'
     if (verdict === 'unknown') {
       this.stall(registration)
@@ -757,7 +820,8 @@ export class VaultSocket {
       return
     }
     const data = await encrypt(key, plaintext, frameAad(registration.room, epoch))
-    const hash = await fingerprint(data)
+    const sent = unpackFrame(plaintext)
+    const hash = await fingerprint(sent ? frameContent(sent) : plaintext)
     if (this.registrations.get(registration.room) !== registration || !this.connected || registration.inflight !== null) return
     const ref = this.nextRef
     this.nextRef += 1

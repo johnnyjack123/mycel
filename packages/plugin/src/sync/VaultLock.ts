@@ -155,8 +155,6 @@ export async function takeVaultLock(
       const current = await api.vaultLock(vaultId).catch(() => ({ lock: null }))
       throw new VaultLockedError(current.lock)
     }
-    // Without a lock the other devices would go on writing into what is shown or rolled back.
-    if (error instanceof ApiError && error.status === 404) throw new Error('the sync server is older than 0.8.13 and cannot lock the vault - update it first')
     throw error
   }
 }

@@ -45,7 +45,11 @@ import {
   type KeysResponse,
   type LoginRequest,
   type LogResponse,
+  type OwnedRoomsResponse,
   type PasswordChangeRequest,
+  type ReplaceKeysRequest,
+  type RewriteRequest,
+  type WholeLogResponse,
   type RecoverCommitRequest,
   type RecoverRequest,
   type RecoverResponse,
@@ -426,6 +430,29 @@ export class ConnectApi {
     return this.call('POST', `${API.vaults}/${vaultId}/lock/break`, {})
   }
 
+  // --- replacing every key (docs/PHASE8.md, S2) ----------------------------------
+
+  replaceKeys(request: ReplaceKeysRequest): Promise<SessionResponse> {
+    return this.call('POST', API.replaceKeys, request)
+  }
+
+  finishReplacement(id: string): Promise<AccountBundle> {
+    return this.call('POST', `${API.replaceKeys}/done`, { id })
+  }
+
+  ownedRooms(vaultId: string): Promise<OwnedRoomsResponse> {
+    return this.call('GET', `${API.vaults}/${vaultId}/rooms`)
+  }
+
+  wholeLog(roomName: string): Promise<WholeLogResponse> {
+    return this.call('GET', `${API.log}/${room(roomName)}/whole`)
+  }
+
+  /** Refused with 409 when the room moved on since it was read: read it again. */
+  rewrite(roomName: string, request: RewriteRequest): Promise<unknown> {
+    return this.call('POST', `${API.log}/${room(roomName)}/rewrite`, request)
+  }
+
   // --- blobs ---------------------------------------------------------------------
 
   private blobPath(account: string, vaultId: string, rest: string): string {
@@ -458,8 +485,9 @@ export class ConnectApi {
     return this.call('POST', this.blobPath(account, vaultId, 'have'), request)
   }
 
-  purgeBlobs(account: string, vaultId: string, ids: string[]): Promise<BlobPurgeResponse> {
-    const request: BlobIdsRequest = { ids }
+  /** `replacing`: the id of the key replacement under way, which lets go of content without the grace an upload has. */
+  purgeBlobs(account: string, vaultId: string, ids: string[], replacing?: string): Promise<BlobPurgeResponse> {
+    const request: BlobIdsRequest & { replacing?: string } = replacing ? { ids, replacing } : { ids }
     return this.call('POST', this.blobPath(account, vaultId, 'purge'), request)
   }
 

@@ -172,8 +172,14 @@ export async function derivePasswordKeys(
  */
 export const accountKeys = {
   vaultWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect vault-wrap'),
-  /** Wraps the account's signing key (0.9.3): a password change or a recovery re-wraps the secret only. */
+  /** Wraps the account's signing key: a password change or a recovery re-wraps the secret only. */
   signingWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect signing-wrap'),
+  /**
+   * Wraps the account secret a replacement of every key replaced, under the
+   * new one, until the vaults are written anew: a password change or a
+   * recovery meanwhile leaves it readable.
+   */
+  previousWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect previous-wrap'),
   vaultName: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect vault-name'),
   /** The same on every device of the account, and meaningless to everyone else. */
   vaultId: async (secret: Bytes, vaultName: string): Promise<string> =>
@@ -514,6 +520,19 @@ export async function packSignedFrame(
   update: Uint8Array
 ): Promise<Bytes> {
   const signature = fromBase64(await sign(signingKey, frameMessage(room, epoch, authorTs, author, update)))
+  return assembleFrame(author, cert, authorTs, signature, update)
+}
+
+/**
+ * A frame someone else signed, with another certificate: the owner replaced
+ * its keys and certifies the writer anew. Their signature covers room, epoch,
+ * author, time and change - none of which moves - and still holds.
+ */
+export function recertifyFrame(frame: OpenedFrame, cert: WriterCert): Bytes {
+  return assembleFrame(frame.author, cert, frame.authorTs, frame.signature, frame.update)
+}
+
+function assembleFrame(author: string, cert: WriterCert | null, authorTs: number, signature: Uint8Array, update: Uint8Array): Bytes {
   const head = new Uint8Array(1 + 8 + ACCOUNT_BYTES + 1)
   head[0] = FRAME_FORMAT
   new DataView(head.buffer).setFloat64(1, authorTs)
