@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-03 · **0.9 under way (`docs/PHASE8.md`, the user's decisions of 2026-11-03 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame. Next *Replace all keys*. The name waits for the user (Mycel recommended); the audit goes to a separate agent; publishing comes last.**_
+_Last updated: 2026-11-03 · **0.9 under way (`docs/PHASE8.md`, the user's decisions of 2026-11-03 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame. *Replace all keys* waits for the user's decisions (S2a-c), the name too. The name waits for the user (Mycel recommended); the audit goes to a separate agent; publishing comes last.**_
 
 ## Where we are
 
@@ -56,8 +56,17 @@ an opinion on their two names, *Seemless* and *Mycel* (given: Mycel). Publishing
 4. **0.9.3** - S-a: signing keys, attestations between contacts, signed sealed keys, the
    one-time resealing (`feat/signatures`). Merged, CI green, both images published.
 5. **0.9.4** - S-b: signed frames, writers' certificates, legacy marks (`feat/signed-frames`).
-6. **0.9.5** - S2: *Replace all keys*.
-7. N once the user named it; then the audit agent; P last.
+6. **S2, *Replace all keys*** - not built: thought through, it reaches the identity (contacts
+   confirm again), the files, the recovery code and the backup pairing - three decisions for
+   the user (`docs/PHASE8.md`, "S2 thought through", S2a to S2c), asked 2026-11-05.
+7. N once the user named it (Mycel recommended); then the audit agent; P last.
+
+To try on devices after 0.9.4: the sync server and every device - the user's and their
+contacts' - have to be on 0.9.4 together (protocol 8; an older one is refused with "update").
+The first start of the owner's device seals its shares' keys anew with certificates and marks
+their logs; a contact's shares open once both sides started 0.9.4 once (their signing keys are
+exchanged then). Worth watching: a share right after making a contact; a writer made a reader
+(the note moves to a new epoch); the log for "not signed by someone who may write here".
 
 **Milestone 0.8: sharing a folder, and the small fixes** (`docs/PHASE7.md`, signed off
 2026-10-22; the decisions E0 to E8, the order of work at its end).
@@ -231,7 +240,7 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing once `feat/signed-frames` (0.9.4) is merged; `feat/seal-pinned-only` (0.9.0), `feat/durable-writes` (0.9.1), `feat/live-notes` (0.9.2) and `feat/signatures` (0.9.3) are. Every branch of 0.8
+Nothing. `feat/seal-pinned-only` (0.9.0), `feat/durable-writes` (0.9.1), `feat/live-notes` (0.9.2), `feat/signatures` (0.9.3) and `feat/signed-frames` (0.9.4) are merged. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
 `fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`, `feat/time-machine`,

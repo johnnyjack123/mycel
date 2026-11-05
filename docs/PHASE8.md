@@ -250,6 +250,36 @@ history stays readable, and every share sealed anew - an operation of minutes fo
 vault, under the vault lock. Proposed: an explicit button for after a suspected theft,
 *Replace all keys*, in 0.9 - or left for later.
 
+### S2 thought through (2026-11-05, before building it - for the user)
+
+The draft above undersold it. After a theft of the password and a device's secrets, the thief
+holds four kinds of keys, and replacing them reaches into four places that the draft did
+not name:
+
+1. **The data keys** - account secret, vault keys, everything derived from them. Replaced:
+   every note, folder, the vault index and the settings move to a new epoch under the new
+   vault key (the index and the settings have no epochs yet - the server and the key ring
+   need them), the old vault keys kept wrapped under the new secret so the history stays
+   readable. Under the vault lock; minutes for a large vault.
+2. **The files** - a blob's key and its name both derive from the vault key. Either every
+   file is uploaded again under the new key (clean; gigabytes for a large vault), or the
+   old blobs keep their old key, named by a key generation in their entry, and only new
+   files use the new one (no upload; old files were readable to the thief anyway).
+3. **The identity** - the sealing and the signing key. A thief holding the old ones can vouch
+   for a key of their own exactly as the owner can, so no contact may take a new identity on
+   the old one's word: every contact has to confirm it again with a new friend code, passed
+   outside the server. Until they did, nothing is sealed to them - shares with them pause.
+4. **Around it** - the recovery code wraps the old secret (a new one is shown); the backup
+   server holds the vault key and the private key in its grant, and the pairing secret lies
+   in the settings the thief could read (a new invitation is needed).
+
+**S2a:** both levels - data keys and identity (contacts confirm again) - or the data keys
+only, the identity kept? Recommended: both; the data keys alone leave everything shared
+*with* this account readable to whoever has the old sealing key.
+**S2b:** the files - uploaded again, or key generations? Recommended: key generations.
+**S2c:** when - as 0.9.5 before the review, or after it (the review then also looks at
+0.9.3/0.9.4 first)? Recommended: after the review, as the last piece before 1.0.0.
+
 ## A - the review
 
 Not a feature: reading through what exists with the attacker's eyes, each finding fixed or
@@ -410,3 +440,5 @@ touches a device.
   joins a shared folder's share, and once for existing shares. Not checked: the Time Machine's
   and the history view's replays (they read what the server holds, as before) and the backup
   server. The replay or drop of a frame within an epoch (finding 4) stays as described.
+- **S2 is not built**: thought through, it needs three decisions of the user (S2a to S2c,
+  "S2 thought through" above).
