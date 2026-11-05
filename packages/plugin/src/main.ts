@@ -681,13 +681,11 @@ export default class ObsidianConnectPlugin extends Plugin {
     await this.stopSync()
     const { recoveryCode } = await this.session.register(username, password, invite)
     new Notice(`Obsidian Connect: account ${this.settings.username} created. Keep the password safe.`, 8_000)
-    if (recoveryCode) {
-      new RecoveryCodeModal(
-        this.app,
-        recoveryCode,
-        'Your account is ready. If you ever forget your password - or the name you signed up with - this code gets you back in.'
-      ).open()
-    }
+    new RecoveryCodeModal(
+      this.app,
+      recoveryCode,
+      'Your account is ready. If you ever forget your password - or the name you signed up with - this code gets you back in.'
+    ).open()
     await this.startSync()
   }
 
@@ -719,10 +717,9 @@ export default class ObsidianConnectPlugin extends Plugin {
   }
 
   /** What the settings show about two-factor sign-in; null while not signed in. */
-  totpState(): 'on' | 'off' | 'unsupported' | null {
+  totpState(): 'on' | 'off' | null {
     const bundle = this.unlocked?.bundle
     if (!bundle) return null
-    if (bundle.totp === undefined) return 'unsupported'
     return bundle.totp ? 'on' : 'off'
   }
 
@@ -790,10 +787,9 @@ export default class ObsidianConnectPlugin extends Plugin {
   }
 
   /** What the settings show about the recovery code; null while not signed in. */
-  recoveryState(): { state: 'made'; createdAt: number } | { state: 'none' } | { state: 'unsupported' } | null {
+  recoveryState(): { state: 'made'; createdAt: number } | { state: 'none' } | null {
     const bundle = this.unlocked?.bundle
     if (!bundle) return null
-    if (bundle.recovery === undefined) return { state: 'unsupported' }
     return bundle.recovery ? { state: 'made', createdAt: bundle.recovery.createdAt } : { state: 'none' }
   }
 
@@ -1025,7 +1021,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     const keys = new KeyRing(vault, unlocked, this.api, this.secrets)
     this.keys = keys
     // A key sealed by a contact opens only with their signature, checked against their pinned signing key.
-    keys.setSigners((account) => this.contacts?.resolveSigningKey(account) ?? Promise.resolve(null))
+    keys.setSigners((account) => this.contacts?.signingKey(account) ?? null)
 
     const root = this.pluginDir()
     this.state = new StateStore(this.app.vault.adapter, root)
@@ -1099,7 +1095,13 @@ export default class ObsidianConnectPlugin extends Plugin {
     })
     this.contacts = new Contacts(
       this.api,
-      { accountId: unlocked.accountId, username: unlocked.username, publicKey: unlocked.publicKey, privateKey: unlocked.privateKey },
+      {
+        accountId: unlocked.accountId,
+        username: unlocked.username,
+        publicKey: unlocked.publicKey,
+        privateKey: unlocked.privateKey,
+        signingPublicKey: unlocked.signing.publicKey
+      },
       accountSettings
     )
     const sharing = new Sharing(
@@ -1288,19 +1290,12 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.renderStatus()
   }
 
-  /**
-   * Attachments need to know how large a file the server takes. A server
-   * from before attachments does not say, and its vaults sync notes only.
-   */
+  /** Attachments need to know how large a file the server takes. */
   private async startAttachments(): Promise<void> {
     const attachments = this.attachments
     if (!attachments || attachments.isReady) return
     try {
       const config = await this.api.config()
-      if (config.maxFileBytes === undefined) {
-        log.warn('the server does not store attachments; only notes are synced')
-        return
-      }
       this.maxFileBytes = config.maxFileBytes
       attachments.setOptions(this.attachmentOptions())
       await attachments.start()
@@ -1462,7 +1457,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         vaultId: keys.vaultId,
         indexCrypto: keys.indexCrypto(),
         // Which epochs a shared folder's key opens is asked once: the history reads every one.
-        noteCrypto: (docId) => keys.noteCrypto(docId, { owned: !owners.get(docId), folder: true }),
+        noteCrypto: (docId) => keys.noteCrypto(docId, { owned: !owners.get(docId), folder: true, owner: owners.get(docId) ?? null }),
         download: (hash) => blobs.download(hash),
         backups: this.backupsOf() ?? this.backupServers
       }
@@ -1583,7 +1578,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       api: this.api,
       vaultId: keys.vaultId,
       indexCrypto: keys.indexCrypto(),
-      docCrypto: (docId) => keys.noteCrypto(docId, { owned: true, folder: true }),
+      docCrypto: (docId) => keys.noteCrypto(docId, { owned: true, folder: true, owner: null }),
       store,
       attachments: this.attachments?.isReady ? this.attachments : null,
       settings,
@@ -1664,7 +1659,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     const keys = this.keys
     const purpose = keys ? await new LockSeal(keys.settingsCrypto(), keys.vaultId).open(lock.sealed) : null
     this.otherLock = { lock, purpose }
-    // A lock without a scope comes from a plugin before 0.8.15: it covers the vault.
+    // A lock this device cannot read covers the vault.
     const scope: LockScope = purpose?.scope ?? { kind: 'vault' }
     const what = purpose ? `${purpose.what}, on ${purpose.device}` : 'another device of yours'
     this.editLocks.set(false, {
@@ -2228,10 +2223,6 @@ export default class ObsidianConnectPlugin extends Plugin {
       void this.processContacts()
       return
     }
-    if (kind === 'contact-key') {
-      void this.contacts?.pinSigningKeys().catch((error: unknown) => log.warn('fetching the contacts’ signing keys failed', error))
-      return
-    }
     if (kind === 'contact-removed') {
       this.contacts?.forget((payload as ContactNotice).account)
       this.settingTab?.refresh()
@@ -2265,29 +2256,6 @@ export default class ObsidianConnectPlugin extends Plugin {
       }
     } catch (error) {
       log.warn('reading the contact inbox failed', error)
-    }
-    await this.exchangeSigningKeys()
-  }
-
-  /**
-   * Signing keys between contacts (0.9.3): this account's vouched for to every
-   * contact that has not seen it, theirs pinned once their word checks out.
-   * After a new contact, and on every start.
-   */
-  private async exchangeSigningKeys(): Promise<void> {
-    const contacts = this.contacts
-    if (!contacts || !this.unlocked) return
-    try {
-      if (!this.unlocked.signing) await this.session.ensureSigningKey(this.unlocked)
-      if (this.unlocked.signing) await contacts.attestAll(this.unlocked.signing.publicKey)
-      await contacts.pinSigningKeys()
-      // Once per vault: the keys sealed before 0.9.3, sealed anew and signed.
-      const settings = this.accountSettings
-      if (this.unlocked.signing && this.sharing && this.folders && settings && settings.keysResealedAt() === null) {
-        if (await this.sharing.resealAll(this.folders.ownFolderIds())) settings.setKeysResealedAt(Date.now())
-      }
-    } catch (error) {
-      log.warn('exchanging signing keys with contacts failed', error)
     }
   }
 

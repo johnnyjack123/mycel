@@ -45,7 +45,7 @@ const INVITE_WAIT_MS = 20_000
 /** Whether the running backup server reaches the sync server, as its status says. */
 function describeStatus(status: ServerStatus | null): string[] {
   if (!status) return ['The backup server has not run with this data folder yet - is it started, with this folder mounted?']
-  const lines = [`backup server ${status.version ?? '0.7.11 or older'} (this command: ${pkg.version})`, `sync server: ${status.server}`]
+  const lines = [`backup server ${status.version} (this command: ${pkg.version})`, `sync server: ${status.server}`]
   const age = Date.now() - status.updatedAt
   if (age > 3 * STATUS_EVERY_MS) lines.push(`status from ${day(status.updatedAt)} - the backup server does not seem to run now`)
   if (status.connected) lines.push(`connected since ${day(status.since)}; the relay answers ${status.registered.length} route(s) for it`)

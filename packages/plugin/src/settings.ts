@@ -485,10 +485,6 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     const recovery = this.plugin.recoveryState()
     if (!recovery) return
     const row = new Setting(containerEl).setName('Recovery code')
-    if (recovery.state === 'unsupported') {
-      row.setDesc('This server does not keep recovery codes yet. It needs an update.')
-      return
-    }
     if (recovery.state === 'none') {
       row
         .setDesc(
@@ -519,10 +515,6 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     const state = this.plugin.totpState()
     if (!state) return
     const row = new Setting(containerEl).setName('Two-factor sign-in')
-    if (state === 'unsupported') {
-      row.setDesc('This server does not offer two-factor sign-in yet. It needs an update.')
-      return
-    }
     if (state === 'off') {
       row
         .setDesc(

@@ -1,6 +1,5 @@
 import type { InboxItem } from '@obsidian-connect/shared'
 import {
-  attestationMac,
   contactContext,
   contactKeys,
   contactMac,
@@ -8,7 +7,7 @@ import {
   encodeContactCode,
   fromBase64,
   fromUtf8,
-  keyFingerprint,
+  identityFingerprint,
   newContactSecret,
   sameMac,
   seal,
@@ -26,9 +25,9 @@ import { log } from '../log.js'
 // Contacts, made with a one-time code. The server knows no names, so this is
 // where names come from: each side tells the other its own, sealed to the
 // other's key and signed with a key from the code that never reached the
-// server. The creator's key is checked against the fingerprint in the code,
-// the redeemer's against the signature; after that both are pinned, and a
-// compromised server cannot slip in a key of its own.
+// server. The creator's keys - sealing and signing - are checked against the
+// fingerprint in the code, the redeemer's against the signature; after that
+// both are pinned, and a compromised server cannot slip in a key of its own.
 //
 // Contacts, codes and pending redemptions live in the account's encrypted
 // settings, so every device of the account knows them.
@@ -43,8 +42,6 @@ export type ContactApi = Pick<
   | 'contactInbox'
   | 'contactInboxDone'
   | 'removeContact'
-  | 'attest'
-  | 'attestations'
 >
 
 /** A code handed out and not redeemed yet. */
@@ -61,21 +58,21 @@ export interface Me {
   username: string
   publicKey: Bytes
   privateKey: CryptoKey
+  signingPublicKey: Bytes
 }
 
 interface Introduction {
   account: string
   publicKey: string
+  signingKey: string
   name: string
   mac: string
 }
 
 const CODE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000
-// The attestations are fetched again for a contact's missing signing key at most this often.
-const PIN_AGAIN_MS = 2_000
 
 function introductionText(kind: 'request' | 'reply', codeId: string, intro: Omit<Introduction, 'mac'>): string {
-  return `${kind}|${codeId}|${intro.account}|${intro.publicKey}|${intro.name}`
+  return `${kind}|${codeId}|${intro.account}|${intro.publicKey}|${intro.signingKey}|${intro.name}`
 }
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
@@ -83,9 +80,6 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 export class Contacts {
-  private pinning: Promise<number> | null = null
-  private pinnedAt = 0
-
   constructor(
     private readonly api: ContactApi,
     private readonly me: Me,
@@ -113,88 +107,10 @@ export class Contacts {
     return contact ? fromBase64(contact.publicKey) : null
   }
 
-  /** A contact's signing key, pinned through their attestation; null while none checked out. */
+  /** A contact's signing key, pinned with their sealing key when the contact was made. */
   signingKey(accountId: string): Bytes | null {
     const key = this.settings.contact(accountId)?.signingKey
     return key ? fromBase64(key) : null
-  }
-
-  /**
-   * The signing key, fetching the attestations once when it is not pinned
-   * yet - a contact made a moment ago, or one whose device only now reached
-   * 0.9.3. Not more than once in a while: a stranger's would be asked for again
-   * and again otherwise.
-   */
-  async resolveSigningKey(accountId: string): Promise<Bytes | null> {
-    const pinned = this.signingKey(accountId)
-    if (pinned || !this.isContact(accountId)) return pinned
-    if (Date.now() - this.pinnedAt > PIN_AGAIN_MS) {
-      this.pinning ??= this.pinSigningKeys()
-        .catch((error: unknown) => {
-          log.warn('fetching the contacts’ signing keys failed', error)
-          return 0
-        })
-        .finally(() => {
-          this.pinning = null
-          this.pinnedAt = Date.now()
-        })
-      await this.pinning
-    }
-    return this.signingKey(accountId)
-  }
-
-  /**
-   * This account's signing key, vouched for to every contact that has not
-   * seen it yet: a MAC under the secret the two pinned sealing keys share.
-   * Returns how many were told.
-   */
-  async attestAll(signingPublicKey: Bytes): Promise<number> {
-    const encoded = toBase64(signingPublicKey)
-    let told = 0
-    for (const contact of this.settings.contacts()) {
-      if (contact.attested === encoded) continue
-      const mac = await attestationMac(this.me.privateKey, fromBase64(contact.publicKey), this.me.accountId, contact.accountId, signingPublicKey)
-      try {
-        await this.api.attest({ to: contact.accountId, signingPublicKey: encoded, mac })
-      } catch (error) {
-        log.warn(`telling ${contact.accountId.slice(0, 8)} this account's signing key failed`, error)
-        continue
-      }
-      const current = this.settings.contact(contact.accountId)
-      if (current) this.settings.setContact(contact.accountId, { ...current, attested: encoded })
-      told += 1
-    }
-    if (told > 0) log.info(`signing key told to ${told} contact(s)`)
-    return told
-  }
-
-  /**
-   * Pins the signing keys contacts vouched for, each checked against their
-   * pinned sealing key: only they or this account could have made the MAC,
-   * and this account did not. Returns how many were pinned or changed.
-   */
-  async pinSigningKeys(): Promise<number> {
-    const { attestations } = await this.api.attestations()
-    let pinned = 0
-    for (const attestation of attestations) {
-      const contact = this.settings.contact(attestation.from)
-      if (!contact || attestation.to !== this.me.accountId || contact.signingKey === attestation.signingPublicKey) continue
-      const expected = await attestationMac(
-        this.me.privateKey,
-        fromBase64(contact.publicKey),
-        attestation.from,
-        this.me.accountId,
-        fromBase64(attestation.signingPublicKey)
-      )
-      if (!sameMac(expected, attestation.mac)) {
-        log.error(`${attestation.from.slice(0, 8)}: a signing key that is not theirs came from the server; not taken`)
-        continue
-      }
-      this.settings.setContact(attestation.from, { ...contact, signingKey: attestation.signingPublicKey })
-      pinned += 1
-    }
-    if (pinned > 0) log.info(`${pinned} contact(s)' signing key pinned`)
-    return pinned
   }
 
   isContact(accountId: string): boolean {
@@ -215,12 +131,12 @@ export class Contacts {
     await this.api.addContactCode({ codeId: keys.codeId, redeemHash: toHex(await sha256(keys.redeemKey)), expiresAt })
     this.settings.setCode(keys.codeId, { secret: toBase64(secret), createdAt: now, expiresAt })
     log.info(`contact code ${keys.codeId.slice(0, 8)} created`)
-    return encodeContactCode(secret, await keyFingerprint(this.me.publicKey))
+    return encodeContactCode(secret, await identityFingerprint(this.me.publicKey, this.me.signingPublicKey))
   }
 
   /** Codes this account handed out that nobody has redeemed yet, oldest first - on every device. */
   async openCodes(now = Date.now()): Promise<OpenCode[]> {
-    const fingerprint = await keyFingerprint(this.me.publicKey)
+    const fingerprint = await identityFingerprint(this.me.publicKey, this.me.signingPublicKey)
     return this.settings
       .codes()
       .filter(({ code }) => !code.usedBy && !code.revokedAt && code.expiresAt > now)
@@ -250,9 +166,11 @@ export class Contacts {
   }
 
   /**
-   * Redeems someone's code. Their key is checked against the fingerprint in
-   * the code before anything is sent; their name follows once their device
-   * has answered. Returns their account id.
+   * Redeems someone's code. Their identity - sealing and signing key - is
+   * checked against the fingerprint in the code before anything is sent, and
+   * pinned; their name follows once their device has answered. Returns their
+   * account id. Redeemed from a contact, the code replaces the keys pinned for
+   * them: that is how a contact who replaced their keys is confirmed again.
    */
   async redeem(code: string, now = Date.now()): Promise<string> {
     const decoded = decodeContactCode(code)
@@ -261,18 +179,39 @@ export class Contacts {
     const info = await this.api.contactCode(keys.codeId)
     if (info.owner === this.me.accountId) throw new Error('That is your own code.')
     const ownerKey = fromBase64(info.publicKey)
-    if (!sameBytes(await keyFingerprint(ownerKey), decoded.fingerprint)) {
-      throw new Error("The server handed out a key that does not belong to this code. Nothing was sent.")
+    if (!sameBytes(await identityFingerprint(ownerKey, fromBase64(info.signingPublicKey)), decoded.fingerprint)) {
+      throw new Error("The server handed out keys that do not belong to this code. Nothing was sent.")
     }
-    const intro = { account: this.me.accountId, publicKey: toBase64(this.me.publicKey), name: this.me.username }
+    const intro = this.introduction()
     const signed: Introduction = { ...intro, mac: await contactMac(keys.macKey, introductionText('request', keys.codeId, intro)) }
     const sealed = await seal(ownerKey, utf8(JSON.stringify(signed)), contactContext(keys.codeId, 'request'))
-    this.settings.setPending(keys.codeId, { secret: toBase64(decoded.secret), owner: info.owner, publicKey: info.publicKey, requestedAt: now })
+    this.settings.setPending(keys.codeId, {
+      secret: toBase64(decoded.secret),
+      owner: info.owner,
+      publicKey: info.publicKey,
+      signingKey: info.signingPublicKey,
+      requestedAt: now
+    })
     await this.api.redeemContact({ codeId: keys.codeId, redeemKey: toBase64(keys.redeemKey), sealed })
-    if (!this.settings.contact(info.owner)) {
-      this.settings.setContact(info.owner, { accountId: info.owner, name: '', publicKey: info.publicKey, addedAt: now })
-    }
+    const existing = this.settings.contact(info.owner)
+    this.settings.setContact(info.owner, {
+      accountId: info.owner,
+      name: existing?.name ?? '',
+      localName: existing?.localName,
+      publicKey: info.publicKey,
+      signingKey: info.signingPublicKey,
+      addedAt: existing?.addedAt ?? now
+    })
     return info.owner
+  }
+
+  private introduction(): Omit<Introduction, 'mac'> {
+    return {
+      account: this.me.accountId,
+      publicKey: toBase64(this.me.publicKey),
+      signingKey: toBase64(this.me.signingPublicKey),
+      name: this.me.username
+    }
   }
 
   /** Handles what waits in the inbox. Returns how many contacts were added or completed. */
@@ -310,7 +249,7 @@ export class Contacts {
     if (code.revokedAt || (code.usedBy && code.usedBy !== item.from)) return 'dropped'
     const keys = await contactKeys(fromBase64(code.secret))
     const intro = await this.open(item)
-    if (intro.account !== item.from) return 'dropped'
+    if (intro.account !== item.from || typeof intro.publicKey !== 'string' || typeof intro.signingKey !== 'string') return 'dropped'
     const expected = await contactMac(keys.macKey, introductionText('request', item.codeId, intro))
     if (!sameMac(expected, intro.mac)) return 'dropped'
 
@@ -321,9 +260,10 @@ export class Contacts {
       name: intro.name,
       localName: existing?.localName,
       publicKey: intro.publicKey,
+      signingKey: intro.signingKey,
       addedAt: existing?.addedAt ?? Date.now()
     })
-    const answer = { account: this.me.accountId, publicKey: toBase64(this.me.publicKey), name: this.me.username }
+    const answer = this.introduction()
     const signed: Introduction = { ...answer, mac: await contactMac(keys.macKey, introductionText('reply', item.codeId, answer)) }
     const sealed = await seal(fromBase64(intro.publicKey), utf8(JSON.stringify(signed)), contactContext(item.codeId, 'reply'))
     await this.api.replyContact({ to: item.from, codeId: item.codeId, sealed })
@@ -337,8 +277,8 @@ export class Contacts {
     if (pending.owner !== item.from) return 'dropped'
     const keys = await contactKeys(fromBase64(pending.secret))
     const intro = await this.open(item)
-    // Only the key checked against the code's fingerprint counts.
-    if (intro.account !== item.from || intro.publicKey !== pending.publicKey) return 'dropped'
+    // Only the keys checked against the code's fingerprint count.
+    if (intro.account !== item.from || intro.publicKey !== pending.publicKey || intro.signingKey !== pending.signingKey) return 'dropped'
     const expected = await contactMac(keys.macKey, introductionText('reply', item.codeId, intro))
     if (!sameMac(expected, intro.mac)) return 'dropped'
     const existing = this.settings.contact(item.from)
@@ -347,6 +287,7 @@ export class Contacts {
       name: intro.name,
       localName: existing?.localName,
       publicKey: pending.publicKey,
+      signingKey: pending.signingKey,
       addedAt: existing?.addedAt ?? Date.now()
     })
     this.settings.setPending(item.codeId, null)

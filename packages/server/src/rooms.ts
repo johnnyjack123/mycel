@@ -32,6 +32,7 @@ import {
   type NotifyKind,
   type RevokeRequest,
   type RoleRequest,
+  type RotateRequest,
   type SealedEpochsResponse,
   type ShareMembersResponse,
   type Notice,
@@ -786,24 +787,21 @@ export class RoomHub {
     return open
   }
 
-  /** Which epochs each member holds a key of - for the owner, to seal exactly those anew (0.9.3). */
+  /** Which epochs each member holds a key of - for the owner, to seal exactly those anew after it replaced its keys. */
   async sealedEpochs(owner: string, room: string): Promise<SealedEpochsResponse> {
-    const open = await this.ownedRoom(owner, room)
-    const meta = open.log.meta
+    const meta = (await this.ownedRoom(owner, room)).log.meta
     const members: Record<string, number[]> = {}
-    const roles: Record<string, ShareRole> = {}
-    for (const [account, member] of Object.entries(meta.members)) {
+    for (const account of Object.keys(meta.members)) {
       members[account] = Object.keys(meta.sealedKeys[account] ?? {})
         .map(Number)
         .sort((a, b) => a - b)
-      roles[account] = member.role
     }
-    return { room, members, roles, headSeq: open.log.headSeq, marked: Boolean(meta.legacyMark) }
+    return { room, members }
   }
 
   /**
-   * The owner's keys sealed anew, now signed. Only a key a member holds
-   * already is replaced: resealing gives nobody an epoch they did not have.
+   * The owner's keys sealed anew. Only a key a member holds already is
+   * replaced: resealing gives nobody an epoch they did not have.
    */
   async reseal(owner: string, room: string, keys: unknown): Promise<void> {
     const open = await this.ownedRoom(owner, room)
@@ -978,6 +976,29 @@ export class RoomHub {
     const docId = roomSubject(meta.room)
     if (stays) this.notify(account, 'share-changed', { docId, owner })
     else this.notify(account, 'share-removed', { docId, owner })
+  }
+
+  /**
+   * The owner moves a note to its next epoch, everyone keeping access: whoever
+   * changed between reader and writer holds a certificate in the epoch written
+   * in from now on exactly when they may write.
+   */
+  async rotateNote(owner: string, request: RotateRequest): Promise<void> {
+    const open = await this.owned(owner, request.docId)
+    const meta = open.log.meta
+    const rotation = request.rotation
+    if (!rotation || rotation.epoch !== meta.epoch + 1) throw new HubError(409, 'the note moved to another epoch; try again')
+    for (const member of Object.keys(meta.members)) {
+      const sealed = rotation.keys?.[member]
+      if (typeof sealed !== 'string' || sealed.length === 0 || sealed.length > SEALED_MAX) throw new HubError(400, `the new key for ${member} is missing`)
+    }
+    this.checkFolderEpoch(meta, rotation.folderEpoch)
+    this.moveEpoch(meta, rotation.epoch)
+    for (const member of Object.keys(meta.members)) {
+      meta.sealedKeys[member] = { ...meta.sealedKeys[member], [String(rotation.epoch)]: rotation.keys[member] as string }
+    }
+    this.rekeyAll(open)
+    await open.log.saveMeta()
   }
 
   /** Whether someone reaches a note through its shared folder. */
@@ -1649,19 +1670,7 @@ export class RoomHub {
     const meta = open.log.meta
     const response: KeysResponse = { room, epoch: meta.epoch, keys: access.owner ? {} : { ...meta.sealedKeys[account] } }
     if (meta.ties) response.ties = { ...meta.ties }
-    if (meta.legacyMark) response.legacyMark = meta.legacyMark
     return response
-  }
-
-  /**
-   * The owner's word up to which seq the room's log may hold unsigned frames
-   * (0.9.4). Signed by the owner: the server keeps it and cannot move it.
-   */
-  async setLegacyMark(owner: string, room: string, mark: unknown): Promise<void> {
-    const open = await this.ownedRoom(owner, room)
-    if (typeof mark !== 'string' || !/^\d+\.[A-Za-z0-9+/=]{40,200}$/.test(mark)) throw new HubError(400, 'not a mark')
-    open.log.meta.legacyMark = mark
-    await open.log.saveMeta()
   }
 
   /** What someone with `access` may read: a starting snapshot and the frames after it. */
@@ -1692,7 +1701,6 @@ export class RoomHub {
       room: open.log.meta.room,
       epoch,
       headSeq,
-      ...(open.log.meta.legacyMark ? { legacyMark: open.log.meta.legacyMark } : {}),
       snapshot:
         snapshot && snapshotData
           ? { uptoSeq: snapshot.uptoSeq, ts: snapshot.ts, epoch: snapshot.epoch, data: toBase64(snapshotData) }

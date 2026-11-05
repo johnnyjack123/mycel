@@ -185,7 +185,6 @@ export class TimeMachineSession {
   /** Where the history begins: 0 while it holds everything. */
   reach = 0
   backupProblem: string | null = null
-  withoutTimes = false
   /** How far filling in the contents of the moment shown got. */
   progress: { done: number; of: number } | null = null
   items: PastItem[] = []
@@ -300,7 +299,6 @@ export class TimeMachineSession {
       const timeline =
         this.timeline ?? (await VaultTimeline.load({ api: this.source.api, vaultId: this.source.vaultId, indexCrypto: this.source.indexCrypto }))
       this.timeline = timeline
-      this.withoutTimes = timeline.withoutTimes
       ticks = timeline.ticks(this.folder, gap)
       const last = ticks.at(-1)
       if (last && !this.structureDiffers(this.historyTargets(last.at))) this.latest = ticks.pop() ?? null

@@ -8,7 +8,7 @@ export interface IssuedToken {
 /** Whose token, and from which of the account's session generations. */
 export interface TokenSession {
   accountId: string
-  /** Valid only while the account is still at it; tokens from before generations are 0. */
+  /** Valid only while the account is still at it. */
   gen: number
 }
 
@@ -76,16 +76,22 @@ export class TokenService {
 
   async verifyBackup(token: string): Promise<BackupSession> {
     const { payload } = await jwtVerify(token, this.key, { issuer: 'obsidian-connect' })
-    if (payload.scope !== 'backup' || typeof payload.sub !== 'string' || typeof payload.vault !== 'string' || typeof payload.kid !== 'string') {
+    if (
+      payload.scope !== 'backup' ||
+      typeof payload.sub !== 'string' ||
+      typeof payload.gen !== 'number' ||
+      typeof payload.vault !== 'string' ||
+      typeof payload.kid !== 'string'
+    ) {
       throw new Error('not a backup token')
     }
-    return { accountId: payload.sub, gen: typeof payload.gen === 'number' ? payload.gen : 0, vaultId: payload.vault, keyId: payload.kid }
+    return { accountId: payload.sub, gen: payload.gen, vaultId: payload.vault, keyId: payload.kid }
   }
 
   private async check(token: string, scope: 'user' | '2fa'): Promise<TokenSession> {
     const { payload } = await jwtVerify(token, this.key, { issuer: 'obsidian-connect' })
-    if (payload.scope !== scope || typeof payload.sub !== 'string') throw new Error(`not a ${scope} token`)
-    return { accountId: payload.sub, gen: typeof payload.gen === 'number' ? payload.gen : 0 }
+    if (payload.scope !== scope || typeof payload.sub !== 'string' || typeof payload.gen !== 'number') throw new Error(`not a ${scope} token`)
+    return { accountId: payload.sub, gen: payload.gen }
   }
 }
 

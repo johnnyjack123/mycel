@@ -184,7 +184,6 @@ function untar(archive: string, into: string): boolean {
     check(guardReference(runs).notes === 100 && guardReference(runs).files === 40, 'the reference is the most notes and files of the week')
     check(vanished(guardReference(runs), { notes: 45, files: 40 }, 50, 10) !== null, 'so a shrink split over two runs is held as a whole')
     check(guardReference([...runs, { at: 9 * DAY, notes: 70, files: 40 }]).notes === 70, 'counts older than a week before the newest fall out')
-    check(guardReference([{ at: 0, notes: 30 }]).files === undefined, 'files not counted yet are not compared')
     const followed = followedAt(runs, { at: 2 * DAY, notes: 60, files: 40 }, false)
     check(followed.length === 3 && followedAt(followed, { at: 3 * DAY, notes: 20, files: 40 }, true).length === 1, 'a confirmation starts the counts afresh')
     check(followedAt(runs, { at: 8 * DAY + 1, notes: 70, files: 40 }, false).every((entry) => entry.at > DAY), 'and following a week later lets the older ones go')
@@ -259,7 +258,7 @@ function untar(archive: string, into: string): boolean {
       'half past two, which the clocks skip when summer time begins: an hour later'
     )
     check(
-      iso(nextAt({ minutes: 180, weekday: 0, zone: 'Europe/Berlin' }, at('2026-10-19T00:00'))) === '2026-10-25T02:00',
+      iso(nextAt({ minutes: 180, weekdays: [0], zone: 'Europe/Berlin' }, at('2026-10-19T00:00'))) === '2026-10-25T02:00',
       'weekly on Sunday at three: the coming Sunday'
     )
     check(
@@ -268,14 +267,14 @@ function untar(archive: string, into: string): boolean {
     )
     check(iso(nextAt({ minutes: 180, zone: 'Not/AZone' }, at('2026-10-18T10:00'))) === '2026-10-19T03:00', 'a zone not known counts as UTC')
     check(
-      atOf({ minutes: 1440, zone: 'UTC' }) === null && atOf({ minutes: 60 }) === null && atOf({ minutes: 60, weekday: 9, zone: 'UTC' })?.weekday === undefined,
+      atOf({ minutes: 1440, zone: 'UTC' }) === null && atOf({ minutes: 60 }) === null && atOf({ minutes: 60, weekdays: [9], zone: 'UTC' })?.weekdays === undefined,
       'a time out of range, or without a zone, is no schedule; a weekday out of range is every day'
     )
     const task = { server: 'r', where: 'local', password: 'p', everyHours: 0, decrypted: false, createdAt: 1 }
-    const weekly = readConfig(new Map([['backupTask:r', { ...task, at: { minutes: 180, weekday: 0, zone: 'Europe/Berlin' } }]]), 'r', { encrypted: 'e', decrypted: 'd' })
+    const weekly = readConfig(new Map([['backupTask:r', { ...task, at: { minutes: 180, weekdays: [0], zone: 'Europe/Berlin' } }]]), 'r', { encrypted: 'e', decrypted: 'd' })
     check(
       weekly.ready && weekly.at?.weekdays?.join() === '0' && weekly.everyHours === 168 && weekly.problems.length === 0,
-      'the backup server reads a weekly time as 0.7.18 set it, and counts it as a week',
+      'the backup server reads a weekly time, and counts it as a week',
       weekly
     )
 

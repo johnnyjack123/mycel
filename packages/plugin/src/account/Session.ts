@@ -60,12 +60,8 @@ export interface Unlocked {
   /** Random, made at registration, kept under the master key; vault ids, names and keys come from it. */
   accountSecret: Bytes
   bundle: AccountBundle
-  /**
-   * The account's signing key (0.9.3), wrapped under a key from the account
-   * secret. Null on a device that started offline for an account that has
-   * none yet: it is made once the server is reachable (`ensureSigningKey`).
-   */
-  signing: { privateKey: CryptoKey; publicKey: Bytes } | null
+  /** The account's signing key, wrapped under a key from the account secret. */
+  signing: { privateKey: CryptoKey; publicKey: Bytes }
 }
 
 export interface OpenVault {
@@ -93,7 +89,7 @@ const OWN_MOVE_MS = 10_000
 /** A new account, or one recovered: signed in, and the recovery code to show once. */
 export interface Registered {
   unlocked: Unlocked
-  recoveryCode: string | null
+  recoveryCode: string
 }
 
 /**
@@ -212,10 +208,7 @@ export class Session {
     this.secrets.save(SERVER, null)
   }
 
-  /**
-   * A new account, with its recovery code. The code is null when the server
-   * did not keep it - one from before recovery codes.
-   */
+  /** A new account, with its recovery code. */
   async register(username: string, password: string, invite?: string): Promise<Registered> {
     const name = normalizeName(username)
     const serverId = await this.serverId()
@@ -235,7 +228,7 @@ export class Session {
       ...signing
     })
     const unlocked = await this.adopt(response, keys.masterKey, name, serverId)
-    return { unlocked, recoveryCode: response.account.recovery ? recovery.code : null }
+    return { unlocked, recoveryCode: recovery.code }
   }
 
   /** A new recovery code for these keys, and what the server keeps of it. */
@@ -342,7 +335,6 @@ export class Session {
     const secret = await decodeRecoveryCode(code)
     if (!secret) throw new Error('That is not a recovery code. Check it for a typo.')
     const server = await this.server()
-    if (!server.features?.includes('recovery')) throw new Error('This server does not take recovery codes yet. It needs an update.')
     const name = normalizeName(username)
     const keys = await recoveryKeys(secret)
     const found = await this.api.recover({ recoveryKey: toBase64(keys.recoveryKey) })
@@ -451,24 +443,13 @@ export class Session {
 
   /** The password alone: whoever has it and this device could make a recovery code, which turns it off anyway. */
   async disableTotp(unlocked: Unlocked, password: string): Promise<Unlocked> {
-    let bundle: AccountBundle
-    try {
-      bundle = await this.api.disableTotp({ loginKey: await this.currentLoginKey(unlocked, password) })
-    } catch (error) {
-      // A server from 0.6.2 to 0.6.5 still asks for a code as well.
-      if (error instanceof ApiError && error.message === 'the code does not match') {
-        throw new Error('This server still wants a code from the app to turn it off. It needs an update.')
-      }
-      throw error
-    }
+    const bundle = await this.api.disableTotp({ loginKey: await this.currentLoginKey(unlocked, password) })
     return this.withBundle(unlocked, bundle)
   }
 
   private async adopt(response: SessionResponse, masterKey: Bytes, username: string, serverId: string): Promise<Unlocked> {
-    const opened = await this.unlockWith(response.account, masterKey, username)
+    const unlocked = await this.unlockWith(response.account, masterKey, username)
     await this.onToken(response.token, username)
-    // With the token in place: an account from before 0.9.3 gets its signing key now.
-    const unlocked = await this.ensureSigningKey(opened)
     this.secrets.save(MASTER, toBase64(masterKey))
     this.secrets.save(BUNDLE, JSON.stringify(unlocked.bundle))
     this.secrets.save(NAME, username)
@@ -502,34 +483,8 @@ export class Session {
   }
 
   private async openSigningKey(bundle: AccountBundle, accountSecret: Bytes): Promise<Unlocked['signing']> {
-    if (!bundle.signingPublicKey || !bundle.wrappedSigningKey) return null
     const pkcs8 = await unwrapSecret(await accountKeys.signingWrap(accountSecret), bundle.wrappedSigningKey, SIGNING_KEY)
     return { privateKey: await importSigningKey(pkcs8), publicKey: fromBase64(bundle.signingPublicKey) }
-  }
-
-  /**
-   * An account from before 0.9.3 gets its signing key here, from whichever of
-   * its devices is first: the server keeps the first one, and the others take
-   * that. Offline, the device goes on without one until it can ask.
-   */
-  async ensureSigningKey(unlocked: Unlocked): Promise<Unlocked> {
-    if (unlocked.signing) return unlocked
-    let bundle: AccountBundle
-    try {
-      bundle = await this.api.setSigningKey(await this.newSigningKey(unlocked.accountSecret))
-    } catch (error) {
-      if (!(error instanceof ApiError) || error.status !== 409) return unlocked
-      try {
-        bundle = await this.api.account()
-      } catch {
-        return unlocked
-      }
-    }
-    this.secrets.save(BUNDLE, JSON.stringify(bundle))
-    // In place: the key ring and everything else holding this account sign from now on.
-    unlocked.bundle = bundle
-    unlocked.signing = await this.openSigningKey(bundle, unlocked.accountSecret)
-    return unlocked
   }
 
   /**
@@ -556,15 +511,13 @@ export class Session {
       // Unreachable: carry on with the cached bundle.
     }
     if (!bundle) return null
-    let unlocked: Unlocked
     try {
-      unlocked = await this.unlockWith(bundle, masterKey, username)
+      return await this.unlockWith(bundle, masterKey, username)
     } catch {
       // The password was changed on another device; this master key is stale.
       this.forget()
       return null
     }
-    return this.ensureSigningKey(unlocked)
   }
 
   /** The names of the account's vaults, decrypted here. */

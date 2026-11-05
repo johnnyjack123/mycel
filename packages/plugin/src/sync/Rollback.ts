@@ -173,8 +173,7 @@ export interface RollbackOutcome {
 }
 
 export interface RollbackDeps {
-  /** `changedRooms`: left out, every note's history is read. */
-  api: { log(room: string): Promise<LogResponse>; changedRooms?(vaultId: string, since: number): Promise<ChangedResponse> }
+  api: { log(room: string): Promise<LogResponse>; changedRooms(vaultId: string, since: number): Promise<ChangedResponse> }
   /**
    * How far the server's clock, by which it lists the notes that changed, may
    * be from the authors' clocks the rollback goes by; an hour unless set.
@@ -351,7 +350,7 @@ export class Rollback {
       const change: NoteChange = { docId, pathNow, pathThen, shared: Boolean(now?.shared || old?.shared) }
       if (pathThen === null) plan.notes.push({ ...change, trash: true })
       else if (now?.purgedAt) outOfReach({ kind: 'note', id: docId, pathNow, pathThen, shared: change.shared }, 'it was deleted longer ago than the history keeps')
-      else if (changed && pathNow === pathThen && !changed.has(docRoom(docId))) continue
+      else if (pathNow === pathThen && !changed.has(docRoom(docId))) continue
       else toRead.push(change)
     }
     let read = 0
@@ -436,19 +435,10 @@ export class Rollback {
     return { plan, unreached }
   }
 
-  /**
-   * The notes the server saw a change of since `since`; null when it cannot
-   * say - a server before 0.8.8 -, and then every note is read.
-   */
-  private async changedSince(since: number): Promise<Set<string> | null> {
+  /** The notes the server saw a change of since `since`. */
+  private async changedSince(since: number): Promise<Set<string>> {
     const { api, vaultId } = this.deps
-    if (!api.changedRooms) return null
-    try {
-      return new Set((await api.changedRooms(vaultId, since)).rooms)
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404) return null
-      throw error
-    }
+    return new Set((await api.changedRooms(vaultId, since)).rooms)
   }
 
   /** The newest backup at or before `to` over the vault's backup servers; null without one. */

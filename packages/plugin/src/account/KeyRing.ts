@@ -11,7 +11,6 @@ import {
   fromUtf8,
   packSignedFrame,
   seal,
-  signLegacyMark,
   signSealed,
   signWriterCert,
   splitSealed,
@@ -21,7 +20,6 @@ import {
   utf8,
   vaultKeys,
   verifyFrame,
-  verifyLegacyMark,
   verifySealed,
   verifyWriterCert,
   type Bytes,
@@ -51,14 +49,14 @@ export interface Recipient {
   account: string
   publicKey: Bytes
   /**
-   * Someone who may write gets the owner's certificate with the key (0.9.4),
-   * over their signing key - without one, nobody takes what they write.
+   * Someone who may write gets the owner's certificate with the key, over
+   * their signing key - without one, nobody takes what they write.
    */
   writer?: { signingKey: Bytes } | null
 }
 
 /** How a note's keys are found. */
-export interface NoteKeyOptions {
+export interface NoteKeyPlace {
   /** This vault owns the note: its own epochs derive from the vault key. */
   owned: boolean
   /**
@@ -68,13 +66,16 @@ export interface NoteKeyOptions {
    * does not fit.
    */
   folder?: boolean
+}
+
+export interface NoteKeyOptions extends NoteKeyPlace {
   /**
-   * Who owns the note: null for this account. Known, its frames are signed on
-   * the way out and checked on the way in (0.9.4); left out - a history read
-   * on the side - neither. As a function it is asked at every frame: a note
-   * copied into someone else's folder becomes theirs after it was opened.
+   * Who owns the note: null for this account. Its frames are signed on the way
+   * out and checked against it on the way in. As a function it is asked at
+   * every frame: a note copied into someone else's folder becomes theirs after
+   * it was opened.
    */
-  owner?: string | null | (() => string | null)
+  owner: string | null | (() => string | null)
 }
 
 /**
@@ -91,8 +92,8 @@ export class KeyRing {
   private blobIdKey: Promise<Bytes> | null = null
   /** Whether a shared folder is one of this vault's own; set once the vault index is there. */
   private ownsFolder: (folderId: string) => boolean = () => false
-  /** A contact's signing key, pinned through their attestation; null for anyone else. */
-  private signerKey: (account: string) => Promise<Bytes | null> = async () => null
+  /** A contact's signing key, as pinned; null for anyone else. */
+  private signerKey: (account: string) => Bytes | null = () => null
 
   constructor(
     private readonly vault: OpenVault,
@@ -106,14 +107,14 @@ export class KeyRing {
     this.ownsFolder = owns
   }
 
-  /** Where the signing keys of contacts come from: the contact list, fetching their attestations when one is missing. */
-  setSigners(resolve: (account: string) => Promise<Bytes | null>): void {
+  /** Where the signing keys of contacts come from: the contact list. */
+  setSigners(resolve: (account: string) => Bytes | null): void {
     this.signerKey = resolve
   }
 
   /**
-   * A key sealed to this account, opened only with its sealer's signature
-   * (0.9.3): this account's own, or a contact's whose signing key is pinned.
+   * A key sealed to this account, opened only with its sealer's signature:
+   * this account's own, or a contact's whose signing key is pinned.
    * A server handing out a key of its own - and frames under it - would
    * otherwise have this device read what it wrote as the owner's.
    */
@@ -123,7 +124,7 @@ export class KeyRing {
       log.warn(`${room}: the key of epoch ${epoch} carries no signature; not taken`)
       return null
     }
-    const signerKey = signed.signer === this.account.accountId ? (this.account.signing?.publicKey ?? null) : await this.signerKey(signed.signer)
+    const signerKey = this.signerPublicKey(signed.signer)
     if (!signerKey) {
       log.warn(`${room}: the key of epoch ${epoch} was sealed by ${signed.signer.slice(0, 8)}, whose signing key this account does not know`)
       return null
@@ -147,44 +148,27 @@ export class KeyRing {
   /** A key sealed for `recipient`, signed by this account as the one who sealed it - with a writer's certificate for one who may write. */
   private async sealFor(room: string, epoch: number, recipient: Recipient, key: Bytes): Promise<string> {
     const signing = this.account.signing
-    if (!signing) throw new Error('This device has no signing key yet. Try again once the server is reachable.')
     const sealed = await seal(recipient.publicKey, key, epochKeyContext(room, epoch))
     const cert = recipient.writer ? await signWriterCert(signing.privateKey, room, epoch, recipient.account, recipient.writer.signingKey) : undefined
     return signSealed(signing.privateKey, this.account.accountId, room, epoch, recipient.account, sealed, cert)
   }
 
-  // --- signed frames (0.9.4) ------------------------------------------------------
-  // Every frame of a note or folder is signed by its author inside the encryption.
-  // Whoever is not the room's owner adds the owner's certificate that they may
-  // write there, which came with their key. A frame is taken only when its author
-  // is the owner, or holds such a certificate; and its signature holds.
+  // --- signed frames --------------------------------------------------------------
+  // Every frame is signed by its author inside the encryption. Whoever is not the
+  // room's owner adds the owner's certificate that they may write there, which
+  // came with their key. A frame is taken only when its author is the owner, or
+  // holds such a certificate; and its signature holds.
 
-  /** Signed marks, by room: up to which seq the log may hold frames from before signatures. */
-  private readonly marks = new Map<string, string | null>()
-  private readonly marksAsked = new Set<string>()
   private readonly certsAsked = new Set<string>()
 
   /** The signing key of an account: this one's own, or a contact's as pinned. */
-  private async signerPublicKey(account: string): Promise<Bytes | null> {
-    return account === this.account.accountId ? (this.account.signing?.publicKey ?? null) : this.signerKey(account)
-  }
-
-  /** The owner's word up to which seq a room may hold unsigned frames; null when it gave none. */
-  private async legacyMark(room: string, owner: string): Promise<number | null> {
-    if (!this.marksAsked.has(room)) {
-      this.marksAsked.add(room)
-      await this.fetchKeys(room)
-    }
-    const mark = this.marks.get(room)
-    if (!mark) return null
-    const ownerKey = await this.signerPublicKey(owner)
-    return ownerKey ? verifyLegacyMark(ownerKey, room, mark) : null
+  private signerPublicKey(account: string): Bytes | null {
+    return account === this.account.accountId ? this.account.signing.publicKey : this.signerKey(account)
   }
 
   /** This account's certificate to write in a room in an epoch, from the key it came with; asked for once when missing. */
   private async ownCert(scopeRoom: string, scopeEpoch: number): Promise<WriterCert | null> {
     const signing = this.account.signing
-    if (!signing) return null
     const find = (): WriterCert | null => {
       const value = this.sealed(scopeRoom)[String(scopeEpoch)]
       const cert = value ? splitSealed(value)?.cert : undefined
@@ -202,7 +186,6 @@ export class KeyRing {
   /** Signs what this device writes in a room; null while it may not - a writer whose certificate has not come. */
   private async packFor(room: string, epoch: number, owner: string, tie: FolderTie | null, authorTs: number, update: Uint8Array): Promise<Bytes | null> {
     const signing = this.account.signing
-    if (!signing) return null
     let cert: WriterCert | null = null
     if (owner !== this.account.accountId) {
       cert = (tie ? await this.ownCert(folderRoom(tie.folder), tie.epoch) : null) ?? (await this.ownCert(room, epoch))
@@ -214,45 +197,26 @@ export class KeyRing {
     return packSignedFrame(signing.privateKey, room, epoch, this.account.accountId, cert, authorTs, update)
   }
 
-  /** This account's word, as owner, that a room's unsigned frames up to `seq` are from before signatures. */
-  signLegacyMark(room: string, seq: number): Promise<string> {
-    const signing = this.account.signing
-    if (!signing) throw new Error('This device has no signing key yet. Try again once the server is reachable.')
-    return signLegacyMark(signing.privateKey, room, seq)
-  }
-
   /** A snapshot or starting point this account makes of a room of its own, signed as its owner. */
-  async packAsOwner(room: string, epoch: number, authorTs: number, update: Uint8Array): Promise<Bytes> {
-    const signing = this.account.signing
-    if (!signing) throw new Error('This device has no signing key yet. Try again once the server is reachable.')
-    return packSignedFrame(signing.privateKey, room, epoch, this.account.accountId, null, authorTs, update)
+  packAsOwner(room: string, epoch: number, authorTs: number, update: Uint8Array): Promise<Bytes> {
+    return packSignedFrame(this.account.signing.privateKey, room, epoch, this.account.accountId, null, authorTs, update)
   }
 
   /** Whether a frame or snapshot read from a room's log is taken (`RoomCrypto.check`). */
   private async checkFrame(
     room: string,
     epoch: number,
-    seq: number,
     owner: string,
     tie: FolderTie | null,
     kind: 'frame' | 'snapshot',
-    frame: OpenedFrame,
-    /** The mark as it came with the log, for a room this account may no longer ask about. */
-    keptMark?: string | null
+    frame: OpenedFrame
   ): Promise<FrameVerdict> {
-    if (!frame.signed) {
-      // From before signatures: as far as the owner vouched for, or in a room of this account's that never got a mark.
-      const ownerKey = keptMark ? await this.signerPublicKey(owner) : null
-      const mark = keptMark === undefined ? await this.legacyMark(room, owner) : keptMark && ownerKey ? await verifyLegacyMark(ownerKey, room, keptMark) : null
-      if (mark !== null) return seq <= mark ? 'ok' : 'forged'
-      return owner === this.account.accountId ? 'ok' : 'forged'
-    }
-    const author = frame.signed.author
-    const ownerKey = await this.signerPublicKey(owner)
+    const author = frame.author
+    const ownerKey = this.signerPublicKey(owner)
     if (!ownerKey) return 'unknown'
     if (author === owner) return (await verifyFrame(ownerKey, room, epoch, frame)) ? 'ok' : 'forged'
     // Only the owner makes snapshots and starting points.
-    const cert = frame.signed.cert
+    const cert = frame.cert
     if (kind === 'snapshot' || !cert) return 'forged'
     const certified =
       (tie !== null && (await verifyWriterCert(ownerKey, folderRoom(tie.folder), tie.epoch, author, cert))) ||
@@ -273,9 +237,9 @@ export class KeyRing {
     return this.account.accountId
   }
 
-  /** This account's signing key, public half; null on a device that has not got it yet. */
-  get signingPublicKey(): Bytes | null {
-    return this.account.signing?.publicKey ?? null
+  /** This account's signing key, public half. */
+  get signingPublicKey(): Bytes {
+    return this.account.signing.publicKey
   }
 
   /** A note's id in this vault: stable on every device, unguessable elsewhere. */
@@ -319,12 +283,22 @@ export class KeyRing {
 
   indexCrypto(): RoomCrypto {
     const room = indexRoom(this.vault.vaultId)
-    return { key: (epoch) => (epoch === 0 ? this.cached(room, () => vaultKeys.index(this.vault.key)) : Promise.resolve(null)) }
+    return this.ownRoomCrypto(room, (epoch) => (epoch === 0 ? this.cached(room, () => vaultKeys.index(this.vault.key)) : Promise.resolve(null)))
   }
 
   settingsCrypto(): RoomCrypto {
     const room = settingsRoom(this.vault.vaultId)
-    return { key: (epoch) => (epoch === 0 ? this.cached(room, () => vaultKeys.settings(this.vault.key)) : Promise.resolve(null)) }
+    return this.ownRoomCrypto(room, (epoch) => (epoch === 0 ? this.cached(room, () => vaultKeys.settings(this.vault.key)) : Promise.resolve(null)))
+  }
+
+  /** A room only this account ever reads or writes: signed by it, taken only from it. */
+  private ownRoomCrypto(room: string, key: RoomCrypto['key']): RoomCrypto {
+    const me = this.account.accountId
+    return {
+      key,
+      pack: (epoch, authorTs, update) => this.packFor(room, epoch, me, null, authorTs, update),
+      check: (kind, _seq, epoch, frame) => this.checkFrame(room, epoch, me, null, kind, frame)
+    }
   }
 
   // --- notes ---------------------------------------------------------------------
@@ -337,7 +311,7 @@ export class KeyRing {
    * The raw key of an epoch a note already has. `owned` and `folder` as in
    * `noteCrypto`; null when this account cannot read that epoch.
    */
-  async noteKey(docId: string, epoch: number, options: NoteKeyOptions = { owned: true }): Promise<Bytes | null> {
+  async noteKey(docId: string, epoch: number, options: NoteKeyPlace = { owned: true }): Promise<Bytes | null> {
     const tie = await this.tieOf(docId, epoch, options)
     return this.noteKeyUnder(docId, epoch, tie, options.owned)
   }
@@ -372,7 +346,9 @@ export class KeyRing {
    */
   noteCrypto(docId: string, options: NoteKeyOptions): RoomCrypto {
     const room = docRoom(docId)
-    const crypto: RoomCrypto = {
+    const given = options.owner
+    const ownerOf = (): string => (typeof given === 'function' ? given() : given) ?? this.account.accountId
+    return {
       key: async (epoch) => {
         const tie = await this.tieOf(docId, epoch, options)
         const id = `${room}#${epoch}#${tie ? `${tie.folder}.${tie.epoch}` : 'own'}`
@@ -386,55 +362,50 @@ export class KeyRing {
         const before = JSON.stringify(this.knownTies(room).ties)
         await this.fetchKeys(room)
         return JSON.stringify(this.knownTies(room).ties) !== before
+      },
+      pack: async (epoch, authorTs, update) => this.packFor(room, epoch, ownerOf(), await this.tieOf(docId, epoch, options), authorTs, update),
+      check: async (kind, _seq, epoch, frame) => {
+        const verdict = await this.checkFrame(room, epoch, ownerOf(), await this.tieOf(docId, epoch, options), kind, frame)
+        if (verdict !== 'forged' || !frame.cert) return verdict
+        // The certificate may be the folder's, for an epoch this device has not heard was a folder's -
+        // a note a writer made in the folder a moment ago: asked once before it is dropped.
+        await this.fetchKeys(room)
+        const tie = this.knownTies(room).ties[String(epoch)] ?? null
+        return tie ? this.checkFrame(room, epoch, ownerOf(), tie, kind, frame) : verdict
       }
     }
-    const given = options.owner
-    if (given === undefined) return crypto
-    const ownerOf = (): string => (typeof given === 'function' ? given() : given) ?? this.account.accountId
-    crypto.pack = async (epoch, authorTs, update) => this.packFor(room, epoch, ownerOf(), await this.tieOf(docId, epoch, options), authorTs, update)
-    crypto.check = async (kind, seq, epoch, frame) => {
-      const verdict = await this.checkFrame(room, epoch, seq, ownerOf(), await this.tieOf(docId, epoch, options), kind, frame)
-      if (verdict !== 'forged' || !frame.signed?.cert) return verdict
-      // The certificate may be the folder's, for an epoch this device has not heard was a folder's -
-      // a note a writer made in the folder a moment ago: asked once before it is dropped.
-      await this.fetchKeys(room)
-      const tie = this.knownTies(room).ties[String(epoch)] ?? null
-      return tie ? this.checkFrame(room, epoch, seq, ownerOf(), tie, kind, frame) : verdict
-    }
-    return crypto
   }
 
   ownDocCrypto(docId: string): RoomCrypto {
     return this.noteCrypto(docId, { owned: true, owner: null })
   }
 
-  /** Keys of a note someone else owns: sealed to this account, fetched when an epoch is missing. */
-  sharedDocCrypto(docId: string): RoomCrypto {
-    return this.noteCrypto(docId, { owned: false })
+  /** Keys of a note `owner` shared with this account: sealed to it, fetched when an epoch is missing. */
+  sharedDocCrypto(docId: string, owner: string): RoomCrypto {
+    return this.noteCrypto(docId, { owned: false, owner })
   }
 
   /**
    * Keys of a share that ended, from what the server kept for this account.
    * Nothing is fetched or stored: the room is no longer this account's to read.
    * A note of a shared folder comes with the folder's keys this account held.
+   * What was kept is checked as the live note was, against its owner.
    */
   endedDocCrypto(
     docId: string,
     sealed: Record<string, string>,
-    folder?: { id: string; keys: Record<string, string>; epochs: Record<string, number> },
-    /** Its owner and the legacy mark kept with it: what was kept is checked as the live note was. */
-    signed?: { owner: string; legacyMark: string | null }
+    folder: { id: string; keys: Record<string, string>; epochs: Record<string, number> } | undefined,
+    owner: string
   ): RoomCrypto {
     const room = docRoom(docId)
-    const check: RoomCrypto['check'] = signed
-      ? (kind, seq, epoch, frame) => {
-          const folderEpoch = folder?.epochs[String(epoch)]
-          const tie = folder && folderEpoch !== undefined ? { folder: folder.id, epoch: folderEpoch } : null
-          return this.checkFrame(room, epoch, seq, signed.owner, tie, kind, frame, signed.legacyMark)
-        }
-      : undefined
     return {
-      check,
+      // Nothing is written into a share that ended.
+      pack: async () => null,
+      check: (kind, _seq, epoch, frame) => {
+        const folderEpoch = folder?.epochs[String(epoch)]
+        const tie = folder && folderEpoch !== undefined ? { folder: folder.id, epoch: folderEpoch } : null
+        return this.checkFrame(room, epoch, owner, tie, kind, frame)
+      },
       key: async (epoch) => {
         const folderEpoch = folder?.epochs[String(epoch)]
         const sealedFolderKey = folderEpoch === undefined ? undefined : folder?.keys[String(folderEpoch)]
@@ -480,23 +451,21 @@ export class KeyRing {
     return this.sealedKeyOf(folderRoom(folderId), epoch)
   }
 
-  /** The folder room's own keys; `owner` (null: this account) has its frames signed and checked. */
-  folderRoomCrypto(folderId: string, owner?: string | null): RoomCrypto {
+  /** The folder room's own keys; its frames signed and checked against `owner` (null: this account). */
+  folderRoomCrypto(folderId: string, owner: string | null): RoomCrypto {
     const room = folderRoom(folderId)
-    const crypto: RoomCrypto = {
+    const ownerId = owner ?? this.account.accountId
+    return {
       key: async (epoch) => {
         const id = `${room}#${epoch}`
         const existing = this.keys.get(id)
         if (existing) return existing
         const folderKey = await this.folderKey(folderId, epoch)
         return folderKey ? this.cached(id, () => folderKeys.room(folderKey)) : null
-      }
+      },
+      pack: (epoch, authorTs, update) => this.packFor(room, epoch, ownerId, null, authorTs, update),
+      check: (kind, _seq, epoch, frame) => this.checkFrame(room, epoch, ownerId, null, kind, frame)
     }
-    if (owner === undefined) return crypto
-    const ownerId = owner ?? this.account.accountId
-    crypto.pack = (epoch, authorTs, update) => this.packFor(room, epoch, ownerId, null, authorTs, update)
-    crypto.check = (kind, seq, epoch, frame) => this.checkFrame(room, epoch, seq, ownerId, null, kind, frame)
-    return crypto
   }
 
   /** The key ids of notes and files created in the folder are derived under, in a folder epoch. */
@@ -558,7 +527,7 @@ export class KeyRing {
   }
 
   /** Which folder epoch a note's epoch belongs to, if any - asked of the server when it matters and is unknown. */
-  private async tieOf(docId: string, epoch: number, options: NoteKeyOptions): Promise<FolderTie | null> {
+  private async tieOf(docId: string, epoch: number, options: NoteKeyPlace): Promise<FolderTie | null> {
     const room = docRoom(docId)
     const known = this.knownTies(room)
     const tie = known.ties[String(epoch)]
@@ -575,7 +544,6 @@ export class KeyRing {
   private async fetchKeys(room: string): Promise<KeysResponse | null> {
     try {
       const response = await this.api.keys(room)
-      this.marks.set(room, response.legacyMark ?? null)
       const merged = { ...this.sealed(room), ...response.keys }
       this.sealedByRoom.set(room, merged)
       if (Object.keys(response.keys).length > 0) this.secrets.save(`${SEALED_PREFIX}${room}`, JSON.stringify(merged))

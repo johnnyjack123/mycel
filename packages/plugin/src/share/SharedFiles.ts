@@ -334,8 +334,8 @@ export class SharedFiles {
     // This vault's own newer version is on its way into the list - written by
     // another of its devices, whose index arrived here before the note did.
     if (base?.prev !== undefined && listed.hash === base.prev && local?.entry.hash === base.hash) return
-    // No base, yet the list's version replaced exactly what this vault has:
-    // that is as good as one - a vault from before bases were kept.
+    // No base - a crash before it was written -, yet the list's version
+    // replaced exactly what this vault has: that is as good as one.
     const known = base?.hash ?? (local && listed.prev === local.entry.hash ? local.entry.hash : undefined)
     // Nothing here for this link yet - or only a file of this vault's own that
     // happens to share the name: the note's file comes in next to it.

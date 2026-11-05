@@ -8,6 +8,33 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.5** (2026-11-05) - **a clean slate** (protocol 9). Nothing runs in production yet, and
+  the user will start once afresh (the user, 2026-11-05): every path that only served data
+  or devices from before is gone, and a server, device or backup server of 0.9.5 reads
+  nothing an earlier version wrote. **Contacts pin both keys from the start**: a friend code
+  carries the fingerprint of the creator's *identity* - sealing and signing key together
+  (`identityFingerprint`) - and the two introductions carry both keys, MAC'd with the code;
+  attestations, their routes and `contact-key` are gone. Redeeming a code from someone who is
+  a contact already replaces the keys pinned for them (how 0.9.6 confirms a contact who
+  replaced their keys). Every account has its signing key from registration (the server
+  refuses one without). **No unsigned frame is read anywhere**: the legacy mark and
+  `packFrame` are gone; a frame that does not unpack is dropped like a forged one, never
+  stopping the room; the histories - Time Machine, rollback, a note's versions - take only
+  what the live room would take, as the fork and compaction already did; a compaction never
+  folds a snapshot that is not the owner's into its own. **Roles come from the owner's record
+  alone**, never the server's word (nobody unrecorded writes), and **every change of role moves
+  the note or folder to a new epoch** (`POST /shares/rotate` for a note): made a writer, the
+  certificate is in the new epoch's key before the server lets them write - resealing the
+  current one left a device that had asked for it once without it until a restart. Sharing
+  again with history, from writer to reader, rotates too. Removed besides: the fallbacks for
+  servers without attachments, recovery codes, 2FA, blob touching or listing, the Time
+  Machine's frame times or the rollback's changed notes; a vault lock without a scope; tokens
+  without a session generation; the backup schedule's single `weekday`, its counts without
+  files and its status without a version; keys sealed without a signature on the backup
+  server. Checked in `test:merge` (identity fingerprints, a code whose signing key the server
+  swapped, frames cut short), `test:rooms` (no account without a signing key, the rotation
+  route, a token without a generation refused) and every other suite.
+
 - **0.9.4** (2026-11-04) - **signed frames** (`docs/PHASE8.md`, S-b; protocol 8). A frame named no
   author: everyone holding a note's key could write what every other holder took - a reader
   through a server that let them, a writer as someone else. Now every frame and snapshot of a

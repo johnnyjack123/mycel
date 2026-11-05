@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-03 · **0.9 under way (`docs/PHASE8.md`, the user's decisions of 2026-11-03 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame. *Replace all keys* waits for the user's decisions (S2a-c), the name too. The name waits for the user (Mycel recommended); the audit goes to a separate agent; publishing comes last.**_
+_Last updated: 2026-11-05 · **0.9 under way (`docs/PHASE8.md`, the user's decisions of 2026-11-03 and 2026-11-05 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before. Next: *Replace all keys* (0.9.6), then the rename to Mycel (0.9.7); then the user starts afresh once, and the audit goes to a separate agent in a new chat; publishing comes last.**_
 
 ## Where we are
 
@@ -55,18 +55,23 @@ an opinion on their two names, *Seemless* and *Mycel* (given: Mycel). Publishing
    CI green, both images published.
 4. **0.9.3** - S-a: signing keys, attestations between contacts, signed sealed keys, the
    one-time resealing (`feat/signatures`). Merged, CI green, both images published.
-5. **0.9.4** - S-b: signed frames, writers' certificates, legacy marks (`feat/signed-frames`).
-6. **S2, *Replace all keys*** - not built: thought through, it reaches the identity (contacts
-   confirm again), the files, the recovery code and the backup pairing - three decisions for
-   the user (`docs/PHASE8.md`, "S2 thought through", S2a to S2c), asked 2026-11-05.
-7. N once the user named it (Mycel recommended); then the audit agent; P last.
+5. **0.9.4** - S-b: signed frames, writers' certificates (`feat/signed-frames`). Merged, CI
+   green, both images published.
+6. **0.9.5** - a clean slate: everything kept for data from before removed, contacts pin both
+   keys with the friend code, every change of role a new epoch (`feat/clean-slate`).
+7. **0.9.6** - S2, *Replace all keys*, as the user decided on 2026-11-05 (`docs/PHASE8.md`, S2a
+   to S2c): a new identity (contacts confirm again with a new friend code), every file
+   re-encrypted and uploaded anew, the backup server invited again.
+8. **0.9.7** - N: the rename to *Mycel*, everywhere (the user, 2026-11-05).
+9. Then the user starts once afresh (0.9.5 reads nothing from before); the audit goes to a
+   separate agent in a new chat, once everything is built (the user: no audit agent from here);
+   P last.
 
-To try on devices after 0.9.4: the sync server and every device - the user's and their
-contacts' - have to be on 0.9.4 together (protocol 8; an older one is refused with "update").
-The first start of the owner's device seals its shares' keys anew with certificates and marks
-their logs; a contact's shares open once both sides started 0.9.4 once (their signing keys are
-exchanged then). Worth watching: a share right after making a contact; a writer made a reader
-(the note moves to a new epoch); the log for "not signed by someone who may write here".
+To try on devices after 0.9.5: nothing of before is read - a new data folder for the sync
+server, new accounts, contacts made anew, the plugin's data on each device reset (its folder's
+`data.json` and the vault's local storage), the backup server's data folder emptied. Worth
+watching: a share right after making a contact; a writer made a reader and back (each moves
+the note to a new epoch); the log for "not signed by someone who may write here".
 
 **Milestone 0.8: sharing a folder, and the small fixes** (`docs/PHASE7.md`, signed off
 2026-10-22; the decisions E0 to E8, the order of work at its end).
@@ -240,7 +245,7 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing. `feat/seal-pinned-only` (0.9.0), `feat/durable-writes` (0.9.1), `feat/live-notes` (0.9.2), `feat/signatures` (0.9.3) and `feat/signed-frames` (0.9.4) are merged. Every branch of 0.8
+Nothing. `feat/seal-pinned-only` (0.9.0), `feat/durable-writes` (0.9.1), `feat/live-notes` (0.9.2), `feat/signatures` (0.9.3), `feat/signed-frames` (0.9.4) and `feat/clean-slate` (0.9.5) are merged. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
 `fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`, `feat/time-machine`,
@@ -316,9 +321,11 @@ user's call, as with the earlier branches.
   notes whose file and log did not move would need the scan to trust mtime and size.
 - Shared notes are still compared with their files once a minute (`SharedFiles.scheduleAll`),
   which opens each: beyond `maxLoadedDocuments` shared notes, they go in and out of memory.
-- Signing out does not replace the account secret (*Replace all keys*, 0.9.5). Frames are
-  signed per author since 0.9.4; the Time Machine's and the history view's replays and the
-  backup server do not check the signatures - they read what the server holds, as before.
+- Signing out does not replace the account secret (*Replace all keys*, 0.9.6). Frames are
+  signed per author since 0.9.4, and since 0.9.5 the Time Machine's and the history view's
+  replays check them as the live room does; the backup server does not - it holds no contact
+  list and reads what the server holds (it would need the account's signing key and the
+  contacts' pinned ones, and the checks of `KeyRing.checkFrame`).
 - The plugin id contains "obsidian", which the community directory refuses (0.9).
 - `test:recovery`'s check "carries on in the same note, and what it wrote while away
   reaches P1" failed on 2026-10-16 and 2026-10-23: a race in the fork on return, fixed

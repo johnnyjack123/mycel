@@ -94,12 +94,14 @@ export class VaultKeys {
   }
 
   /**
-   * A key sealed to the account. Its sealer's signature (0.9.3) is the devices'
-   * to check, against the contacts they pinned; the backup server reads the
-   * vault as the account's devices left it and holds no contact list.
+   * A key sealed to the account. Its sealer's signature is the devices' to
+   * check, against the contacts they pinned; the backup server reads the vault
+   * as the account's devices left it and holds no contact list.
    */
   private unsealKey(value: string, context: string): Promise<Bytes> {
-    return unseal(this.privateKey, this.publicKey, splitSealed(value)?.sealed ?? value, context)
+    const signed = splitSealed(value)
+    if (!signed) return Promise.reject(new Error('a key without its sealer’s signature'))
+    return unseal(this.privateKey, this.publicKey, signed.sealed, context)
   }
 
   /**
@@ -112,13 +114,13 @@ export class VaultKeys {
     let changedAt = 0
     let unreadable = 0
     const apply = async (epoch: number, data: string, aad: string, ts: number): Promise<void> => {
-      const key = await this.roomKey(cached, epoch)
-      if (!key) {
-        unreadable += 1
-        return
-      }
       let plaintext: Uint8Array
       try {
+        const key = await this.roomKey(cached, epoch)
+        if (!key) {
+          unreadable += 1
+          return
+        }
         plaintext = await decrypt(key, fromBase64(data), aad)
       } catch {
         // A key that does not fit is a frame this run cannot read - said as a
@@ -126,7 +128,12 @@ export class VaultKeys {
         unreadable += 1
         return
       }
-      Y.applyUpdate(doc, unpackFrame(plaintext).update)
+      const frame = unpackFrame(plaintext)
+      if (!frame) {
+        unreadable += 1
+        return
+      }
+      Y.applyUpdate(doc, frame.update)
       changedAt = Math.max(changedAt, ts)
     }
     if (cached.snapshot) {

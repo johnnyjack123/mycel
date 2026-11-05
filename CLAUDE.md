@@ -571,23 +571,24 @@ adds the note to its own index under the share folder.
 - **Only contacts, and their keys are pinned.** Two accounts become contacts
   when one redeems the other's one-time friend code (`share/Contacts.ts`,
   `server/src/contacts.ts`), which travels outside the server and carries the
-  fingerprint of its creator's key. The code yields a redeem key (the server
-  keeps its hash) and a MAC key that never leaves a device, so the server can
-  pass the sealed names back and forth but not forge them. **Signing keys**
-  (0.9.3): every account has an ECDSA P-256 key besides its sealing one, wrapped
-  under a key from the account secret; contacts pin it through an attestation - a
-  MAC under the secret their pinned sealing keys share (`attestationMac`,
-  `Contacts.attestAll`/`pinSigningKeys`). Every key sealed to a member carries
+  fingerprint of its creator's identity - sealing and signing key together
+  (`identityFingerprint`). The code yields a redeem key (the server keeps its
+  hash) and a MAC key that never leaves a device, so the server can pass the
+  sealed introductions - name and both keys - back and forth but not forge them.
+  Every account has an ECDSA P-256 **signing key** from its registration, wrapped
+  under a key from the account secret. Every key sealed to a member carries
   its sealer's signature (`sealed.signer.signature`, `KeyRing.sealFor`/`openSealed`):
   a device opens only keys signed by itself or a pinned contact - a server handing
-  out a key of its own is caught. Keys sealed before 0.9.3 are sealed anew once per
-  vault (`Sharing.resealAll`). **Signed frames** (0.9.4): every frame and snapshot of
-  a note or folder carries its author and signature inside the encryption
-  (`packSignedFrame`, `KeyRing.packFor`/`checkFrame`, `RoomCrypto.pack`/`check`);
-  anyone but the owner adds the owner's writer's certificate, which comes with their
+  out a key of its own is caught. **Signed frames**: every frame and snapshot of
+  a note, folder, the index or the settings carries its author and signature inside
+  the encryption (`packSignedFrame`, `KeyRing.packFor`/`checkFrame`,
+  `RoomCrypto.pack`/`check`) - checked wherever a log is read: live, in a history,
+  a fork, a compaction; anything else is dropped, never let to stop a room. Anyone
+  but the owner adds the owner's writer's certificate, which comes with their
   sealed key (`sealed.signer.signature.cert`) and follows the owner's own record of
-  roles (`AccountSettings.shareRole`); made a reader, the note or folder moves to a new
-  epoch. Unsigned frames pass only up to the owner's signed legacy mark. Keys are taken from
+  roles (`AccountSettings.shareRole`) alone - nobody unrecorded writes; every change
+  of role moves the note or folder to a new epoch (`Sharing.setRole`, `POST
+  /shares/rotate`). Nothing written before 0.9.5 is read (protocol 9). Keys are taken from
   the contact list, never from the server - it has no route for anyone's key. A
   member the server lists who is no contact stops the rotation that would seal a
   key to them (`Sharing.memberKeys`, 0.9.0) and is asked about over everything

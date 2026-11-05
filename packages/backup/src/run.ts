@@ -144,8 +144,7 @@ interface DestinationState {
 export interface Counted {
   at: number
   notes: number
-  /** Absent in a count from before files were counted. */
-  files?: number
+  files: number
 }
 
 interface JobState {
@@ -155,9 +154,6 @@ interface JobState {
    * starts it afresh.
    */
   followed?: Counted[]
-  /** Before 0.7.18: the counts at the one run the copy last followed. */
-  liveNotes?: number
-  liveFiles?: number
   verifiedCacheAt?: number
   /** What the trusted copy was last brought level with (`layoutDigest`). */
   trustedDigest?: string
@@ -236,8 +232,7 @@ export function guardReference(followed: readonly Counted[]): { notes?: number; 
   const newest = followed.at(-1)?.at
   if (newest === undefined) return {}
   const recent = followed.filter((entry) => entry.at >= newest - WEEK_MS)
-  const files = recent.flatMap((entry) => (entry.files === undefined ? [] : [entry.files]))
-  return { notes: Math.max(...recent.map((entry) => entry.notes)), files: files.length > 0 ? Math.max(...files) : undefined }
+  return { notes: Math.max(...recent.map((entry) => entry.notes)), files: Math.max(...recent.map((entry) => entry.files)) }
 }
 
 /** The counts once the copy followed at `now`: within the week before, or - confirmed - only these. */
@@ -399,10 +394,7 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
 
   const live = { notes: layout.liveNotes, files: layout.liveFiles }
   const counted: Counted = { at: now(), ...live }
-  // A count kept by 0.7.17 or older goes on as the first of the list.
-  state.followed ??= state.liveNotes === undefined ? [] : [{ at: counted.at, notes: state.liveNotes, files: state.liveFiles }]
-  delete state.liveNotes
-  delete state.liveFiles
+  state.followed ??= []
   if (job.config.trusted) {
     const guard = job.config.trustedGuard ?? BACKUP_GUARD_DEFAULT
     const reference = guardReference(state.followed)

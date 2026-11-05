@@ -59,7 +59,7 @@ export class Blobs {
     for (let restart = 0; ; restart += 1) {
       const known = await this.info(blobId)
       if (known?.complete) {
-        if ((await this.touch(blobId)) !== false) return
+        if (await this.touch(blobId)) return
         if (restart >= RESTARTS) throw new Error(`the server kept losing ${blobId} while it was uploaded`)
         continue
       }
@@ -178,17 +178,11 @@ export class Blobs {
    * and it has to be uploaded first.
    */
   async keep(hash: string): Promise<boolean> {
-    return (await this.touch(await this.keys.blobId(hash))) ?? this.has(hash)
+    return this.touch(await this.keys.blobId(hash))
   }
 
-  /** Null from a server before 0.8.2, which has no such route and keeps content as it always did. */
-  private async touch(blobId: string): Promise<boolean | null> {
-    try {
-      const { touched } = await this.api.touchBlobs(this.keys.accountId, this.keys.vaultId, [blobId])
-      return touched.includes(blobId)
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404) return null
-      throw error
-    }
+  private async touch(blobId: string): Promise<boolean> {
+    const { touched } = await this.api.touchBlobs(this.keys.accountId, this.keys.vaultId, [blobId])
+    return touched.includes(blobId)
   }
 }

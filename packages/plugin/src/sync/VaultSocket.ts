@@ -8,7 +8,7 @@ import {
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
 import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, type FolderTie, type Notice, type NotifyKind } from '@obsidian-connect/shared'
-import { bytes, decrypt, encrypt, packFrame, sha256, toHex, unpackFrame, type Bytes, type OpenedFrame } from '@obsidian-connect/shared/crypto'
+import { bytes, decrypt, encrypt, sha256, toHex, unpackFrame, type Bytes, type OpenedFrame } from '@obsidian-connect/shared/crypto'
 import type { HistoryEntry } from './History.js'
 import { log } from '../log.js'
 
@@ -41,18 +41,17 @@ export interface RoomCrypto {
   /** A frame did not open with the key given: ask what the epochs belong to. True when that changed something. */
   refresh?(): Promise<boolean>
   /**
-   * The plaintext of what this device sends, signed by its account (0.9.4).
-   * Null while it may not sign yet - a writer whose certificate has not come:
-   * the change waits rather than go out unsigned. Rooms without it (the vault
-   * index, the settings: never shared) send frames as they always did.
+   * The plaintext of what this device sends, signed by its account. Null
+   * while it may not sign yet - a writer whose certificate has not come: the
+   * change waits rather than go out unsigned.
    */
-  pack?(epoch: number, authorTs: number, update: Uint8Array): Promise<Bytes | null>
+  pack(epoch: number, authorTs: number, update: Uint8Array): Promise<Bytes | null>
   /**
    * Whether a frame or snapshot read from the log is taken: its author may
    * write here and signed it. `unknown`: a key this device does not have yet -
    * the room is caught up again later. `forged`: dropped.
    */
-  check?(kind: 'frame' | 'snapshot', seq: number, epoch: number, frame: OpenedFrame): Promise<FrameVerdict>
+  check(kind: 'frame' | 'snapshot', seq: number, epoch: number, frame: OpenedFrame): Promise<FrameVerdict>
 }
 
 export type FrameVerdict = 'ok' | 'forged' | 'unknown'
@@ -609,14 +608,14 @@ export class VaultSocket {
       return
     }
     const frame = unpackFrame(plaintext)
-    const verdict = (await registration.options.crypto.check?.('frame', seq, epoch, frame)) ?? 'ok'
+    const verdict = frame ? await registration.options.crypto.check('frame', seq, epoch, frame) : 'forged'
     if (registration.dead) return
     if (verdict === 'unknown') {
       this.stall(registration)
       return
     }
     registration.stalls = 0
-    if (verdict === 'forged') {
+    if (verdict === 'forged' || !frame) {
       // Passed over for good: asked for again, it would be the same frame.
       log.error(`${registration.room}: frame #${seq} is not signed by someone who may write here; dropped`)
     } else {
@@ -667,12 +666,12 @@ export class VaultSocket {
     const plaintext = await this.open(registration, epoch, data, snapshotAad(registration.room, epoch))
     if (!plaintext || registration.dead) return
     const snapshot = unpackFrame(plaintext)
-    const verdict = (await registration.options.crypto.check?.('snapshot', uptoSeq, epoch, snapshot)) ?? 'ok'
+    const verdict = snapshot ? await registration.options.crypto.check('snapshot', uptoSeq, epoch, snapshot) : 'forged'
     if (verdict === 'unknown') {
       this.stall(registration)
       return
     }
-    if (verdict === 'forged') {
+    if (verdict === 'forged' || !snapshot) {
       log.error(`${registration.room}: a snapshot up to #${uptoSeq} is not signed by its owner; dropped`)
       return
     }
@@ -746,8 +745,7 @@ export class VaultSocket {
       log.error(`no key to send ${registration.room} under epoch ${epoch}`)
       return
     }
-    const crypto = registration.options.crypto
-    const plaintext = crypto.pack ? await crypto.pack(epoch, authorTs, payload) : packFrame(authorTs, payload)
+    const plaintext = await registration.options.crypto.pack(epoch, authorTs, payload)
     if (!plaintext) {
       // Kept until this device may sign it here; tried again a little later.
       if (registration.sendTimer === null) {

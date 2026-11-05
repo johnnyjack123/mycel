@@ -50,9 +50,9 @@ export interface StoredAccount {
   totp?: StoredTotp
   /** Backup keys, by id: each reads one vault for a backup server. */
   backupKeys?: Record<string, StoredBackupKey>
-  /** The signing key (0.9.3): public, and private wrapped under a key from the account secret. */
-  signingPublicKey?: string
-  wrappedSigningKey?: string
+  /** The signing key: public, and private wrapped under a key from the account secret. */
+  signingPublicKey: string
+  wrappedSigningKey: string
 }
 
 export interface StoredBackupKey {
@@ -642,26 +642,6 @@ export class AccountStore {
   settleRemoval(accountId: string): Promise<void> {
     return this.update((data) => {
       delete data.removed[accountId]
-    })
-  }
-
-  /**
-   * An account made before 0.9.3 gets its signing key from its first device
-   * on 0.9.3. Once only: a token alone must not replace it. Whoever had the
-   * token first could set one - which no contact takes, since the key reaches
-   * them with a MAC only the account's sealing key can make.
-   */
-  setSigningKey(accountId: string, signingPublicKey: unknown, wrappedSigningKey: unknown): Promise<AccountBundle> {
-    if (!decoded(signingPublicKey, 65) || !decoded(wrappedSigningKey, 16)) {
-      return Promise.reject(new AccountError(400, 'incomplete key material'))
-    }
-    return this.update((data) => {
-      const account = data.accounts[accountId]
-      if (!account) throw new AccountError(401, 'sign in again')
-      if (account.signingPublicKey) throw new AccountError(409, 'the account has a signing key')
-      account.signingPublicKey = signingPublicKey as string
-      account.wrappedSigningKey = wrappedSigningKey as string
-      return this.bundle(account)
     })
   }
 
