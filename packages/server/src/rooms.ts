@@ -313,6 +313,7 @@ export class RoomHub {
     const loading = RoomLog.load(this.options.dataDir, meta)
       .then((log) => {
         const loaded: OpenRoom = { log, subscribers: new Set(), idleTimer: null }
+        console.info(`[DEBUG] load ${room.slice(0, 12)} head=${log.headSeq} frames=${log.frames.map((f) => `${f.seq}/${f.epoch}`).join(',')} since=${meta.epochSince} epoch=${meta.epoch}`)
         this.rooms.set(room, loaded)
         return loaded
       })
@@ -378,6 +379,7 @@ export class RoomHub {
           return
         }
         this.noteHead(room, open.log.writtenSeq)
+        console.info(`[DEBUG] idle-close ${room.slice(0, 12)} head=${open.log.headSeq}`)
         this.rooms.delete(room)
       })
     }, this.options.idleCloseMs ?? IDLE_CLOSE_MS)
@@ -711,12 +713,15 @@ export class RoomHub {
     }
     // Encrypted under an epoch the others may not hold any more, or not yet.
     if (epoch !== open.log.meta.epoch) {
+      console.info(`[DEBUG] push ${room.slice(0, 12)} ref ${ref} epoch ${epoch} refused, now ${open.log.meta.epoch}`)
       client.sendRekey(room, open.log.meta.epoch, this.tieOf(room, open.log.meta.epoch))
       return
     }
     let frame: Frame
     try {
+      console.info(`[DEBUG] push ${room.slice(0, 12)} ref ${ref} epoch ${epoch} appending at head ${open.log.headSeq}`)
       frame = await open.log.append(epoch, data)
+      console.info(`[DEBUG] push ${room.slice(0, 12)} ref ${ref} appended #${frame.seq} head ${open.log.headSeq} sameLog=${this.rooms.get(room) === open}`)
     } catch (error) {
       // Not acknowledged, so the device still has it: it sends it again once it is back.
       console.error(`[obsidian-connect] ${room}: a frame could not be written; the connection is closed so its device sends it again`, error)
@@ -776,6 +781,12 @@ export class RoomHub {
   private moveEpoch(meta: RoomMeta, epoch: number): void {
     meta.epoch = epoch
     meta.epochSince = this.headOf(meta)
+    {
+      const open = this.rooms.get(meta.room)
+      console.info(
+        `[DEBUG] moveEpoch ${meta.room.slice(0, 12)} -> ${epoch} since ${meta.epochSince} open=${Boolean(open)} sameMeta=${open?.log.meta === meta} frames=${open?.log.frames.map((f) => `${f.seq}/${f.epoch}`).join(',')} head=${open?.log.headSeq} snaps=${meta.snapshots.map((s) => s.uptoSeq).join(',')} ${new Error().stack?.split('\n').slice(2, 5).join(' | ')}`
+      )
+    }
     if (!meta.folder) return
     const folder = this.metas.get(folderRoom(meta.folder.id))
     if (folder) meta.ties = { ...meta.ties, [String(epoch)]: { folder: meta.folder.id, epoch: folder.epoch } }
@@ -1418,6 +1429,9 @@ export class RoomHub {
     if (kind === 'doc' && !meta.folder) throw new HubError(400, 'the note is not in a shared folder')
     if (request.epoch !== meta.epoch) throw new HubError(409, 'encrypt it under the current epoch')
     const uptoSeq = request.uptoSeq
+    console.info(
+      `[DEBUG] startSnapshot ${room.slice(0, 12)} upto ${uptoSeq} epoch ${request.epoch}/${meta.epoch} since ${meta.epochSince} head=${open.log.headSeq} frames=${open.log.frames.map((f) => `${f.seq}/${f.epoch}`).join(',')} snaps=${meta.snapshots.map((s) => s.uptoSeq).join(',')} sameMeta=${this.metas.get(room) === meta}`
+    )
     if (!Number.isInteger(uptoSeq) || uptoSeq < 1 || uptoSeq < (meta.epochSince ?? 0) || uptoSeq > open.log.headSeq) {
       throw new HubError(409, `the starting point (#${uptoSeq}) does not fit the log (epoch from #${meta.epochSince ?? 0}, head #${open.log.headSeq}); try again`)
     }
