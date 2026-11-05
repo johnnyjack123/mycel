@@ -1,6 +1,6 @@
 import { TFile, getLinkpath, type App } from 'obsidian'
 import { Notice } from '../notices.js'
-import type { AttachmentEntry, AttachmentVersion, BlobListResponse, SharedAttachment } from '@obsidian-connect/shared'
+import type { AttachmentEntry, AttachmentVersion, SharedAttachment } from '@obsidian-connect/shared'
 import { contentHash, type Bytes } from '@obsidian-connect/shared/crypto'
 import { ApiError } from '../account/api.js'
 import type { AttachmentIndex, SharedBase } from './AttachmentIndex.js'
@@ -1518,14 +1518,7 @@ export class AttachmentStore {
    * and reusing content touches it (`Blobs.keep`).
    */
   private async letGoOfUnnamed(retentionDays: number, now: number): Promise<number> {
-    let listing: BlobListResponse
-    try {
-      listing = await this.blobs.list()
-    } catch (error) {
-      // A server from before 0.8.2 lists nothing.
-      if (error instanceof ApiError && error.status === 404) return 0
-      throw error
-    }
+    const listing = await this.blobs.list()
     const cutoff = now - Math.max(retentionDays, UNNAMED_MIN_DAYS) * DAY_MS
     const old = [...listing.blobs, ...listing.uploads].filter((blob) => blob.touchedAt < cutoff)
     if (old.length === 0) return 0

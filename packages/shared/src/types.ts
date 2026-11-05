@@ -59,7 +59,7 @@ export interface VaultFolder {
   updatedAt: number
   /**
    * When this account shared its folder: whatever lay in it then goes in with
-   * the share, and is never asked about as moved in. Absent before 0.8.1.
+   * the share, and is never asked about as moved in.
    */
   sharedAt?: number
   /** Whose folder it is, when it is someone else's. */
@@ -189,13 +189,9 @@ export interface AuthConfigResponse {
   protocol: number
   /** Random, made once by the server; part of every account's salt. */
   serverId: string
-  /** The largest file the server takes. Absent: a server from before attachments. */
-  maxFileBytes?: number
-  /** What the server can beyond signing in, e.g. `recovery`. Absent: a server from before 0.6. */
-  features?: ServerFeature[]
+  /** The largest file the server takes. */
+  maxFileBytes: number
 }
-
-export type ServerFeature = 'recovery' | 'totp' | 'backup'
 
 /**
  * The answer to the right login key of an account with two-factor sign-in
@@ -224,8 +220,6 @@ export interface TotpEnableRequest {
 /** Turns two-factor sign-in off: the password is enough. */
 export interface TotpDisableRequest {
   loginKey: string
-  /** Sent by 0.6.2 to 0.6.5, and ignored since. */
-  code?: string
 }
 
 /** A recovery code as the server keeps it: the key it finds the account by, and the second wrapping. */
@@ -244,7 +238,7 @@ export interface RegisterRequest {
   publicKey: string
   wrappedPrivateKey: string
   wrappedAccountSecret: string
-  /** The account's recovery code, made with it. A server from before 0.6 ignores it. */
+  /** The account's recovery code, made with it. */
   recovery?: RecoveryRecord
   signingPublicKey: string
   wrappedSigningKey: string
@@ -271,8 +265,8 @@ export interface RecoverResponse {
   publicKey: string
   wrappedPrivateKey: string
   wrappedAccountSecret: string
-  /** Whether the account signs in with a second factor, which the recovery may keep. Absent before 0.6.3. */
-  totp?: boolean
+  /** Whether the account signs in with a second factor, which the recovery may keep. */
+  totp: boolean
 }
 
 /** A new name and password for the account, and a new code; the old one is spent. */
@@ -308,23 +302,13 @@ export interface AccountBundle {
   wrappedPrivateKey: string
   wrappedAccountSecret: string
   vaults: VaultRecord[]
-  /** When the recovery code was made; null without one, absent from a server before 0.6. */
-  recovery?: { createdAt: number } | null
+  /** When the recovery code was made; null without one. */
+  recovery: { createdAt: number } | null
   /** Whether signing in asks for a code from an authenticator app. */
-  totp?: boolean
-  /** The account's backup keys. Absent from a server before 0.7. */
-  backupKeys?: BackupKeyInfo[]
-  /**
-   * The account's signing key (0.9.3): its public half, and its private half
-   * wrapped under a key from the account secret. Absent until a device of the
-   * account made one.
-   */
-  signingPublicKey?: string
-  wrappedSigningKey?: string
-}
-
-/** The account's signing key, set once by the first device of 0.9.3 (`POST /account/signing-key`). */
-export interface SigningKeyRequest {
+  totp: boolean
+  /** The account's backup keys. */
+  backupKeys: BackupKeyInfo[]
+  /** The account's signing key: its public half, and its private half wrapped under a key from the account secret. */
   signingPublicKey: string
   wrappedSigningKey: string
 }
@@ -463,8 +447,6 @@ export interface BackupAt {
   minutes: number
   /** The days, 0 Sunday to 6 Saturday; absent: every day. */
   weekdays?: number[]
-  /** One day, as 0.7.18 set it; `weekdays` from 0.7.19 on. */
-  weekday?: number
   /** An IANA time zone, e.g. `Europe/Berlin`. */
   zone: string
 }
@@ -472,8 +454,8 @@ export interface BackupAt {
 const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6]
 
 /** The days a time of day backs up on, 0 Sunday to 6 Saturday, sorted - every day unless it names some. */
-export function scheduleDays(at: Pick<BackupAt, 'weekdays' | 'weekday'>): number[] {
-  const named = at.weekdays ?? (at.weekday === undefined ? EVERY_DAY : [at.weekday])
+export function scheduleDays(at: Pick<BackupAt, 'weekdays'>): number[] {
+  const named = at.weekdays ?? EVERY_DAY
   const days = Array.from(new Set(named.filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))).sort((a, b) => a - b)
   return days.length > 0 ? days : [...EVERY_DAY]
 }
@@ -770,6 +752,12 @@ export interface RevokeRequest {
   rotation: Rotation
 }
 
+/** A note of the owner's to its next epoch, everyone keeping access: whose role changed holds a certificate there exactly as a writer. */
+export interface RotateRequest {
+  docId: string
+  rotation: Rotation
+}
+
 export interface RoleRequest {
   docId: string
   account: string
@@ -797,8 +785,6 @@ export type NotifyKind =
   | 'share-removed'
   | 'contact'
   | 'contact-removed'
-  /** A contact vouched for its signing key (0.9.3): only the attestations are read again, not the inbox. */
-  | 'contact-key'
   | 'account-changed'
   | 'folder-added'
   | 'folder-changed'
@@ -1056,9 +1042,11 @@ export interface ContactCodeRequest {
 }
 
 /** What a code's holder needs to check the creator's key against the fingerprint in the code. */
+/** The code's creator and their identity, as the server has it - checked against the fingerprint in the code. */
 export interface ContactCodeInfo {
   owner: string
   publicKey: string
+  signingPublicKey: string
 }
 
 export interface RedeemRequest {
@@ -1094,44 +1082,13 @@ export interface ContactsResponse {
 }
 
 /**
- * An account vouching for its signing key to one contact (0.9.3): a MAC under
- * the secret their pinned sealing keys share (`attestationMac`). The server
- * passes it on; it cannot make one.
- */
-export interface Attestation {
-  from: string
-  to: string
-  signingPublicKey: string
-  mac: string
-  at: number
-}
-
-export interface AttestRequest {
-  to: string
-  signingPublicKey: string
-  mac: string
-}
-
-export interface AttestationsResponse {
-  /** Those addressed to the caller. */
-  attestations: Attestation[]
-}
-
-/**
- * The owner's own record of which epochs each member of a room holds a key
- * of, and the keys sealed anew and signed for exactly those (0.9.3): keys
- * sealed before signing keys existed are replaced once.
+ * Which epochs each member of a room holds a key of, for the owner to seal
+ * exactly those anew - after it replaced its keys.
  */
 export interface SealedEpochsResponse {
   room: string
   /** member -> the epochs the server keeps a key of for them. */
   members: Record<string, number[]>
-  /** member -> role, as the server keeps it. */
-  roles?: Record<string, ShareRole>
-  /** The room's head, frames still being written included. */
-  headSeq?: number
-  /** Whether the owner already set a legacy mark. */
-  marked?: boolean
 }
 
 export interface ResealRequest {
@@ -1153,16 +1110,6 @@ export interface KeysResponse {
    * Every epoch up to `epoch` not named here is the note's own.
    */
   ties?: Record<string, FolderTie>
-  /**
-   * The owner's word up to which seq the log may hold frames without
-   * signatures (0.9.4): `seq.signature`, signed by the owner (`signLegacyMark`).
-   */
-  legacyMark?: string
-}
-
-/** The owner sets a room's legacy mark (`POST /keys/:room/mark`). */
-export interface LegacyMarkRequest {
-  mark: string
 }
 
 /** A note epoch spent in a shared folder: its key derives from that folder epoch's key. */
@@ -1197,8 +1144,6 @@ export interface LogResponse {
    * whole readable part, snapshot and all.
    */
   from?: number
-  /** The owner's signed word up to which seq the log holds unsigned frames (0.9.4) - kept with a fork too. */
-  legacyMark?: string
 }
 
 export interface SnapshotRequest {

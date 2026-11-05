@@ -1,15 +1,7 @@
-// Version 8: every frame of a note or folder is signed by its author, inside the
-// encryption, with the owner's certificate for anyone else who writes. Version 7:
-// keys sealed to members carry their sealer's signature, and every
-// account has a signing key its contacts pin. Version 6: a device watches the
-// notes it does not hold open (`watch`) and hears
-// when their logs move on (`changed`). Version 5: shared folders - rooms of kind
-// `fld`, and a subscribe may name the folder a new note is created in. Version 4:
-// a subscribe says whether the room may be created, and the server knows accounts
-// only by id - no names, no salts per name. Version 3: the server stores an
-// ordered log of encrypted frames and can no longer read a document. Version 2
-// relayed plaintext Yjs sync messages.
-export const PROTOCOL_VERSION = 8
+// Version 9: a clean slate - every frame signed by its author, every key sealed
+// to a member signed by its sealer, every account with a signing key from its
+// start; nothing written by an earlier version is read. Versions 2 to 8 led there.
+export const PROTOCOL_VERSION = 9
 export const DEFAULT_SERVER_PORT = 1234
 
 export type ShareRole = 'read' | 'write'
@@ -29,8 +21,7 @@ export const INDEX_FIELD = 'files'
 export const SETTINGS_FIELD = 'settings'
 // The Y.Maps in the vault index document for files that are not notes:
 // fileId -> AttachmentEntry, and `${fileId}:${hash}` -> AttachmentVersion.
-// Maps of their own, because a device on 0.4 takes every entry of
-// INDEX_FIELD for a note.
+// Maps of their own: every entry of INDEX_FIELD is a note.
 export const ATTACHMENTS_FIELD = 'attachments'
 export const VERSIONS_FIELD = 'versions'
 // `${docId}:${ref}` -> { at }: files of a shared note this account let go of.
@@ -163,8 +154,7 @@ export const MUX = {
   /**
    * room (empty), varString lock id: this connection holds the vault's lock and
    * writes under it - a rollback, or a restore from the Time Machine. Sent
-   * again after every reconnect. Before 0.8.15 the server let it write only
-   * under a lock of kind `rollback`.
+   * again after every reconnect.
    */
   holdLock: 5,
   /**

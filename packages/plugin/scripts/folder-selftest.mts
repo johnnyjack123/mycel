@@ -81,7 +81,7 @@ try {
   )
   {
     const docId = P1.index?.docIdForPath('Shared/X/Plan.md') as string
-    const history = new NoteHistory(P1.api, docRoom(docId), (P1.keys as InstanceType<typeof KeyRing>).sharedDocCrypto(docId), 150)
+    const history = new NoteHistory(P1.api, docRoom(docId), (P1.keys as InstanceType<typeof KeyRing>).sharedDocCrypto(docId, O1.accountId), 150)
     await history.load()
     check(
       history.versions().some((version) => history.textAt(version.seq).includes('draft')),
@@ -93,7 +93,7 @@ try {
   check(await eventually(() => Q.vault.text('Shared/X/Plan.md') === 'plan\n'), 'shared without history with a reader')
   {
     const docId = Q.index?.docIdForPath('Shared/X/Plan.md') as string
-    const history = new NoteHistory(Q.api, docRoom(docId), (Q.keys as InstanceType<typeof KeyRing>).sharedDocCrypto(docId), 150)
+    const history = new NoteHistory(Q.api, docRoom(docId), (Q.keys as InstanceType<typeof KeyRing>).sharedDocCrypto(docId, O1.accountId), 150)
     await history.load()
     const texts = history.versions().map((version) => history.textAt(version.seq))
     check(texts.length > 0 && texts.every((text) => !text.includes('draft')), 'without history, nothing from before', texts)

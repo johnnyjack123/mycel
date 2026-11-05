@@ -353,7 +353,7 @@ export async function unseal(
   return decrypt(key, data.slice(P256_PUBLIC_BYTES), `seal:${context}`)
 }
 
-// --- signing (0.9.3, docs/PHASE8.md S) -----------------------------------------------
+// --- signing --------------------------------------------------------------------------
 //
 // Every account has a signing key pair besides its sealing one: ECDSA P-256,
 // which every WebCrypto has. The owner of a note or folder signs each key it
@@ -411,25 +411,6 @@ export async function verifySignature(publicKey: Bytes, message: string | Bytes,
   }
 }
 
-/**
- * The MAC by which an account vouches for its signing key to one contact:
- * under the secret their two pinned sealing keys share (static Diffie-Hellman).
- * Only the two of them can make it, and the contact did not - so the other
- * one did. A contact made before signing keys existed learns the key this way,
- * with no new friend code; one made since, too.
- */
-export async function attestationMac(
-  privateKey: CryptoKey,
-  theirPublicKey: Bytes,
-  from: string,
-  to: string,
-  signingPublicKey: Bytes
-): Promise<string> {
-  const shared = await crypto.subtle.deriveBits({ name: 'ECDH', public: await importPublicKey(theirPublicKey) }, privateKey, 256)
-  const key = await hkdf(new Uint8Array(shared), 'obsidian-connect key-attest')
-  return toHex(await hmac(key, `signing-key|${from}|${to}|${toBase64(signingPublicKey)}`))
-}
-
 /** What the owner signs for a key it seals: which room and epoch, for whom, and the sealed box itself. */
 async function sealedKeyMessage(room: string, epoch: number, recipient: string, sealed: string): Promise<string> {
   return `sealed-key|${room}|${epoch}|${recipient}|${toHex(await sha256(utf8(sealed)))}`
@@ -437,8 +418,8 @@ async function sealedKeyMessage(room: string, epoch: number, recipient: string, 
 
 /**
  * A sealed key with its sealer's signature: `sealed.signer.signature`, and for
- * someone who may write (0.9.4) `.cert` - the owner's word that they may, over
- * the room and epoch and their signing key (`writerCertMessage`).
+ * someone who may write `.cert` - the owner's word that they may, over the room
+ * and epoch and their signing key (`writerCertMessage`).
  */
 export async function signSealed(
   signingKey: CryptoKey,
@@ -461,7 +442,7 @@ export interface SignedSealed {
   cert?: string
 }
 
-/** The parts of a signed sealed key; null for one without a signature. */
+/** The parts of a signed sealed key; null for anything else. */
 export function splitSealed(value: string): SignedSealed | null {
   const parts = value.split('.')
   if (parts.length !== 3 && parts.length !== 4) return null
@@ -476,26 +457,17 @@ export async function verifySealed(signerPublicKey: Bytes, room: string, epoch: 
 
 // --- frames ------------------------------------------------------------------------
 //
-// A frame's plaintext - the same for a snapshot - is the author's clock and the Yjs
-// update. Since 0.9.4 it also names its author and carries their signature over
-// room, epoch, clock and update, inside the encryption: the server sees no
-// author, and cannot take the signature off. Someone writing in a room they do
-// not own adds the owner's word that they may write there - a writer's
-// certificate: the owner's signature over the room (or folder), the epoch, the
-// writer and the writer's signing key - so everyone in the room can check them,
-// contacts of theirs or not.
+// A frame's plaintext - the same for a snapshot - names its author, the author's
+// clock and the Yjs update, and carries the author's signature over room, epoch,
+// clock and update, inside the encryption: the server sees no author, and cannot
+// take the signature off. Someone writing in a room they do not own adds the
+// owner's word that they may write there - a writer's certificate: the owner's
+// signature over the room (or folder), the epoch, the writer and the writer's
+// signing key - so everyone in the room can check them, contacts of theirs or not.
 
-const SIGNED_FRAME = 2
+const FRAME_FORMAT = 1
 const ACCOUNT_BYTES = 16
 const SIGNATURE_BYTES = 64
-
-/** The plaintext of a log frame from before 0.9.4: the author's clock, then the Yjs update. */
-export function packFrame(authorTs: number, update: Uint8Array): Bytes {
-  const out = new Uint8Array(8 + update.length)
-  new DataView(out.buffer).setFloat64(0, authorTs)
-  out.set(update, 8)
-  return out
-}
 
 /** The owner's word that `account`, with this signing key, may write in a room or folder in one epoch. */
 export interface WriterCert {
@@ -504,19 +476,14 @@ export interface WriterCert {
   signature: Bytes
 }
 
-export interface FrameSignature {
+export interface OpenedFrame {
+  authorTs: number
+  update: Bytes
   /** The author's account id. */
   author: string
   /** Absent for the room's owner, who needs none. */
   cert: WriterCert | null
   signature: Bytes
-}
-
-export interface OpenedFrame {
-  authorTs: number
-  update: Bytes
-  /** Null for a frame from before 0.9.4. */
-  signed: FrameSignature | null
 }
 
 function frameMessage(room: string, epoch: number, authorTs: number, author: string, update: Uint8Array): Bytes {
@@ -548,49 +515,47 @@ export async function packSignedFrame(
 ): Promise<Bytes> {
   const signature = fromBase64(await sign(signingKey, frameMessage(room, epoch, authorTs, author, update)))
   const head = new Uint8Array(1 + 8 + ACCOUNT_BYTES + 1)
-  head[0] = SIGNED_FRAME
+  head[0] = FRAME_FORMAT
   new DataView(head.buffer).setFloat64(1, authorTs)
   head.set(fromHex(author), 9)
   head[9 + ACCOUNT_BYTES] = cert ? 1 : 0
   return concat(head, ...(cert ? [cert.signingKey, cert.signature] : []), signature, update)
 }
 
-/** A frame's plaintext, either form; throws for one that is neither. */
-export function unpackFrame(data: Uint8Array): OpenedFrame {
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-  if (data[0] !== SIGNED_FRAME) return { authorTs: view.getFloat64(0), update: bytes(data.subarray(8)), signed: null }
-  const authorTs = view.getFloat64(1)
-  const author = toHex(data.subarray(9, 9 + ACCOUNT_BYTES))
-  let offset = 9 + ACCOUNT_BYTES + 1
+/**
+ * A frame's plaintext; null for anything that is not one. It opened under the
+ * room's key, so whoever made it holds that key - and is dropped like a forged
+ * frame, never let to stop the room.
+ */
+export function unpackFrame(data: Uint8Array): OpenedFrame | null {
+  const head = 9 + ACCOUNT_BYTES + 1
+  if (data[0] !== FRAME_FORMAT || data.length < head + SIGNATURE_BYTES) return null
+  const flag = data[head - 1]
+  if (flag !== 0 && flag !== 1) return null
+  let offset = head
   let cert: WriterCert | null = null
-  if (data[9 + ACCOUNT_BYTES] === 1) {
-    cert = { signingKey: bytes(data.subarray(offset, offset + P256_PUBLIC_BYTES)), signature: bytes(data.subarray(offset + P256_PUBLIC_BYTES, offset + P256_PUBLIC_BYTES + SIGNATURE_BYTES)) }
+  if (flag === 1) {
+    if (data.length < head + P256_PUBLIC_BYTES + 2 * SIGNATURE_BYTES) return null
+    cert = {
+      signingKey: bytes(data.subarray(offset, offset + P256_PUBLIC_BYTES)),
+      signature: bytes(data.subarray(offset + P256_PUBLIC_BYTES, offset + P256_PUBLIC_BYTES + SIGNATURE_BYTES))
+    }
     offset += P256_PUBLIC_BYTES + SIGNATURE_BYTES
   }
-  const signature = bytes(data.subarray(offset, offset + SIGNATURE_BYTES))
-  if (signature.length !== SIGNATURE_BYTES) throw new Error('a signed frame that ends early')
-  return { authorTs, update: bytes(data.subarray(offset + SIGNATURE_BYTES)), signed: { author, cert, signature } }
+  const authorTs = new DataView(data.buffer, data.byteOffset, data.byteLength).getFloat64(1)
+  if (!Number.isFinite(authorTs)) return null
+  return {
+    authorTs,
+    update: bytes(data.subarray(offset + SIGNATURE_BYTES)),
+    author: toHex(data.subarray(9, 9 + ACCOUNT_BYTES)),
+    cert,
+    signature: bytes(data.subarray(offset, offset + SIGNATURE_BYTES))
+  }
 }
 
-/** Whether a signed frame's signature holds under `publicKey` - the owner's, or the one its certificate names. */
+/** Whether a frame's signature holds under `publicKey` - the owner's, or the one its certificate names. */
 export function verifyFrame(publicKey: Bytes, room: string, epoch: number, frame: OpenedFrame): Promise<boolean> {
-  if (!frame.signed) return Promise.resolve(false)
-  return verifySignature(publicKey, frameMessage(room, epoch, frame.authorTs, frame.signed.author, frame.update), toBase64(frame.signed.signature))
-}
-
-/**
- * The owner's word up to which seq a room's log may hold frames without
- * signatures - those written before 0.9.4. Signed, so the server cannot move it.
- */
-export async function signLegacyMark(ownerKey: CryptoKey, room: string, seq: number): Promise<string> {
-  return `${seq}.${await sign(ownerKey, `legacy|${room}|${seq}`)}`
-}
-
-export async function verifyLegacyMark(ownerPublicKey: Bytes, room: string, mark: string): Promise<number | null> {
-  const [seqText, signature] = mark.split('.')
-  const seq = Number(seqText)
-  if (!Number.isSafeInteger(seq) || seq < 0 || !signature) return null
-  return (await verifySignature(ownerPublicKey, `legacy|${room}|${seq}`, signature)) ? seq : null
+  return verifySignature(publicKey, frameMessage(room, epoch, frame.authorTs, frame.author, frame.update), toBase64(frame.signature))
 }
 
 // --- blobs -------------------------------------------------------------------------
@@ -639,11 +604,11 @@ export function titleContext(docId: string): string {
 // --- contacts ------------------------------------------------------------------------
 //
 // A one-time friend code carries a random secret and the fingerprint of its
-// creator's public key, and travels outside the server. From the secret come
-// the code's id, a key the server checks a redemption with (it stores only a
-// hash), and a MAC key that never leaves a device: both sides sign what they
-// send each other with it, so a server that saw the redemption still cannot
-// forge a contact or swap a key.
+// creator's identity - sealing and signing key together -, and travels outside
+// the server. From the secret come the code's id, a key the server checks a
+// redemption with (it stores only a hash), and a MAC key that never leaves a
+// device: both sides sign what they send each other with it, so a server that
+// saw the redemption still cannot forge a contact or swap a key.
 
 const CONTACT_SECRET_BYTES = 16
 const FINGERPRINT_BYTES = 12
@@ -654,9 +619,12 @@ export function newContactSecret(): Bytes {
   return randomBytes(CONTACT_SECRET_BYTES)
 }
 
-/** The first 96 bits of the key's hash: enough that nobody can make another key that matches. */
-export async function keyFingerprint(publicKey: Bytes): Promise<Bytes> {
-  return (await sha256(publicKey)).slice(0, FINGERPRINT_BYTES)
+/**
+ * The first 96 bits of the hash of an identity - its sealing and its signing
+ * key: enough that nobody can make another pair that matches.
+ */
+export async function identityFingerprint(publicKey: Bytes, signingPublicKey: Bytes): Promise<Bytes> {
+  return (await sha256(concat(publicKey, signingPublicKey))).slice(0, FINGERPRINT_BYTES)
 }
 
 export interface ContactKeys {

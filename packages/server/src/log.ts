@@ -68,8 +68,6 @@ export interface RoomMeta {
    * its owner still reads those epochs.
    */
   ties?: Record<string, FolderTie>
-  /** The owner's signed word up to which seq the log may hold unsigned frames (0.9.4). */
-  legacyMark?: string
 }
 
 /** A note's place in a shared folder, as the server keeps it. */
@@ -111,11 +109,6 @@ export function decodeFrames(buffer: Buffer): { frames: Frame[]; bytes: number }
     const end = offset + HEADER_BYTES + length
     if (length > MAX_FRAME_BYTES || end > buffer.length || seq < 1 || !Number.isSafeInteger(seq)) break
     const previous = frames[frames.length - 1]
-    // Before 0.9.1 a push during a compaction was written twice; the second copy is the same frame.
-    if (previous && seq === previous.seq) {
-      offset = end
-      continue
-    }
     if (previous && seq !== previous.seq + 1) break
     frames.push({ seq, ts, epoch, data: new Uint8Array(buffer.subarray(offset + HEADER_BYTES, end)) })
     offset = end

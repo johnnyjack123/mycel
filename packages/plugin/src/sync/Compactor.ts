@@ -1,6 +1,6 @@
 import * as Y from 'yjs'
 import { frameAad, roomKind, roomSubject, snapshotAad } from '@obsidian-connect/shared'
-import { decrypt, encrypt, fromBase64, packFrame, toBase64, unpackFrame } from '@obsidian-connect/shared/crypto'
+import { decrypt, encrypt, fromBase64, toBase64, unpackFrame } from '@obsidian-connect/shared/crypto'
 import type { ConnectApi } from '../account/api.js'
 import type { KeyRing } from '../account/KeyRing.js'
 import type { RoomCrypto } from './VaultSocket.js'
@@ -72,7 +72,11 @@ export class Compactor {
         if (!key) return false
         const plaintext = await decrypt(key, fromBase64(log.snapshot.data), snapshotAad(room, log.snapshot.epoch))
         const snapshot = unpackFrame(plaintext)
-        if ((await crypto.check?.('snapshot', log.snapshot.uptoSeq, log.snapshot.epoch, snapshot)) === 'unknown') return false
+        // A snapshot not the owner's is never folded into one that is.
+        if (!snapshot || (await crypto.check('snapshot', log.snapshot.uptoSeq, log.snapshot.epoch, snapshot)) !== 'ok') {
+          logger.error(`${room}: its snapshot is not signed by this account; not compacted`)
+          return false
+        }
         Y.applyUpdate(doc, snapshot.update)
         newest = snapshot.authorTs
       }
@@ -85,18 +89,21 @@ export class Compactor {
         const plaintext = await decrypt(key, fromBase64(frame.data), frameAad(room, frame.epoch))
         const change = unpackFrame(plaintext)
         // Folded in, a frame would carry this account's signature from then on: only what it takes is.
-        const verdict = (await crypto.check?.('frame', frame.seq, frame.epoch, change)) ?? 'ok'
+        const verdict = change ? await crypto.check('frame', frame.seq, frame.epoch, change) : 'forged'
         if (verdict === 'unknown') return false
-        if (verdict === 'ok') Y.applyUpdate(doc, change.update)
-        else logger.error(`${room}: frame #${frame.seq} is not signed by someone who may write there; not folded in`)
-        newest = Math.max(newest, change.authorTs)
+        if (verdict === 'ok' && change) {
+          Y.applyUpdate(doc, change.update)
+          newest = Math.max(newest, change.authorTs)
+        } else {
+          logger.error(`${room}: frame #${frame.seq} is not signed by someone who may write there; not folded in`)
+        }
         uptoSeq = frame.seq
       }
       if (uptoSeq === 0) return false
       // Under the current epoch: everyone who still has access holds that key.
       const key = await crypto.key(log.epoch)
       if (!key) return false
-      const packed = crypto.pack ? await this.keys.packAsOwner(room, log.epoch, newest, Y.encodeStateAsUpdate(doc)) : packFrame(newest, Y.encodeStateAsUpdate(doc))
+      const packed = await this.keys.packAsOwner(room, log.epoch, newest, Y.encodeStateAsUpdate(doc))
       const data = await encrypt(key, packed, snapshotAad(room, log.epoch))
       await this.api.snapshot(room, { uptoSeq, epoch: log.epoch, data: toBase64(data) })
       return true

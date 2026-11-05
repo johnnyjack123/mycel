@@ -12,7 +12,7 @@ import { check, delay, Device, eventually, failures, useServer } from './harness
 // Imported after the harness set up the DOM; CodeMirror reads it at module scope.
 const { Notice } = await import('obsidian')
 const { BLOB_CHUNK_BYTES, MUX, docRoom, frameAad, indexRoom } = await import('@obsidian-connect/shared')
-const { aesKey, contentHash, encrypt, epochKeyContext, packFrame, packSignedFrame, randomBytes, seal } = await import('@obsidian-connect/shared/crypto')
+const { aesKey, contentHash, encrypt, epochKeyContext, packSignedFrame, randomBytes, seal } = await import('@obsidian-connect/shared/crypto')
 const Y = await import('yjs')
 const encoding = await import('lib0/encoding')
 const { KeyRing } = await import('../src/account/KeyRing.js')
@@ -969,9 +969,8 @@ try {
     )
     check(C.vault.paths().join(',') === 'Shared/Together.md', "and nothing else from A's vault", C.vault.paths())
 
-    // A key without the owner's signature is not taken (0.9.3) - one a server
-    // made up, or one sealed before signing keys -, and the owner's device seals
-    // the keys of its shares anew, signed, once.
+    // A key without the owner's signature is not taken - one a server made up -,
+    // and the owner's device can seal the keys of its shares anew, signed.
     {
       const sealedFor = (await A.api.sealedEpochs(room)).members[C.accountId] ?? []
       const epoch = sealedFor[sealedFor.length - 1] as number
@@ -987,7 +986,7 @@ try {
       check(Buffer.from((await keyOfC()) ?? []).equals(Buffer.from(ownersKey ?? [1])), 'and C opens them again')
     }
 
-    // Every frame is signed by its author (0.9.4): a member posing as the owner, or
+    // Every frame is signed by its author: a member posing as the owner, or
     // writing without the owner's certificate, is not taken - even by a server that
     // let the frame through.
     {
@@ -1012,7 +1011,10 @@ try {
       if (raw && signing) {
         await pushRaw(await packSignedFrame(signing.privateKey, room, epoch, A.accountId, null, Date.now(), insert('POSING AS ALICE ')))
         await pushRaw(await packSignedFrame(signing.privateKey, room, epoch, C.accountId, null, Date.now(), insert('NO CERTIFICATE ')))
-        await pushRaw(packFrame(Date.now(), insert('UNSIGNED ')))
+        const unsigned = insert('UNSIGNED ')
+        const plain = new Uint8Array(9 + unsigned.length)
+        plain.set(unsigned, 9)
+        await pushRaw(plain)
       }
       check(Boolean(raw && signing), 'C holds the key and her signing key')
       await delay(1_500)
@@ -1032,7 +1034,7 @@ try {
     }
 
     {
-      const history = new NoteHistory(C.api, room, (C.keys as InstanceType<typeof KeyRing>).sharedDocCrypto(docId), HISTORY_GAP_MS)
+      const history = new NoteHistory(C.api, room, (C.keys as InstanceType<typeof KeyRing>).sharedDocCrypto(docId, A.accountId), HISTORY_GAP_MS)
       await history.load()
       const texts = history.versions().map((version) => history.textAt(version.seq))
       check(

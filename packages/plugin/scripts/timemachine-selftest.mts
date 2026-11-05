@@ -91,7 +91,7 @@ function prepare(device: Device) {
       api: device.api,
       vaultId: keys.vaultId,
       indexCrypto: keys.indexCrypto(),
-      noteCrypto: (docId: string) => keys.noteCrypto(docId, { owned: !owners.get(docId), folder: true }),
+      noteCrypto: (docId: string) => keys.noteCrypto(docId, { owned: !owners.get(docId), folder: true, owner: owners.get(docId) ?? null }),
       download: (hash: string) => blobs.download(hash),
       backups: null
     }

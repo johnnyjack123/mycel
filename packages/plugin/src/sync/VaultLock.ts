@@ -22,19 +22,16 @@ export interface LockPurpose {
   device: string
   /** Tells two locks for the same thing apart, so a device knows its own. */
   nonce: string
-  /**
-   * What the other devices may not edit meanwhile (0.8.15). A lock without one,
-   * from an older plugin, covers the vault.
-   */
-  scope?: LockScope
+  /** What the other devices may not edit meanwhile. */
+  scope: LockScope
 }
 
-function lockScope(value: unknown): LockScope | undefined {
-  if (!value || typeof value !== 'object') return undefined
+function lockScope(value: unknown): LockScope | null {
+  if (!value || typeof value !== 'object') return null
   const { kind, path } = value as { kind?: unknown; path?: unknown }
   if (kind === 'vault') return { kind }
   if ((kind === 'folder' || kind === 'note') && typeof path === 'string') return { kind, path }
-  return undefined
+  return null
 }
 
 /** Whether a path lies in what a lock covers. */
@@ -77,9 +74,9 @@ export class LockSeal {
       const key = await this.crypto.key(0)
       if (!key) return null
       const value = JSON.parse(fromUtf8(await decrypt(key, fromBase64(sealed), this.aad))) as Partial<LockPurpose>
-      if (typeof value.what !== 'string' || typeof value.device !== 'string' || typeof value.nonce !== 'string') return null
       const scope = lockScope(value.scope)
-      return { what: value.what, device: value.device, nonce: value.nonce, ...(scope ? { scope } : {}) }
+      if (typeof value.what !== 'string' || typeof value.device !== 'string' || typeof value.nonce !== 'string' || !scope) return null
+      return { what: value.what, device: value.device, nonce: value.nonce, scope }
     } catch {
       return null
     }

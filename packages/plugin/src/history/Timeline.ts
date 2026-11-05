@@ -9,7 +9,6 @@ import {
   type LogResponse,
   type TimesResponse
 } from '@obsidian-connect/shared'
-import { ApiError } from '../account/api.js'
 import type { RoomCrypto } from '../sync/VaultSocket.js'
 import { RoomHistory } from './RoomHistory.js'
 
@@ -90,19 +89,13 @@ export class VaultTimeline {
     /** The earliest moment the index replays to: 0 while it holds every change. */
     readonly reach: number,
     /** Changes of the index this device has no key for. */
-    readonly unreadable: number,
-    /** The server could not say when notes changed: their edits make no ticks. */
-    readonly withoutTimes = false
+    readonly unreadable: number
   ) {}
 
   static async load(deps: TimelineDeps): Promise<VaultTimeline> {
     const [history, times] = await Promise.all([
       RoomHistory.load(deps.api, indexRoom(deps.vaultId), deps.indexCrypto),
-      // A server before 0.8.11 cannot say: then only what the index shows makes ticks.
-      deps.api.frameTimes(deps.vaultId, 0).catch((error: unknown) => {
-        if (error instanceof ApiError && error.status === 404) return null
-        throw error
-      })
+      deps.api.frameTimes(deps.vaultId, 0)
     ])
     const initial: VaultPast = { notes: new Map(), files: new Map() }
     const events: EntryEvent[] = []
@@ -133,7 +126,7 @@ export class VaultTimeline {
       changedNotes.clear()
       changedFiles.clear()
     })
-    return new VaultTimeline(initial, events, paths, new Map(Object.entries(times?.rooms ?? {})), history.reach, history.unreadable, times === null)
+    return new VaultTimeline(initial, events, paths, new Map(Object.entries(times.rooms)), history.reach, history.unreadable)
   }
 
   /** Whether the index at `ts` can be told. */

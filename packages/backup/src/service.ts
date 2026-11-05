@@ -141,14 +141,14 @@ export async function listVaults(dataDir: string): Promise<PairedVault[]> {
         vaultId,
         vaultName: grant.vaultName,
         accountId: pairing.accountId,
-        accountName: grant.accountName ?? '',
+        accountName: grant.accountName,
         label: pairing.label,
         pairedAt: pairing.pairedAt,
-        decryptedFolder: pairing.decryptedFolder || `${pairing.accountId}/${vaultId}`,
+        decryptedFolder: pairing.decryptedFolder,
         lastRun: last ? { at: last.startedAt, ok: last.ok } : null
       })
     } catch {
-      // half written, or from before pairings: not a vault to list
+      // half written: not a vault to list
     }
   }
   return found
@@ -257,7 +257,7 @@ export class BackupService {
    */
   private async decryptedFolderFor(grant: BackupGrant, label: string): Promise<string> {
     const vault = vaultFolder(grant.vaultName)
-    const person = vaultFolder(grant.accountName?.trim() || label.trim() || grant.accountId.slice(0, 8))
+    const person = vaultFolder(grant.accountName.trim() || label.trim() || grant.accountId.slice(0, 8))
     const short = grant.accountId.slice(0, 8)
     const taken = new Set(Array.from(this.vaults, ([id, other]) => (id === grant.vaultId ? '' : other.pairing.decryptedFolder)))
     for (const candidate of [`${person}/${vault}`, `${person} (${short})/${vault}`, `${person} (${short})/${vault} (${grant.vaultId.slice(0, 8)})`]) {

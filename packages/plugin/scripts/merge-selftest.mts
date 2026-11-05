@@ -299,7 +299,7 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(await rejects(() => e2e.unseal(bobPrivate, bob.publicKey, box, 'epoch:doc:x#1')), 'and for nobody else')
   check(await rejects(() => e2e.unseal(alicePrivate, alice.publicKey, box, 'epoch:doc:x#2')), 'and only as what it was sealed for')
 
-  // Signing keys (0.9.3): the owner signs what it seals, contacts vouch for their keys.
+  // Signing keys: the owner signs what it seals.
   {
     const owner = await e2e.generateSigningKeys()
     const ownerSigning = await e2e.importSigningKey(owner.privateKey)
@@ -322,23 +322,21 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     check(swapped !== null && !(await e2e.verifySealed(owner.publicKey, 'doc:x', 1, aliceId, swapped)), 'a box swapped under the signature is caught')
     check(e2e.splitSealed(box) === null, 'a key sealed without a signature is told apart')
 
+    // An identity is both keys: a code's fingerprint covers the signing key too.
     const signing = await e2e.generateSigningKeys()
-    const forBob = await e2e.attestationMac(alicePrivate, bob.publicKey, aliceId, ownerId, signing.publicKey)
-    const checkedByBob = await e2e.attestationMac(bobPrivate, alice.publicKey, aliceId, ownerId, signing.publicKey)
-    check(forBob === checkedByBob, "a contact's word for its signing key checks out with the other's pinned key")
-    const carol = await e2e.generateIdentity()
-    const byStranger = await e2e.attestationMac(await e2e.importPrivateKey(carol.privateKey), bob.publicKey, aliceId, ownerId, signing.publicKey)
-    check(byStranger !== checkedByBob, 'and nobody else can make it')
+    const identity = await e2e.identityFingerprint(alice.publicKey, signing.publicKey)
     check(
-      (await e2e.attestationMac(bobPrivate, alice.publicKey, aliceId, ownerId, other.publicKey)) !== forBob,
-      'nor carry it over to another key'
+      e2e.toHex(identity) === e2e.toHex(await e2e.identityFingerprint(alice.publicKey, signing.publicKey)) &&
+        e2e.toHex(identity) !== e2e.toHex(await e2e.identityFingerprint(alice.publicKey, other.publicKey)) &&
+        e2e.toHex(identity) !== e2e.toHex(await e2e.identityFingerprint(bob.publicKey, signing.publicKey)),
+      "an identity's fingerprint changes with either of its keys"
     )
 
-    // Signed frames (0.9.4): the author signs inside the encryption; a writer carries the owner's certificate.
+    // Signed frames: the author signs inside the encryption; a writer carries the owner's certificate.
     const update = utf8('a change')
-    const byOwner = e2e.unpackFrame(await e2e.packSignedFrame(ownerSigning, 'doc:x', 3, ownerId, null, 1_790_000_000_000, update))
+    const byOwner = e2e.unpackFrame(await e2e.packSignedFrame(ownerSigning, 'doc:x', 3, ownerId, null, 1_790_000_000_000, update)) as e2e.OpenedFrame
     check(
-      byOwner.signed?.author === ownerId && byOwner.authorTs === 1_790_000_000_000 && e2e.toHex(byOwner.update) === e2e.toHex(update),
+      byOwner.author === ownerId && byOwner.cert === null && byOwner.authorTs === 1_790_000_000_000 && e2e.toHex(byOwner.update) === e2e.toHex(update),
       'a signed frame names its author and keeps clock and change'
     )
     check(await e2e.verifyFrame(owner.publicKey, 'doc:x', 3, byOwner), "the owner's frame holds under the owner's key")
@@ -351,27 +349,30 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     const writerSigning = await e2e.importSigningKey(writer.privateKey)
     const certSignature = e2e.fromBase64(await e2e.signWriterCert(ownerSigning, 'doc:x', 3, aliceId, writer.publicKey))
     const cert = { signingKey: writer.publicKey, signature: certSignature }
-    const byWriter = e2e.unpackFrame(await e2e.packSignedFrame(writerSigning, 'doc:x', 3, aliceId, cert, 1, update))
+    const byWriter = e2e.unpackFrame(await e2e.packSignedFrame(writerSigning, 'doc:x', 3, aliceId, cert, 1, update)) as e2e.OpenedFrame
     check(
-      byWriter.signed?.cert !== null &&
-        (await e2e.verifyWriterCert(owner.publicKey, 'doc:x', 3, aliceId, byWriter.signed?.cert as typeof cert)) &&
+      byWriter.cert !== null &&
+        (await e2e.verifyWriterCert(owner.publicKey, 'doc:x', 3, aliceId, byWriter.cert)) &&
         (await e2e.verifyFrame(writer.publicKey, 'doc:x', 3, byWriter)),
       "a writer's frame carries the owner's certificate, and holds under the key it names"
     )
+    check(!(await e2e.verifyFrame(writer.publicKey, 'doc:x', 3, { ...byWriter, author: ownerId })), 'and as its author only')
     check(
       !(await e2e.verifyWriterCert(owner.publicKey, 'doc:x', 4, aliceId, cert)) &&
         !(await e2e.verifyWriterCert(owner.publicKey, 'doc:x', 3, ownerId, cert)) &&
         !(await e2e.verifyWriterCert(owner.publicKey, 'doc:x', 3, aliceId, { ...cert, signingKey: other.publicKey })),
       'a certificate is for that writer, that key and that epoch only'
     )
-    check(e2e.unpackFrame(e2e.packFrame(5, update)).signed === null, 'a frame from before signatures is told apart')
-    const mark = await e2e.signLegacyMark(ownerSigning, 'doc:x', 41)
+    const plain = new Uint8Array(9 + update.length)
+    plain.set(update, 9)
+    plain[0] = 1
     check(
-      (await e2e.verifyLegacyMark(owner.publicKey, 'doc:x', mark)) === 41 &&
-        (await e2e.verifyLegacyMark(owner.publicKey, 'doc:y', mark)) === null &&
-        (await e2e.verifyLegacyMark(owner.publicKey, 'doc:x', mark.replace(/^41/, '99'))) === null,
-      "the owner's mark for unsigned frames holds for that room and seq only"
+      e2e.unpackFrame(plain.subarray(0, 40)) === null && e2e.unpackFrame(new Uint8Array(9 + update.length)) === null,
+      'a frame without a signature is no frame'
     )
+    const flagged = await e2e.packSignedFrame(ownerSigning, 'doc:x', 3, ownerId, null, 1, update)
+    flagged[9 + 16] = 1
+    check(e2e.unpackFrame(flagged.subarray(0, 9 + 16 + 1 + 64 + 65)) === null, 'nor one cut short behind its certificate')
   }
 
   const vaultKey = randomBytes(32)
@@ -422,9 +423,6 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     !tiesAscend({ '1': tie('a', 2), '2': tie('a', 1) }) && !tiesAscend({ '1': tie('a', 0.5) }),
     'a later note epoch tied to an earlier epoch of the same folder is not'
   )
-
-  const frame = e2e.unpackFrame(e2e.packFrame(1_790_000_000_123, utf8('update')))
-  check(frame.authorTs === 1_790_000_000_123 && fromUtf8(frame.update) === 'update', 'frames carry the author clock')
 
   // The salt: derived, not stored - from the server's id and the name.
   const salt = await e2e.accountSalt('server-a', 'Anna')
@@ -603,7 +601,8 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   const codes = new Map<string, { owner: string; redeemHash: string; usedBy?: string }>()
   const inbox = new Map<string, InboxItem[]>()
   const keysOf = new Map<string, string>()
-  const lie: { swapKey?: string } = {}
+  const signingKeysOf = new Map<string, string>()
+  const lie: { swapKey?: string; swapSigningKey?: string } = {}
   const deliver = (to: string, item: Omit<InboxItem, 'id' | 'at'>): void => {
     inbox.set(to, [...(inbox.get(to) ?? []), { ...item, id: Math.random().toString(36).slice(2), at: Date.now() }])
   }
@@ -614,7 +613,11 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     contactCode: async (codeId: string) => {
       const code = codes.get(codeId)
       if (!code) throw new Error('no such code')
-      return { owner: code.owner, publicKey: lie.swapKey ?? (keysOf.get(code.owner) as string) }
+      return {
+        owner: code.owner,
+        publicKey: lie.swapKey ?? (keysOf.get(code.owner) as string),
+        signingPublicKey: lie.swapSigningKey ?? (signingKeysOf.get(code.owner) as string)
+      }
     },
     redeemContact: async (request: { codeId: string; redeemKey: string; sealed: string }) => {
       const code = codes.get(request.codeId)
@@ -637,11 +640,23 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   })
   const person = async (name: string) => {
     const identity = await e2e.generateIdentity()
+    const signing = await e2e.generateSigningKeys()
     const accountId = e2e.toHex(e2e.randomBytes(16))
     keysOf.set(accountId, e2e.toBase64(identity.publicKey))
+    signingKeysOf.set(accountId, e2e.toBase64(signing.publicKey))
     const settings = new AccountSettings()
-    const me = { accountId, username: name, publicKey: identity.publicKey, privateKey: await e2e.importPrivateKey(identity.privateKey) }
+    const me = {
+      accountId,
+      username: name,
+      publicKey: identity.publicKey,
+      privateKey: await e2e.importPrivateKey(identity.privateKey),
+      signingPublicKey: signing.publicKey
+    }
     return { me, settings, contacts: new Contacts(apiFor(accountId) as never, me, settings) }
+  }
+  const pinnedSigning = (holder: { contacts: { signingKey(account: string): Uint8Array | null } }, account: string): string | undefined => {
+    const key = holder.contacts.signingKey(account)
+    return key ? e2e.toBase64(key) : undefined
   }
 
   const anna = await person('anna')
@@ -654,6 +669,11 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(
     e2e.toBase64(ben.contacts.publicKey(anna.me.accountId) ?? new Uint8Array()) === keysOf.get(anna.me.accountId),
     "and holds the other's key, pinned"
+  )
+  check(
+    pinnedSigning(ben, anna.me.accountId) === signingKeysOf.get(anna.me.accountId) &&
+      pinnedSigning(anna, ben.me.accountId) === signingKeysOf.get(ben.me.accountId),
+    "and the other's signing key, both ways"
   )
 
   // A second person with the same code: the server lets it through, anna's device does not.
@@ -676,14 +696,31 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     () => 'sent',
     (error: Error) => error.message
   )
-  check(swapped.includes('does not belong'), 'a key that does not match the code is refused before anything is sent', swapped)
+  check(swapped.includes('do not belong'), 'a key that does not match the code is refused before anything is sent', swapped)
   lie.swapKey = undefined
+  // Only the signing key swapped: whoever holds it could sign keys and frames in anna's name.
+  lie.swapSigningKey = e2e.toBase64((await e2e.generateSigningKeys()).publicKey)
+  const fifthCode = await anna.contacts.createCode()
+  const swappedSigning = await eve.contacts.redeem(fifthCode).then(
+    () => 'sent',
+    (error: Error) => error.message
+  )
+  check(swappedSigning.includes('do not belong'), 'so is a signing key that does not', swappedSigning)
+  lie.swapSigningKey = undefined
 
   // A server inventing a request: it has no code secret, so no valid MAC.
   const forger = await person('mallory')
   const forged = await e2e.seal(
     anna.me.publicKey,
-    e2e.utf8(JSON.stringify({ account: forger.me.accountId, publicKey: keysOf.get(forger.me.accountId), name: 'ben', mac: '00'.repeat(32) })),
+    e2e.utf8(
+      JSON.stringify({
+        account: forger.me.accountId,
+        publicKey: keysOf.get(forger.me.accountId),
+        signingKey: signingKeysOf.get(forger.me.accountId),
+        name: 'ben',
+        mac: '00'.repeat(32)
+      })
+    ),
     e2e.contactContext([...codes.keys()].at(-1) as string, 'request')
   )
   const forgedCodeId = [...codes.keys()].at(-1) as string
@@ -698,20 +735,37 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   inbox.set(anna.me.accountId, [])
   const fakeAnswer = await e2e.seal(
     carl.me.publicKey,
-    e2e.utf8(JSON.stringify({ account: anna.me.accountId, publicKey: e2e.toBase64(fake.publicKey), name: 'anna', mac: '00'.repeat(32) })),
+    e2e.utf8(
+      JSON.stringify({
+        account: anna.me.accountId,
+        publicKey: e2e.toBase64(fake.publicKey),
+        signingKey: e2e.toBase64((await e2e.generateSigningKeys()).publicKey),
+        name: 'anna',
+        mac: '00'.repeat(32)
+      })
+    ),
     e2e.contactContext([...codes.keys()].at(-1) as string, 'reply')
   )
   deliver(carl.me.accountId, { kind: 'reply', from: anna.me.accountId, codeId: [...codes.keys()].at(-1) as string, sealed: fakeAnswer })
   await carl.contacts.processInbox()
   check(
     carl.contacts.name(anna.me.accountId) !== 'anna' &&
-      e2e.toBase64(carl.contacts.publicKey(anna.me.accountId) ?? new Uint8Array()) === keysOf.get(anna.me.accountId),
-    "a forged answer neither names the contact nor changes the key checked against the code"
+      e2e.toBase64(carl.contacts.publicKey(anna.me.accountId) ?? new Uint8Array()) === keysOf.get(anna.me.accountId) &&
+      pinnedSigning(carl, anna.me.accountId) === signingKeysOf.get(anna.me.accountId),
+    "a forged answer neither names the contact nor changes the keys checked against the code"
   )
   // The same with anna's real key: only the MAC can tell it is not hers.
   const namedAnswer = await e2e.seal(
     carl.me.publicKey,
-    e2e.utf8(JSON.stringify({ account: anna.me.accountId, publicKey: keysOf.get(anna.me.accountId), name: 'not anna', mac: '00'.repeat(32) })),
+    e2e.utf8(
+      JSON.stringify({
+        account: anna.me.accountId,
+        publicKey: keysOf.get(anna.me.accountId),
+        signingKey: signingKeysOf.get(anna.me.accountId),
+        name: 'not anna',
+        mac: '00'.repeat(32)
+      })
+    ),
     e2e.contactContext([...codes.keys()].at(-1) as string, 'reply')
   )
   deliver(carl.me.accountId, { kind: 'reply', from: anna.me.accountId, codeId: [...codes.keys()].at(-1) as string, sealed: namedAnswer })

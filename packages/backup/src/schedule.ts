@@ -82,7 +82,7 @@ export function nextAt(at: BackupAt, after: number): number {
 /** A schedule as the settings hold it, or null when it is not one. */
 export function atOf(value: unknown): BackupAt | null {
   if (!value || typeof value !== 'object') return null
-  const { minutes, weekday, weekdays, zone } = value as Partial<BackupAt>
+  const { minutes, weekdays, zone } = value as Partial<BackupAt>
   if (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < 0 || minutes > 1439) return null
   if (typeof zone !== 'string' || zone === '') return null
   const at: BackupAt = { minutes, zone }
@@ -91,8 +91,6 @@ export function atOf(value: unknown): BackupAt | null {
     // Days out of range dropped; none left is every day.
     const valid = weekdays.filter(day)
     if (valid.length > 0 && valid.length < 7) at.weekdays = scheduleDays({ weekdays: valid })
-  } else if (day(weekday)) {
-    at.weekdays = [weekday]
   }
   return at
 }

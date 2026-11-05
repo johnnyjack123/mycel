@@ -20,13 +20,10 @@ import {
   type BlobPurgeResponse,
   type BlobTouchResponse,
   type BlobUsageResponse,
-  type AttestRequest,
-  type AttestationsResponse,
   type AuthConfigResponse,
-  type LegacyMarkRequest,
   type ResealRequest,
+  type RotateRequest,
   type SealedEpochsResponse,
-  type SigningKeyRequest,
   type ChangedResponse,
   type TimesResponse,
   type CompactableResponse,
@@ -262,8 +259,7 @@ export function createHttpApp(
     registration: config.registration,
     protocol: PROTOCOL_VERSION,
     serverId: await accounts.serverId(),
-    maxFileBytes: blobs.limits.maxFileBytes,
-    features: ['recovery', 'totp', 'backup']
+    maxFileBytes: blobs.limits.maxFileBytes
   }))
 
   app.post(API.register, async (request, reply) =>
@@ -278,11 +274,10 @@ export function createHttpApp(
       const account = await accounts.login(((request.body ?? {}) as Partial<LoginRequest>).loginKey)
       if (!account) return null
       if (!account.totp) return session(account.accountId)
-      // The right password, but no session and no keys yet. A plugin from
-      // before 0.6 shows the error and nothing else.
+      // The right password, but no session and no keys yet.
       void reply.code(403)
       return {
-        error: 'This account signs in with a code from an authenticator app. Update Obsidian Connect to 0.6.2 or later.',
+        error: 'This account signs in with a code from an authenticator app.',
         secondFactor: 'totp',
         challenge: await tokens.challenge(account.accountId, sessionOf(account))
       }
@@ -497,14 +492,6 @@ export function createHttpApp(
     return accounts.addVault(accountId, body.vaultId, body.sealedName, body.wrappedKey)
   })
 
-  // Set once, by the first device of the account on 0.9.3; refused when there is one.
-  app.post(`${API.account}/signing-key`, async (request, reply) => {
-    const accountId = await user(request, reply)
-    if (!accountId) return undefined
-    const body = (request.body ?? {}) as Partial<SigningKeyRequest>
-    return accounts.setSigningKey(accountId, body.signingPublicKey, body.wrappedSigningKey)
-  })
-
   // --- contacts ------------------------------------------------------------------
 
   app.post(`${API.contacts}/codes`, async (request, reply) => {
@@ -521,7 +508,7 @@ export function createHttpApp(
     const owner = await contacts.codeOwner(request.params.codeId)
     const account = owner ? await accounts.get(owner) : undefined
     if (!account) return reply.code(404).send({ error: 'this code is not valid (any more)' })
-    const info: ContactCodeInfo = { owner: account.accountId, publicKey: account.publicKey }
+    const info: ContactCodeInfo = { owner: account.accountId, publicKey: account.publicKey, signingPublicKey: account.signingPublicKey }
     return info
   })
 
@@ -569,21 +556,6 @@ export function createHttpApp(
     return { contacts: await contacts.contactsOf(accountId) }
   })
 
-  app.post(`${API.contacts}/attest`, async (request, reply) => {
-    const accountId = await user(request, reply)
-    if (!accountId) return undefined
-    const body = (request.body ?? {}) as Partial<AttestRequest>
-    await contacts.attest(accountId, body.to, body.signingPublicKey, body.mac)
-    hub.notify(body.to as string, 'contact-key', { account: accountId })
-    return { ok: true }
-  })
-
-  app.get(`${API.contacts}/attestations`, async (request, reply): Promise<AttestationsResponse | undefined> => {
-    const accountId = await user(request, reply)
-    if (!accountId) return undefined
-    return { attestations: await contacts.attestationsFor(accountId) }
-  })
-
   app.post(`${API.contacts}/remove`, async (request, reply) => {
     const accountId = await user(request, reply)
     if (!accountId) return undefined
@@ -618,6 +590,13 @@ export function createHttpApp(
     const accountId = await user(request, reply)
     if (!accountId) return undefined
     await hub.revoke(accountId, request.body as RevokeRequest)
+    return { ok: true }
+  })
+
+  app.post(`${API.shares}/rotate`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    await hub.rotateNote(accountId, request.body as RotateRequest)
     return { ok: true }
   })
 
@@ -745,13 +724,6 @@ export function createHttpApp(
     const accountId = await user(request, reply)
     if (!accountId) return undefined
     return hub.sealedEpochs(accountId, request.params.room)
-  })
-
-  app.post<{ Params: RoomParams }>(`${API.keys}/:room/mark`, async (request, reply) => {
-    const accountId = await user(request, reply)
-    if (!accountId) return undefined
-    await hub.setLegacyMark(accountId, request.params.room, ((request.body ?? {}) as Partial<LegacyMarkRequest>).mark)
-    return { ok: true }
   })
 
   app.post<{ Params: RoomParams }>(`${API.keys}/:room/reseal`, async (request, reply) => {

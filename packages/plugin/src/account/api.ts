@@ -3,11 +3,9 @@ import {
   type AcceptRequest,
   type AccountBundle,
   type AttachBlobsRequest,
-  type AttestRequest,
-  type AttestationsResponse,
   type ResealRequest,
+  type RotateRequest,
   type SealedEpochsResponse,
-  type SigningKeyRequest,
   type AuthConfigResponse,
   type BackupKeyCreated,
   type BackupKeyDeleteRequest,
@@ -213,28 +211,12 @@ export class ConnectApi {
     return this.call('POST', API.vaults, request)
   }
 
-  setSigningKey(request: SigningKeyRequest): Promise<AccountBundle> {
-    return this.call('POST', `${API.account}/signing-key`, request)
-  }
-
-  attest(request: AttestRequest): Promise<unknown> {
-    return this.call('POST', `${API.contacts}/attest`, request)
-  }
-
-  attestations(): Promise<AttestationsResponse> {
-    return this.call('GET', `${API.contacts}/attestations`)
-  }
-
   sealedEpochs(room: string): Promise<SealedEpochsResponse> {
     return this.call('GET', `${API.keys}/${encodeURIComponent(room)}/sealed`)
   }
 
   reseal(request: ResealRequest): Promise<unknown> {
     return this.call('POST', `${API.keys}/${encodeURIComponent(request.room)}/reseal`, request)
-  }
-
-  setLegacyMark(room: string, mark: string): Promise<unknown> {
-    return this.call('POST', `${API.keys}/${encodeURIComponent(room)}/mark`, { mark })
   }
 
   addContactCode(request: ContactCodeRequest): Promise<unknown> {
@@ -287,6 +269,10 @@ export class ConnectApi {
 
   revoke(request: RevokeRequest): Promise<unknown> {
     return this.call('POST', `${API.shares}/revoke`, request)
+  }
+
+  rotateNote(request: RotateRequest): Promise<unknown> {
+    return this.call('POST', `${API.shares}/rotate`, request)
   }
 
   leave(docId: string): Promise<unknown> {

@@ -10,9 +10,7 @@ import type { RoomCrypto } from '../sync/VaultSocket.js'
 //
 // A compaction folds the oldest changes into a snapshot, which keeps their
 // result but not when each was made: a moment before the snapshot is out of
-// reach. Since 0.7.8 a snapshot carries the time of the newest change it
-// holds; one made before says when the compaction ran, which is later, so its
-// reach errs on the safe side.
+// reach. A snapshot carries the time of the newest change it holds.
 
 export interface HistoryStep {
   seq: number
@@ -25,19 +23,19 @@ export interface ReadLog {
   base: HistoryStep | null
   /** By the author's time, then by seq. */
   steps: HistoryStep[]
-  /** Frames, or the snapshot, this device has no key for. */
+  /** Frames, or the snapshot, this device has no key for or does not take. */
   unreadable: number
 }
 
-/** A room's readable log, decrypted. */
+/** A room's readable log, decrypted - only what the live room would take, as its signatures say. */
 export async function readLog(api: { log(room: string): Promise<LogResponse> }, room: string, crypto: RoomCrypto): Promise<ReadLog> {
   const log = await api.log(room)
   let base: HistoryStep | null = null
   let unreadable = 0
   if (log.snapshot) {
     const key = await crypto.key(log.snapshot.epoch)
-    if (key) {
-      const snapshot = unpackFrame(await decrypt(key, fromBase64(log.snapshot.data), snapshotAad(room, log.snapshot.epoch)))
+    const snapshot = key ? unpackFrame(await decrypt(key, fromBase64(log.snapshot.data), snapshotAad(room, log.snapshot.epoch))) : null
+    if (snapshot && (await crypto.check('snapshot', log.snapshot.uptoSeq, log.snapshot.epoch, snapshot)) === 'ok') {
       base = { seq: log.snapshot.uptoSeq, ts: snapshot.authorTs, update: snapshot.update }
     } else {
       unreadable += 1
@@ -51,6 +49,10 @@ export async function readLog(api: { log(room: string): Promise<LogResponse> }, 
       continue
     }
     const change = unpackFrame(await decrypt(key, fromBase64(frame.data), frameAad(room, frame.epoch)))
+    if (!change || (await crypto.check('frame', frame.seq, frame.epoch, change)) !== 'ok') {
+      unreadable += 1
+      continue
+    }
     steps.push({ seq: frame.seq, ts: change.authorTs, update: change.update })
   }
   steps.sort((a, b) => a.ts - b.ts || a.seq - b.seq)

@@ -390,23 +390,11 @@ try {
   await contacts.pair(alice, bob)
   await contacts.pair(alice, carol)
 
-  // --- signing keys (0.9.3) ----------------------------------------------------------------
+  // --- signing keys: every account has one, from its start ---------------------------------
   {
-    const signingPublicKey = b64(65)
-    const mac = 'ab'.repeat(32)
-    check(
-      (await status(() => accounts.setSigningKey(bob, b64(65), b64(64)))) === 409,
-      'an account that has a signing key keeps it: a token alone does not replace it'
-    )
-    check((await status(() => contacts.attest(alice, dave, signingPublicKey, mac))) === 403, 'a signing key is vouched for to contacts only')
-    check((await status(() => contacts.attest(alice, bob, signingPublicKey, 'not a mac'))) === 400, 'and with a MAC')
-    await contacts.attest(alice, bob, signingPublicKey, mac)
-    const forBob = await contacts.attestationsFor(bob)
-    check(
-      forBob.length === 1 && forBob[0]?.from === alice && forBob[0].signingPublicKey === signingPublicKey && forBob[0].mac === mac,
-      'the contact finds it, as it was given'
-    )
-    check((await contacts.attestationsFor(carol)).length === 0, 'nobody else does')
+    const { signingPublicKey: _key, ...unsigned } = keyMaterial()
+    check((await status(() => accounts.register(unsigned as never, 'open'))) === 400, 'an account is not made without a signing key')
+    check((await status(() => accounts.register({ ...keyMaterial(), signingPublicKey: 'short' }, 'open'))) === 400, 'nor with one that is no key')
   }
 
   // --- blobs: the encrypted contents of attachments -------------------------------------
@@ -554,7 +542,7 @@ try {
     {
       const erinKeys = keyMaterial()
       const erin = (await accounts.register(erinKeys, 'open')).accountId
-      const legacy = await new SignJWT({ scope: 'user' })
+      const withoutGeneration = await new SignJWT({ scope: 'user' })
         .setProtectedHeader({ alg: 'HS256' })
         .setSubject(erin)
         .setIssuer('obsidian-connect')
@@ -562,8 +550,8 @@ try {
         .setExpirationTime('1h')
         .sign(new TextEncoder().encode('rooms-selftest'))
       check(
-        (await app.inject({ method: 'GET', url: '/account', headers: { authorization: `Bearer ${legacy}` } })).statusCode === 200,
-        'a token from before generations still works: updating the server signs nobody out'
+        (await app.inject({ method: 'GET', url: '/account', headers: { authorization: `Bearer ${withoutGeneration}` } })).statusCode === 401,
+        'a token that names no session generation is refused'
       )
       const before = await auth(erin)
       const otherDevice = new Client(erin, hexId())
@@ -580,10 +568,6 @@ try {
       check(changed.statusCode === 200, 'the password is changed', changed.body)
       check((await app.inject({ method: 'GET', url: '/account', headers: before })).statusCode === 401, 'afterwards the token from before is refused')
       check((await app.inject({ method: 'POST', url: '/auth/refresh', headers: before })).statusCode === 401, 'and cannot be refreshed')
-      check(
-        (await app.inject({ method: 'GET', url: '/account', headers: { authorization: `Bearer ${legacy}` } })).statusCode === 401,
-        'nor can one from before generations'
-      )
       const fresh = { authorization: `Bearer ${(changed.json() as { token: string }).token}` }
       check((await app.inject({ method: 'GET', url: '/account', headers: fresh })).statusCode === 200, 'the device that changed it carries on with its new token')
       const refreshed = await app.inject({ method: 'POST', url: '/auth/refresh', headers: fresh })
@@ -596,7 +580,6 @@ try {
       check(!bystander.take().some((message) => message.type === 'close'), "and nobody else's")
 
       // The recovery over HTTP: the code alone, guarded like a sign-in.
-      check(((config.json() as { features?: string[] }).features ?? []).includes('recovery'), 'the server says it takes recovery codes')
       const freshNow = async (): Promise<Record<string, string>> => auth(erin)
       const code = b64(32)
       const record = { recoveryKey: code, wrappedPrivateKey: b64(64), wrappedAccountSecret: b64(48) }
@@ -657,7 +640,6 @@ try {
     {
       let clock = 1_900_000_000_000
       const app = createHttpApp(loadConfig({}), tokens, accounts, httpHub, contacts, again, { logger: false, paceMs: 0, now: () => clock })
-      check(((config.json() as { features?: string[] }).features ?? []).includes('totp'), 'the server says it offers two-factor sign-in')
       const ivyKeys = keyMaterial()
       const ivy = (await accounts.register(ivyKeys, 'open')).accountId
       const secret = randomBytes(20)
@@ -843,7 +825,7 @@ try {
   check(bobCatchUp[0]?.type === 'frame' && bobCatchUp[0].seq === 1, 'with history, the recipient gets every frame', bobCatchUp)
   check((await hub.keys(bob, room)).keys['0'] === 'k0', 'and the keys sealed to them')
   check(Object.keys((await hub.keys(alice, room)).keys).length === 0, 'the owner needs no sealed keys')
-  // Sealing anew, signed (0.9.3): only what each member holds, only by the owner.
+  // Sealing anew: only what each member holds, only by the owner.
   check((await status(() => hub.sealedEpochs(bob, room))) === 403, "only the owner asks which epochs the members hold")
   check((await hub.sealedEpochs(alice, room)).members[bob]?.join() === '0', 'the owner learns which epochs a member holds')
   check(
@@ -856,6 +838,23 @@ try {
   await hub.push(bobDevice, room, 1, 0, bytes('from bob'))
   check(bobDevice.take()[0]?.type === 'ack' && a1.take()[0]?.data === 'from bob', 'a writer pushes, the owner receives')
   a2.take()
+
+  // A note to its next epoch, everyone keeping access: how a change of role takes effect.
+  {
+    const turning = hexId()
+    const turningRoom = `doc:${turning}`
+    await hub.subscribe(a1, turningRoom, 0)
+    a1.take()
+    await hub.share(alice, { docId: turning, account: bob, role: 'write', withHistory: true, keys: { '0': 'k0' }, title: 't' })
+    bobDevice.take()
+    const rotate = (account: string, epoch: number, keys: Record<string, string>) => hub.rotateNote(account, { docId: turning, rotation: { epoch, keys } })
+    check((await status(() => rotate(bob, 1, { [bob]: 'k1' }))) === 403, 'only the owner moves a note to its next epoch')
+    check((await status(() => rotate(alice, 2, { [bob]: 'k2' }))) === 409, 'to the next one only')
+    check((await status(() => rotate(alice, 1, {}))) === 400, 'with a key for everyone in it')
+    await rotate(alice, 1, { [bob]: 'k1' })
+    const held = await hub.keys(bob, turningRoom)
+    check(held.epoch === 1 && held.keys['0'] === 'k0' && held.keys['1'] === 'k1', 'everyone keeps what they held and gets the new key', held)
+  }
 
   // --- sharing without history ---------------------------------------------------
   check(

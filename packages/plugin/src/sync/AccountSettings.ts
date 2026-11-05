@@ -39,11 +39,9 @@ export interface RecoveryDecision {
 }
 
 const RECOVERY_KEY = 'recovery'
-// Sealed anew with writers' certificates and logs marked (0.9.4); 0.9.3 kept its own key, done again here.
-const RESEALED_KEY = 'keysResealed2'
 const ROLE_KEY = 'role:'
 
-/** Someone this account shares with. Their key is pinned when the contact is made. */
+/** Someone this account shares with. Their keys are pinned when the contact is made. */
 export interface Contact {
   accountId: string
   /** The name they gave; empty until their device answered. */
@@ -51,11 +49,8 @@ export interface Contact {
   /** What this account calls them, if it renamed them. */
   localName?: string
   publicKey: string
+  signingKey: string
   addedAt: number
-  /** Their signing key (0.9.3), pinned once their attestation checked out against `publicKey`. */
-  signingKey?: string
-  /** The signing key of this account it last attested to them - attested again when that changes. */
-  attested?: string
 }
 
 /** A code this account handed out; its secret opens the redemption. */
@@ -76,6 +71,7 @@ export interface PendingContact {
   secret: string
   owner: string
   publicKey: string
+  signingKey: string
   requestedAt: number
 }
 
@@ -88,11 +84,7 @@ export interface RollbackRecord {
   to: number
   /** '' for the whole vault; the note's path for a note. */
   folder: string
-  /**
-   * A note restored on its own (0.8.16); absent for the vault or a folder. Its
-   * path is in `folder`, so a device before 0.8.16 lists it by that and marks no
-   * folder's timeline with it.
-   */
+  /** A note restored on its own, its path in `folder`; absent for the vault or a folder. */
   kind?: 'note'
   /** `running` on a record whose device went away meanwhile: it broke off. */
   state: 'running' | 'done' | 'failed'
@@ -178,24 +170,10 @@ export class AccountSettings {
   }
 
   /**
-   * When this vault's shares had their keys sealed anew, signed and with the
-   * writers' certificates, and their logs marked (0.9.4) - once, by whichever
-   * device of the account got there first.
-   */
-  keysResealedAt(): number | null {
-    const value = this.map.get(RESEALED_KEY)
-    return typeof value === 'number' ? value : null
-  }
-
-  setKeysResealedAt(at: number): void {
-    this.doc.transact(() => this.map.set(RESEALED_KEY, at), 'local')
-  }
-
-  /**
    * Who may write in a note or folder of this account's, as this account
-   * decided it (0.9.4): the writers' certificates are issued by this record,
-   * not by the server's word - which could make a reader a writer at the next
-   * rotation. Null where nothing was recorded (shares from before).
+   * decided it: the writers' certificates are issued by this record, not by
+   * the server's word - which could make a reader a writer at the next
+   * rotation. Null where nothing is recorded.
    */
   shareRole(room: string, account: string): ShareRole | null {
     const value = this.map.get(`${ROLE_KEY}${room}|${account}`)

@@ -403,6 +403,23 @@ touches a device.
   themselves: yes, a licence binds those who receive the code, not its author (with code
   others contributed, theirs needs their consent).
 
+## Decided (the user, 2026-11-05)
+
+- **Nothing kept for data from before** ("da das aktuell noch nicht in Production ist, kann
+  eigentlich aller Backward-Compatible-Kram raus"): the user will start once afresh - a new
+  data folder, new accounts, contacts made anew. 0.9.5 removes every such path.
+- **S2a: the identity too** - contacts confirm the new one with a new friend code.
+- **S2b: the files uploaded again** under the new key - no key generations, no exceptions.
+- **S2c: built now**, before the review: the review goes over everything once it is all built
+  ("weil wenn du das nach dem Audit einbaust, ist das wieder eine Stelle, wo potentiell ein
+  Fehler stecken kann").
+- **N1: *Mycel*.** N2 follows from the fresh start: everything renamed, the internal labels
+  too (the salt's label, `localStorage` keys, IndexedDB names, the tokens' issuer, restic's
+  host and tag, the environment variables) - nothing has to stay readable. The repository's
+  name on GitHub is the user's to change.
+- **A: no audit agent from this chat.** The user sends one in a new chat, focused on the
+  audit alone, once everything here is done.
+
 ## Built
 
 - **0.9.0** - S finding 1 (above).
@@ -440,5 +457,12 @@ touches a device.
   joins a shared folder's share, and once for existing shares. Not checked: the Time Machine's
   and the history view's replays (they read what the server holds, as before) and the backup
   server. The replay or drop of a frame within an epoch (finding 4) stays as described.
-- **S2 is not built**: thought through, it needs three decisions of the user (S2a to S2c,
-  "S2 thought through" above).
+- **0.9.5** - the clean slate. Contacts pin both keys when they are made: the friend code
+  carries a fingerprint over the sealing and the signing key, both introductions carry both,
+  and redeeming a contact's code again replaces what is pinned for them (S2's way to confirm a
+  new identity). The attestations, the legacy marks, `packFrame` and the server's word on
+  roles are gone; every change of role moves the room to a new epoch (`POST /shares/rotate`
+  for a note), so a new writer's certificate is in the key before the server lets them write.
+  The Time Machine's and the history view's replays check signatures now; the backup server
+  still does not (`docs/PROGRESS.md`, known issues). Protocol 9.
+- **S2 is not built yet** - 0.9.6, as decided on 2026-11-05.
