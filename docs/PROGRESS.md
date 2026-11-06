@@ -360,6 +360,10 @@ user's call, as with the earlier branches.
   reaches P1" failed on 2026-10-16 and 2026-10-23: a race in the fork on return, fixed
   in 0.8.7 (CHANGELOG). If it fails again, its log shows `merge (no common base,
   union)` for `Shared/Shared.md` - then the base did not move along some other way.
+  It failed again in CI on `main` on 2026-11-06 (0.9.7's merge; passed on rerun), without
+  that line: P2, back, logs "adopt-local, file 48 chars, note 19, base 19" and "carries on
+  as 8bff2dba, 128 B held here", then "merged 1 duplicate(s)" twice - and P1 keeps "from
+  anna\nand more\n" while P2 has its own "and less" text. For the audit.
 - `test:folders`' checks "a file brought back from the trash is back for everyone in the
   folder" and "and the folder does not delete it again" failed in CI on `main` on
   2026-10-29, 2026-11-02 and 2026-11-03 (passed on rerun, and locally): the owner restores
