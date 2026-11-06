@@ -7,7 +7,7 @@ import {
   type BackupServerSetting,
   type BackupTaskSetting,
   type ShareRole
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 
 // Settings that must be the same on every device of an account travel in a
 // document of their own, next to the vault index. History retention above

@@ -55,16 +55,16 @@ export class TimeMachineBar {
     private readonly handlers: BarHandlers,
     overview: boolean
   ) {
-    this.el = parent.createDiv({ cls: 'connect-tm-bar-top' })
-    const icon = this.el.createSpan({ cls: 'connect-tm-bar-icon' })
+    this.el = parent.createDiv({ cls: 'mycel-tm-bar-top' })
+    const icon = this.el.createSpan({ cls: 'mycel-tm-bar-icon' })
     setIcon(icon, 'history')
-    const text = this.el.createDiv({ cls: 'connect-tm-bar-text' })
-    this.title = text.createDiv({ cls: 'connect-tm-bar-title' })
-    const line = text.createDiv({ cls: 'connect-tm-bar-line2' })
-    this.moment = line.createSpan({ cls: 'connect-tm-bar-moment' })
-    this.detail = line.createSpan({ cls: 'connect-tm-bar-detail' })
+    const text = this.el.createDiv({ cls: 'mycel-tm-bar-text' })
+    this.title = text.createDiv({ cls: 'mycel-tm-bar-title' })
+    const line = text.createDiv({ cls: 'mycel-tm-bar-line2' })
+    this.moment = line.createSpan({ cls: 'mycel-tm-bar-moment' })
+    this.detail = line.createSpan({ cls: 'mycel-tm-bar-detail' })
     this.legend = line.createSpan()
-    this.buttons = this.el.createDiv({ cls: 'connect-tm-bar-buttons' })
+    this.buttons = this.el.createDiv({ cls: 'mycel-tm-bar-buttons' })
     if (overview) {
       const list = this.buttons.createEl('button', { cls: 'clickable-icon', attr: { 'aria-label': 'What differs from now' } })
       setIcon(list, 'list-tree')
@@ -82,22 +82,22 @@ export class TimeMachineBar {
     this.detail.setText([state.detail, state.busy ?? state.progress ?? ''].filter(Boolean).join(' · '))
     this.legend.empty()
     const swatch = (cls: string, text: string): void => {
-      const item = this.legend.createSpan({ cls: 'connect-tm-legend' })
-      item.createSpan({ cls: `connect-tm-legend-swatch ${cls}` })
+      const item = this.legend.createSpan({ cls: 'mycel-tm-legend' })
+      item.createSpan({ cls: `mycel-tm-legend-swatch ${cls}` })
       item.appendText(text)
     }
     if (state.legend.marks) swatch('is-mark', 'before an earlier rollback or restore')
     if (state.legend.backups) swatch('is-backup', 'a backup')
-    this.buttons.querySelectorAll('.connect-tm-bar-action').forEach((el) => el.remove())
-    const marks = this.buttons.createEl('button', { cls: 'connect-tm-bar-action', text: state.marks ? 'Changes: shown' : 'Changes: hidden' })
+    this.buttons.querySelectorAll('.mycel-tm-bar-action').forEach((el) => el.remove())
+    const marks = this.buttons.createEl('button', { cls: 'mycel-tm-bar-action', text: state.marks ? 'Changes: shown' : 'Changes: hidden' })
     marks.toggleClass('is-active', state.marks)
     marks.onclick = () => this.handlers.toggleMarks(!state.marks)
     if (state.restore) {
-      const restore = this.buttons.createEl('button', { cls: 'connect-tm-bar-action mod-warning', text: 'Restore this version' })
+      const restore = this.buttons.createEl('button', { cls: 'mycel-tm-bar-action mod-warning', text: 'Restore this version' })
       restore.disabled = state.busy !== null
       restore.onclick = () => this.handlers.apply()
     }
-    const abort = this.buttons.createEl('button', { cls: 'connect-tm-bar-action mod-cta', text: 'Abort', attr: { 'aria-label': 'Put every file back as it was, unlock the vault and sync again' } })
+    const abort = this.buttons.createEl('button', { cls: 'mycel-tm-bar-action mod-cta', text: 'Abort', attr: { 'aria-label': 'Put every file back as it was, unlock the vault and sync again' } })
     abort.disabled = state.busy !== null
     abort.onclick = () => this.handlers.backToNow()
   }

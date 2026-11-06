@@ -12,11 +12,11 @@ import type {
   RegistrationMode,
   ReplaceKeysRequest,
   VaultRecord
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 import { TOTP_SECRET_BYTES, totpMatch } from './totp.js'
 
 // Accounts live in one JSON file. The server and the CLI (`docker exec …
-// obsidian-connect invite`) both write it, so every change re-reads the file
+// mycel invite`) both write it, so every change re-reads the file
 // first and replaces it atomically, and the server reloads it when it changed.
 //
 // The server knows no names. An account is a random id; it is found by the

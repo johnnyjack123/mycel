@@ -47,7 +47,7 @@ import {
   type VaultLockKind,
   type VaultLockRequest,
   type VaultLockTaken
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 import { isAccountId, type AccountStore } from './accounts.js'
 import type { ContactStore } from './contacts.js'
 import type { FolderKept, ForkStore } from './forks.js'
@@ -225,7 +225,7 @@ export class RoomHub {
       stored = JSON.parse(await readFile(this.locksFile, 'utf8')) as typeof stored
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
-      console.error('[obsidian-connect] the vault locks kept before the restart could not be read; none is held', error)
+      console.error('[mycel] the vault locks kept before the restart could not be read; none is held', error)
       return
     }
     const now = Date.now()
@@ -242,7 +242,7 @@ export class RoomHub {
     const json = JSON.stringify(stored, null, 2)
     this.lockWrites = this.lockWrites
       .then(() => writeDurable(this.locksFile, json))
-      .catch((error: unknown) => console.error('[obsidian-connect] keeping the vault locks failed', error))
+      .catch((error: unknown) => console.error('[mycel] keeping the vault locks failed', error))
   }
 
   private startLockSweep(): void {
@@ -719,12 +719,12 @@ export class RoomHub {
       frame = await open.log.append(epoch, data)
     } catch (error) {
       // Not acknowledged, so the device still has it: it sends it again once it is back.
-      console.error(`[obsidian-connect] ${room}: a frame could not be written; the connection is closed so its device sends it again`, error)
+      console.error(`[mycel] ${room}: a frame could not be written; the connection is closed so its device sends it again`, error)
       client.close(CLOSE_WRITE_FAILED, 'the server could not store a change')
       return
     }
     if (this.options.logUpdates) {
-      console.info(`[obsidian-connect] ${room}: #${frame.seq} ${data.length}B -> ${open.subscribers.size - 1} peer(s)`)
+      console.info(`[mycel] ${room}: #${frame.seq} ${data.length}B -> ${open.subscribers.size - 1} peer(s)`)
     }
     client.sendAck(room, ref, frame.seq)
     for (const subscriber of open.subscribers) if (subscriber !== client) subscriber.sendFrame(room, frame)
@@ -935,7 +935,7 @@ export class RoomHub {
     try {
       await keep()
     } catch (error) {
-      console.error(`[obsidian-connect] keeping ${room} for ${account} failed; their devices fork from what they hold`, error)
+      console.error(`[mycel] keeping ${room} for ${account} failed; their devices fork from what they hold`, error)
     }
   }
 
@@ -1197,8 +1197,10 @@ export class RoomHub {
    * with nothing in it; null while there is none.
    */
   private startOf(meta: RoomMeta): number | null {
-    if (this.headOf(meta) === 0) return 0
-    const since = meta.epochSince ?? 0
+    const head = this.headOf(meta)
+    if (head === 0) return 0
+    // As `startSnapshot` takes them: a frame counted when the epoch moved that never landed does not count.
+    const since = Math.min(meta.epochSince ?? 0, head)
     const found = meta.snapshots
       .filter((snapshot) => snapshot.epoch === meta.epoch && snapshot.uptoSeq >= since)
       .reduce((max, snapshot) => Math.max(max, snapshot.uptoSeq), -1)
@@ -1418,9 +1420,17 @@ export class RoomHub {
     if (kind === 'doc' && !meta.folder) throw new HubError(400, 'the note is not in a shared folder')
     if (request.epoch !== meta.epoch) throw new HubError(409, 'encrypt it under the current epoch')
     const uptoSeq = request.uptoSeq
-    if (!Number.isInteger(uptoSeq) || uptoSeq < 1 || uptoSeq < (meta.epochSince ?? 0) || uptoSeq > open.log.headSeq) {
-      throw new HubError(409, `the starting point (#${uptoSeq}) does not fit the log (epoch from #${meta.epochSince ?? 0}, head #${open.log.headSeq}); try again`)
+    const head = open.log.headSeq
+    // It holds every frame of an earlier epoch: those on the disk, and those
+    // still being written when the epoch moved (`epochSince` counted them). A
+    // frame counted then that never landed in this log - the head is behind
+    // it - is no frame anyone has to read.
+    const since = Math.min(meta.epochSince ?? 0, head)
+    const older = open.log.frames.reduce((last, frame) => (frame.epoch < meta.epoch ? Math.max(last, frame.seq) : last), meta.compactedUpTo)
+    if (!Number.isInteger(uptoSeq) || uptoSeq < 1 || uptoSeq < Math.max(since, older) || uptoSeq > head) {
+      throw new HubError(409, `the starting point (#${uptoSeq}) does not fit the log (epoch from #${meta.epochSince ?? 0}, older frames up to #${older}, head #${head}); try again`)
     }
+    if ((meta.epochSince ?? 0) > head) console.warn(`[mycel] ${room}: its epoch began after #${meta.epochSince}, but its head is #${head}`)
     await open.log.addJoinSnapshot(uptoSeq, request.epoch, fromBase64(request.data, 'the snapshot'))
   }
 
@@ -1820,7 +1830,7 @@ export class RoomHub {
     this.heads.delete(room)
     this.forgetAttachments(meta)
     await open.log.remove()
-    console.info(`[obsidian-connect] ${room} of ${account} purged, deleted longer ago than the retention`)
+    console.info(`[mycel] ${room} of ${account} purged, deleted longer ago than the retention`)
   }
 
   /** Fills a brand-new room with frames, oldest first - a detached note's history. */
@@ -2057,13 +2067,13 @@ export class RoomHub {
       try {
         await this.clearAccount(account, now)
         await this.accounts.settleRemoval(account)
-        console.info(`[obsidian-connect] removed account ${account}: its shares ended and its data is deleted`)
+        console.info(`[mycel] removed account ${account}: its shares ended and its data is deleted`)
       } catch (error) {
-        console.error(`[obsidian-connect] clearing the removed account ${account} failed; trying again later`, error)
+        console.error(`[mycel] clearing the removed account ${account} failed; trying again later`, error)
       }
     }
     const expired = await this.forks.expire(now)
-    if (expired > 0) console.info(`[obsidian-connect] ${expired} kept share history(s) expired, 90 days after their owner's account went`)
+    if (expired > 0) console.info(`[mycel] ${expired} kept share history(s) expired, 90 days after their owner's account went`)
   }
 
   private async clearAccount(account: string, now: number): Promise<void> {

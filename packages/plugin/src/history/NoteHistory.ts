@@ -1,4 +1,4 @@
-import { CONTENT_FIELD } from '@obsidian-connect/shared'
+import { CONTENT_FIELD } from '@mycel/shared'
 import type { ConnectApi } from '../account/api.js'
 import type { RoomCrypto } from '../sync/VaultSocket.js'
 import { Replay, readLog, type HistoryStep } from './RoomHistory.js'

@@ -3,11 +3,11 @@
 // disconnect and a crash, presence, and who may open a vault's connection.
 // Everything the server sees is ciphertext.
 //
-//   PORT=1235 OBSIDIAN_CONNECT_REGISTRATION=open OBSIDIAN_CONNECT_DATA_DIR=<scratch> npm run start:server
+//   PORT=1235 MYCEL_REGISTRATION=open MYCEL_DATA_DIR=<scratch> npm run start:server
 //   npm run test:socket -- ws://localhost:1235
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
-import { CLOSE_SIGNED_OUT, CONTENT_FIELD, docRoom, indexRoom } from '@obsidian-connect/shared'
+import { CLOSE_SIGNED_OUT, CONTENT_FIELD, docRoom, indexRoom } from '@mycel/shared'
 
 // VaultSocket targets the browser Obsidian runs in: Node 22+ has a WebSocket,
 // the timers need a `window`.
@@ -20,7 +20,7 @@ const { hashWasmArgon2id } = await import('../src/account/argon2.js')
 const { VaultSocket, memoryCursor } = await import('../src/sync/VaultSocket.js')
 const { LocalCursor } = await import('../src/sync/DocHandle.js')
 
-const serverUrl = process.argv[2] ?? process.env.OBSIDIAN_CONNECT_URL ?? 'ws://localhost:1234'
+const serverUrl = process.argv[2] ?? process.env.MYCEL_URL ?? 'ws://localhost:1234'
 const run = Date.now().toString(36)
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 

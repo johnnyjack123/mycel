@@ -32,7 +32,7 @@ export class RecoveryModal extends Modal {
     contentEl.createEl('p', {
       text: `For ${count === 1 ? 'this note' : `these ${count} notes`}, the server's copy is not the one this device last saw. It lost data, or it was restored from a backup. Nothing is sent or overwritten until you choose.`
     })
-    const list = contentEl.createEl('ul', { cls: 'connect-linked-notes' })
+    const list = contentEl.createEl('ul', { cls: 'mycel-linked-notes' })
     for (const path of this.notes) list.createEl('li', { text: path })
     new Setting(contentEl)
       .setName('This device is right')

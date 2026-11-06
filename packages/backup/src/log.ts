@@ -20,7 +20,7 @@ function write(level: Level, message: string, error?: unknown): void {
 
 export const log = {
   debug: (message: string): void => {
-    if (process.env.OBSIDIAN_CONNECT_BACKUP_DEBUG === 'true') write('debug', message)
+    if (process.env.MYCEL_BACKUP_DEBUG === 'true') write('debug', message)
   },
   info: (message: string): void => write('info', message),
   warn: (message: string, error?: unknown): void => write('warn', message, error),

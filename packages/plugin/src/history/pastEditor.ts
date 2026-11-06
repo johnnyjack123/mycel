@@ -1,6 +1,6 @@
 import { EditorState, Prec, StateEffect, StateField, type Extension, type Range, type Transaction } from '@codemirror/state'
 import { Decoration, EditorView, ViewPlugin, WidgetType, showPanel, type DecorationSet, type Panel, type ViewUpdate } from '@codemirror/view'
-import { lineDiff } from '@obsidian-connect/shared'
+import { lineDiff } from '@mycel/shared'
 
 // A note showing its past is shown in its own editor (`docs/TIMEMACHINE.md`,
 // W1): read-only, and with the changes against now marked in it - the lines
@@ -55,7 +55,7 @@ class GoneLines extends WidgetType {
 
   toDOM(): HTMLElement {
     const el = document.createElement('div')
-    el.className = 'connect-tm-now-lines'
+    el.className = 'mycel-tm-now-lines'
     el.setAttribute('aria-label', 'There now, not then')
     el.textContent = this.text.replace(/\n$/, '')
     return el
@@ -75,7 +75,7 @@ function marksFor(now: string | null, then: string): DecorationSet {
     return starts
   }
   const markThen = (from: number, to: number): void => {
-    for (const start of lineStarts(from, to)) ranges.push(Decoration.line({ class: 'connect-tm-then-line' }).range(start))
+    for (const start of lineStarts(from, to)) ranges.push(Decoration.line({ class: 'mycel-tm-then-line' }).range(start))
   }
   if (now === null) {
     markThen(0, then.length)
@@ -104,9 +104,9 @@ function panelOf(banner: LockBanner): () => Panel {
   if (!make) {
     make = () => {
       const dom = document.createElement('div')
-      dom.className = 'connect-lock-banner'
+      dom.className = 'mycel-lock-banner'
       const text = document.createElement('span')
-      text.className = 'connect-lock-banner-text'
+      text.className = 'mycel-lock-banner-text'
       text.textContent = banner.text
       dom.append(text)
       if (banner.unlock) {

@@ -1,5 +1,5 @@
 import { Modal, type App } from 'obsidian'
-import type { VaultLockInfo } from '@obsidian-connect/shared'
+import type { VaultLockInfo } from '@mycel/shared'
 import { busy } from '../busy.js'
 import type { LockPurpose } from '../sync/VaultLock.js'
 
@@ -48,7 +48,7 @@ export class StartModal extends Modal {
       text: `${this.note ? 'The note' : this.what.replace(/^the /, 'The ')} is read-only on all your devices meanwhile. What is written elsewhere in the vault waits, and goes out once it is over.`
     })
     list.createEl('li', { text: 'Every file is copied into the plugin folder before it is replaced, and comes back from there - also if Obsidian closes meanwhile.' })
-    this.stepsEl = contentEl.createDiv({ cls: 'connect-tm-steps' })
+    this.stepsEl = contentEl.createDiv({ cls: 'mycel-tm-steps' })
     this.buttonsEl = contentEl.createDiv({ cls: 'modal-button-container' })
     this.buttonsEl.createEl('button', { text: 'Cancel' }).onclick = () => this.choose(false)
     const go = this.buttonsEl.createEl('button', { cls: 'mod-cta', text: 'Open the Time Machine' })
@@ -66,7 +66,7 @@ export class StartModal extends Modal {
   /** One step of opening it, shown as it happens. */
   step(text: string): void {
     this.stepsEl?.empty()
-    this.stepsEl?.createDiv({ cls: 'connect-tm-step', text })
+    this.stepsEl?.createDiv({ cls: 'mycel-tm-step', text })
   }
 
   /** A question on the way: go on or stop. Closing the window stops. */

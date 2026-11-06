@@ -1,4 +1,4 @@
-import { blobChunkCount, type BlobListResponse, type SharedAttachment } from '@obsidian-connect/shared'
+import { blobChunkCount, type BlobListResponse, type SharedAttachment } from '@mycel/shared'
 import {
   aesKey,
   blobChunk,
@@ -8,7 +8,7 @@ import {
   encryptBlobChunk,
   fromBase64,
   type Bytes
-} from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared/crypto'
 import { ApiError, type ConnectApi } from '../account/api.js'
 
 // Moves the content of attachments to and from this vault's store on the

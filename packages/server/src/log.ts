@@ -1,6 +1,6 @@
 import { readFile, readdir, rm, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { isHexId, roomKind, roomSubject, type FolderTie, type ShareRole } from '@obsidian-connect/shared'
+import { isHexId, roomKind, roomSubject, type FolderTie, type ShareRole } from '@mycel/shared'
 import { appendDurable, ensureDir, truncateDurable, writeDurable } from './durable.js'
 
 // One room on disk: `meta.json` with who may do what, `log.bin` with the
@@ -155,7 +155,7 @@ const writeQueues = new Map<string, Promise<unknown>>()
 function queueWrite<T>(dir: string, room: string, task: () => Promise<T>): Promise<T> {
   const run = (writeQueues.get(dir) ?? Promise.resolve()).then(task)
   const settled = run.catch((error) => {
-    console.error(`[obsidian-connect] writing ${room} failed`, error)
+    console.error(`[mycel] writing ${room} failed`, error)
   })
   writeQueues.set(dir, settled)
   void settled.then(() => {
@@ -281,7 +281,7 @@ export class RoomLog {
     const raw = await readOptional(file)
     const { frames, bytes } = raw ? decodeFrames(raw) : { frames: [], bytes: 0 }
     if (raw && bytes < raw.length) {
-      console.warn(`[obsidian-connect] ${meta.room}: ${raw.length - bytes} byte(s) at the end of its log are no whole frame; cut off`)
+      console.warn(`[mycel] ${meta.room}: ${raw.length - bytes} byte(s) at the end of its log are no whole frame; cut off`)
       await truncateDurable(file, bytes)
     }
     return new RoomLog(

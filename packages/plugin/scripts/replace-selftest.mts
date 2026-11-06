@@ -9,8 +9,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { check, delay, Device, eventually, finish, useServer } from './harness.mjs'
 
-const { docRoom, frameAad } = await import('@obsidian-connect/shared')
-const { contentHash, decrypt, fromBase64 } = await import('@obsidian-connect/shared/crypto')
+const { docRoom, frameAad } = await import('@mycel/shared')
+const { contentHash, decrypt, fromBase64 } = await import('@mycel/shared/crypto')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
 const { Blobs } = await import('../src/sync/Blobs.js')
@@ -24,9 +24,9 @@ const server = await startServer(
   loadConfig({
     HOST: '127.0.0.1',
     PORT: '0',
-    OBSIDIAN_CONNECT_DATA_DIR: root,
-    OBSIDIAN_CONNECT_REGISTRATION: 'open',
-    OBSIDIAN_CONNECT_JWT_SECRET: 'replace-selftest'
+    MYCEL_DATA_DIR: root,
+    MYCEL_REGISTRATION: 'open',
+    MYCEL_JWT_SECRET: 'replace-selftest'
   }),
   { logger: false, paceMs: 0, maxFailures: 1_000 }
 )

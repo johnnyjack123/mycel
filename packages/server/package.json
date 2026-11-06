@@ -1,11 +1,11 @@
 {
-  "name": "@obsidian-connect/server",
-  "version": "0.9.6",
+  "name": "@mycel/server",
+  "version": "0.9.7",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
   "bin": {
-    "obsidian-connect": "bin/obsidian-connect.mjs"
+    "mycel": "bin/mycel.mjs"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -16,7 +16,7 @@
     "test:rooms": "tsx scripts/rooms-selftest.mts"
   },
   "dependencies": {
-    "@obsidian-connect/shared": "*",
+    "@mycel/shared": "*",
     "fastify": "^5.12.4",
     "jose": "^5.9.6",
     "lib0": "^0.2.98",

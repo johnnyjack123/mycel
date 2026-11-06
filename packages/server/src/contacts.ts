@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { InboxItem } from '@obsidian-connect/shared'
+import type { InboxItem } from '@mycel/shared'
 import { AccountError, isAccountId } from './accounts.js'
 import { ensureDir, writeDurable } from './durable.js'
 

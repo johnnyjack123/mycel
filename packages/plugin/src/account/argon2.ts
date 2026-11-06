@@ -1,5 +1,5 @@
 import { argon2id } from 'hash-wasm'
-import type { Argon2id } from '@obsidian-connect/shared/crypto'
+import type { Argon2id } from '@mycel/shared/crypto'
 
 // WebCrypto has no Argon2id. hash-wasm ships it as WebAssembly inside the
 // JavaScript bundle, so it works in Obsidian on every platform and in Node.

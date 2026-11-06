@@ -1,6 +1,6 @@
 import { readFile, readdir, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { isHexId, type ForkResponse, type ForkSummary, type LogResponse } from '@obsidian-connect/shared'
+import { isHexId, type ForkResponse, type ForkSummary, type LogResponse } from '@mycel/shared'
 import { ensureDir, writeDurable } from './durable.js'
 
 // What a participant could read of a note when its share ended, kept until
@@ -70,7 +70,7 @@ export class ForkStore {
           const record = JSON.parse(await readFile(join(this.dir(account), name), 'utf8')) as ForkRecord
           this.of(account).set(match[1] as string, record)
         } catch (error) {
-          console.error(`[obsidian-connect] a fork record of ${account} could not be read`, error)
+          console.error(`[mycel] a fork record of ${account} could not be read`, error)
         }
       }
     }
@@ -128,7 +128,7 @@ export class ForkStore {
       try {
         log = JSON.parse(await readFile(this.logFile(account, docId), 'utf8')) as LogResponse
       } catch (error) {
-        console.error(`[obsidian-connect] the kept history of ${docId} could not be read`, error)
+        console.error(`[mycel] the kept history of ${docId} could not be read`, error)
       }
     }
     const response: ForkResponse = {

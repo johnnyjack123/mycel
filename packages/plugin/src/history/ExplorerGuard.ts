@@ -49,7 +49,7 @@ export class ExplorerGuard {
     private readonly policy: () => ExplorerPolicy | null,
     private readonly refused: (why: string) => void
   ) {
-    this.style = doc.head.createEl('style', { attr: { id: 'connect-explorer-guard' } })
+    this.style = doc.head.createEl('style', { attr: { id: 'mycel-explorer-guard' } })
   }
 
   /** Starts catching; the function returned stops it and greys nothing any more. */

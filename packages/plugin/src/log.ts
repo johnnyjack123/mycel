@@ -39,7 +39,7 @@ export interface LogFiles {
   remove(path: string): Promise<void>
 }
 
-const PREFIX = '[obsidian-connect]'
+const PREFIX = '[mycel]'
 const KEEP_DAYS = 7
 const FLUSH_MS = 2_000
 /** Lines kept while no file is attached yet, or while writing fails. */

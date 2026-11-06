@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
-import type { RegistrationMode } from '@obsidian-connect/shared'
+import type { RegistrationMode } from '@mycel/shared'
 
 const BYTE_ORDER_MARK = 0xfeff
 
@@ -62,19 +62,19 @@ function parseIntFallback(value: string | undefined, fallback: number): number {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
-  const jwtSecret = env.OBSIDIAN_CONNECT_JWT_SECRET || DEV_SECRET
+  const jwtSecret = env.MYCEL_JWT_SECRET || DEV_SECRET
   return {
     host: env.HOST ?? '0.0.0.0',
     port: parseIntFallback(env.PORT, 1234),
     jwtSecret,
     insecureSecret: jwtSecret === DEV_SECRET,
-    dataDir: resolve(env.OBSIDIAN_CONNECT_DATA_DIR ?? './data'),
-    registration: env.OBSIDIAN_CONNECT_REGISTRATION === 'open' ? 'open' : 'invite',
-    accessTokenTtlSeconds: parseIntFallback(env.OBSIDIAN_CONNECT_TOKEN_TTL, THIRTY_DAYS),
-    logUpdates: env.OBSIDIAN_CONNECT_LOG_UPDATES === 'true',
-    maxFileBytes: Math.max(1, parseIntFallback(env.OBSIDIAN_CONNECT_MAX_FILE_MB, DEFAULT_MAX_FILE_MB)) * MB,
+    dataDir: resolve(env.MYCEL_DATA_DIR ?? './data'),
+    registration: env.MYCEL_REGISTRATION === 'open' ? 'open' : 'invite',
+    accessTokenTtlSeconds: parseIntFallback(env.MYCEL_TOKEN_TTL, THIRTY_DAYS),
+    logUpdates: env.MYCEL_LOG_UPDATES === 'true',
+    maxFileBytes: Math.max(1, parseIntFallback(env.MYCEL_MAX_FILE_MB, DEFAULT_MAX_FILE_MB)) * MB,
     // With open registration, this is what keeps a stranger from filling the disk.
-    quotaBytes: env.OBSIDIAN_CONNECT_QUOTA_MB ? Math.max(0, parseIntFallback(env.OBSIDIAN_CONNECT_QUOTA_MB, 0)) * MB : null,
-    purgeGraceMs: Math.max(0, parseIntFallback(env.OBSIDIAN_CONNECT_PURGE_GRACE_S, DEFAULT_PURGE_GRACE_S)) * 1000
+    quotaBytes: env.MYCEL_QUOTA_MB ? Math.max(0, parseIntFallback(env.MYCEL_QUOTA_MB, 0)) * MB : null,
+    purgeGraceMs: Math.max(0, parseIntFallback(env.MYCEL_PURGE_GRACE_S, DEFAULT_PURGE_GRACE_S)) * 1000
   }
 }

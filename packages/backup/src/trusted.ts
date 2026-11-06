@@ -12,9 +12,9 @@ import type { OutFile } from './layout.js'
 // run instead of emptied and written again, so a run that breaks off leaves a
 // whole copy. It touches only what it wrote itself.
 
-const MANIFEST = '.obsidian-connect-backup.json'
+const MANIFEST = '.mycel-backup.json'
 /** The trash and the settings, in a folder Obsidian never lists - so no note of the vault can lie there. */
-const EXTRA = '.obsidian-connect'
+const EXTRA = '.mycel'
 
 /**
  * Where a file of the backup lies in the copy: the vault's own notes and
@@ -166,7 +166,7 @@ export async function alignTrusted(
       continue
     }
     await mkdir(dirname(target), { recursive: true })
-    const temp = `${target}.obsidian-connect.tmp`
+    const temp = `${target}.mycel.tmp`
     const out = createWriteStream(temp)
     let size = 0
     try {

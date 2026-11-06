@@ -2,9 +2,9 @@
 
 Decided with the user on 2026-09-23:
 
-- Accounts are created on the server with `docker exec … obsidian-connect user add <name>`.
+- Accounts are created on the server with `docker exec … mycel user add <name>`.
   `.env` decides whether people may also register themselves
-  (`OBSIDIAN_CONNECT_REGISTRATION=open`) or only redeem an invite (`invite`, default).
+  (`MYCEL_REGISTRATION=open`) or only redeem an invite (`invite`, default).
 - End-to-end encryption ships together with accounts.
 - A share grants **read** or **write**.
 
@@ -46,7 +46,7 @@ vaultKey  ── HMAC "doc::<path>::<generation>" ──► the note's docId
 - The device keeps the access token in `data.json` and the master key in Obsidian's
   per-vault `localStorage` (not in the vault). It caches the account bundle there too,
   so a device starts offline.
-- Tokens last `OBSIDIAN_CONNECT_TOKEN_TTL` (default 30 days) and are refreshed on start.
+- Tokens last `MYCEL_TOKEN_TTL` (default 30 days) and are refreshed on start.
 - Password change re-wraps the private key and the vault keys; documents are untouched.
 
 ## Transport: an encrypted log
@@ -124,10 +124,10 @@ ordered log of opaque frames.
 
 ## Server
 
-- `.env`: `OBSIDIAN_CONNECT_JWT_SECRET` (required outside development),
-  `OBSIDIAN_CONNECT_REGISTRATION` (`invite` | `open`), `PORT`, `HOST`,
-  `OBSIDIAN_CONNECT_DATA_DIR`, `OBSIDIAN_CONNECT_TOKEN_TTL`.
-- CLI (`obsidian-connect` in the image): `user add <name>` prints an invite code,
+- `.env`: `MYCEL_JWT_SECRET` (required outside development),
+  `MYCEL_REGISTRATION` (`invite` | `open`), `PORT`, `HOST`,
+  `MYCEL_DATA_DIR`, `MYCEL_TOKEN_TTL`.
+- CLI (`mycel` in the image): `user add <name>` prints an invite code,
   `user invite <name>` a new one for an account not claimed yet, `user list`,
   `user remove <name>`.
 - Data: `accounts.json`; per room `meta.json`, `log.bin`, `snap-<uptoSeq>.bin`.

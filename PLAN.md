@@ -1,4 +1,4 @@
-# Obsidian Connect for Obsidian — Plan
+# Mycel for Obsidian — Plan
 
 > The original plan from before Phase 1, kept for its reasoning (why CRDTs, why not
 > CouchDB). It is not maintained: the current architecture is in `CLAUDE.md`, the
@@ -81,10 +81,10 @@ Prove or kill the main-editor CodeMirror 6 injection before building anything el
 
 Deliverables:
 - Monorepo scaffold (npm workspaces, TypeScript everywhere).
-- `@obsidian-connect/shared` protocol types.
-- `@obsidian-connect/server`: health endpoint, dev/ login token endpoints, JWT auth for
+- `@mycel/shared` protocol types.
+- `@mycel/server`: health endpoint, dev/ login token endpoints, JWT auth for
   WebSocket upgrades, `y-websocket` room handling, disk persistence.
-- `@obsidian-connect/plugin`: connect a note to a room, seed the `Y.Doc` from the file,
+- `@mycel/plugin`: connect a note to a room, seed the `Y.Doc` from the file,
   attach a lightweight `Y.Text` <-> CodeMirror binding plus remote cursor
   decorations to Obsidian's own editor, with a dedicated collaboration view as a
   guaranteed fallback.

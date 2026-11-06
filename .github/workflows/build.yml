@@ -105,8 +105,8 @@ jobs:
       # accounts, so start one and wait for it.
       - name: Start the sync server
         env:
-          OBSIDIAN_CONNECT_REGISTRATION: open
-          OBSIDIAN_CONNECT_JWT_SECRET: ci-only-secret
+          MYCEL_REGISTRATION: open
+          MYCEL_JWT_SECRET: ci-only-secret
         run: |
           npm run start:server > server.log 2>&1 &
           for _ in $(seq 1 30); do
@@ -238,7 +238,7 @@ jobs:
       # The registry only takes lowercase names; account names need not be.
       - name: Image name
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/obsidian-connect-server" >> "$GITHUB_OUTPUT"
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mycel-server" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
 
@@ -252,14 +252,14 @@ jobs:
         with:
           context: .
           load: true
-          tags: obsidian-connect-server:smoke
+          tags: mycel-server:smoke
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Smoke test
         run: |
           set -euo pipefail
-          docker run -d --name smoke -p 1234:1234 -e OBSIDIAN_CONNECT_JWT_SECRET=smoke-only obsidian-connect-server:smoke
+          docker run -d --name smoke -p 1234:1234 -e MYCEL_JWT_SECRET=smoke-only mycel-server:smoke
           healthy=false
           for _ in $(seq 1 30); do
             if curl -sf http://localhost:1234/health > /dev/null; then
@@ -273,8 +273,8 @@ jobs:
             docker logs smoke
             exit 1
           fi
-          docker exec smoke obsidian-connect invite
-          if ! docker exec smoke obsidian-connect user list | grep -q 'invite code(s) not used yet'; then
+          docker exec smoke mycel invite
+          if ! docker exec smoke mycel user list | grep -q 'invite code(s) not used yet'; then
             echo "::error::the CLI did not write the data volume"
             docker logs smoke
             exit 1
@@ -284,9 +284,9 @@ jobs:
           # handed over at start; the admin command, run as root through docker exec,
           # writes as the server's user too; and the server itself does not run as root.
           mkdir -p hostdata
-          docker run -d --name smoke-bind -p 1235:1234 -e OBSIDIAN_CONNECT_JWT_SECRET=smoke-only -v "$PWD/hostdata:/data" obsidian-connect-server:smoke
+          docker run -d --name smoke-bind -p 1235:1234 -e MYCEL_JWT_SECRET=smoke-only -v "$PWD/hostdata:/data" mycel-server:smoke
           for _ in $(seq 1 30); do curl -sf http://localhost:1235/health > /dev/null && break; sleep 1; done
-          docker exec smoke-bind obsidian-connect invite
+          docker exec smoke-bind mycel invite
           owners=$(docker exec smoke-bind stat -c '%u' /data /data/accounts.json /proc/1 | sort -u)
           echo "owners: $owners"
           if [ "$owners" != "1000" ]; then
@@ -294,12 +294,12 @@ jobs:
             docker logs smoke-bind
             exit 1
           fi
-          docker exec smoke-bind obsidian-connect user list | grep -q 'invite code(s) not used yet'
+          docker exec smoke-bind mycel user list | grep -q 'invite code(s) not used yet'
           docker rm -f smoke-bind
           # Started as another user nothing is handed over: a folder it cannot write
           # stops it at once, saying what to do.
           mkdir -p unwritable && chmod 755 unwritable
-          if out=$(docker run --rm --user 4321:4321 -e OBSIDIAN_CONNECT_JWT_SECRET=smoke-only -v "$PWD/unwritable:/data" obsidian-connect-server:smoke 2>&1); then
+          if out=$(docker run --rm --user 4321:4321 -e MYCEL_JWT_SECRET=smoke-only -v "$PWD/unwritable:/data" mycel-server:smoke 2>&1); then
             echo "::error::the server started with a data folder it cannot write"
             exit 1
           fi
@@ -346,7 +346,7 @@ jobs:
 
       - name: Image name
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/obsidian-connect-backup" >> "$GITHUB_OUTPUT"
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mycel-backup" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
 
@@ -358,7 +358,7 @@ jobs:
           context: .
           file: Dockerfile.backup
           load: true
-          tags: obsidian-connect-backup:smoke
+          tags: mycel-backup:smoke
           cache-from: type=gha,scope=backup
           cache-to: type=gha,mode=max,scope=backup
 
@@ -369,13 +369,13 @@ jobs:
       - name: Smoke test
         run: |
           set -euo pipefail
-          docker run --rm --entrypoint restic obsidian-connect-backup:smoke version
+          docker run --rm --entrypoint restic mycel-backup:smoke version
           # restic reaches an sftp: repository through ssh.
-          docker run --rm --entrypoint ssh obsidian-connect-backup:smoke -V
+          docker run --rm --entrypoint ssh mycel-backup:smoke -V
           # And any cloud rclone knows through rclone: a repository made, backed up into
           # and listed by restic through rclone - here rclone's local backend.
-          docker run --rm --entrypoint rclone obsidian-connect-backup:smoke version
-          docker run --rm --entrypoint sh obsidian-connect-backup:smoke -c '
+          docker run --rm --entrypoint rclone mycel-backup:smoke version
+          docker run --rm --entrypoint sh mycel-backup:smoke -c '
             set -eu
             export RESTIC_PASSWORD=smoke RESTIC_REPOSITORY=rclone:/tmp/repo RESTIC_CACHE_DIR=/tmp/restic-cache
             echo hello > /tmp/note.md
@@ -383,21 +383,21 @@ jobs:
             restic backup /tmp/note.md
             restic ls latest | grep -q /tmp/note.md'
           docker volume create smoke-backup-data
-          made=$(docker run --rm -v smoke-backup-data:/data obsidian-connect-backup:smoke obsidian-connect-backup invite smoke)
+          made=$(docker run --rm -v smoke-backup-data:/data mycel-backup:smoke mycel-backup invite smoke)
           echo "$made"
           code=$(echo "$made" | sed -n 2p | tr -d ' ')
           echo "$code" | grep -Eq '^([0-9A-Z]{5}-){5}[0-9A-Z]{5}$'
-          listed=$(docker run --rm -v smoke-backup-data:/data obsidian-connect-backup:smoke obsidian-connect-backup invites)
+          listed=$(docker run --rm -v smoke-backup-data:/data mycel-backup:smoke mycel-backup invites)
           echo "$listed"
           if ! echo "$listed" | grep -q '  smoke  '; then
             echo "::error::the invitation was not kept in the data volume"
             exit 1
           fi
           docker run -d --name smoke-backup \
-            -e OBSIDIAN_CONNECT_SERVER=ws://127.0.0.1:9 \
-            --tmpfs /run/obsidian-connect-backup:mode=1777 \
+            -e MYCEL_SERVER=ws://127.0.0.1:9 \
+            --tmpfs /run/mycel-backup:mode=1777 \
             -v smoke-backup-data:/data \
-            obsidian-connect-backup:smoke
+            mycel-backup:smoke
           sleep 8
           docker logs smoke-backup
           if [ "$(docker inspect -f '{{.State.Running}}' smoke-backup)" != true ]; then
@@ -408,7 +408,7 @@ jobs:
           # Started as another user nothing is handed over: a data folder it cannot
           # write stops it at once, saying what to do, instead of it running blind.
           mkdir -p unwritable && chmod 755 unwritable
-          if out=$(docker run --rm --user 4321:4321 -e OBSIDIAN_CONNECT_SERVER=ws://127.0.0.1:9 -v "$PWD/unwritable:/data" obsidian-connect-backup:smoke 2>&1); then
+          if out=$(docker run --rm --user 4321:4321 -e MYCEL_SERVER=ws://127.0.0.1:9 -v "$PWD/unwritable:/data" mycel-backup:smoke 2>&1); then
             echo "::error::the backup server started with a data folder it cannot write"
             exit 1
           fi
@@ -427,23 +427,23 @@ jobs:
         run: |
           set -euo pipefail
           npm ci
-          OBSIDIAN_CONNECT_JWT_SECRET=ci-only-secret npm run start:server > server.log 2>&1 &
+          MYCEL_JWT_SECRET=ci-only-secret npm run start:server > server.log 2>&1 &
           for _ in $(seq 1 30); do curl -sf http://localhost:1234/health > /dev/null && break; sleep 1; done
           # Bind-mounted folders that are the runner's, as a fresh setup's would be someone else's:
           # handed over at start, and an invitation made through docker exec - as root - read by
           # the running backup server, which runs as user 1000.
           mkdir -p backup-bind encrypted-bind decrypted-bind
           docker run -d --name relay-backup --network host \
-            -e OBSIDIAN_CONNECT_SERVER=ws://127.0.0.1:1234 \
-            --tmpfs /run/obsidian-connect-backup:mode=1777 \
+            -e MYCEL_SERVER=ws://127.0.0.1:1234 \
+            --tmpfs /run/mycel-backup:mode=1777 \
             -v "$PWD/backup-bind:/data" \
             -v "$PWD/encrypted-bind:/encrypted" \
             -v "$PWD/decrypted-bind:/decrypted" \
-            obsidian-connect-backup:smoke
+            mycel-backup:smoke
           sleep 2
-          made=$(docker exec relay-backup obsidian-connect-backup invite smoke)
+          made=$(docker exec relay-backup mycel-backup invite smoke)
           echo "$made"
-          status=$(docker exec relay-backup obsidian-connect-backup status)
+          status=$(docker exec relay-backup mycel-backup status)
           echo "$status"
           docker logs relay-backup
           if ! echo "$made" | grep -q 'The backup server answers it at' || ! echo "$status" | grep -Eq 'smoke .*[0-9]  answered'; then

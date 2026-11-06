@@ -1,6 +1,6 @@
 import { Notice } from '../notices.js'
-import { folderRoom, type AttachmentEntry, type FolderFile, type VaultFolder } from '@obsidian-connect/shared'
-import { deriveFileId, type Bytes } from '@obsidian-connect/shared/crypto'
+import { folderRoom, type AttachmentEntry, type FolderFile, type VaultFolder } from '@mycel/shared'
+import { deriveFileId, type Bytes } from '@mycel/shared/crypto'
 import type { ConnectApi } from '../account/api.js'
 import type { AttachmentStore } from '../sync/AttachmentStore.js'
 import type { FolderIndex } from '../sync/FolderIndex.js'

@@ -25,7 +25,7 @@ export class RecoveryCodeModal extends Modal {
     this.contentEl.createEl('p', {
       text: 'The code alone opens your account - your name and password are not needed with it. Keep it apart from your password: on paper, or in a password manager under its own entry. It is shown only now.'
     })
-    const shown = this.contentEl.createDiv({ cls: 'connect-recovery-code connect-code', text: this.code })
+    const shown = this.contentEl.createDiv({ cls: 'mycel-recovery-code mycel-code', text: this.code })
     shown.setAttr('aria-label', 'Recovery code')
     let noted = false
     let done: { setDisabled(disabled: boolean): unknown } | null = null
@@ -107,7 +107,7 @@ export class PasswordPromptModal extends Modal {
       await busy(button, () => this.run(this.password))
       this.close()
     } catch (error) {
-      new Notice(`Obsidian Connect: ${error instanceof Error ? error.message : String(error)}`, 8_000)
+      new Notice(`Mycel: ${error instanceof Error ? error.message : String(error)}`, 8_000)
     } finally {
       this.busy = false
     }

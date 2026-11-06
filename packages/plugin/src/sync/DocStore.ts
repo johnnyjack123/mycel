@@ -11,7 +11,7 @@ import {
   type CollabUser,
   type IndexEntry,
   type ShareRole
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 import { additiveEdits, reconcile, type ReconcileOutcome } from './Reconciler.js'
 import { matchesGlob } from './glob.js'
 import { FORK_ORIGIN, RESTORE_ORIGIN, SYNC_ORIGIN } from './origin.js'
@@ -412,7 +412,7 @@ export class DocStore {
    */
   private async registerIndex(): Promise<void> {
     if (this.indexStore) return
-    const store = this.openLocal(`obsidian-connect/${this.options.vaultId}/idx`, this.index.doc)
+    const store = this.openLocal(`mycel/${this.options.vaultId}/idx`, this.index.doc)
     this.indexStore = store
     await store.whenSynced
     this.indexCursor = await LocalCursor.load(store)
@@ -1447,7 +1447,7 @@ export class DocStore {
   }
 
   private localName(docId: string): string {
-    return `obsidian-connect/${this.options.vaultId}/${docId}`
+    return `mycel/${this.options.vaultId}/${docId}`
   }
 
   /**

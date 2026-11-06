@@ -7,8 +7,8 @@ import {
   type IndexEntry,
   type LogResponse,
   type TimesResponse
-} from '@obsidian-connect/shared'
-import { bytes, contentHash, fromUtf8 } from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared'
+import { bytes, contentHash, fromUtf8 } from '@mycel/shared/crypto'
 import type { RollbackRecord } from '../sync/AccountSettings.js'
 import type { BackupSource } from '../sync/Rollback.js'
 import type { RoomCrypto } from '../sync/VaultSocket.js'

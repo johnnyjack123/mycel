@@ -11,7 +11,7 @@ import {
   type BackupAt,
   type BackupTaskSetting,
   type KeepPolicy
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 import type { VaultKeys } from './keys.js'
 import type { Destination, JobConfig } from './run.js'
 import { atOf, knownZone } from './schedule.js'
@@ -166,7 +166,7 @@ export async function fetchSettings(client: SyncClient, keys: VaultKeys): Promis
 export async function writable(folder: string): Promise<string | null> {
   try {
     await mkdir(folder, { recursive: true })
-    const probe = join(folder, `.obsidian-connect-probe-${process.pid}`)
+    const probe = join(folder, `.mycel-probe-${process.pid}`)
     await writeFile(probe, '')
     await rm(probe, { force: true })
     return null

@@ -8,7 +8,7 @@ import {
   settingsRoom,
   type AttachmentEntry,
   type IndexEntry
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 import type { Cache } from './cache.js'
 import type { VaultKeys } from './keys.js'
 

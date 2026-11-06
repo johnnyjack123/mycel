@@ -1,4 +1,4 @@
-# Obsidian Connect
+# Mycel
 
 Obsidian plugin plus a small self-hosted server. Two features, one mechanism:
 
@@ -248,8 +248,8 @@ someone's notes. Treat them as rules, not preferences.
 
 - **The server knows no names.** An account is a random id; `accounts.json`
   finds it by the hash of a **login key**. Accounts come from an invite code
-  (`obsidian-connect invite`, naming nobody) or, with
-  `OBSIDIAN_CONNECT_REGISTRATION=open`, from anyone.
+  (`mycel invite`, naming nobody) or, with
+  `MYCEL_REGISTRATION=open`, from anyone.
 - Salt = hash of the server's random id (`server.json`, public, pinned by the
   plugin per address) and the name — derived, never stored or secret. Password
   → Argon2id with parameters pinned in the code (`KDF_VERSIONS`, not taken from
@@ -445,7 +445,7 @@ and the server holds immutable blobs of its versions:
 ### Backups
 
 A **backup server** of the user's own (`packages/backup`, image
-`obsidian-connect-backup`; spec `docs/PHASE6.md`, running it `docs/BACKUP.md`)
+`mycel-backup`; spec `docs/PHASE6.md`, running it `docs/BACKUP.md`)
 pulls a vault, decrypts it in memory and hands it to restic. For a few private
 people: whoever runs it can read the vaults on it.
 
@@ -501,7 +501,7 @@ people: whoever runs it can read the vaults on it.
   every other file as a tar stream (killed before it ends when producing it fails),
   every snapshot checked back, and only then - once the repository took the run - the
   copy brought level: the vault at its top so it opens as a vault, trash and settings
-  in its hidden `.obsidian-connect/`, never emptied, only its own files touched, held
+  in its hidden `.mycel/`, never emptied, only its own files touched, held
   when more than its guard's share (50 % unless set) of the notes, or of the files,
   vanished - counted apart, and against the most of the week's followed runs
   (`guardReference`), not the last one: measured by the last, a loss split over two
@@ -536,7 +536,7 @@ people: whoever runs it can read the vaults on it.
   and whether only to read; a note shared to read only also gets a lock in the
   header of every view showing it - a phone has no status bar.
 - **The notification center** (`notices.ts`, `NotificationsView.ts`; 0.8.13), titled
-  *Connect* for the user since 0.8.17 - it holds more than notices: the
+  *Mycel* for the user - it holds more than notices: the
   plugin's `Notice` is its own subclass of Obsidian's, which also keeps each notice -
   when, the text, a failure or not, the note it names - in the plugin folder's
   `notices.json` (500, or 30 days). A bell in the ribbon counts the unseen and opens the
@@ -798,7 +798,7 @@ npm run test:rollback  # rolling a vault or folder back from the history, the ga
 npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too), the vault lock, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
 npm run test:replace   # every key of an account replaced: the vaults and files written anew, the other device, a contact confirming again, a replacement carried on by another device — in-process server
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
-                       # restic on the PATH or named by OBSIDIAN_CONNECT_RESTIC (where it lies here: docs/PROGRESS.md)
+                       # restic on the PATH or named by MYCEL_RESTIC (where it lies here: docs/PROGRESS.md)
 # needs a server that lets tests create accounts:
 npm run test:socket    # the encrypted transport, two devices of one account
 npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing, attachments
@@ -840,7 +840,7 @@ its tabs and its buttons.
   `Uint8Array<ArrayBufferLike>`. Convert with `bytes()`.
 - **`shared/crypto` is not in the package index.** The server compiles the
   shared sources without DOM types and never encrypts; import it as
-  `@obsidian-connect/shared/crypto`.
+  `@mycel/shared/crypto`.
 - **Never add the editor extension with `StateEffect.appendConfig`.** Obsidian
   drops such extensions whenever it rebuilds the EditorState (file switch inside
   a leaf, edit/preview toggle), and re-attaching from workspace events while it
@@ -851,7 +851,7 @@ its tabs and its buttons.
 - **There is no Docker on the development machine.** The images are only ever
   built in CI: the `docker` job in `build.yml` runs after the tests, on `main`
   only, starts the image once (health check, `invite` through the CLI) and
-  publishes it to `ghcr.io/johnnyjack123/obsidian-connect-server`. A broken
+  publishes it to `ghcr.io/johnnyjack123/mycel-server`. A broken
   `Dockerfile` shows up there and nowhere earlier. The `docker-backup` job builds
   and starts `Dockerfile.backup` on every push (restic runs, an invitation is made
   and kept, ssh is there for `sftp:`, restic makes a repository through rclone, the
@@ -859,7 +859,7 @@ its tabs and its buttons.
   folders when they are not its own - and `rclone config` through `docker exec`
   leaves its file to user 1000 -, and registers its invitations at a real sync
   server) and publishes
-  `obsidian-connect-backup` from `main` only. Every Dockerfile copies every
+  `mycel-backup` from `main` only. Every Dockerfile copies every
   workspace's `package.json` before `npm ci`.
 - **Both images start as root and drop to `PUID`:`PGID` (1000:1000)** in
   `docker/entrypoint.sh`, after handing their data folder to that user - a
@@ -895,7 +895,7 @@ its tabs and its buttons.
   open so the tests can create accounts:
 
   ```bash
-  PORT=1235 OBSIDIAN_CONNECT_REGISTRATION=open OBSIDIAN_CONNECT_DATA_DIR="$TMPDIR/oc-test-data" npm run start:server
+  PORT=1235 MYCEL_REGISTRATION=open MYCEL_DATA_DIR="$TMPDIR/oc-test-data" npm run start:server
   npm run test:vault -- ws://localhost:1235
   ```
 

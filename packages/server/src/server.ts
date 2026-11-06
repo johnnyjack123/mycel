@@ -2,7 +2,7 @@ import type { IncomingMessage } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Duplex } from 'node:stream'
 import { WebSocketServer } from 'ws'
-import { CLOSE_SIGNED_OUT, isHexId } from '@obsidian-connect/shared'
+import { CLOSE_SIGNED_OUT, isHexId } from '@mycel/shared'
 import { AccountStore, sessionOf } from './accounts.js'
 import { TokenService, type TokenSession } from './auth.js'
 import { BlobStore } from './blobs.js'
@@ -149,7 +149,7 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
   })
 
   if (config.insecureSecret) {
-    app.log.warn('OBSIDIAN_CONNECT_JWT_SECRET is not set; tokens use a built-in secret. Set it before exposing the server.')
+    app.log.warn('MYCEL_JWT_SECRET is not set; tokens use a built-in secret. Set it before exposing the server.')
   }
   // The rooms and the vault locks kept over the restart, before anyone asks.
   await hub.started()
@@ -160,7 +160,7 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
     throw error
   }
   const port = (app.server.address() as AddressInfo).port
-  app.log.info(`Obsidian Connect server is listening on ${config.host}:${port} (registration: ${config.registration})`)
+  app.log.info(`Mycel server is listening on ${config.host}:${port} (registration: ${config.registration})`)
   sweep()
 
   return {

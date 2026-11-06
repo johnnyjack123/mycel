@@ -9,8 +9,8 @@ import {
   type RewriteRequest,
   type Rotation,
   type WholeLogResponse
-} from '@obsidian-connect/shared'
-import { decrypt, encrypt, fromBase64, recertifyFrame, toBase64, unpackFrame, type Bytes, type OpenedFrame } from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared'
+import { decrypt, encrypt, fromBase64, recertifyFrame, toBase64, unpackFrame, type Bytes, type OpenedFrame } from '@mycel/shared/crypto'
 import { ApiError, type ConnectApi } from './api.js'
 import { KeyRing, type Recipient } from './KeyRing.js'
 import type { OpenVault, PreviousKeys, SecretStore, Unlocked } from './Session.js'

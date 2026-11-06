@@ -1,6 +1,6 @@
 import { App, Modal, Setting, type TFile } from 'obsidian'
 import { Notice } from '../notices.js'
-import type { ShareRole } from '@obsidian-connect/shared'
+import type { ShareRole } from '@mycel/shared'
 import { busy } from '../busy.js'
 import { formatSize } from '../history/media.js'
 import type { Contact } from '../sync/AccountSettings.js'
@@ -66,7 +66,7 @@ export class ShareModal extends Modal {
     const people = this.contacts.filter((contact) => contact.name || contact.localName)
     if (people.length === 0) {
       contentEl.createEl('p', {
-        text: 'Notes are shared with contacts. Add one under Settings → Obsidian Connect → Contacts first.'
+        text: 'Notes are shared with contacts. Add one under Settings → Mycel → Contacts first.'
       })
       return
     }
@@ -168,10 +168,10 @@ export class ShareModal extends Modal {
           })
         )
     }
-    const list = contentEl.createEl('ul', { cls: 'connect-linked-notes' })
+    const list = contentEl.createEl('ul', { cls: 'mycel-linked-notes' })
     for (const note of this.linked) {
       const item = list.createEl('li', { text: note.path })
-      if (note.reason) item.createSpan({ cls: 'connect-linked-reason', text: ` - ${note.reason}` })
+      if (note.reason) item.createSpan({ cls: 'mycel-linked-reason', text: ` - ${note.reason}` })
     }
   }
 

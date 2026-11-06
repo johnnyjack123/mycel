@@ -9,9 +9,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { check, Device, eventually, finish, useServer } from './harness.mjs'
 
-const { docRoom } = await import('@obsidian-connect/shared')
+const { docRoom } = await import('@mycel/shared')
 const { TOTP_STEP_SECONDS, encodeRecoveryCode, newRecoverySecret, newTotpSecret, totpCode, totpStep } = await import(
-  '@obsidian-connect/shared/crypto'
+  '@mycel/shared/crypto'
 )
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
@@ -25,9 +25,9 @@ const server = await startServer(
   loadConfig({
     HOST: '127.0.0.1',
     PORT: '0',
-    OBSIDIAN_CONNECT_DATA_DIR: root,
-    OBSIDIAN_CONNECT_REGISTRATION: 'open',
-    OBSIDIAN_CONNECT_JWT_SECRET: 'account-selftest'
+    MYCEL_DATA_DIR: root,
+    MYCEL_REGISTRATION: 'open',
+    MYCEL_JWT_SECRET: 'account-selftest'
   }),
   // Wrong passwords and codes on purpose, many more than an address may try.
   { logger: false, paceMs: 0, now: () => clock, maxFailures: 1_000 }

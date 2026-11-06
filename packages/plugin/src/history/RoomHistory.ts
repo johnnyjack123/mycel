@@ -1,6 +1,6 @@
 import * as Y from 'yjs'
-import { frameAad, snapshotAad, type LogResponse } from '@obsidian-connect/shared'
-import { decrypt, fromBase64, unpackFrame } from '@obsidian-connect/shared/crypto'
+import { frameAad, snapshotAad, type LogResponse } from '@mycel/shared'
+import { decrypt, fromBase64, unpackFrame } from '@mycel/shared/crypto'
 import type { RoomCrypto } from '../sync/VaultSocket.js'
 
 // A room's history as the server keeps it - the vault index, a note -,

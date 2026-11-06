@@ -1,8 +1,8 @@
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { IndexeddbPersistence } from 'y-indexeddb'
-import { CONTENT_FIELD, docRoom, type CollabUser } from '@obsidian-connect/shared'
-import { fromBase64, toBase64 } from '@obsidian-connect/shared/crypto'
+import { CONTENT_FIELD, docRoom, type CollabUser } from '@mycel/shared'
+import { fromBase64, toBase64 } from '@mycel/shared/crypto'
 import type { HistoryStore } from './History.js'
 import type { RoomCrypto, RoomCursor, VaultSocket } from './VaultSocket.js'
 import { log } from '../log.js'
@@ -166,7 +166,7 @@ export class DocHandle {
     this.sharedNow = options.shared
     this.readOnlyNow = options.readOnly
     if (options.shared) this.awareness.setLocalStateField('user', user)
-    this.persistence = openLocal(`obsidian-connect/${vaultId}/${docId}`, this.doc)
+    this.persistence = openLocal(`mycel/${vaultId}/${docId}`, this.doc)
   }
 
   /**

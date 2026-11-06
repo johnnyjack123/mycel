@@ -310,9 +310,9 @@ D 5). What is gone through:
   copies, `notices.json`, the logs. In Obsidian's own settings: whether it is turned on,
   its hotkeys, its open views.
 - **Stays, whatever the name** - it is part of keys, ids or data that exist: the
-  `localStorage` keys (`obsidian-connect:master` and the like) and the IndexedDB names
-  (`obsidian-connect/<vault>/<note>`), every label of every key derivation (the password's
-  salt says `obsidian-connect salt` - changed, nobody could sign in), the tokens' issuer,
+  `localStorage` keys (`mycel:master` and the like) and the IndexedDB names
+  (`mycel/<vault>/<note>`), every label of every key derivation (the password's
+  salt says `mycel salt` - changed, nobody could sign in), the tokens' issuer,
   the server's `/health` answer the plugin checks, the backup server's restic host and
   tag (its snapshots are found by them) and the decrypted copy's marker file. None of
   them is ever shown. They keep their spelling for good.
@@ -323,7 +323,7 @@ D 5). What is gone through:
 ### Proposed
 
 - The new plugin, at its first start, finds the old folder: while the old plugin is still
-  turned on it does nothing but say so in a window (*Turn off Obsidian Connect*); once it
+  turned on it does nothing but say so in a window (*Turn off Mycel*); once it
   is off, it copies the old folder's data (not its code) into its own - the Time Machine's
   journal before anything else looks at the files -, starts, and says the old plugin can
   be deleted. Both running at once would share the keys and the databases.
@@ -331,7 +331,7 @@ D 5). What is gone through:
   plugin does not write).
 - The server and the backup server: the names the user sees (CLI, images) can follow -
   the new ones and the old ones side by side for a while, the environment variables read
-  under both names (otherwise a missing `OBSIDIAN_CONNECT_JWT_SECRET` silently signs
+  under both names (otherwise a missing `MYCEL_JWT_SECRET` silently signs
   everyone out and a missing `..._DATA_DIR` starts an empty server).
 
 **N1 (for the user): the name and the id** - "Connect" / `connect`, or something more
@@ -479,3 +479,9 @@ touches a device.
   nothing to it; a new friend code confirms the new keys, and their device reseals and rotates
   what it shares with the account. Backup servers are taken off first, their tasks kept for
   the next invitation.
+- **0.9.7** - N as decided on 2026-11-05: *Mycel*, everywhere - plugin id and name, packages,
+  environment variables, images, command lines, every key derivation's label, `localStorage`
+  and IndexedDB names, the tokens' issuer, `/health`, restic's host and tag, CSS classes, the
+  log's prefix. The migration proposed above (the new plugin taking the old folder's data) is
+  not built: the user starts afresh, so there is nothing to carry over. The repository's name
+  on GitHub is the user's to change.

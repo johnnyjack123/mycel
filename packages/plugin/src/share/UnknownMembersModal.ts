@@ -69,7 +69,7 @@ export class UnknownMembersModal extends Modal {
                 this.render(error instanceof Error ? error.message : String(error))
                 return
               }
-              new Notice(`Obsidian Connect: ${account.slice(0, 8)} is no longer in "${where}". Try again what you were doing.`, 10_000)
+              new Notice(`Mycel: ${account.slice(0, 8)} is no longer in "${where}". Try again what you were doing.`, 10_000)
               this.close()
             })
           )

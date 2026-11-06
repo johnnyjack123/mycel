@@ -19,7 +19,7 @@ import {
   type PluginValue,
   type ViewUpdate
 } from '@codemirror/view'
-import { applyTextEdits, textEdits, type CollabUser, type TextEdit } from '@obsidian-connect/shared'
+import { applyTextEdits, textEdits, type CollabUser, type TextEdit } from '@mycel/shared'
 import { EDITOR_ORIGIN } from '../sync/origin.js'
 import { log } from '../log.js'
 
@@ -142,10 +142,10 @@ class CaretWidget extends WidgetType {
 
   toDOM(): HTMLElement {
     const caret = document.createElement('span')
-    caret.className = 'connect-remote-caret'
+    caret.className = 'mycel-remote-caret'
     caret.style.borderColor = this.user.color
     const label = document.createElement('span')
-    label.className = 'connect-remote-caret-label'
+    label.className = 'mycel-remote-caret-label'
     label.style.backgroundColor = this.user.color
     label.textContent = this.user.name
     caret.appendChild(label)
@@ -609,7 +609,7 @@ export class EditorBinding implements PluginValue {
       if (from !== to) {
         ranges.push(
           Decoration.mark({
-            class: 'connect-remote-selection',
+            class: 'mycel-remote-selection',
             attributes: { style: `background-color: ${user.colorLight}` }
           }).range(from, to)
         )

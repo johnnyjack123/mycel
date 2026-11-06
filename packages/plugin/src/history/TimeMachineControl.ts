@@ -239,7 +239,7 @@ export class TimeMachineControl implements PastEditorHost {
     if (this.opening || this.ending) return
     const prepared = this.host.prepare()
     if (!prepared) {
-      new Notice('Obsidian Connect is not connected yet. The Time Machine reads the past from the server, so it opens once the vault syncs.')
+      new Notice('Mycel is not connected yet. The Time Machine reads the past from the server, so it opens once the vault syncs.')
       return
     }
     const modal = new StartModal(this.host.app, scopeName(scope), scope.kind === 'note')
@@ -662,7 +662,7 @@ export class TimeMachineControl implements PastEditorHost {
 
   private showUi(session: TimeMachineSession): void {
     const doc = this.host.app.workspace.containerEl.doc
-    const root = doc.body.createDiv({ cls: 'connect-tm-ui' })
+    const root = doc.body.createDiv({ cls: 'mycel-tm-ui' })
     const strip = new TimeMachineStrip(root, {
       select: (place) => void this.moveTo(place),
       label: (position) => this.label(position)
@@ -679,7 +679,7 @@ export class TimeMachineControl implements PastEditorHost {
       },
       session.scope.kind !== 'note'
     )
-    doc.body.addClass('connect-tm-active')
+    doc.body.addClass('mycel-tm-active')
     const editors = doc.querySelector('.workspace-split.mod-root')
     // Below the tabs, never in their row: on Windows the window's own buttons lie at
     // the right end of it, over everything, and they hid the way out (0.8.14). The
@@ -693,8 +693,8 @@ export class TimeMachineControl implements PastEditorHost {
       for (const group of groups) {
         const groupBox = group.getBoundingClientRect()
         const topRow = Math.abs(groupBox.top - box.top) < 2
-        group.toggleClass('connect-tm-below-bar', topRow)
-        group.toggleClass('connect-tm-beside-strip', Math.abs(groupBox.left - box.left) < 2)
+        group.toggleClass('mycel-tm-below-bar', topRow)
+        group.toggleClass('mycel-tm-beside-strip', Math.abs(groupBox.left - box.left) < 2)
         const header = topRow ? group.querySelector<HTMLElement>(':scope > .workspace-tab-header-container') : null
         const headerBox = header?.getBoundingClientRect()
         if (headerBox && headerBox.height > 0) top = Math.max(top, headerBox.bottom)
@@ -703,12 +703,12 @@ export class TimeMachineControl implements PastEditorHost {
       // The status bar floats over the editors' lower right corner.
       const status = doc.querySelector<HTMLElement>('.status-bar')?.getBoundingClientRect()
       const bottom = status && status.height > 0 && status.left < box.left + 80 ? Math.min(box.bottom, status.top) : box.bottom
-      root.style.setProperty('--connect-tm-top', `${top}px`)
-      root.style.setProperty('--connect-tm-right', `${Math.max(0, doc.documentElement.clientWidth - box.right)}px`)
-      root.style.setProperty('--connect-tm-left', `${box.left}px`)
-      root.style.setProperty('--connect-tm-strip-top', `${top + height}px`)
-      root.style.setProperty('--connect-tm-strip-height', `${Math.max(0, bottom - top - height)}px`)
-      doc.body.style.setProperty('--connect-tm-bar-height', `${height}px`)
+      root.style.setProperty('--mycel-tm-top', `${top}px`)
+      root.style.setProperty('--mycel-tm-right', `${Math.max(0, doc.documentElement.clientWidth - box.right)}px`)
+      root.style.setProperty('--mycel-tm-left', `${box.left}px`)
+      root.style.setProperty('--mycel-tm-strip-top', `${top + height}px`)
+      root.style.setProperty('--mycel-tm-strip-height', `${Math.max(0, bottom - top - height)}px`)
+      doc.body.style.setProperty('--mycel-tm-bar-height', `${height}px`)
     }
     const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place)
     if (editors) resize?.observe(editors)
@@ -727,9 +727,9 @@ export class TimeMachineControl implements PastEditorHost {
     this.ui.strip.destroy()
     this.ui.bar.destroy()
     this.ui.root.remove()
-    doc.body.removeClass('connect-tm-active')
-    doc.body.style.removeProperty('--connect-tm-bar-height')
-    doc.querySelectorAll('.connect-tm-below-bar, .connect-tm-beside-strip').forEach((group) => group.removeClass('connect-tm-below-bar', 'connect-tm-beside-strip'))
+    doc.body.removeClass('mycel-tm-active')
+    doc.body.style.removeProperty('--mycel-tm-bar-height')
+    doc.querySelectorAll('.mycel-tm-below-bar, .mycel-tm-beside-strip').forEach((group) => group.removeClass('mycel-tm-below-bar', 'mycel-tm-beside-strip'))
     this.ui = null
   }
 

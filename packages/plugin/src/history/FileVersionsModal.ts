@@ -66,19 +66,19 @@ export class FileVersionsModal extends Modal {
       text: `${this.versions.length} earlier version(s)${this.retentionDays > 0 ? `, kept for ${this.retentionDays} days` : ''}. Restoring one is a change like any other: the current version is kept as an earlier one.`
     })
 
-    const list = contentEl.createDiv({ cls: 'connect-history-list' })
+    const list = contentEl.createDiv({ cls: 'mycel-history-list' })
     for (const version of this.versions) {
-      const row = list.createDiv({ cls: 'connect-history-row' })
+      const row = list.createDiv({ cls: 'mycel-history-row' })
       if (this.selected === version) row.addClass('is-selected')
       row.createSpan({ text: `${new Date(version.since).toLocaleString()} – ${new Date(version.at).toLocaleString()}` })
-      row.createSpan({ cls: 'connect-history-size', text: size(version.size) })
+      row.createSpan({ cls: 'mycel-history-size', text: size(version.size) })
       row.onclick = () => void this.select(version)
     }
 
     const selected = this.selected
     if (!selected) return
     if (this.previewUrl) {
-      contentEl.createEl('img', { cls: 'connect-version-preview', attr: { src: this.previewUrl, alt: this.file.name } })
+      contentEl.createEl('img', { cls: 'mycel-version-preview', attr: { src: this.previewUrl, alt: this.file.name } })
     } else if (!imageType(this.file.extension)) {
       contentEl.createEl('p', { cls: 'setting-item-description', text: 'No preview for this kind of file. Save it as a copy to open it.' })
     }

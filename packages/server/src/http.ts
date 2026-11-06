@@ -77,7 +77,7 @@ import {
   type VaultLockRequest,
   type VaultLockResponse,
   type VaultLockTaken
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 import { AccountError, isAccountId, sessionOf, type AccountStore, type StoredAccount } from './accounts.js'
 import type { TokenService, TokenSession } from './auth.js'
 import { BlobError, type BlobStore } from './blobs.js'
@@ -255,7 +255,7 @@ export function createHttpApp(
     }, options.paceMs)
   }
 
-  app.get(API.health, async () => ({ ok: true, service: 'obsidian-connect-server', protocol: PROTOCOL_VERSION }))
+  app.get(API.health, async () => ({ ok: true, service: 'mycel-server', protocol: PROTOCOL_VERSION }))
 
   // --- accounts ------------------------------------------------------------------
 

@@ -4,10 +4,10 @@
 # as that user. A bind-mounted folder Docker made belongs to root; without
 # this, every setup needed a chown by hand first.
 #
-#   OBSIDIAN_CONNECT_OWN       folders handed over with everything in them
+#   MYCEL_OWN       folders handed over with everything in them
 #                              (only what is not theirs yet: a large folder is
 #                              not walked again on every start)
-#   OBSIDIAN_CONNECT_OWN_TOP   folders handed over themselves, never what lies
+#   MYCEL_OWN_TOP   folders handed over themselves, never what lies
 #                              in them - the backup server's folders for
 #                              repositories and copies may be a NAS share or
 #                              a mounted cloud
@@ -20,14 +20,14 @@ uid="${PUID:-1000}"
 gid="${PGID:-1000}"
 
 if [ "$(id -u)" = "0" ]; then
-  for dir in ${OBSIDIAN_CONNECT_OWN:-}; do
+  for dir in ${MYCEL_OWN:-}; do
     mkdir -p "$dir"
     find "$dir" \( ! -user "$uid" -o ! -group "$gid" \) -exec chown "$uid:$gid" {} +
   done
-  for dir in ${OBSIDIAN_CONNECT_OWN_TOP:-}; do
+  for dir in ${MYCEL_OWN_TOP:-}; do
     mkdir -p "$dir"
     # A mount that refuses (a network share squashing root) is left as it is.
-    chown "$uid:$gid" "$dir" 2>/dev/null || echo "[obsidian-connect] could not hand $dir to $uid:$gid; it must be writable by that user" >&2
+    chown "$uid:$gid" "$dir" 2>/dev/null || echo "[mycel] could not hand $dir to $uid:$gid; it must be writable by that user" >&2
   done
   exec su-exec "$uid:$gid" "$@"
 fi

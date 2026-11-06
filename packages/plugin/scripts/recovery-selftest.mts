@@ -9,11 +9,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { check, delay, Device, eventually, finish, useServer, VAULT } from './harness.mjs'
 
-const { docRoom } = await import('@obsidian-connect/shared')
+const { docRoom } = await import('@mycel/shared')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
 const { Blobs } = await import('../src/sync/Blobs.js')
-const { contentHash } = await import('@obsidian-connect/shared/crypto')
+const { contentHash } = await import('@mycel/shared/crypto')
 const { AccountStore } = await import('../../server/src/accounts.js')
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
@@ -26,11 +26,11 @@ async function serve(dataDir: string) {
     loadConfig({
       HOST: '127.0.0.1',
       PORT: String(port),
-      OBSIDIAN_CONNECT_DATA_DIR: dataDir,
-      OBSIDIAN_CONNECT_REGISTRATION: 'open',
-      OBSIDIAN_CONNECT_JWT_SECRET: 'recovery-selftest',
+      MYCEL_DATA_DIR: dataDir,
+      MYCEL_REGISTRATION: 'open',
+      MYCEL_JWT_SECRET: 'recovery-selftest',
       // Content uploaded seconds ago may go when the test empties the trash.
-      OBSIDIAN_CONNECT_PURGE_GRACE_S: '0'
+      MYCEL_PURGE_GRACE_S: '0'
     }),
     // Removed accounts are cleared within moments, not minutes.
     { logger: false, sweepMs: 200 }

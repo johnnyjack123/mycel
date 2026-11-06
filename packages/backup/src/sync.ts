@@ -5,7 +5,7 @@ import {
   type BlobInfo,
   type KeysResponse,
   type LogResponse
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 
 // The backup server's side of the sync server's REST API: signing in with a
 // backup key, and reading. A backup token writes nothing, so there is nothing

@@ -8,7 +8,7 @@ import {
   type IndexEntry,
   type LogResponse,
   type TimesResponse
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 import type { RoomCrypto } from '../sync/VaultSocket.js'
 import { RoomHistory } from './RoomHistory.js'
 

@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-05 · **0.9 under way (`docs/PHASE8.md`, the user's decisions of 2026-11-03 and 2026-11-05 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before. Next: *Replace all keys* (0.9.6), then the rename to Mycel (0.9.7); then the user starts afresh once, and the audit goes to a separate agent in a new chat; publishing comes last.**_
+_Last updated: 2026-11-06 · **0.9 built up to the audit (`docs/PHASE8.md`, the user's decisions of 2026-11-03 and 2026-11-05 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel. Next: the user starts afresh once (below, "Starting afresh"), then the audit by a separate agent in a new chat; publishing comes last.**_
 
 ## Where we are
 
@@ -26,7 +26,8 @@ folder, opening the decrypted copy as a vault.
 
 **The user's setup** (matters when something fails between the hosts):
 - Sync server: Docker on a machine in a subnet of its own, behind Nginx Proxy
-  Manager with TLS (`wss://sync.example.org`). Its access list
+  Manager with TLS (`wss://sync.example.org` - the user's host name, not
+  renamed with the project). Its access list
   admits the home network and the Pi's subnet address. Needs 0.7.18 or newer - the
   relay's ping, without which NPM closed the backup server's connection every minute.
 - Backup server: Docker on a Raspberry Pi 5 that routes the subnet (iptables script
@@ -63,16 +64,32 @@ an opinion on their two names, *Seemless* and *Mycel* (given: Mycel). Publishing
 7. **0.9.6** - S2, *Replace all keys*, as the user decided on 2026-11-05 (`docs/PHASE8.md`, S2a
    to S2c): a new identity (contacts confirm again with a new friend code), every room written
    anew, every file uploaded anew, the backup server invited again (`feat/replace-keys`).
-8. **0.9.7** - N: the rename to *Mycel*, everywhere (the user, 2026-11-05).
-9. Then the user starts once afresh (0.9.5 reads nothing from before); the audit goes to a
-   separate agent in a new chat, once everything is built (the user: no audit agent from here);
-   P last.
+   Merged, CI green.
+8. **0.9.7** - N: the rename to *Mycel*, everywhere, the internal names included (the user,
+   2026-11-05; `feat/mycel`).
+9. Then the user starts once afresh (below); the audit goes to a separate agent in a new chat,
+   once everything is built (the user: no audit agent from here); P last.
 
-To try on devices after 0.9.5: nothing of before is read - a new data folder for the sync
-server, new accounts, contacts made anew, the plugin's data on each device reset (its folder's
-`data.json` and the vault's local storage), the backup server's data folder emptied. Worth
-watching: a share right after making a contact; a writer made a reader and back (each moves
-the note to a new epoch); the log for "not signed by someone who may write here".
+**Starting afresh** (nothing written before 0.9.5 is read, and nothing named before 0.9.7 is
+found):
+- Sync server: the image is `ghcr.io/johnnyjack123/mycel-server` now; a new, empty data folder;
+  the `.env` with every variable renamed (`OBSIDIAN_CONNECT_JWT_SECRET` → `MYCEL_JWT_SECRET`,
+  and so on - `docs/server.env` lists them); the CLI is `mycel` (`docker exec <container> mycel
+  invite`). The proxy's host name can stay as it is.
+- Backup server: the image is `mycel-backup`, its variables `MYCEL_*` (`docs/backup.env`), its
+  data folder emptied; it is invited again from a device.
+- Every device: the old plugin folder `.obsidian/plugins/obsidian-connect/` deleted (it holds
+  the old token and keys), the new one `.obsidian/plugins/mycel/` installed; the vault's
+  `localStorage` and IndexedDB entries of the old plugin are not read any more (they are named
+  `obsidian-connect…`) and can be cleared with the browser tools or left. New accounts are
+  registered, contacts made anew with friend codes, notes and folders shared anew.
+- The repository on GitHub keeps its name until the user renames it (GitHub forwards the old
+  address); the images are published under the new names from the next push to `main` on.
+
+Worth watching on devices: a share right after making a contact; a writer made a reader and
+back (each moves the note to a new epoch); *Replace all keys* on a test account (its notice
+while the vault is written anew, a contact's notice, the new friend code, the backup server
+invited again); the log for "not signed by someone who may write here".
 
 **Milestone 0.8: sharing a folder, and the small fixes** (`docs/PHASE7.md`, signed off
 2026-10-22; the decisions E0 to E8, the order of work at its end).
@@ -246,7 +263,9 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing. `feat/seal-pinned-only` (0.9.0), `feat/durable-writes` (0.9.1), `feat/live-notes` (0.9.2), `feat/signatures` (0.9.3), `feat/signed-frames` (0.9.4), `feat/clean-slate` (0.9.5) and `feat/replace-keys` (0.9.6) are merged. Every branch of 0.8
+Nothing. `feat/seal-pinned-only` (0.9.0), `feat/durable-writes` (0.9.1), `feat/live-notes` (0.9.2), `feat/signatures` (0.9.3), `feat/signed-frames` (0.9.4), `feat/clean-slate` (0.9.5), `feat/replace-keys` (0.9.6) and `feat/mycel` (0.9.7) are merged.
+`debug/start-race` on the remote holds only temporary logging from chasing a CI failure of
+0.9.6 (CHANGELOG); nothing of it is in `main`, and it can go. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
 `fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`, `feat/time-machine`,
@@ -276,7 +295,7 @@ user's call, as with the earlier branches.
 - "Compare versions" on a note (2026-10-12): on which device it appeared, and the date
   the dialog names - then that device's log of the day. Not answered; low priority.
 - Whether the user's loss through the guard on 2026-10-20 was two runs in a row
-  (`docker compose logs obsidian-connect-backup | grep "backup of"` around 20:46).
+  (`docker compose logs mycel-backup | grep "backup of"` around 20:46).
   Not needed any more: both possible causes are fixed in 0.7.18.
 
 ## Known issues / debt
@@ -348,6 +367,40 @@ user's call, as with the earlier branches.
   devices is still being decided - the log shows "deleted for everyone in its shared
   folder" after "brought back for everyone". The delete-versus-restore race of
   invariant 29 (`decideMs`), not looked into yet.
+- **A writer's offline version of a shared folder's file can end up only in its version
+  history** (seen in CI 2026-11-06, `test:folders` "changed on both sides, the file keeps the
+  owner's version and the writer's goes next to it"; never locally - for the audit): P1 changes
+  `Shared/X/pic.png` while away, the owner changes it too; P1 starts its attachments before the
+  vault index came from the server ("attachments: 2 known" where the passing run says 4), takes
+  its file for a change of its own and sets its content, racing the owner's version in the same
+  index entry. The owner's wins; Pia's other device adopts it and records P1's content as a
+  version (`recordVersion`), and then P1's `AttachmentIndex.replaced(fileId, own hash)` is true
+  - "replaced by someone who knew it" - and P1 overwrites its file with the owner's version
+  ("changed on another device") without a conflict copy. P1's content stays on the server and
+  in the file's version history, not as a file. Two ways out to weigh: attachments start only
+  once the index is synced with the server (invariant 1's spirit), and a version recorded by
+  another device's adoption should not count as that device having seen this one's content.
+- **Two more races seen only in CI, never locally** (for the audit; both before 0.9.6 too):
+  - `test:folders` "no file at Shared/X/Sub/byPia.png" (2026-11-06, twice in four runs): a
+    writer (P1) renames a file inside a shared folder; the owner's devices follow, but on the
+    writer's other device and on the reader the file goes to the new name and back to the old
+    one twice ("renamed on another device to … fromPia.png" after "… byPia.png"), and the
+    writer's own file ends at the old name. Something writes the old path into the folder
+    document or the vault index after the rename - `FolderFiles.reconcileOne` follows the
+    folder's path when the base says the file still lies where the folder had it, and the
+    base is the vault's, synced apart from the folder document. No hold, no missing key in
+    the log.
+  - `test:backup` "the starting point (#1) does not fit the log (epoch from #2, head #1)"
+    (0.9.2, 0.9.3, three times for 0.9.6/0.9.7): a note created and its folder shared without
+    history a moment later; the server moved the note's epoch while counting a frame still
+    being written (`epochSince` 2), and later its head is 1 - the device's `lastSeq` is 1 too,
+    nothing of it unacknowledged, so the share failed with "try again" five times over. Since
+    0.9.7 a starting point has to hold every frame of an earlier epoch on the disk and every
+    one counted when the epoch moved that did land (`min(epochSince, head)`); a server that
+    finds its epoch beginning after its head says so in its log ("its epoch began after"). Why
+    a counted frame does not land is not found: server-side logs (`debug/start-race`) caught no
+    failing run; passing runs show the creation frame written under the old epoch while the
+    note joined its folder, and sent again under the new one after the `rekey`.
 - The development machine is short of memory (often 1.6 GB free of 15.6 GB): a
   `test:backup` run takes four to ten minutes, and twice died at its start (restic,
   then Node out of memory); rerun before suspecting the code.
@@ -359,7 +412,7 @@ user's call, as with the earlier branches.
 restic on the development machine: `%USERPROFILE%\tools\restic\restic_0.19.1_windows_amd64.exe`
 (the official release, checksum checked, put there with the user's consent on
 2026-10-15). `test:backup` needs
-`OBSIDIAN_CONNECT_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
+`MYCEL_RESTIC="$HOME/tools/restic/restic_0.19.1_windows_amd64.exe"`.
 rclone runs only in the image (CI).
 
 At 0.8.16, run 2026-11-02 on `feat/time-machine-4`: `typecheck` and `build` pass;

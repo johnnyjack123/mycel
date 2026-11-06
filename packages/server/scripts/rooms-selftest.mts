@@ -9,7 +9,7 @@ import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SignJWT } from 'jose'
-import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, CLOSE_SIGNED_OUT, type FolderTie, type Notice, type NotifyKind } from '@obsidian-connect/shared'
+import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, CLOSE_SIGNED_OUT, type FolderTie, type Notice, type NotifyKind } from '@mycel/shared'
 import { AccountStore, sessionOf, type StoredAccount } from '../src/accounts.js'
 import { TokenService } from '../src/auth.js'
 import { BlobStore } from '../src/blobs.js'
@@ -545,7 +545,7 @@ try {
       const withoutGeneration = await new SignJWT({ scope: 'user' })
         .setProtectedHeader({ alg: 'HS256' })
         .setSubject(erin)
-        .setIssuer('obsidian-connect')
+        .setIssuer('mycel')
         .setIssuedAt()
         .setExpirationTime('1h')
         .sign(new TextEncoder().encode('rooms-selftest'))

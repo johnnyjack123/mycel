@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { BackupListedEntry, BackupSnapshotRef } from '@obsidian-connect/shared'
+import type { BackupListedEntry, BackupSnapshotRef } from '@mycel/shared'
 import type { Restic, ResticRepo } from './restic.js'
 import type { Destination } from './run.js'
 import { TarReader } from './tarcheck.js'

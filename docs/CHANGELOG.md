@@ -8,6 +8,25 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.7** (2026-11-06) - **the name: Mycel** (`docs/PHASE8.md`, N; the user, 2026-11-05).
+  Since the user starts once afresh, everything is renamed, the internal names included -
+  nothing has to stay readable: the plugin (id `mycel`, name *Mycel*, its folder
+  `.obsidian/plugins/mycel/`), the packages (`@mycel/shared`, `@mycel/server`, `@mycel/plugin`,
+  `@mycel/backup`), the environment variables (`OBSIDIAN_CONNECT_*` → `MYCEL_*`), the images
+  (`ghcr.io/<owner>/mycel-server`, `mycel-backup`), the command lines (`mycel`, `mycel-backup`),
+  every key derivation's label (`mycel salt`, `mycel login`, …), the `localStorage` keys and
+  IndexedDB names, the tokens' issuer, the server's `/health` answer, restic's host and tag,
+  the log prefix `[mycel]`, the CSS classes (`mycel-…`), the notification center's title. The
+  historical design documents keep the names they were written with only where they discuss
+  the choice of a name; this changelog keeps them for everything before 0.9.7. The repository
+  on GitHub keeps its name until the user renames it. Checked by every suite, run under the
+  new names. Also: **a starting point no longer has to reach past a frame that never landed**
+  - a folder shared without history right after a note in it was made failed now and then in
+  CI with "the starting point does not fit the log (epoch from #2, head #1)", since 0.9.2: the
+  server had counted a frame still being written when the note's epoch moved, and that frame
+  is not in the log. A starting point now has to hold every frame of an earlier epoch and every
+  counted one that landed (`docs/PROGRESS.md`, known issues, for what is still unexplained).
+
 - **0.9.6** (2026-11-05) - ***Replace all keys*** (`docs/PHASE8.md`, S2, as the user decided
   on 2026-11-05). A new password signs every other device out, but whoever had the keys
   before could still read what they got of the notes. A button in the account's settings now
@@ -30,10 +49,12 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
   change; only a key holder can make them): written anew, the log is still the one it knew,
   and such a frame it cannot open yet confirms nothing and refutes nothing (`unreadable`:
   nothing sent, caught up again once a key comes) instead of holding the note for the user. The
-  first build of this compared what the frames say only, which needs their key: in CI a frame
-  whose key was missing for a moment left rooms unconfirmed and unsent, and `test:backup` failed
-  twice ("the starting point does not fit the log") and `test:folders` once; comparing the
-  bytes first, as before, is what every case outside a replacement does again. **Contacts:** the server tells them
+  first build of this compared what the frames say only, which needs their key - a frame whose
+  key was missing for a moment would have left a room unconfirmed and unsent; comparing the
+  bytes first, as before, is what every case outside a replacement does again. The CI failures
+  seen meanwhile (`test:backup` "the starting point does not fit the log", `test:folders` "no
+  file at Shared/X/Sub/byPia.png") turned out to be older races, seen in CI before 0.9.6 too
+  (`docs/PROGRESS.md`, known issues). **Contacts:** the server tells them
   (`contact-replaced`); their devices then seal nothing to the account and take nothing in its
   name until a **new friend code** confirmed the new keys - redeemed either way, it replaces
   the pinned ones, and their device seals what it shares with the account anew and moves it to

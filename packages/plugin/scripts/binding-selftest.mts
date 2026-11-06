@@ -363,7 +363,7 @@ check(
   await Promise.all([p.synced, q.synced])
   check(await eventually(() => p.host.acquired === 1 && q.host.acquired === 1), 'two editors of a shared note bind')
   const caretOn = (side: typeof p): number => {
-    const caret = side.view.dom.querySelector('.connect-remote-caret')
+    const caret = side.view.dom.querySelector('.mycel-remote-caret')
     return caret ? side.view.posAtDOM(caret) : -1
   }
   p.view.dispatch({ selection: { anchor: 3 } })

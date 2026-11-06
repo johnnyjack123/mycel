@@ -1,4 +1,4 @@
-import { scheduleDays, type BackupAt } from '@obsidian-connect/shared'
+import { scheduleDays, type BackupAt } from '@mycel/shared'
 
 // When a backup at a time of day comes next - in the time zone of the device
 // that set it: a container's clock runs in UTC, and "at three at night" means

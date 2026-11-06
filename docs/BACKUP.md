@@ -27,7 +27,7 @@ How it is built and why: `docs/PHASE6.md`.
   backup server, and what it relays is encrypted between the two with a key that
   depends on a secret only the two know, which never leaves either.
 - **A vault is connected with an invitation, once.** The operator makes one per
-  person (`obsidian-connect-backup invite`); it connects one vault, once, within a
+  person (`mycel-backup invite`); it connects one vault, once, within a
   week. From then on the vault has a secret of its own with the backup server - kept
   in the account's encrypted settings, so all its devices and nobody else reach it -
   and the backup server knows which account the vault belongs to. Nobody else can see
@@ -42,7 +42,7 @@ from this repository: `docker-compose.backup.yml` and `docs/backup.env`.
 ```bash
 cp backup.env .env                    # then edit it: the sync server, its three folders
 docker compose -f docker-compose.backup.yml up -d
-docker compose -f docker-compose.backup.yml exec obsidian-connect-backup obsidian-connect-backup invite Anna
+docker compose -f docker-compose.backup.yml exec mycel-backup mycel-backup invite Anna
 ```
 
 The last line prints an invitation for Anna; pass it on as you would a password. It
@@ -63,7 +63,7 @@ id says nothing about it - `vaults` lists which id is which vault of whom. An ac
 name is not unique: a second account of the same name gets its account's id added
 (`anna (3f2a9c01)/Notes`). The decrypted copy holds the vault itself at its top, so it
 opens in Obsidian as a vault; its trash and settings lie beside the notes, in the
-hidden `.obsidian-connect/`. Every backup brings it up to date and overwrites what was
+hidden `.mycel/`. Every backup brings it up to date and overwrites what was
 changed in it - copy a note out before you edit it.
 
 The encrypted folder may be a NAS share or a mounted cloud folder: restic encrypts
@@ -77,7 +77,7 @@ them - the folder itself, not what already lies in it - to the user it runs as
 through `docker compose exec`. Its data folder is `./backup-data` unless set, so the
 file can lie next to the sync server's `docker-compose.yml`, whose is `./data`.
 
-The operator's commands, all through `docker compose -f docker-compose.backup.yml exec obsidian-connect-backup obsidian-connect-backup …`:
+The operator's commands, all through `docker compose -f docker-compose.backup.yml exec mycel-backup mycel-backup …`:
 
 | Command | What it does |
 |---|---|
@@ -95,19 +95,19 @@ Updating: `docker compose -f docker-compose.backup.yml pull && docker compose -f
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OBSIDIAN_CONNECT_SERVER` | — (required) | The sync server, `wss://…` as devices are given it - or any address this container reaches it by (see "When connecting fails"). |
-| `OBSIDIAN_CONNECT_BACKUP_NAME` | the host name | What devices are shown it as. |
+| `MYCEL_SERVER` | — (required) | The sync server, `wss://…` as devices are given it - or any address this container reaches it by (see "When connecting fails"). |
+| `MYCEL_BACKUP_NAME` | the host name | What devices are shown it as. |
 | `SERVER_DATA` | `./backup-data` | Its own data, mounted at `/data`. |
 | `ENCRYPTED_VAULTS` | `./encrypted-vaults` | The repositories kept on the backup server, mounted at `/encrypted`. |
 | `DECRYPTED_VAULTS` | `./decrypted-vaults` | The decrypted copies, mounted at `/decrypted`. |
 | `RAM_DISK` | `1g` | The memory a vault's notes may take during a backup. |
-| `OBSIDIAN_CONNECT_BACKUP_DEBUG` | `false` | More in the log. |
+| `MYCEL_BACKUP_DEBUG` | `false` | More in the log. |
 | `PUID`, `PGID` | `1000` | The user and group it runs as; the image hands its folders to them at every start. |
 
-The container's own paths, if you run it some other way: `OBSIDIAN_CONNECT_BACKUP_DATA`
-(`/data`), `OBSIDIAN_CONNECT_BACKUP_ENCRYPTED` (`/encrypted`),
-`OBSIDIAN_CONNECT_BACKUP_DECRYPTED` (`/decrypted`), `OBSIDIAN_CONNECT_BACKUP_WORK`
-(`/run/obsidian-connect-backup`, the RAM disk), `OBSIDIAN_CONNECT_RESTIC` (restic).
+The container's own paths, if you run it some other way: `MYCEL_BACKUP_DATA`
+(`/data`), `MYCEL_BACKUP_ENCRYPTED` (`/encrypted`),
+`MYCEL_BACKUP_DECRYPTED` (`/decrypted`), `MYCEL_BACKUP_WORK`
+(`/run/mycel-backup`, the RAM disk), `MYCEL_RESTIC` (restic).
 
 **Memory.** Notes and canvases lie in the RAM disk during a run, decrypted; pictures,
 PDFs and other files never do - they stream into restic one at a time. A vault of
@@ -125,17 +125,17 @@ given the password it had.
 ### When connecting fails
 
 "No backup server answers this invitation" in Obsidian means the sync server knows no
-backup server for it. `obsidian-connect-backup status` on the backup server says why:
+backup server for it. `mycel-backup status` on the backup server says why:
 
 - **NOT connected**, with a reason: the container does not reach the sync server at
-  `OBSIDIAN_CONNECT_SERVER`; `check` tries it step by step. On the same host as the
+  `MYCEL_SERVER`; `check` tries it step by step. On the same host as the
   sync server, a container often reaches neither the public address (the router does
   not loop it back) nor the host's LAN address (a firewall such as ufw drops traffic
   from Docker's networks). What works there:
   - both compose files in one folder - one compose project, one network - and
-    `OBSIDIAN_CONNECT_SERVER=ws://obsidian-connect:1234`, the sync server's container;
+    `MYCEL_SERVER=ws://mycel:1234`, the sync server's container;
   - or `network_mode: host` for the backup server in `docker-compose.backup.yml` and
-    `OBSIDIAN_CONNECT_SERVER=ws://127.0.0.1:1234`. It needs no port of its own, so
+    `MYCEL_SERVER=ws://127.0.0.1:1234`. It needs no port of its own, so
     nothing else changes.
 
   On another machine, use an address it reaches the sync server by, such as
@@ -161,7 +161,7 @@ backup server for it. `obsidian-connect-backup status` on the backup server says
 
 ## Setting it up in Obsidian
 
-*Settings → Obsidian Connect → Backups*:
+*Settings → Mycel → Backups*:
 
 1. **Connect a backup server…** - the invitation and your password. Your other
    devices find it in the settings by themselves. A vault has one backup server:
@@ -232,7 +232,7 @@ Drive, OneDrive, Dropbox, Nextcloud and WebDAV, pCloud, Mega and most others. It
 operator sets a cloud up once, as a *remote*, on the backup server:
 
 ```bash
-docker compose -f docker-compose.backup.yml exec obsidian-connect-backup rclone config
+docker compose -f docker-compose.backup.yml exec mycel-backup rclone config
 ```
 
 It asks for the kind of cloud and its credentials. For a cloud you sign in to in a
@@ -261,7 +261,7 @@ now and at most in the week before. If you deleted them on purpose, *Let the cop
 follow*: the window stays until that backup is done and a notice says what was
 removed. *Not now* leaves it waiting - the Backups tab keeps a *Decide…* for later.
 Letting it follow, or setting the guard to never, starts the measuring afresh. Deleted notes stay in the copy's hidden
-trash (`.obsidian-connect/trash/`) as long as the vault's trash keeps them.
+trash (`.mycel/trash/`) as long as the vault's trash keeps them.
 
 ## What a backup holds
 
@@ -274,8 +274,8 @@ trash (`.obsidian-connect/trash/`) as long as the vault's trash keeps them.
 restic keeps it as two snapshots per backup: one of the notes (`<Vault>/` with its
 notes and canvases, the trash's notes, the settings), and one stream of all other
 files, `<Vault> files.tar`, made only when a file changed. The decrypted copy holds
-all of it in one folder: the vault at its top, the trash in `.obsidian-connect/trash/`,
-the settings in `.obsidian-connect/settings.json`.
+all of it in one folder: the vault at its top, the trash in `.mycel/trash/`,
+the settings in `.mycel/settings.json`.
 
 Every backup is checked: every note's path and size in the new snapshot, the newest
 notes read back byte for byte; once a day restic's own check of the whole repository;
@@ -321,14 +321,14 @@ a note makes that old version the newest everywhere.
 
 ## Without Docker
 
-For trying it on a laptop: restic on the PATH (or `OBSIDIAN_CONNECT_RESTIC`), then
+For trying it on a laptop: restic on the PATH (or `MYCEL_RESTIC`), then
 
 ```bash
-OBSIDIAN_CONNECT_SERVER=ws://localhost:1234 OBSIDIAN_CONNECT_BACKUP_DATA=./backup-data \
-OBSIDIAN_CONNECT_BACKUP_ENCRYPTED=./encrypted-vaults OBSIDIAN_CONNECT_BACKUP_DECRYPTED=./decrypted-vaults \
+MYCEL_SERVER=ws://localhost:1234 MYCEL_BACKUP_DATA=./backup-data \
+MYCEL_BACKUP_ENCRYPTED=./encrypted-vaults MYCEL_BACKUP_DECRYPTED=./decrypted-vaults \
 npm run start:backup
 # in a second terminal:
-OBSIDIAN_CONNECT_BACKUP_DATA=./backup-data node packages/backup/bin/obsidian-connect-backup.mjs invite me
+MYCEL_BACKUP_DATA=./backup-data node packages/backup/bin/mycel-backup.mjs invite me
 ```
 
 Outside Linux there is no RAM disk; the notes then lie in the system's temporary

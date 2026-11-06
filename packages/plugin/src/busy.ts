@@ -10,7 +10,7 @@ export interface BusyButton {
   extraSettingsEl?: HTMLElement
 }
 
-const BUSY = 'connect-busy'
+const BUSY = 'mycel-busy'
 
 /**
  * Runs `task` with `button` greyed out and spinning. A button already busy

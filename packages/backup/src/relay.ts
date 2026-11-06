@@ -1,4 +1,4 @@
-import type { RelayFrame } from '@obsidian-connect/shared'
+import type { RelayFrame } from '@mycel/shared'
 import { log } from './log.js'
 import { explainUnreachable } from './probe.js'
 

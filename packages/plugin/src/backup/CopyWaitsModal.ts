@@ -1,6 +1,6 @@
 import { App, Modal, Setting, type ButtonComponent } from 'obsidian'
 import { Notice } from '../notices.js'
-import type { BackupRunStatus } from '@obsidian-connect/shared'
+import type { BackupRunStatus } from '@mycel/shared'
 import { busy } from '../busy'
 import type { Backups } from './Backups'
 
@@ -42,7 +42,7 @@ export class CopyWaitsModal extends Modal {
     })
     const shrunk = this.run.trusted?.shrunk ?? []
     if (shrunk.length > 0) {
-      const list = contentEl.createEl('ul', { cls: 'connect-shrunk' })
+      const list = contentEl.createEl('ul', { cls: 'mycel-shrunk' })
       for (const kind of shrunk) {
         const gone = kind.before > 0 ? Math.round((1 - kind.now / kind.before) * 100) : 100
         const item = list.createEl('li')
@@ -60,7 +60,7 @@ export class CopyWaitsModal extends Modal {
       text: 'Deleted on purpose? Let the copy follow. Not sure? Look first - what is gone is among the deleted notes, in the earlier backups, and still in the copy.'
     })
     if (failure) contentEl.createEl('p', { cls: 'mod-warning', text: `Letting it follow did not work: ${failure}` })
-    const status = contentEl.createEl('p', { cls: 'setting-item-description connect-follow-status' })
+    const status = contentEl.createEl('p', { cls: 'setting-item-description mycel-follow-status' })
 
     let follow: ButtonComponent | null = null
     const others: ButtonComponent[] = []
@@ -96,13 +96,13 @@ export class CopyWaitsModal extends Modal {
       this.decided = true
       const done = outcome.run?.trusted
       const counts = done && (done.written !== undefined || done.deleted !== undefined) ? ` - ${done.written ?? 0} written, ${done.deleted ?? 0} removed` : ''
-      new Notice(`Obsidian Connect: the decrypted copy follows the vault again${counts}.`, 10_000)
+      new Notice(`Mycel: the decrypted copy follows the vault again${counts}.`, 10_000)
       this.close()
       return
     }
     const why = outcome.error ?? 'the backup failed'
     // Closed meanwhile: said where it is seen.
-    if (!this.contentEl.isConnected) new Notice(`Obsidian Connect: letting the decrypted copy follow did not work - ${why}`, 0)
+    if (!this.contentEl.isConnected) new Notice(`Mycel: letting the decrypted copy follow did not work - ${why}`, 0)
     else this.render(why)
   }
 

@@ -1,6 +1,6 @@
 import { App, Modal, Setting, type ButtonComponent } from 'obsidian'
 import { Notice } from '../notices.js'
-import type { FolderStateResponse, ShareRole } from '@obsidian-connect/shared'
+import type { FolderStateResponse, ShareRole } from '@mycel/shared'
 import { busy } from '../busy.js'
 import type { Contact } from '../sync/AccountSettings.js'
 import type { Folders, MoveInAnswer, MoveInQuestion, OutsideQuestion } from './Folders.js'
@@ -64,7 +64,7 @@ export class ShareFolderModal extends Modal {
     contentEl.empty()
     const people = this.contacts.filter((contact) => contact.name || contact.localName)
     if (people.length === 0) {
-      contentEl.createEl('p', { text: 'Folders are shared with contacts. Add one under Settings → Obsidian Connect → Contacts first.' })
+      contentEl.createEl('p', { text: 'Folders are shared with contacts. Add one under Settings → Mycel → Contacts first.' })
       return
     }
     const preview = this.folders.preview(this.path)
@@ -129,7 +129,7 @@ export class ShareFolderModal extends Modal {
       )
     this.renderLinked(contentEl)
 
-    const warning = contentEl.createDiv({ cls: 'connect-folder-warning' })
+    const warning = contentEl.createDiv({ cls: 'mycel-folder-warning' })
     warning.createEl('p', {
       text: `Everything in this folder is shared with them - ${notes(preview.notes)} now, and its files - and everything added to it later, by you or by anyone who may edit it, goes along by itself.`
     })
@@ -138,7 +138,7 @@ export class ShareFolderModal extends Modal {
     })
     if (preview.others.length > 0) {
       contentEl.createEl('p', { text: `${notes(preview.others.length)} in it belong to someone else and stay out:` })
-      const others = contentEl.createEl('ul', { cls: 'connect-linked-notes' })
+      const others = contentEl.createEl('ul', { cls: 'mycel-linked-notes' })
       for (const path of preview.others) others.createEl('li', { text: path })
     }
     contentEl.createEl('p', {
@@ -146,7 +146,7 @@ export class ShareFolderModal extends Modal {
       text: 'Whatever they receive stays with them: taking access away later stops new changes from reaching them, but the copy they have is theirs.'
     })
 
-    const status = contentEl.createEl('p', { cls: 'setting-item-description connect-follow-status' })
+    const status = contentEl.createEl('p', { cls: 'setting-item-description mycel-follow-status' })
     new Setting(contentEl).addButton((button) =>
       button
         .setButtonText(current ? 'Share again' : 'Share the folder')
@@ -173,10 +173,10 @@ export class ShareFolderModal extends Modal {
           })
         )
     }
-    const list = contentEl.createEl('ul', { cls: 'connect-linked-notes' })
+    const list = contentEl.createEl('ul', { cls: 'mycel-linked-notes' })
     for (const note of this.linked) {
       const item = list.createEl('li', { text: note.path })
-      if (note.reason) item.createSpan({ cls: 'connect-linked-reason', text: ` - ${note.reason}` })
+      if (note.reason) item.createSpan({ cls: 'mycel-linked-reason', text: ` - ${note.reason}` })
     }
   }
 
@@ -397,7 +397,7 @@ export class MoveInModal extends Modal {
       contentEl.createEl('p', {
         text: `It embeds or links ${question.files.length === 1 ? 'a file' : `${question.files.length} files`} outside the folder, which go${question.files.length === 1 ? 'es' : ''} along with it - everyone in the folder gets ${question.files.length === 1 ? 'it' : 'them'}:`
       })
-      const files = contentEl.createEl('ul', { cls: 'connect-linked-notes' })
+      const files = contentEl.createEl('ul', { cls: 'mycel-linked-notes' })
       for (const file of question.files) files.createEl('li', { text: file })
     }
     this.renderLinked(contentEl)
@@ -441,10 +441,10 @@ export class MoveInModal extends Modal {
           })
         )
     }
-    const list = contentEl.createEl('ul', { cls: 'connect-linked-notes' })
+    const list = contentEl.createEl('ul', { cls: 'mycel-linked-notes' })
     for (const note of linked) {
       const item = list.createEl('li', { text: note.path })
-      if (note.reason) item.createSpan({ cls: 'connect-linked-reason', text: ` - ${note.reason}` })
+      if (note.reason) item.createSpan({ cls: 'mycel-linked-reason', text: ` - ${note.reason}` })
     }
   }
 

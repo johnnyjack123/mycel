@@ -1,10 +1,10 @@
-# The Obsidian Connect backup server: pulls a vault from the sync server,
+# The Mycel backup server: pulls a vault from the sync server,
 # decrypts it in memory and hands it to restic. CI builds and publishes it
 # from main (the docker-backup job in .github/workflows/build.yml); by hand,
 # from the repository root:
 #
-#   docker build -f Dockerfile.backup -t obsidian-connect-backup .
-#   docker exec <container> obsidian-connect-backup invite <name>
+#   docker build -f Dockerfile.backup -t mycel-backup .
+#   docker exec <container> mycel-backup invite <name>
 FROM node:24-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -13,7 +13,7 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/server/package.json packages/server/
 COPY packages/plugin/package.json packages/plugin/
 COPY packages/backup/package.json packages/backup/
-RUN npm ci --omit=dev --workspace @obsidian-connect/backup
+RUN npm ci --omit=dev --workspace @mycel/backup
 
 # restic's own release, checked against its checksum: the version the tests run.
 FROM alpine:3.22 AS restic
@@ -55,15 +55,15 @@ RUN apk add --no-cache su-exec openssh-client ca-certificates
 # rclone's remotes live in the data folder: they survive an update, and rclone can
 # write back a refreshed token.
 ENV NODE_ENV=production \
-    OBSIDIAN_CONNECT_BACKUP_DATA=/data \
-    OBSIDIAN_CONNECT_BACKUP_ENCRYPTED=/encrypted \
-    OBSIDIAN_CONNECT_BACKUP_DECRYPTED=/decrypted \
-    OBSIDIAN_CONNECT_BACKUP_WORK=/run/obsidian-connect-backup \
-    OBSIDIAN_CONNECT_RESTIC=/usr/local/bin/restic \
+    MYCEL_BACKUP_DATA=/data \
+    MYCEL_BACKUP_ENCRYPTED=/encrypted \
+    MYCEL_BACKUP_DECRYPTED=/decrypted \
+    MYCEL_BACKUP_WORK=/run/mycel-backup \
+    MYCEL_RESTIC=/usr/local/bin/restic \
     RCLONE_CONFIG=/data/rclone/rclone.conf \
     RCLONE_CACHE_DIR=/data/rclone/cache \
-    OBSIDIAN_CONNECT_OWN="/data /data/rclone" \
-    OBSIDIAN_CONNECT_OWN_TOP="/encrypted /decrypted /run/obsidian-connect-backup"
+    MYCEL_OWN="/data /data/rclone" \
+    MYCEL_OWN_TOP="/encrypted /decrypted /run/mycel-backup"
 COPY --from=restic /restic /usr/local/bin/restic
 COPY --from=rclone /rclone /usr/local/lib/rclone/rclone
 COPY docker/rclone.sh /usr/local/bin/rclone
@@ -74,13 +74,13 @@ COPY packages/shared/src packages/shared/src
 COPY packages/backup/package.json packages/backup/
 COPY packages/backup/src packages/backup/src
 COPY packages/backup/bin packages/backup/bin
-COPY docker/entrypoint.sh /usr/local/bin/obsidian-connect-entrypoint
-RUN chmod +x packages/backup/bin/obsidian-connect-backup.mjs /usr/local/bin/obsidian-connect-entrypoint /usr/local/bin/rclone \
- && ln -s /app/packages/backup/bin/obsidian-connect-backup.mjs /usr/local/bin/obsidian-connect-backup \
- && mkdir -p /data /encrypted /decrypted /run/obsidian-connect-backup \
- && chown node:node /data /encrypted /decrypted /run/obsidian-connect-backup
+COPY docker/entrypoint.sh /usr/local/bin/mycel-entrypoint
+RUN chmod +x packages/backup/bin/mycel-backup.mjs /usr/local/bin/mycel-entrypoint /usr/local/bin/rclone \
+ && ln -s /app/packages/backup/bin/mycel-backup.mjs /usr/local/bin/mycel-backup \
+ && mkdir -p /data /encrypted /decrypted /run/mycel-backup \
+ && chown node:node /data /encrypted /decrypted /run/mycel-backup
 # No USER: the entrypoint starts as root, hands the folders over and drops to
 # PUID:PGID (1000:1000, the image's node user) before the backup server runs.
 VOLUME /data
-ENTRYPOINT ["/usr/local/bin/obsidian-connect-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/mycel-entrypoint"]
 CMD ["node", "--import", "tsx", "packages/backup/src/index.ts"]

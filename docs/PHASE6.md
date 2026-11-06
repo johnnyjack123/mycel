@@ -62,14 +62,14 @@ plugin ──(account token)──► sync server ◄──(backup token, read o
 
 - **Sync server:** backup keys per vault and a token scope that reads one vault; a
   relay that forwards opaque frames between a plugin and a backup server.
-- **Backup server** (`packages/backup`, image `obsidian-connect-backup`): its identity
+- **Backup server** (`packages/backup`, image `mycel-backup`): its identity
   and code, the session, the encrypted cache, the run, restic.
 - **Plugin:** a "Backups" section in the settings.
 
 ## The backup server's code
 
 On its first start the backup server makes 16 random bytes - its **code** - and prints
-it (and again with `docker exec … obsidian-connect-backup code`). Thirty characters in
+it (and again with `docker exec … mycel-backup code`). Thirty characters in
 six groups of five, with a check against typos, like the recovery code. It lies in
 the backup server's data volume.
 
@@ -95,11 +95,11 @@ So instead both ends prove that they know the code, and the session key depends 
 it - a pre-shared key, as WireGuard and Noise (`NNpsk0`) use one:
 
 ```
-psk = HKDF(code, "obsidian-connect backup-pair")
+psk = HKDF(code, "mycel backup-pair")
 plugin → backup:  eP, nP                           ephemeral P-256 key, 16 random bytes
 backup → plugin:  eB, nB, macB = HMAC(psk, "backup" ‖ transcript)
 plugin:           checks macB - whoever answered knows the code
-both:             keys = HKDF(ECDH(eP, eB) ‖ psk, "obsidian-connect backup-session" ‖ transcript), one per direction
+both:             keys = HKDF(ECDH(eP, eB) ‖ psk, "mycel backup-session" ‖ transcript), one per direction
 plugin → backup:  AES-GCM { macP = HMAC(psk, "plugin" ‖ transcript), ... }
 backup:           checks macP - whoever asked knows the code
 then:             AES-GCM frames, a counter per direction as the nonce
@@ -222,7 +222,7 @@ that is down) does not hold up the others.
    written into a folder in a RAM disk (`tmpfs`); attachments decrypted from the cache
    one at a time, straight into the tar stream.
 4. **restic, per destination.**
-   - `restic backup --host obsidian-connect-backup --tag <vault> <ramdisk>/<vault>`:
+   - `restic backup --host mycel-backup --tag <vault> <ramdisk>/<vault>`:
      the notes snapshot. A fixed host and path, so restic finds the last snapshot and
      reads only notes that changed.
    - If any attachment changed since this destination's last files snapshot:
@@ -285,10 +285,10 @@ asking:
   and the whole files stream read back and every file hashed (`TarHasher`). `forget`
   only with a retention set; then `prune` once a week.
 - **restic** gets the repository's password and credentials in the environment of
-  that one call; nothing of the backup server's own `RESTIC_*` or `OBSIDIAN_CONNECT_*`
+  that one call; nothing of the backup server's own `RESTIC_*` or `MYCEL_*`
   passes. A stream whose producer fails kills restic before the stream ends -
   checked: ended instead, restic stored the stream cut short.
-- **The trusted copy** keeps `.obsidian-connect-backup.json` - its files and their
+- **The trusted copy** keeps `.mycel-backup.json` - its files and their
   hashes - and refuses a folder that is neither empty nor its own, or another vault's.
   Deletions go first (a file may stand where a folder has to go), files are written
   under a temporary name and renamed. A note that could only be read in part, and a
@@ -361,7 +361,7 @@ folder rules, writable, and for restic the repository opened - or made - with it
 password), `disconnect`. Taken without asking:
 
 - The backup server reads the vault from the sync server it is registered at
-  (`OBSIDIAN_CONNECT_SERVER`), not from the address in the grant: a device may reach
+  (`MYCEL_SERVER`), not from the address in the grant: a device may reach
   the sync server by another address than the backup server does.
 - Limits: 8 sessions per device connection, 64 per backup server, 16 backup servers
   per address, a frame at most 1 MiB, ten seconds to register. Failed handshakes are
@@ -401,7 +401,7 @@ password), `disconnect`. Taken without asking:
    run and asking its status over the session; the schedule.
 4. **0.7.3 - the plugin:** *Settings → Backups*, the settings entries, connecting again
    after a password change, the notice.
-5. **0.7.4 - the image:** `obsidian-connect-backup` with restic, a compose file with
+5. **0.7.4 - the image:** `mycel-backup` with restic, a compose file with
    the RAM disk, CI building and starting it, `docs/BACKUP.md`.
 
 ## Tests
@@ -423,7 +423,7 @@ password), `disconnect`. Taken without asking:
   to start another's run.
 - restic runs in the tests: CI installs a pinned release; on the development machine
   the same release lies in a folder outside the repository, named by
-  `OBSIDIAN_CONNECT_RESTIC`.
+  `MYCEL_RESTIC`.
 
 ## After the first build (0.7.6 to 0.7.9)
 
@@ -439,7 +439,7 @@ Decided: no code shared by everyone any more. The operator invites per person, t
 invitation works once, and from then on the vault and the backup server share a
 secret of their own.
 
-- **Inviting:** `obsidian-connect-backup invite [label]` on the backup server prints a
+- **Inviting:** `mycel-backup invite [label]` on the backup server prints a
   one-time invitation - 30 characters like a recovery code, with a check of its own
   kind, so neither passes for the other - valid seven days. `invites` lists the open
   ones, `revoke <id>` withdraws one. They lie in the data volume (`invites.json`); the
@@ -464,7 +464,7 @@ secret of their own.
   backup server a new key over the pairing's session (`rekey`), at once or any time
   later ("Connect again…" asks for the password only).
 - **Disconnecting** from a device as before, or by the operator,
-  `obsidian-connect-backup disconnect <vaultId>`: pairing, grant and cache go, the
+  `mycel-backup disconnect <vaultId>`: pairing, grant and cache go, the
   route is dropped; the devices are told the backup server no longer has the vault.
   `vaults` lists the paired vaults: id, account, label, last run.
 - The backup server's own code (`code`, `identity.json`) goes.
@@ -698,7 +698,7 @@ backup server's folders lie, the backup server names what goes into them.
   whatever the copy deletes is in a snapshot first.
 - *The copy is the vault at its top:* `decrypted/<name>/<vault>/` opens in Obsidian as
   a vault; the trash and the settings, which a restic snapshot keeps beside the vault's
-  folder, lie in its hidden `.obsidian-connect/` (`copyPath`) - a folder Obsidian never
+  folder, lie in its hidden `.mycel/` (`copyPath`) - a folder Obsidian never
   lists, so no note's path can be one of them.
 - *The copy's folder is picked once,* when the vault is first paired, and kept in the
   pairing (`decryptedFolder`); a later change of the account's name does not move it.

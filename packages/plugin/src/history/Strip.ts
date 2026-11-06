@@ -46,10 +46,10 @@ export class TimeMachineStrip {
   ) {
     // Named by hidden text, never `aria-label`: Obsidian shows a tooltip of its own
     // for every element that has one, a second one beside the moment's.
-    this.el = parent.createDiv({ cls: 'connect-tm-strip', attr: { tabindex: '0', role: 'listbox', 'aria-labelledby': 'connect-tm-strip-name' } })
-    this.el.createSpan({ cls: 'connect-tm-unseen', text: 'Time Machine timeline', attr: { id: 'connect-tm-strip-name' } })
-    this.list = this.el.createDiv({ cls: 'connect-tm-strip-bars' })
-    this.tip = this.el.createDiv({ cls: 'connect-tm-strip-tip' })
+    this.el = parent.createDiv({ cls: 'mycel-tm-strip', attr: { tabindex: '0', role: 'listbox', 'aria-labelledby': 'mycel-tm-strip-name' } })
+    this.el.createSpan({ cls: 'mycel-tm-unseen', text: 'Time Machine timeline', attr: { id: 'mycel-tm-strip-name' } })
+    this.list = this.el.createDiv({ cls: 'mycel-tm-strip-bars' })
+    this.tip = this.el.createDiv({ cls: 'mycel-tm-strip-tip' })
     this.el.addEventListener('pointermove', (event) => this.point(event))
     this.el.addEventListener('pointerdown', (event) => {
       this.dragging = event.pointerType !== 'mouse'
@@ -91,8 +91,8 @@ export class TimeMachineStrip {
     this.list.empty()
     let day: string | null = null
     this.bars = this.positions.map((position, i) => {
-      const bar = this.list.createDiv({ cls: 'connect-tm-bar', attr: { role: 'option' } })
-      bar.createSpan({ cls: 'connect-tm-unseen', text: this.handlers.label(position) })
+      const bar = this.list.createDiv({ cls: 'mycel-tm-bar', attr: { role: 'option' } })
+      bar.createSpan({ cls: 'mycel-tm-unseen', text: this.handlers.label(position) })
       if (!position.tick) bar.addClass('is-now')
       if (position.backup) bar.addClass('is-backup')
       if (position.mark) bar.addClass('is-mark')
@@ -100,7 +100,7 @@ export class TimeMachineStrip {
       const label = position.tick ? new Date(position.at).toDateString() : day
       if (day !== null && label !== day) bar.addClass('is-new-day')
       day = label
-      bar.createDiv({ cls: 'connect-tm-bar-line' })
+      bar.createDiv({ cls: 'mycel-tm-bar-line' })
       bar.dataset.place = String(i)
       return bar
     })
@@ -148,7 +148,7 @@ export class TimeMachineStrip {
         const box = bar.getBoundingClientRect()
         scale = barScale(box.top + box.height / 2 - y)
       }
-      bar.style.setProperty('--connect-tm-scale', scale.toFixed(3))
+      bar.style.setProperty('--mycel-tm-scale', scale.toFixed(3))
     }
     if (this.hovered !== null) {
       const bar = this.bars[this.hovered]

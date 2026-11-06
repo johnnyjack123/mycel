@@ -1,7 +1,7 @@
 import { TFile, getLinkpath, type App } from 'obsidian'
 import { Notice } from '../notices.js'
 import * as Y from 'yjs'
-import { NOTE_ATTACHMENTS_FIELD, NOTE_SHARE_FIELD, docRoom, type AttachmentEntry, type SharedAttachment } from '@obsidian-connect/shared'
+import { NOTE_ATTACHMENTS_FIELD, NOTE_SHARE_FIELD, docRoom, type AttachmentEntry, type SharedAttachment } from '@mycel/shared'
 import type { ConnectApi } from '../account/api.js'
 import type { AttachmentStore } from '../sync/AttachmentStore.js'
 import type { DocHandle } from '../sync/DocHandle.js'

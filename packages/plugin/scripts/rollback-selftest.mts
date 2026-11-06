@@ -17,7 +17,7 @@ const { RoomHistory } = await import('../src/history/RoomHistory.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
 const { VaultTimeline } = await import('../src/history/Timeline.js')
 const { ApiError } = await import('../src/account/api.js')
-const { docRoom } = await import('@obsidian-connect/shared')
+const { docRoom } = await import('@mycel/shared')
 
 const root = mkdtempSync(join(tmpdir(), 'oc-rollback-selftest-'))
 const run = Date.now().toString(36)
@@ -25,9 +25,9 @@ const server = await startServer(
   loadConfig({
     HOST: '127.0.0.1',
     PORT: '0',
-    OBSIDIAN_CONNECT_DATA_DIR: join(root, 'server'),
-    OBSIDIAN_CONNECT_REGISTRATION: 'open',
-    OBSIDIAN_CONNECT_JWT_SECRET: 'rollback-selftest'
+    MYCEL_DATA_DIR: join(root, 'server'),
+    MYCEL_REGISTRATION: 'open',
+    MYCEL_JWT_SECRET: 'rollback-selftest'
   }),
   { logger: false, paceMs: 0 }
 )

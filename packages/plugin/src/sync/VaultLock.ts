@@ -1,5 +1,5 @@
-import type { VaultLockInfo, VaultLockKind } from '@obsidian-connect/shared'
-import { decrypt, encrypt, fromBase64, fromUtf8, randomBytes, toBase64, toHex, utf8 } from '@obsidian-connect/shared/crypto'
+import type { VaultLockInfo, VaultLockKind } from '@mycel/shared'
+import { decrypt, encrypt, fromBase64, fromUtf8, randomBytes, toBase64, toHex, utf8 } from '@mycel/shared/crypto'
 import { ApiError, type ConnectApi } from '../account/api.js'
 import type { RoomCrypto } from './VaultSocket.js'
 import { log } from '../log.js'

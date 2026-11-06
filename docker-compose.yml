@@ -1,17 +1,17 @@
 # Values come from a `.env` file next to this one; see docs/SERVER.md.
 # The image is built and published by CI on every push to main.
 services:
-  obsidian-connect:
-    image: ghcr.io/johnnyjack123/obsidian-connect-server:latest
-    container_name: obsidian-connect
+  mycel:
+    image: ghcr.io/johnnyjack123/mycel-server:latest
+    container_name: mycel
     restart: unless-stopped
     environment:
-      OBSIDIAN_CONNECT_JWT_SECRET: ${OBSIDIAN_CONNECT_JWT_SECRET:?set OBSIDIAN_CONNECT_JWT_SECRET in .env}
-      OBSIDIAN_CONNECT_REGISTRATION: ${OBSIDIAN_CONNECT_REGISTRATION:-invite}
-      OBSIDIAN_CONNECT_TOKEN_TTL: ${OBSIDIAN_CONNECT_TOKEN_TTL:-2592000}
-      OBSIDIAN_CONNECT_LOG_UPDATES: ${OBSIDIAN_CONNECT_LOG_UPDATES:-false}
-      OBSIDIAN_CONNECT_MAX_FILE_MB: ${OBSIDIAN_CONNECT_MAX_FILE_MB:-100}
-      OBSIDIAN_CONNECT_QUOTA_MB: ${OBSIDIAN_CONNECT_QUOTA_MB:-}
+      MYCEL_JWT_SECRET: ${MYCEL_JWT_SECRET:?set MYCEL_JWT_SECRET in .env}
+      MYCEL_REGISTRATION: ${MYCEL_REGISTRATION:-invite}
+      MYCEL_TOKEN_TTL: ${MYCEL_TOKEN_TTL:-2592000}
+      MYCEL_LOG_UPDATES: ${MYCEL_LOG_UPDATES:-false}
+      MYCEL_MAX_FILE_MB: ${MYCEL_MAX_FILE_MB:-100}
+      MYCEL_QUOTA_MB: ${MYCEL_QUOTA_MB:-}
       # The user the server runs as; the image hands ./data to it at every start.
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}

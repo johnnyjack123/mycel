@@ -2,19 +2,19 @@
 // may write with two, someone who may only read - all against a running
 // server, end-to-end encrypted, with the fake vault of test:vault.
 //
-//   PORT=1235 OBSIDIAN_CONNECT_REGISTRATION=open OBSIDIAN_CONNECT_DATA_DIR=<scratch> npm run start:server
+//   PORT=1235 MYCEL_REGISTRATION=open MYCEL_DATA_DIR=<scratch> npm run start:server
 //   npm run test:folders -- ws://localhost:1235
 import { check, delay, Device, eventually, failures, useServer } from './harness.mjs'
 
 // Imported after the harness set up the DOM.
 const { Notice } = await import('obsidian')
 
-const { docRoom } = await import('@obsidian-connect/shared')
+const { docRoom } = await import('@mycel/shared')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
 const { UnknownMembersError } = await import('../src/share/Sharing.js')
 
-const serverUrl = process.argv[2] ?? process.env.OBSIDIAN_CONNECT_URL ?? 'ws://localhost:1234'
+const serverUrl = process.argv[2] ?? process.env.MYCEL_URL ?? 'ws://localhost:1234'
 useServer(serverUrl)
 const run = Date.now().toString(36)
 const olga = `olga${run}`
@@ -293,8 +293,8 @@ try {
   {
     // And the two still see each other's carets in it.
     const caretOf = (view: typeof olgas): { at: number; name: string } | null => {
-      const caret = view.view.dom.querySelector('.connect-remote-caret')
-      return caret ? { at: view.view.posAtDOM(caret), name: caret.querySelector('.connect-remote-caret-label')?.textContent ?? '' } : null
+      const caret = view.view.dom.querySelector('.mycel-remote-caret')
+      return caret ? { at: view.view.posAtDOM(caret), name: caret.querySelector('.mycel-remote-caret-label')?.textContent ?? '' } : null
     }
     olgas.view.dispatch({ selection: { anchor: 4 } })
     pias.view.dispatch({ selection: { anchor: 9 } })

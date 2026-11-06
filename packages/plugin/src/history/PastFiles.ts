@@ -1,5 +1,5 @@
 import { TFile, TFolder, type DataAdapter, type TAbstractFile } from 'obsidian'
-import { bytes, contentHash, utf8 } from '@obsidian-connect/shared/crypto'
+import { bytes, contentHash, utf8 } from '@mycel/shared/crypto'
 import { log } from '../log.js'
 
 // The past written into the vault's own files (`docs/TIMEMACHINE.md`, U3), and

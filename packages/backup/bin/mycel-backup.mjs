@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// `obsidian-connect-backup [run | invite | status | check | invites | revoke | vaults | disconnect]`.
+// `mycel-backup [run | invite | status | check | invites | revoke | vaults | disconnect]`.
 // Runs the TypeScript entry through tsx, the same way the image starts it.
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'

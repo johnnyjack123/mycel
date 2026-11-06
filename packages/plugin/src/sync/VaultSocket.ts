@@ -7,8 +7,8 @@ import {
 } from 'y-protocols/awareness'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, type FolderTie, type Notice, type NotifyKind } from '@obsidian-connect/shared'
-import { bytes, concat, decrypt, encrypt, sha256, toHex, unpackFrame, utf8, type Bytes, type OpenedFrame } from '@obsidian-connect/shared/crypto'
+import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, type FolderTie, type Notice, type NotifyKind } from '@mycel/shared'
+import { bytes, concat, decrypt, encrypt, sha256, toHex, unpackFrame, utf8, type Bytes, type OpenedFrame } from '@mycel/shared/crypto'
 import type { HistoryEntry } from './History.js'
 import { log } from '../log.js'
 

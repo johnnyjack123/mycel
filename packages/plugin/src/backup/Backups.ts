@@ -12,8 +12,8 @@ import {
   type BackupTaskSetting,
   type BackupVaultStatus,
   type KeepPolicy
-} from '@obsidian-connect/shared'
-import { backupRouteKeys, fromBase64, randomBytes, sha256, toHex, utf8 } from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared'
+import { backupRouteKeys, fromBase64, randomBytes, sha256, toHex, utf8 } from '@mycel/shared/crypto'
 import { log } from '../log'
 import type { AccountSettings } from '../sync/AccountSettings'
 import { openInviteSession, openPairingSession, type BackupSession } from './BackupLink'
