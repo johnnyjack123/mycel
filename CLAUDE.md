@@ -131,12 +131,14 @@ someone's notes. Treat them as rules, not preferences.
     base: a note emptied on purpose is empty too.
 19. **A seq number alone does not identify a log position.** A server restored
     from a backup numbers new frames from where the backup ended, and a device
-    that was away took them for frames it had. Every cursor keeps the
-    fingerprint of its last frame - of what it says (author, time, change), not
-    its ciphertext, which replacing an account's keys writes anew - and every
+    that was away took them for frames it had. Every cursor keeps two
+    fingerprints of its last frame - its bytes, and what it says (author, time,
+    change) for when replacing an account's keys wrote it anew - and every
     subscribe asks for that frame again (`afterSeq = lastSeq - 1`); gone or
-    different means the log is another one, one no key opens yet means
-    nothing (`unreadable`: nothing sent, caught up again) - except that a snapshot reaching up to or past it is
+    different means the log is another one; other bytes it cannot open yet
+    mean nothing (`unreadable`: nothing sent, caught up again). Never compare
+    by what it says alone: that needs its key, and a key missing for a moment
+    left rooms unconfirmed and unsent (0.9.6) - except that a snapshot reaching up to or past it is
     compaction, which folded the frame in: one ending exactly at the last
     frame (a note untouched for longer than the retention) was once taken for
     another server, and every old note was held and asked about. So is a

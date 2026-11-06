@@ -25,11 +25,15 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
   a key from the new one, until the vaults are written anew (`KeyReplacement` in the bundle):
   whichever device of the account gets there next carries it on, a room already written anew
   is marked (`rewrittenBy`), a room a crash left half written is read with both kinds of keys.
-  A vault keeps its id: devices find it by its sealed name now. **A device knows a log by what
-  its frames say**, not by their ciphertext (author, time, change - only a key holder can make
-  them): written anew, the log is still the one it knew, and a frame it cannot open yet
-  confirms nothing and refutes nothing (`unreadable`: nothing sent, caught up again later)
-  instead of holding the note for the user. **Contacts:** the server tells them
+  A vault keeps its id: devices find it by its sealed name now. **A device knows the frame its
+  cursor ends at by its bytes, and - when they differ - by what it says** (author, time,
+  change; only a key holder can make them): written anew, the log is still the one it knew,
+  and such a frame it cannot open yet confirms nothing and refutes nothing (`unreadable`:
+  nothing sent, caught up again once a key comes) instead of holding the note for the user. The
+  first build of this compared what the frames say only, which needs their key: in CI a frame
+  whose key was missing for a moment left rooms unconfirmed and unsent, and `test:backup` failed
+  twice ("the starting point does not fit the log") and `test:folders` once; comparing the
+  bytes first, as before, is what every case outside a replacement does again. **Contacts:** the server tells them
   (`contact-replaced`); their devices then seal nothing to the account and take nothing in its
   name until a **new friend code** confirmed the new keys - redeemed either way, it replaces
   the pinned ones, and their device seals what it shares with the account anew and moves it to
