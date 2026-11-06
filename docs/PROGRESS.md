@@ -367,6 +367,19 @@ user's call, as with the earlier branches.
   devices is still being decided - the log shows "deleted for everyone in its shared
   folder" after "brought back for everyone". The delete-versus-restore race of
   invariant 29 (`decideMs`), not looked into yet.
+- **A writer's offline version of a shared folder's file can end up only in its version
+  history** (seen in CI 2026-11-06, `test:folders` "changed on both sides, the file keeps the
+  owner's version and the writer's goes next to it"; never locally - for the audit): P1 changes
+  `Shared/X/pic.png` while away, the owner changes it too; P1 starts its attachments before the
+  vault index came from the server ("attachments: 2 known" where the passing run says 4), takes
+  its file for a change of its own and sets its content, racing the owner's version in the same
+  index entry. The owner's wins; Pia's other device adopts it and records P1's content as a
+  version (`recordVersion`), and then P1's `AttachmentIndex.replaced(fileId, own hash)` is true
+  - "replaced by someone who knew it" - and P1 overwrites its file with the owner's version
+  ("changed on another device") without a conflict copy. P1's content stays on the server and
+  in the file's version history, not as a file. Two ways out to weigh: attachments start only
+  once the index is synced with the server (invariant 1's spirit), and a version recorded by
+  another device's adoption should not count as that device having seen this one's content.
 - **Two more races seen only in CI, never locally** (for the audit; both before 0.9.6 too):
   - `test:folders` "no file at Shared/X/Sub/byPia.png" (2026-11-06, twice in four runs): a
     writer (P1) renames a file inside a shared folder; the owner's devices follow, but on the
