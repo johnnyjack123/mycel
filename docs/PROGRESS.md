@@ -378,12 +378,16 @@ user's call, as with the earlier branches.
     base is the vault's, synced apart from the folder document. No hold, no missing key in
     the log.
   - `test:backup` "the starting point (#1) does not fit the log (epoch from #2, head #1)"
-    (0.9.2, 0.9.3 and twice for 0.9.6): a note created and its folder shared without history a
-    moment later; the server moved the note's epoch while counting a frame still being
-    written (`epochSince` 2), and later its head is 1 - the device's `lastSeq` is 1 too, so
-    the share fails with "try again" five times over. Server-side logs (`debug/start-race`)
-    caught no failing run; one passing run showed the creation frame refused under the old
-    epoch and sent again under the new one.
+    (0.9.2, 0.9.3, three times for 0.9.6/0.9.7): a note created and its folder shared without
+    history a moment later; the server moved the note's epoch while counting a frame still
+    being written (`epochSince` 2), and later its head is 1 - the device's `lastSeq` is 1 too,
+    nothing of it unacknowledged, so the share failed with "try again" five times over. Since
+    0.9.7 a starting point has to hold every frame of an earlier epoch on the disk and every
+    one counted when the epoch moved that did land (`min(epochSince, head)`); a server that
+    finds its epoch beginning after its head says so in its log ("its epoch began after"). Why
+    a counted frame does not land is not found: server-side logs (`debug/start-race`) caught no
+    failing run; passing runs show the creation frame written under the old epoch while the
+    note joined its folder, and sent again under the new one after the `rekey`.
 - The development machine is short of memory (often 1.6 GB free of 15.6 GB): a
   `test:backup` run takes four to ten minutes, and twice died at its start (restic,
   then Node out of memory); rerun before suspecting the code.

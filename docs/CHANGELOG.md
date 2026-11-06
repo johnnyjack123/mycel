@@ -20,7 +20,12 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
   historical design documents keep the names they were written with only where they discuss
   the choice of a name; this changelog keeps them for everything before 0.9.7. The repository
   on GitHub keeps its name until the user renames it. Checked by every suite, run under the
-  new names.
+  new names. Also: **a starting point no longer has to reach past a frame that never landed**
+  - a folder shared without history right after a note in it was made failed now and then in
+  CI with "the starting point does not fit the log (epoch from #2, head #1)", since 0.9.2: the
+  server had counted a frame still being written when the note's epoch moved, and that frame
+  is not in the log. A starting point now has to hold every frame of an earlier epoch and every
+  counted one that landed (`docs/PROGRESS.md`, known issues, for what is still unexplained).
 
 - **0.9.6** (2026-11-05) - ***Replace all keys*** (`docs/PHASE8.md`, S2, as the user decided
   on 2026-11-05). A new password signs every other device out, but whoever had the keys

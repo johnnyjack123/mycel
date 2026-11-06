@@ -1197,8 +1197,10 @@ export class RoomHub {
    * with nothing in it; null while there is none.
    */
   private startOf(meta: RoomMeta): number | null {
-    if (this.headOf(meta) === 0) return 0
-    const since = meta.epochSince ?? 0
+    const head = this.headOf(meta)
+    if (head === 0) return 0
+    // As `startSnapshot` takes them: a frame counted when the epoch moved that never landed does not count.
+    const since = Math.min(meta.epochSince ?? 0, head)
     const found = meta.snapshots
       .filter((snapshot) => snapshot.epoch === meta.epoch && snapshot.uptoSeq >= since)
       .reduce((max, snapshot) => Math.max(max, snapshot.uptoSeq), -1)
@@ -1418,9 +1420,17 @@ export class RoomHub {
     if (kind === 'doc' && !meta.folder) throw new HubError(400, 'the note is not in a shared folder')
     if (request.epoch !== meta.epoch) throw new HubError(409, 'encrypt it under the current epoch')
     const uptoSeq = request.uptoSeq
-    if (!Number.isInteger(uptoSeq) || uptoSeq < 1 || uptoSeq < (meta.epochSince ?? 0) || uptoSeq > open.log.headSeq) {
-      throw new HubError(409, `the starting point (#${uptoSeq}) does not fit the log (epoch from #${meta.epochSince ?? 0}, head #${open.log.headSeq}); try again`)
+    const head = open.log.headSeq
+    // It holds every frame of an earlier epoch: those on the disk, and those
+    // still being written when the epoch moved (`epochSince` counted them). A
+    // frame counted then that never landed in this log - the head is behind
+    // it - is no frame anyone has to read.
+    const since = Math.min(meta.epochSince ?? 0, head)
+    const older = open.log.frames.reduce((last, frame) => (frame.epoch < meta.epoch ? Math.max(last, frame.seq) : last), meta.compactedUpTo)
+    if (!Number.isInteger(uptoSeq) || uptoSeq < 1 || uptoSeq < Math.max(since, older) || uptoSeq > head) {
+      throw new HubError(409, `the starting point (#${uptoSeq}) does not fit the log (epoch from #${meta.epochSince ?? 0}, older frames up to #${older}, head #${head}); try again`)
     }
+    if ((meta.epochSince ?? 0) > head) console.warn(`[mycel] ${room}: its epoch began after #${meta.epochSince}, but its head is #${head}`)
     await open.log.addJoinSnapshot(uptoSeq, request.epoch, fromBase64(request.data, 'the snapshot'))
   }
 
