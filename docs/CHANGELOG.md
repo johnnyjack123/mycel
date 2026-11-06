@@ -44,10 +44,12 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
   change; only a key holder can make them): written anew, the log is still the one it knew,
   and such a frame it cannot open yet confirms nothing and refutes nothing (`unreadable`:
   nothing sent, caught up again once a key comes) instead of holding the note for the user. The
-  first build of this compared what the frames say only, which needs their key: in CI a frame
-  whose key was missing for a moment left rooms unconfirmed and unsent, and `test:backup` failed
-  twice ("the starting point does not fit the log") and `test:folders` once; comparing the
-  bytes first, as before, is what every case outside a replacement does again. **Contacts:** the server tells them
+  first build of this compared what the frames say only, which needs their key - a frame whose
+  key was missing for a moment would have left a room unconfirmed and unsent; comparing the
+  bytes first, as before, is what every case outside a replacement does again. The CI failures
+  seen meanwhile (`test:backup` "the starting point does not fit the log", `test:folders` "no
+  file at Shared/X/Sub/byPia.png") turned out to be older races, seen in CI before 0.9.6 too
+  (`docs/PROGRESS.md`, known issues). **Contacts:** the server tells them
   (`contact-replaced`); their devices then seal nothing to the account and take nothing in its
   name until a **new friend code** confirmed the new keys - redeemed either way, it replaces
   the pinned ones, and their device seals what it shares with the account anew and moves it to

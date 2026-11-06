@@ -367,6 +367,23 @@ user's call, as with the earlier branches.
   devices is still being decided - the log shows "deleted for everyone in its shared
   folder" after "brought back for everyone". The delete-versus-restore race of
   invariant 29 (`decideMs`), not looked into yet.
+- **Two more races seen only in CI, never locally** (for the audit; both before 0.9.6 too):
+  - `test:folders` "no file at Shared/X/Sub/byPia.png" (2026-11-06, twice in four runs): a
+    writer (P1) renames a file inside a shared folder; the owner's devices follow, but on the
+    writer's other device and on the reader the file goes to the new name and back to the old
+    one twice ("renamed on another device to … fromPia.png" after "… byPia.png"), and the
+    writer's own file ends at the old name. Something writes the old path into the folder
+    document or the vault index after the rename - `FolderFiles.reconcileOne` follows the
+    folder's path when the base says the file still lies where the folder had it, and the
+    base is the vault's, synced apart from the folder document. No hold, no missing key in
+    the log.
+  - `test:backup` "the starting point (#1) does not fit the log (epoch from #2, head #1)"
+    (0.9.2, 0.9.3 and twice for 0.9.6): a note created and its folder shared without history a
+    moment later; the server moved the note's epoch while counting a frame still being
+    written (`epochSince` 2), and later its head is 1 - the device's `lastSeq` is 1 too, so
+    the share fails with "try again" five times over. Server-side logs (`debug/start-race`)
+    caught no failing run; one passing run showed the creation frame refused under the old
+    epoch and sent again under the new one.
 - The development machine is short of memory (often 1.6 GB free of 15.6 GB): a
   `test:backup` run takes four to ten minutes, and twice died at its start (restic,
   then Node out of memory); rerun before suspecting the code.
