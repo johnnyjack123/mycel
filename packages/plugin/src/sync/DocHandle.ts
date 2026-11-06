@@ -46,6 +46,7 @@ const PERSIST_DELAY_MS = 250
 interface SavedCursor {
   lastSeq: number
   lastHash?: string | null
+  lastContent?: string | null
   held?: boolean
   syncedAt?: number
   epoch: number
@@ -57,6 +58,7 @@ interface SavedCursor {
 export class LocalCursor implements RoomCursor {
   lastSeq = 0
   lastHash: string | null = null
+  lastContent: string | null = null
   held = false
   syncedAt = 0
   epoch = 0
@@ -75,6 +77,7 @@ export class LocalCursor implements RoomCursor {
         const saved = JSON.parse(raw) as SavedCursor
         cursor.lastSeq = saved.lastSeq ?? 0
         cursor.lastHash = saved.lastHash ?? null
+        cursor.lastContent = saved.lastContent ?? null
         cursor.held = saved.held ?? false
         cursor.syncedAt = saved.syncedAt ?? 0
         cursor.epoch = saved.epoch ?? 0
@@ -106,6 +109,7 @@ export class LocalCursor implements RoomCursor {
     const saved: SavedCursor = {
       lastSeq: this.lastSeq,
       lastHash: this.lastHash,
+      lastContent: this.lastContent,
       held: this.held,
       syncedAt: this.syncedAt,
       epoch: this.epoch,

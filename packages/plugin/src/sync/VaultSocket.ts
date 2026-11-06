@@ -68,6 +68,12 @@ export interface RoomCursor {
    */
   lastHash: string | null
   /**
+   * Fingerprint of what that frame says - author, time, change. Compared
+   * only when its bytes differ: replacing an account's keys writes every
+   * frame anew, and the log is still the one this device knew.
+   */
+  lastContent: string | null
+  /**
    * The server's log turned out not to be the one this device knew. Nothing
    * is sent until the user decided whose state is right - or a restored
    * server would be overwritten, or a lost one filled with half a state.
@@ -94,6 +100,7 @@ export function memoryCursor(): RoomCursor {
   return {
     lastSeq: 0,
     lastHash: null,
+    lastContent: null,
     held: false,
     syncedAt: 0,
     epoch: 0,
@@ -172,13 +179,13 @@ interface Registration {
   chain: Promise<void>
   inflight: number | null
   /** What is in flight: its author time, payload and fingerprint, for the ack. */
-  inflightFrame: { authorTs: number; payload: Uint8Array; hash: string } | null
+  inflightFrame: { authorTs: number; payload: Uint8Array; hash: string; content: string } | null
   /** Old changes sent again after the server lost them, each as its own frame. */
   replay: HistoryEntry[]
   /** The author time of a replayed change being sent, so its history keeps its time. */
   sendingTs: number | null
   /** Whether the frame the cursor ends at came back unchanged in this catch-up. */
-  verify: { seq: number; hash: string | null; state: Verification }
+  verify: { seq: number; hash: string | null; content: string | null; state: Verification }
   sendTimer: number | null
   /** How many were present when last logged; presence is logged when that changes. */
   present: number
@@ -381,8 +388,8 @@ export class VaultSocket {
     const lastSeq = cursor.lastSeq
     registration.verify =
       lastSeq > 0 && cursor.lastHash
-        ? { seq: lastSeq, hash: cursor.lastHash, state: 'pending' }
-        : { seq: 0, hash: null, state: 'none' }
+        ? { seq: lastSeq, hash: cursor.lastHash, content: cursor.lastContent, state: 'pending' }
+        : { seq: 0, hash: null, content: null, state: 'none' }
     this.send((encoder) => {
       encoding.writeVarUint(encoder, MUX.subscribe)
       encoding.writeVarString(encoder, registration.room)
@@ -393,9 +400,25 @@ export class VaultSocket {
     })
   }
 
-  private checkVerification(registration: Registration, seq: number, hash: string): void {
+  /** Whether the frame the cursor ends at came back with the same bytes; null when they differ and only what it says can tell. */
+  private sameBytes(registration: Registration, seq: number, hash: string): boolean | null {
     const verify = registration.verify
-    if (verify.state === 'pending' && seq === verify.seq) verify.state = hash === verify.hash ? 'match' : 'mismatch'
+    if (verify.state !== 'pending' || seq !== verify.seq) return null
+    if (hash === verify.hash) {
+      verify.state = 'match'
+      return true
+    }
+    // Without what the frame said, the bytes are all there is to go by.
+    if (verify.content === null) verify.state = 'mismatch'
+    return false
+  }
+
+  /** Other bytes, same content: written anew under replaced keys, still the log this device knew. */
+  private sameContent(registration: Registration, seq: number, content: string | null): void {
+    const verify = registration.verify
+    if (verify.state !== 'pending' || seq !== verify.seq) return
+    if (content === null) verify.state = 'unreadable'
+    else verify.state = content === verify.content ? 'match' : 'mismatch'
   }
 
   // --- incoming ------------------------------------------------------------------
@@ -512,6 +535,7 @@ export class VaultSocket {
           if (seq > cursor.lastSeq) {
             cursor.lastSeq = seq
             cursor.lastHash = frame?.hash ?? null
+            cursor.lastContent = frame?.content ?? null
           }
           if (frame) registration.options.history?.({ authorTs: frame.authorTs, update: frame.payload })
           cursor.persist()
@@ -617,9 +641,8 @@ export class VaultSocket {
   }
 
   /**
-   * The plaintext, or null when no key this device has opens it - one that
-   * has not come yet, or one its owner replaced: the room is caught up again
-   * then, and nothing is taken for another log.
+   * The plaintext; null when there is no key for the epoch yet. Throws when
+   * the key there is does not open it, asked for again once.
    */
   private async open(registration: Registration, epoch: number, data: Uint8Array, aad: string): Promise<Uint8Array | null> {
     const crypto = registration.options.crypto
@@ -630,41 +653,45 @@ export class VaultSocket {
     }
     try {
       return await decrypt(key, data, aad)
-    } catch {
+    } catch (error) {
       // The note spent that epoch in a shared folder this device has not heard
-      // of yet, or its owner sealed its keys anew: asked again once.
-      const changed = crypto.refresh ? await crypto.refresh().catch(() => false) : false
-      const again = changed ? await crypto.key(epoch).catch(() => null) : null
-      if (again) {
-        try {
-          return await decrypt(again, data, aad)
-        } catch {
-          // Falls through.
-        }
-      }
-      log.warn(`${registration.room}: something under epoch ${epoch} does not open with the key this device has`)
+      // of yet, or its owner sealed its keys anew.
+      if (!crypto.refresh || !(await crypto.refresh())) throw error
+      const again = await crypto.key(epoch)
+      if (!again) return null
+      return decrypt(again, data, aad)
+    }
+  }
+
+  /** `open`, where a key that does not fit counts as none - for the frame the cursor ends at, which is only compared. */
+  private async openToCompare(registration: Registration, epoch: number, data: Uint8Array, aad: string): Promise<Uint8Array | null> {
+    try {
+      return await this.open(registration, epoch, data, aad)
+    } catch {
       return null
     }
   }
 
   private async applyFrame(registration: Registration, seq: number, epoch: number, data: Uint8Array): Promise<void> {
     const cursor = registration.options.cursor
-    const verify = registration.verify
-    const comparing = verify.state === 'pending' && seq === verify.seq
+    const hash = await fingerprint(data)
+    // Other bytes than this device saw: only what the frame says can tell, once it is open.
+    const comparing = this.sameBytes(registration, seq, hash) === false && registration.verify.state === 'pending'
     // The catch-up and the live stream can overlap by a frame or two, and the
     // catch-up starts one frame early on purpose: that one is only compared.
     if ((seq <= cursor.lastSeq && !comparing) || registration.stalled) return
-    const plaintext = await this.open(registration, epoch, data, frameAad(registration.room, epoch))
+    const aad = frameAad(registration.room, epoch)
+    const plaintext = comparing ? await this.openToCompare(registration, epoch, data, aad) : await this.open(registration, epoch, data, aad)
     if (registration.dead) return
     // Unreadable: leave lastSeq where it is, so the next catch-up brings it again.
     if (!plaintext) {
-      if (comparing) verify.state = 'unreadable'
+      if (comparing) this.sameContent(registration, seq, null)
       this.stall(registration)
       return
     }
     const frame = unpackFrame(plaintext)
-    const hash = await fingerprint(frame ? frameContent(frame) : plaintext)
-    this.checkVerification(registration, seq, hash)
+    const content = await fingerprint(frame ? frameContent(frame) : plaintext)
+    if (comparing) this.sameContent(registration, seq, content)
     if (seq <= cursor.lastSeq) return
     const verdict = frame ? await registration.options.crypto.check('frame', seq, epoch, frame) : 'forged'
     if (registration.dead) return
@@ -683,6 +710,7 @@ export class VaultSocket {
     }
     cursor.lastSeq = seq
     cursor.lastHash = hash
+    cursor.lastContent = content
     cursor.persist()
   }
 
@@ -718,15 +746,19 @@ export class VaultSocket {
     // data. A server restored from a backup hands back its snapshot as it was.
     const reKeyed = uptoSeq === verify.seq && verify.hash?.startsWith('snapshot:') === true && epoch !== registration.options.cursor.epoch
     const folded = uptoSeq > verify.seq || (uptoSeq === verify.seq && !verify.hash?.startsWith('snapshot:')) || reKeyed
-    const plaintext = await this.open(registration, epoch, data, snapshotAad(registration.room, epoch))
+    const hash = `snapshot:${await fingerprint(data)}`
+    let comparing = false
+    if (verify.state === 'pending' && folded) verify.state = 'match'
+    else comparing = this.sameBytes(registration, uptoSeq, hash) === false && verify.state === 'pending'
+    const aad = snapshotAad(registration.room, epoch)
+    const plaintext = comparing ? await this.openToCompare(registration, epoch, data, aad) : await this.open(registration, epoch, data, aad)
     if (registration.dead) return
     const snapshot = plaintext ? unpackFrame(plaintext) : null
-    const hash = plaintext ? `snapshot:${await fingerprint(snapshot ? frameContent(snapshot) : plaintext)}` : null
-    if (verify.state === 'pending' && folded) verify.state = 'match'
-    else if (hash) this.checkVerification(registration, uptoSeq, hash)
-    else if (verify.state === 'pending' && uptoSeq === verify.seq) verify.state = 'unreadable'
-    if (!plaintext || !hash) {
-      this.stall(registration)
+    const content = plaintext ? `snapshot:${await fingerprint(snapshot ? frameContent(snapshot) : plaintext)}` : null
+    if (comparing) this.sameContent(registration, uptoSeq, content)
+    if (!plaintext || !content) {
+      // Only the frame the cursor ends at, which nothing confirmed, is asked for again.
+      if (registration.verify.state === 'unreadable') this.stall(registration)
       return
     }
     const verdict = snapshot ? await registration.options.crypto.check('snapshot', uptoSeq, epoch, snapshot) : 'forged'
@@ -744,6 +776,7 @@ export class VaultSocket {
     if (uptoSeq >= cursor.lastSeq) {
       cursor.lastSeq = uptoSeq
       cursor.lastHash = hash
+      cursor.lastContent = content
     }
     cursor.persist()
   }
@@ -820,13 +853,14 @@ export class VaultSocket {
       return
     }
     const data = await encrypt(key, plaintext, frameAad(registration.room, epoch))
+    const hash = await fingerprint(data)
     const sent = unpackFrame(plaintext)
-    const hash = await fingerprint(sent ? frameContent(sent) : plaintext)
+    const content = await fingerprint(sent ? frameContent(sent) : plaintext)
     if (this.registrations.get(registration.room) !== registration || !this.connected || registration.inflight !== null) return
     const ref = this.nextRef
     this.nextRef += 1
     registration.inflight = ref
-    registration.inflightFrame = { authorTs, payload, hash }
+    registration.inflightFrame = { authorTs, payload, hash, content }
     log.debug(`${registration.room}: push ${ref}, ${payload.length} B, epoch ${epoch}`)
     this.send((encoder) => {
       encoding.writeVarUint(encoder, MUX.push)
@@ -954,7 +988,7 @@ export class VaultSocket {
       inflightFrame: null,
       replay: [],
       sendingTs: null,
-      verify: { seq: 0, hash: null, state: 'none' },
+      verify: { seq: 0, hash: null, content: null, state: 'none' },
       sendTimer: null,
       present: 0,
       dead: false,
