@@ -458,6 +458,17 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
         )
       this.recoveryRow(containerEl)
       this.totpRow(containerEl)
+      new Setting(containerEl)
+        .setName('Replace all keys')
+        .setDesc(
+          'If someone may have your password or one of your devices: a new password and new keys for everything, and your vaults written anew under them on the server. Your contacts confirm you again with a new friend code.'
+        )
+        .addButton((button) =>
+          button
+            .setButtonText('Replace all keys…')
+            .setWarning()
+            .onClick(() => this.plugin.openReplaceKeys())
+        )
       const ids = this.plugin.ids()
       if (ids) {
         // The server knows no names; these are what it knows, and what the
@@ -770,9 +781,10 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     for (const contact of this.plugin.contactList()) {
       const confirming = this.removing === contact.accountId
       const own = contact.localName && contact.name && contact.localName !== contact.name ? ` · calls themselves ${contact.name}` : ''
+      const replaced = contact.replacedAt !== undefined ? ' · replaced their keys - exchange a new friend code with them; until then what you share waits' : ''
       new Setting(containerEl)
         .setName(contact.localName || contact.name || 'Waiting for their device to answer…')
-        .setDesc(`${contact.accountId}${own}`)
+        .setDesc(`${contact.accountId}${own}${replaced}`)
         .addText((text) =>
           text
             .setPlaceholder('Your name for them')

@@ -152,10 +152,10 @@ export class Blobs {
   }
 
   /** `purge` by the blobs' names, for content no hash of this vault's names any more. Answers the ids kept. */
-  async purgeIds(ids: string[]): Promise<Set<string>> {
+  async purgeIds(ids: string[], replacing?: string): Promise<Set<string>> {
     const kept = new Set<string>()
     for (let start = 0; start < ids.length; start += HAVE_BATCH) {
-      const answer = await this.api.purgeBlobs(this.keys.accountId, this.keys.vaultId, ids.slice(start, start + HAVE_BATCH))
+      const answer = await this.api.purgeBlobs(this.keys.accountId, this.keys.vaultId, ids.slice(start, start + HAVE_BATCH), replacing)
       for (const id of answer.kept) kept.add(id)
     }
     return kept

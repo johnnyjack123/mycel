@@ -78,6 +78,11 @@ jobs:
       - name: Time Machine self-test
         run: npm run test:timemachine
 
+      # Its own server in-process: every key of an account replaced, the vaults
+      # written anew under the new ones, and a contact confirming them again.
+      - name: Key replacement self-test
+        run: npm run test:replace
+
       # The backup server hands vaults to restic, so its self-test runs a real
       # one: the release the image will carry, checked against its checksum.
       - name: Install restic

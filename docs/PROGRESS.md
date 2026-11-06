@@ -58,10 +58,11 @@ an opinion on their two names, *Seemless* and *Mycel* (given: Mycel). Publishing
 5. **0.9.4** - S-b: signed frames, writers' certificates (`feat/signed-frames`). Merged, CI
    green, both images published.
 6. **0.9.5** - a clean slate: everything kept for data from before removed, contacts pin both
-   keys with the friend code, every change of role a new epoch (`feat/clean-slate`).
+   keys with the friend code, every change of role a new epoch (`feat/clean-slate`). Merged,
+   CI green, both images published.
 7. **0.9.6** - S2, *Replace all keys*, as the user decided on 2026-11-05 (`docs/PHASE8.md`, S2a
-   to S2c): a new identity (contacts confirm again with a new friend code), every file
-   re-encrypted and uploaded anew, the backup server invited again.
+   to S2c): a new identity (contacts confirm again with a new friend code), every room written
+   anew, every file uploaded anew, the backup server invited again (`feat/replace-keys`).
 8. **0.9.7** - N: the rename to *Mycel*, everywhere (the user, 2026-11-05).
 9. Then the user starts once afresh (0.9.5 reads nothing from before); the audit goes to a
    separate agent in a new chat, once everything is built (the user: no audit agent from here);
@@ -245,7 +246,7 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 
 ## In flight / half-finished
 
-Nothing. `feat/seal-pinned-only` (0.9.0), `feat/durable-writes` (0.9.1), `feat/live-notes` (0.9.2), `feat/signatures` (0.9.3), `feat/signed-frames` (0.9.4) and `feat/clean-slate` (0.9.5) are merged. Every branch of 0.8
+Nothing. `feat/seal-pinned-only` (0.9.0), `feat/durable-writes` (0.9.1), `feat/live-notes` (0.9.2), `feat/signatures` (0.9.3), `feat/signed-frames` (0.9.4), `feat/clean-slate` (0.9.5) and `feat/replace-keys` (0.9.6) are merged. Every branch of 0.8
 (`feat/folder-share`, `feat/folder-files`, `feat/backup-folders`, `fix/restart-keystrokes`,
 `fix/orphan-blobs`, `fix/purged-copies`, `fix/2fa-reconnect`, `fix/relay-signout`,
 `fix/fork-base`, `fix/rollback-listing`, `feat/move-in-linked`, `feat/time-machine`,
@@ -321,7 +322,16 @@ user's call, as with the earlier branches.
   notes whose file and log did not move would need the scan to trust mtime and size.
 - Shared notes are still compared with their files once a minute (`SharedFiles.scheduleAll`),
   which opens each: beyond `maxLoadedDocuments` shared notes, they go in and out of memory.
-- Signing out does not replace the account secret (*Replace all keys*, 0.9.6). Frames are
+- *Replace all keys* (0.9.6) has limits: a contact's device learns of it from the server
+  (`contact-replaced`) - a server that keeps quiet lets them go on sealing to the keys before
+  until they exchange a new friend code; a member who replaced their own keys and was not
+  confirmed again yet gets this account's rewritten keys sealed to the key pinned for them -
+  the one before; one who is no contact stops the replacement until taken out; files of this account's
+  named in someone else's shared note's list stay under the key before until this account's
+  device next lists them; forks kept for someone whose share ended before the replacement are
+  signed with the signing key before. The plugin's own progress shows in a notice; a vault of
+  thousands of notes has not been measured.
+- Frames are
   signed per author since 0.9.4, and since 0.9.5 the Time Machine's and the history view's
   replays check them as the live room does; the backup server does not - it holds no contact
   list and reads what the server holds (it would need the account's signing key and the

@@ -32,6 +32,7 @@ import { judgePassword } from './account/password'
 import { probeServer, type ServerProbe } from './account/probe'
 import { hashWasmArgon2id } from './account/argon2'
 import { KeyRing } from './account/KeyRing'
+import { KeyReplacement, KeyReplacementError } from './account/KeyReplacement'
 import { PasswordModal } from './account/PasswordModal'
 import { PasswordPromptModal, RecoveryCodeModal } from './account/RecoveryModals'
 import { TotpSetupModal, askKeepTotp, askTotpCode } from './account/TotpModals'
@@ -870,6 +871,95 @@ export default class ObsidianConnectPlugin extends Plugin {
     }).open()
   }
 
+  /** *Replace all keys* (`docs/PHASE8.md`, S2): after a suspected theft of the password or a device. */
+  openReplaceKeys(): void {
+    new PasswordModal(this.app, (current, next) => this.replaceAllKeys(current, next), {
+      title: 'Replace all keys',
+      intro: [
+        'For when someone may have your password or one of your devices. A new password signs every other device out, but whoever had the keys before could still read what they get of your notes. This replaces every key: the account, your identity, every vault, every file - and writes all of it on the server anew, so the keys before open nothing there any more.',
+        'It takes a while for a large vault - every file is uploaded anew. Afterwards: your contacts confirm you again with a new friend code (until then, what you share with each other waits); your backup servers need a new invitation; you get a new recovery code.'
+      ],
+      note: 'Every other device of yours is signed out. Your notes stay as they are on every device.',
+      button: 'Replace all keys',
+      done: 'Every key of your account is replaced.',
+      failed: 'Replacing the keys failed'
+    }).open()
+  }
+
+  /**
+   * Every key replaced on the server, then the vaults written anew under them
+   * (`startSync` carries that out, before anything syncs). The backup servers
+   * are taken off first: their pairing lies in settings whoever had the keys
+   * could read. Their tasks stay, for when they are invited again.
+   */
+  private async replaceAllKeys(current: string, next: string): Promise<void> {
+    const signedIn = this.unlocked
+    if (!signedIn) throw new Error('Sign in first.')
+    // The past in the files would be written anew as the present.
+    if (this.timeMachine.current) throw new Error('Close the Time Machine first.')
+    // Before the backup servers are taken off: a typo must change nothing.
+    if (!(await this.session.checkPassword(signedIn, current))) throw new Error('The current password is wrong.')
+    for (const server of this.backupServers.servers()) await this.backupServers.disconnect(server.routeId, true)
+    await this.stopSync()
+    try {
+      const { unlocked, recoveryCode } = await this.session.replaceKeys(signedIn, current, next)
+      this.unlocked = unlocked
+      new RecoveryCodeModal(
+        this.app,
+        recoveryCode,
+        'Every key of your account is new, and so is this recovery code - the one before no longer works. Next, every vault is written anew under the new keys.'
+      ).open()
+    } finally {
+      await this.startSync()
+    }
+  }
+
+  /**
+   * Writes the vaults anew under replaced keys - a replacement begun here a
+   * moment ago, or one another device began and did not finish. Nothing
+   * syncs before: the keys before must not write anything. Null while it is
+   * not done; it goes on with the next start.
+   */
+  private async carryOnReplacement(unlocked: Unlocked): Promise<Unlocked | null> {
+    const notice = new Notice('Obsidian Connect: writing your vaults anew under the new keys…', 0)
+    try {
+      const vaults = await this.session.allVaults(unlocked)
+      await new KeyReplacement(this.api, unlocked, vaults, {
+        device: Platform.isMobile ? 'a phone or tablet' : 'a computer',
+        progress: ({ vault, what, done, of }) => notice.setMessage(`Obsidian Connect: writing "${vault}" anew under the new keys - ${what} ${done} of ${of}`)
+      }).run()
+      const finished = await this.session.finishReplacement(unlocked)
+      notice.hide()
+      new Notice(
+        'Obsidian Connect: every vault is written anew under your new keys. Give each contact a new friend code - until they redeemed it, what you share waits - and invite your backup servers again.',
+        0
+      )
+      return finished
+    } catch (error) {
+      notice.hide()
+      log.error('writing the vaults anew under the new keys failed', error)
+      const why = error instanceof KeyReplacementError ? error.message : `It goes on with the next start. (${error instanceof Error ? error.message : String(error)})`
+      new Notice(`Obsidian Connect: your vaults are not written anew under the new keys yet; nothing syncs until they are. ${why}`, 0)
+      return null
+    }
+  }
+
+  /** A contact confirmed anew after they replaced their keys: what is shared with them is sealed to the new ones. */
+  private async renewShares(account: string): Promise<void> {
+    const { sharing, folders, contacts } = this
+    if (!sharing || !folders || !contacts) return
+    // Their own notes and folders, sealed to this account under their new keys, open now.
+    this.socket?.retryStalled()
+    try {
+      await sharing.renewFor(account)
+      await folders.renewFor(account)
+      contacts.renewed(account)
+      new Notice(`Obsidian Connect: what you share with ${contacts.name(account)} is sealed to their new keys.`)
+    } catch (error) {
+      log.warn(`sealing the shares with ${account.slice(0, 8)} anew failed; tried again at the next start`, error)
+    }
+  }
+
   // --- backup servers --------------------------------------------------------
 
   /** The vault's backup servers, while the vault syncs. */
@@ -995,7 +1085,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   /** Checked after every wait: whatever it built is torn down by the stop that bumped `syncRun`. */
   private async openSync(run: number): Promise<void> {
     const stopped = (): boolean => run !== this.syncRun
-    const unlocked = await this.session.unlock()
+    let unlocked = await this.session.unlock()
     if (stopped()) return
     if (!unlocked) {
       if (this.settings.username) {
@@ -1006,6 +1096,15 @@ export default class ObsidianConnectPlugin extends Plugin {
       return
     }
     this.unlocked = unlocked
+    if (unlocked.previous) {
+      const carriedOn = await this.carryOnReplacement(unlocked)
+      if (stopped() || !carriedOn) {
+        this.renderStatus()
+        return
+      }
+      unlocked = carriedOn
+      this.unlocked = unlocked
+    }
 
     let vault: OpenVault
     try {
@@ -1104,6 +1203,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       },
       accountSettings
     )
+    this.contacts.onConfirmed((account) => void this.renewShares(account))
     const sharing = new Sharing(
       this.api,
       keys,
@@ -1255,6 +1355,8 @@ export default class ObsidianConnectPlugin extends Plugin {
         void this.startAttachments()
         // Contacts first: a share may come from someone who became a contact while this device was away.
         await this.processContacts()
+        // Contacts confirmed anew whose shares no device sealed to their new keys yet.
+        for (const account of this.contacts?.awaitingRenewal() ?? []) await this.renewShares(account)
         void this.folders?.checkIncoming().then(
           (waiting) => {
             if (waiting > 0) new Notice(`${waiting} folder(s) were shared with you. Run "Notes shared with me".`, 10_000)
@@ -2221,6 +2323,17 @@ export default class ObsidianConnectPlugin extends Plugin {
   private onNotify(kind: NotifyKind, payload: ServerNotice): void {
     if (kind === 'contact') {
       void this.processContacts()
+      return
+    }
+    if (kind === 'contact-replaced') {
+      const account = (payload as ContactNotice).account
+      if (this.contacts?.markReplaced(account)) {
+        new Notice(
+          `Obsidian Connect: ${this.contacts.name(account)} replaced all their keys. What you share with each other waits until you exchange a new friend code with them.`,
+          0
+        )
+        this.settingTab?.refresh()
+      }
       return
     }
     if (kind === 'contact-removed') {

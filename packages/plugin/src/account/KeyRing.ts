@@ -133,7 +133,13 @@ export class KeyRing {
       log.error(`${room}: the signature on the key of epoch ${epoch} does not hold; not taken`)
       return null
     }
-    return unseal(this.account.privateKey, this.account.publicKey, signed.sealed, epochKeyContext(room, epoch))
+    try {
+      return await unseal(this.account.privateKey, this.account.publicKey, signed.sealed, epochKeyContext(room, epoch))
+    } catch {
+      // Sealed to the key this account had before it replaced its keys: the owner seals it anew once they confirmed the new one.
+      log.info(`${room}: the key of epoch ${epoch} is sealed to a key this account no longer has`)
+      return null
+    }
   }
 
   /** A sealed epoch key of `room`: the one kept here, or - when that does not open - the server's, which the owner may have sealed anew. */
@@ -200,6 +206,11 @@ export class KeyRing {
   /** A snapshot or starting point this account makes of a room of its own, signed as its owner. */
   packAsOwner(room: string, epoch: number, authorTs: number, update: Uint8Array): Promise<Bytes> {
     return packSignedFrame(this.account.signing.privateKey, room, epoch, this.account.accountId, null, authorTs, update)
+  }
+
+  /** This account's certificate, as a room's owner, that `account` may write there with `signingKey` in an epoch. */
+  async certFor(room: string, epoch: number, account: string, signingKey: Bytes): Promise<WriterCert> {
+    return { signingKey, signature: fromBase64(await signWriterCert(this.account.signing.privateKey, room, epoch, account, signingKey)) }
   }
 
   /** Whether a frame or snapshot read from a room's log is taken (`RoomCrypto.check`). */
@@ -359,9 +370,14 @@ export class KeyRing {
       },
       learn: (epoch, tie) => this.learnTie(room, epoch, tie),
       refresh: async () => {
-        const before = JSON.stringify(this.knownTies(room).ties)
+        const before = this.keyState(room)
         await this.fetchKeys(room)
-        return JSON.stringify(this.knownTies(room).ties) !== before
+        let changed = this.keyState(room) !== before
+        for (const folder of new Set(Object.values(this.knownTies(room).ties).map((tie) => tie?.folder))) {
+          if (folder) changed = (await this.refreshFolder(folder)) || changed
+        }
+        if (changed) this.forgetKeys(room)
+        return changed
       },
       pack: async (epoch, authorTs, update) => this.packFor(room, epoch, ownerOf(), await this.tieOf(docId, epoch, options), authorTs, update),
       check: async (kind, _seq, epoch, frame) => {
@@ -451,11 +467,35 @@ export class KeyRing {
     return this.sealedKeyOf(folderRoom(folderId), epoch)
   }
 
+  /** What this device knows of a room's keys: the folder epochs its epochs belong to, and the keys sealed to it. */
+  private keyState(room: string): string {
+    return JSON.stringify([this.knownTies(room).ties, this.sealed(room)])
+  }
+
+  /** Lets go of the keys opened or derived for a room: its owner sealed them anew - after replacing its own. */
+  private forgetKeys(room: string): void {
+    for (const id of Array.from(this.keys.keys())) if (id.startsWith(`${room}#`)) this.keys.delete(id)
+  }
+
+  /** A folder's keys asked for again; true when they changed, and what was derived from them is let go of. */
+  private async refreshFolder(folderId: string): Promise<boolean> {
+    const room = folderRoom(folderId)
+    const before = this.keyState(room)
+    await this.fetchKeys(room)
+    if (this.keyState(room) === before) return false
+    for (const id of Array.from(this.folderKeyCache.keys())) if (id.startsWith(`${folderId}#`)) this.folderKeyCache.delete(id)
+    this.forgetKeys(room)
+    // Every note's key in the folder derives from its keys.
+    for (const id of Array.from(this.keys.keys())) if (id.includes(`#${folderId}.`)) this.keys.delete(id)
+    return true
+  }
+
   /** The folder room's own keys; its frames signed and checked against `owner` (null: this account). */
   folderRoomCrypto(folderId: string, owner: string | null): RoomCrypto {
     const room = folderRoom(folderId)
     const ownerId = owner ?? this.account.accountId
     return {
+      refresh: () => this.refreshFolder(folderId),
       key: async (epoch) => {
         const id = `${room}#${epoch}`
         const existing = this.keys.get(id)

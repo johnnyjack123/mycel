@@ -80,11 +80,67 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 export class Contacts {
+  private readonly confirmedListeners = new Set<(accountId: string) => void>()
+
   constructor(
     private readonly api: ContactApi,
     private readonly me: Me,
     private readonly settings: AccountSettings
   ) {}
+
+  /** A contact's keys were confirmed anew with a friend code - they replaced theirs: what is shared with them is sealed anew. */
+  onConfirmed(listener: (accountId: string) => void): void {
+    this.confirmedListeners.add(listener)
+  }
+
+  /**
+   * Pins a contact's keys as the code's exchange vouched for them. Other keys
+   * than pinned before - or a contact who replaced theirs - is told on.
+   */
+  private pin(contact: Contact): void {
+    const before = this.settings.contact(contact.accountId)
+    const changed = before !== null && (before.publicKey !== contact.publicKey || before.signingKey !== contact.signingKey || before.replacedAt !== undefined)
+    // Kept until the shares with them are sealed anew - by whichever device of the account gets there.
+    const renew = changed ? Date.now() : before?.renewNeeded
+    this.settings.setContact(contact.accountId, renew === undefined ? contact : { ...contact, renewNeeded: renew })
+    if (!changed) return
+    log.info(`${contact.accountId.slice(0, 8)}: keys confirmed anew`)
+    for (const listener of this.confirmedListeners) listener(contact.accountId)
+  }
+
+  /** Contacts confirmed anew whose shares are not sealed anew yet. */
+  awaitingRenewal(): string[] {
+    return this.settings
+      .contacts()
+      .filter((contact) => contact.renewNeeded !== undefined)
+      .map((contact) => contact.accountId)
+  }
+
+  /** Everything shared with them is sealed anew to the keys confirmed. */
+  renewed(accountId: string): void {
+    const contact = this.settings.contact(accountId)
+    if (!contact || contact.renewNeeded === undefined) return
+    const { renewNeeded: _done, ...rest } = contact
+    this.settings.setContact(accountId, rest)
+  }
+
+  /**
+   * The server says this contact replaced every key. Only ever a reason to
+   * trust less: their keys stay pinned, but nothing is sealed to them nor
+   * taken in their name until a new friend code confirmed them.
+   */
+  markReplaced(accountId: string, now = Date.now()): boolean {
+    const contact = this.settings.contact(accountId)
+    if (!contact || contact.replacedAt !== undefined) return false
+    this.settings.setContact(accountId, { ...contact, replacedAt: now })
+    log.warn(`${accountId.slice(0, 8)} replaced their keys; waits for a new friend code`)
+    return true
+  }
+
+  /** Whether they replaced their keys and were not confirmed again since. */
+  isReplaced(accountId: string): boolean {
+    return this.settings.contact(accountId)?.replacedAt !== undefined
+  }
 
   /** Everyone, named ones first. */
   list(): Contact[] {
@@ -107,10 +163,14 @@ export class Contacts {
     return contact ? fromBase64(contact.publicKey) : null
   }
 
-  /** A contact's signing key, pinned with their sealing key when the contact was made. */
+  /**
+   * A contact's signing key, pinned with their sealing key when the contact
+   * was made; none while they replaced their keys and were not confirmed
+   * again - whoever took the keys before signs with that one.
+   */
   signingKey(accountId: string): Bytes | null {
-    const key = this.settings.contact(accountId)?.signingKey
-    return key ? fromBase64(key) : null
+    const contact = this.settings.contact(accountId)
+    return contact && contact.replacedAt === undefined ? fromBase64(contact.signingKey) : null
   }
 
   isContact(accountId: string): boolean {
@@ -194,7 +254,7 @@ export class Contacts {
     })
     await this.api.redeemContact({ codeId: keys.codeId, redeemKey: toBase64(keys.redeemKey), sealed })
     const existing = this.settings.contact(info.owner)
-    this.settings.setContact(info.owner, {
+    this.pin({
       accountId: info.owner,
       name: existing?.name ?? '',
       localName: existing?.localName,
@@ -255,7 +315,7 @@ export class Contacts {
 
     this.settings.setCode(item.codeId, { ...code, usedBy: item.from })
     const existing = this.settings.contact(item.from)
-    this.settings.setContact(item.from, {
+    this.pin({
       accountId: item.from,
       name: intro.name,
       localName: existing?.localName,
@@ -282,7 +342,7 @@ export class Contacts {
     const expected = await contactMac(keys.macKey, introductionText('reply', item.codeId, intro))
     if (!sameMac(expected, intro.mac)) return 'dropped'
     const existing = this.settings.contact(item.from)
-    this.settings.setContact(item.from, {
+    this.pin({
       accountId: item.from,
       name: intro.name,
       localName: existing?.localName,

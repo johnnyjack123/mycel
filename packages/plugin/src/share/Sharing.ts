@@ -94,6 +94,10 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function replacedMessage(names: string[]): string {
+  return `${names.join(', ')} replaced their keys. Exchange a new friend code with ${names.length === 1 ? 'them' : 'each of them'} first - until then nothing is sealed to them.`
+}
+
 function titleOf(path: string): string {
   return (path.split('/').pop() ?? path).replace(/\.md$/, '') || 'Shared note'
 }
@@ -147,6 +151,7 @@ export class Sharing {
   recipientKey(account: string): Recipient {
     const pinned = this.contacts.publicKey(account)
     if (!pinned) throw new Error('Notes are shared with contacts only. Add them under Settings → Obsidian Connect → Contacts first.')
+    if (this.contacts.isReplaced(account)) throw new Error(replacedMessage([this.nameOf(account)]))
     return { account, publicKey: pinned }
   }
 
@@ -192,6 +197,9 @@ export class Sharing {
       this.options.unknownMembers?.(unknown, place)
       throw new UnknownMembersError(unknown, place)
     }
+    // Whoever took the keys they replaced would open what is sealed to them now.
+    const replaced = accounts.filter((account) => this.contacts.isReplaced(account))
+    if (replaced.length > 0) throw new Error(replacedMessage(replaced.map((account) => this.nameOf(account))))
     const room = place.kind === 'note' ? docRoom(place.docId) : folderRoom(place.folderId)
     const keys = new Map<string, Recipient>()
     for (const { account } of members) {
@@ -406,6 +414,32 @@ export class Sharing {
       }
     }
     return outcome
+  }
+
+  /**
+   * A contact confirmed anew after they replaced their keys: the keys they
+   * hold of this account's notes are sealed anew to their new one, and each
+   * note moves to a new epoch - whoever took their keys before could open
+   * everything sealed to those, and opens nothing from here on. A note of a
+   * shared folder moves on with the folder (`Folders.renewFor`).
+   */
+  async renewFor(account: string): Promise<void> {
+    for (const { docId, entry } of this.store.allEntries()) {
+      if (entry.owner || entry.deletedAt || (!entry.shared && !entry.folder)) continue
+      const room = docRoom(docId)
+      let epochs: number[]
+      try {
+        epochs = (await this.api.sealedEpochs(room)).members[account] ?? []
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) continue
+        throw error
+      }
+      if (epochs.length === 0) continue
+      const sealed = await this.keys.sealEpochKeys(docId, epochs, this.recipient(account, this.roleOf(room, account)))
+      await this.api.reseal({ room, keys: { [account]: sealed } })
+      if (!entry.folder) await this.rotate(docId)
+      log.info(`${entry.path}: sealed anew to ${account.slice(0, 8)}'s new keys`)
+    }
   }
 
   /** Takes access away and moves the note to an epoch the person never gets. */

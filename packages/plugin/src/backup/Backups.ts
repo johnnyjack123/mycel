@@ -206,7 +206,13 @@ export class Backups {
       const setting: BackupServerSetting = { routeId, pairing: connected.pairing, label: name, keyId: grant.keyId, addedAt: Date.now() }
       const settings = this.settings
       const previous = connected.replaced ? this.server(connected.replaced) : undefined
+      // A task kept when every key was replaced and its backup server taken off carries on with this one.
+      const orphan = previous ? null : settings.orphanedBackupTask()
       settings.setBackupServer(routeId, setting)
+      if (orphan) {
+        settings.setBackupTask(routeId, { ...orphan, server: routeId })
+        settings.setBackupTask(orphan.server, null)
+      }
       if (previous) {
         // The same vault connected again: its task carries on under the new pairing.
         const task = settings.backupTask(previous.routeId)
@@ -271,8 +277,12 @@ export class Backups {
     return done
   }
 
-  /** Takes the vault off a backup server: its key goes, its settings go. Its repository and copy stay where they are. */
-  async disconnect(routeId: string): Promise<void> {
+  /**
+   * Takes the vault off a backup server: its key goes, its settings go - its
+   * task too, unless `keepTask`: a backup server invited again carries on with
+   * it. Its repository and copy stay where they are.
+   */
+  async disconnect(routeId: string, keepTask = false): Promise<void> {
     const setting = this.server(routeId)
     if (!setting) return
     try {
@@ -282,16 +292,16 @@ export class Backups {
       // Unreachable, or it let go of the vault already: without its key it reads nothing anyway.
       log.warn(`telling ${setting.label} to forget the vault failed`, error)
     }
-    await this.forget(routeId)
+    await this.forget(routeId, keepTask)
   }
 
   /** Drops a backup server from the settings and its key from the sync server, without asking it. */
-  async forget(routeId: string): Promise<void> {
+  async forget(routeId: string, keepTask = false): Promise<void> {
     const setting = this.server(routeId)
     if (!setting) return
     await this.deps.deleteKey(setting.keyId).catch(() => undefined)
     const settings = this.settings
-    settings.setBackupTask(routeId, null)
+    if (!keepTask) settings.setBackupTask(routeId, null)
     settings.setBackupServer(routeId, null)
     this.forgetSession(routeId)
     this.views.delete(routeId)

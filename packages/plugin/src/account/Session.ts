@@ -4,7 +4,9 @@ import type {
   BackupGrant,
   RecoveryRecord,
   SecondFactorRequired,
-  SessionResponse
+  ReplaceKeysRequest,
+  SessionResponse,
+  VaultRecord
 } from '@obsidian-connect/shared'
 import {
   CURRENT_KDF_VERSION,
@@ -62,6 +64,18 @@ export interface Unlocked {
   bundle: AccountBundle
   /** The account's signing key, wrapped under a key from the account secret. */
   signing: { privateKey: CryptoKey; publicKey: Bytes }
+  /** The keys a replacement under way replaced, until the vaults are written anew; null otherwise. */
+  previous: PreviousKeys | null
+}
+
+/** What writing the vaults anew needs of the keys a replacement replaced (`KeyReplacement`). */
+export interface PreviousKeys {
+  /** The replacement's id: every room written anew is marked with it. */
+  id: string
+  accountSecret: Bytes
+  signingPublicKey: Bytes
+  /** By vault id. */
+  vaultKeys: Map<string, Bytes>
 }
 
 export interface OpenVault {
@@ -82,6 +96,7 @@ const RECOVERY_PRIVATE_KEY = 'recovery-private-key'
 const RECOVERY_ACCOUNT_SECRET = 'recovery-account-secret'
 const VAULT_KEY = 'vault'
 const SIGNING_KEY = 'signing-key'
+const PREVIOUS_SECRET = 'previous-account-secret'
 // A sign-out close this soon after the device's own request moved the session
 // generation was that request's: the token it brought holds.
 const OWN_MOVE_MS = 10_000
@@ -266,7 +281,8 @@ export class Session {
 
   private withBundle(unlocked: Unlocked, bundle: AccountBundle): Unlocked {
     this.secrets.save(BUNDLE, JSON.stringify(bundle))
-    return { ...unlocked, bundle }
+    // A replacement another device finished lets go of the keys before here too.
+    return { ...unlocked, bundle, previous: bundle.replacing ? unlocked.previous : null }
   }
 
   /** What the server says about the account now: 2FA or a recovery code changed on another device. */
@@ -468,9 +484,91 @@ export class Session {
       masterKey,
       accountSecret,
       bundle,
-      signing: await this.openSigningKey(bundle, accountSecret)
+      signing: await this.openSigningKey(bundle, accountSecret),
+      previous: await this.openPrevious(bundle, accountSecret)
     }
     return unlocked
+  }
+
+  private async openPrevious(bundle: AccountBundle, accountSecret: Bytes): Promise<PreviousKeys | null> {
+    const replacing = bundle.replacing
+    if (!replacing) return null
+    const secret = await unwrapSecret(await accountKeys.previousWrap(accountSecret), replacing.wrappedSecret, PREVIOUS_SECRET)
+    const wrap = await accountKeys.vaultWrap(secret)
+    const vaultKeys = new Map<string, Bytes>()
+    for (const [vaultId, wrapped] of Object.entries(replacing.vaults)) vaultKeys.set(vaultId, await unwrapSecret(wrap, wrapped, VAULT_KEY))
+    return { id: replacing.id, accountSecret: secret, signingPublicKey: fromBase64(replacing.signingPublicKey), vaultKeys }
+  }
+
+  /**
+   * Replaces every key of the account (`docs/PHASE8.md`, S2): a new password,
+   * account secret, identity, signing key, recovery code and vault keys, on the
+   * server in one step - every other device signed out, every backup key ended.
+   * The account secret before stays, wrapped under the new one, until the
+   * vaults are written anew (`KeyReplacement`). Signed in under the new keys,
+   * with the new recovery code to show.
+   */
+  async replaceKeys(unlocked: Unlocked, current: string, next: string): Promise<Registered> {
+    if (unlocked.previous) throw new Error('The keys are being replaced already.')
+    const serverId = await this.serverId()
+    const salt = await accountSalt(serverId, unlocked.username)
+    const currentKeys = await derivePasswordKeys(current, salt, unlocked.bundle.kdfVersion, this.argon2id)
+    const nextKeys = await derivePasswordKeys(next, salt, CURRENT_KDF_VERSION, this.argon2id)
+    const identity = await generateIdentity()
+    const accountSecret = randomBytes(32)
+    const recovery = await this.newRecovery(identity.privateKey, accountSecret)
+    const signing = await this.newSigningKey(accountSecret)
+    const newWrap = await accountKeys.vaultWrap(accountSecret)
+    const oldNames = await aesKey(await accountKeys.vaultName(unlocked.accountSecret))
+    const newNames = await aesKey(await accountKeys.vaultName(accountSecret))
+    const vaults: ReplaceKeysRequest['vaults'] = {}
+    const before: Record<string, string> = {}
+    for (const vault of unlocked.bundle.vaults) {
+      const name = await decrypt(oldNames, fromBase64(vault.sealedName), vaultNameAad(vault.vaultId))
+      vaults[vault.vaultId] = {
+        sealedName: toBase64(await encrypt(newNames, name, vaultNameAad(vault.vaultId))),
+        wrappedKey: await wrapSecret(newWrap, randomBytes(32), VAULT_KEY)
+      }
+      before[vault.vaultId] = vault.wrappedKey
+    }
+    const request: ReplaceKeysRequest = {
+      loginKey: toBase64(currentKeys.loginKey),
+      newLoginKey: toBase64(nextKeys.loginKey),
+      kdfVersion: CURRENT_KDF_VERSION,
+      publicKey: toBase64(identity.publicKey),
+      wrappedPrivateKey: await wrapSecret(nextKeys.masterKey, identity.privateKey, PRIVATE_KEY),
+      wrappedAccountSecret: await wrapSecret(nextKeys.masterKey, accountSecret, ACCOUNT_SECRET),
+      ...signing,
+      recovery: recovery.record,
+      vaults,
+      replacing: {
+        id: toHex(randomBytes(16)),
+        startedAt: Date.now(),
+        wrappedSecret: await wrapSecret(await accountKeys.previousWrap(accountSecret), unlocked.accountSecret, PREVIOUS_SECRET),
+        signingPublicKey: toBase64(unlocked.signing.publicKey),
+        vaults: before
+      }
+    }
+    const replaced = await this.move(async () => this.adopt(await this.api.replaceKeys(request), nextKeys.masterKey, unlocked.username, serverId))
+    return { unlocked: replaced, recoveryCode: recovery.code }
+  }
+
+  /** The vaults are written anew: the keys before are let go of, here and on the server. */
+  async finishReplacement(unlocked: Unlocked): Promise<Unlocked> {
+    if (!unlocked.previous) return unlocked
+    return this.withBundle(unlocked, await this.api.finishReplacement(unlocked.previous.id))
+  }
+
+  /** Every vault of the account under its current key, by its sealed name. */
+  async allVaults(unlocked: Unlocked): Promise<OpenVault[]> {
+    const names = await aesKey(await accountKeys.vaultName(unlocked.accountSecret))
+    const wrap = await accountKeys.vaultWrap(unlocked.accountSecret)
+    const vaults: OpenVault[] = []
+    for (const vault of unlocked.bundle.vaults) {
+      const name = fromUtf8(await decrypt(names, fromBase64(vault.sealedName), vaultNameAad(vault.vaultId)))
+      vaults.push({ vaultId: vault.vaultId, name, key: await unwrapSecret(wrap, vault.wrappedKey, VAULT_KEY) })
+    }
+    return vaults
   }
 
   /** A new signing key, wrapped under a key from the account secret. */
@@ -520,6 +618,18 @@ export class Session {
     }
   }
 
+  private async vaultNamed(unlocked: Unlocked, name: string): Promise<VaultRecord | null> {
+    const key = await aesKey(await accountKeys.vaultName(unlocked.accountSecret))
+    for (const vault of unlocked.bundle.vaults) {
+      try {
+        if (fromUtf8(await decrypt(key, fromBase64(vault.sealedName), vaultNameAad(vault.vaultId))) === name) return vault
+      } catch {
+        // Not readable with this secret.
+      }
+    }
+    return null
+  }
+
   /** The names of the account's vaults, decrypted here. */
   async vaultNames(unlocked: Unlocked): Promise<string[]> {
     const key = await aesKey(await accountKeys.vaultName(unlocked.accountSecret))
@@ -534,12 +644,16 @@ export class Session {
     return names
   }
 
-  /** The vault of that name, created on first use. A second device finds it by name. */
+  /**
+   * The vault of that name, created on first use. A second device finds it by
+   * name - by its sealed name, not by the id the name derives: replacing the
+   * account's keys keeps every vault's id.
+   */
   async openVault(unlocked: Unlocked, name: string): Promise<OpenVault> {
     const vaultName = name.trim()
-    const vaultId = await accountKeys.vaultId(unlocked.accountSecret, vaultName)
     const wrapKey = await accountKeys.vaultWrap(unlocked.accountSecret)
-    let record = unlocked.bundle.vaults.find((vault) => vault.vaultId === vaultId)
+    let record = await this.vaultNamed(unlocked, vaultName)
+    const vaultId = record?.vaultId ?? (await accountKeys.vaultId(unlocked.accountSecret, vaultName))
     if (!record) {
       const key = randomBytes(32)
       const nameKey = await aesKey(await accountKeys.vaultName(unlocked.accountSecret))

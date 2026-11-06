@@ -1621,6 +1621,24 @@ export class Folders {
     await this.api.startSnapshot(room, { epoch, uptoSeq: this.socket.lastSeqOf(room), data: toBase64(data) })
   }
 
+  /**
+   * A member confirmed anew after they replaced their keys: the folder keys
+   * they hold sealed anew to their new one, and the folder with every note in
+   * it to a new epoch (as `Sharing.renewFor` does for a note).
+   */
+  async renewFor(account: string): Promise<void> {
+    for (const folderId of this.ownFolderIds()) {
+      const room = folderRoom(folderId)
+      const epochs = (await this.api.sealedEpochs(room)).members[account] ?? []
+      if (epochs.length === 0) continue
+      const recipient = (await this.sharing.memberKeys([{ account }], { kind: 'folder', folderId })).get(account)
+      if (!recipient) continue
+      await this.api.reseal({ room, keys: { [account]: await this.keys.sealFolderKeys(folderId, epochs, recipient) } })
+      await this.rotate(folderId)
+      log.info(`${this.index.folder(folderId)?.path ?? folderId}: sealed anew to ${account.slice(0, 8)}'s new keys`)
+    }
+  }
+
   async revoke(folderId: string, account: string): Promise<void> {
     await this.rotate(folderId, account)
     this.sharing.recordRole(folderRoom(folderId), account, null)

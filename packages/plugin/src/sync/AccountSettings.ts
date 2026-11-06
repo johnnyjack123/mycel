@@ -51,6 +51,13 @@ export interface Contact {
   publicKey: string
   signingKey: string
   addedAt: number
+  /**
+   * When the server said they replaced every key: nothing is sealed to them
+   * or taken in their name until a new friend code confirmed them again.
+   */
+  replacedAt?: number
+  /** Their keys were confirmed anew: what is shared with them waits to be sealed anew to them. */
+  renewNeeded?: number
 }
 
 /** A code this account handed out; its secret opens the redemption. */
@@ -260,6 +267,12 @@ export class AccountSettings {
 
   setBackupTask(routeId: string, task: BackupTaskSetting | null): void {
     this.put(`${BACKUP_TASK_KEY}${routeId}`, task)
+  }
+
+  /** A task whose backup server was taken off with it kept - after every key was replaced - for the next one invited. */
+  orphanedBackupTask(): BackupTaskSetting | null {
+    const servers = new Set(this.backupServers().map((server) => server.routeId))
+    return this.entries<BackupTaskSetting>(BACKUP_TASK_KEY).find((task) => typeof task.server === 'string' && !servers.has(task.server)) ?? null
   }
 
   // Every rollback of the vault, kept before it changes anything: every device

@@ -311,6 +311,91 @@ export interface AccountBundle {
   /** The account's signing key: its public half, and its private half wrapped under a key from the account secret. */
   signingPublicKey: string
   wrappedSigningKey: string
+  /** A replacement of every key under way: until it is done, the vaults are written anew under the new keys. */
+  replacing: KeyReplacement | null
+}
+
+// --- replacing every key ---------------------------------------------------------------
+//
+// After a suspected theft (`docs/PHASE8.md`, S2): a new password, account secret,
+// identity, signing key, recovery code and vault keys in one step on the server,
+// and then every room the account owns written anew under the new keys, every
+// file uploaded anew - by whichever of its devices gets there, from what the
+// bundle carries meanwhile.
+
+export interface ReplaceKeysRequest {
+  /** The current password's login key: a token alone replaces nothing. */
+  loginKey: string
+  newLoginKey: string
+  kdfVersion: number
+  publicKey: string
+  wrappedPrivateKey: string
+  wrappedAccountSecret: string
+  signingPublicKey: string
+  wrappedSigningKey: string
+  recovery: RecoveryRecord
+  /** Every vault of the account, by id: its name sealed and its new key wrapped under the new secret. */
+  vaults: Record<string, { sealedName: string; wrappedKey: string }>
+  replacing: KeyReplacement
+}
+
+/** What a replacement under way needs of the keys before it, wrapped under a key from the new account secret. */
+export interface KeyReplacement {
+  /** Tells this replacement apart; every room written anew is marked with it. */
+  id: string
+  startedAt: number
+  /** The account secret before. */
+  wrappedSecret: string
+  /** The signing key's public half before: what was written so far is checked by it. */
+  signingPublicKey: string
+  /** Each vault's key before, by vault id, as it was wrapped under the old secret. */
+  vaults: Record<string, string>
+}
+
+/** A room the account owns in a vault, for writing it anew. */
+export interface OwnedRoom {
+  room: string
+  /** The replacement it was written anew by, if any. */
+  rewrittenBy: string | null
+}
+
+export interface OwnedRoomsResponse {
+  rooms: OwnedRoom[]
+}
+
+/** Everything a room holds, for its owner to write it anew: every frame, every snapshot, who holds which epoch. */
+export interface WholeLogResponse {
+  room: string
+  epoch: number
+  headSeq: number
+  frames: Array<{ seq: number; epoch: number; data: string }>
+  snapshots: Array<{ uptoSeq: number; epoch: number; data: string }>
+  /** account -> the epochs they hold a key of. */
+  keys: Record<string, number[]>
+  /** Who is in it now: a new epoch is sealed to each. */
+  members: string[]
+  ties?: Record<string, FolderTie>
+  /** A note in a shared folder: the folder's id. */
+  folder?: string
+  rewrittenBy: string | null
+}
+
+/**
+ * A room written anew in place under the owner's new keys: every frame and
+ * snapshot at its seq, in its epoch; every key a member holds sealed anew. A
+ * room others may write in moves on to a new epoch with it, so nothing under
+ * a key from before is taken any more.
+ */
+export interface RewriteRequest {
+  replacement: string
+  /** The vault lock this device holds. */
+  lockId: string
+  headSeq: number
+  epoch: number
+  frames: Array<{ seq: number; data: string }>
+  snapshots: Array<{ uptoSeq: number; data: string }>
+  keys: Record<string, Record<string, string>>
+  rotation?: Rotation
 }
 
 // --- backup keys -------------------------------------------------------------------
@@ -774,10 +859,13 @@ export interface AcceptRequest {
 }
 
 /**
- * Why a notification was sent to an account. `account-changed` (0.6.8): what the
+ * Why a notification was sent to an account. `account-changed`: what the
  * account bundle says changed - two-factor sign-in turned off, a recovery code
  * made or deleted - and the devices still signed in show it; its notice names
- * the account. Older plugins ignore kinds they do not know.
+ * the account. `contact-replaced`: a contact replaced every key - nothing is
+ * sealed to them or taken from them until they are confirmed again; its notice
+ * names them (`ContactNotice`). The server's word, so only ever a reason to
+ * trust less.
  */
 export type NotifyKind =
   | 'share-added'
@@ -785,6 +873,7 @@ export type NotifyKind =
   | 'share-removed'
   | 'contact'
   | 'contact-removed'
+  | 'contact-replaced'
   | 'account-changed'
   | 'folder-added'
   | 'folder-changed'
@@ -824,8 +913,12 @@ export type Notice = ShareNotice | ContactNotice | FolderNotice | VaultLockNotic
 // the server takes nothing from the account's other devices into the vault
 // (`docs/TIMEMACHINE.md`, V2). It holds even against a device whose own guard failed.
 
-/** `preview`: nobody of the account writes. `rollback`: only the connection holding it. */
-export type VaultLockKind = 'preview' | 'rollback'
+/**
+ * `preview`: nobody of the account writes. `rollback`: only the connection
+ * holding it. `replace`: the vault is written anew under replaced keys
+ * (`RewriteRequest`), over REST; nobody of the account writes meanwhile.
+ */
+export type VaultLockKind = 'preview' | 'rollback' | 'replace'
 
 export interface VaultLockInfo {
   kind: VaultLockKind

@@ -68,6 +68,8 @@ export interface RoomMeta {
    * its owner still reads those epochs.
    */
   ties?: Record<string, FolderTie>
+  /** The key replacement its owner wrote it anew by, last (`RoomHub.rewrite`). */
+  rewrittenBy?: string
 }
 
 /** A note's place in a shared folder, as the server keeps it. */
@@ -431,6 +433,29 @@ export class RoomLog {
       for (const snapshot of superseded) {
         await unlink(this.snapshotFile(snapshot.uptoSeq)).catch(() => undefined)
       }
+    })
+  }
+
+  /**
+   * Every frame and snapshot written anew in place - its owner replaced its
+   * keys: the same seqs, the same epochs, other bytes. A frame that came in
+   * after it was read - under the epoch it moved to, in someone else's new
+   * key - stays as it is. The snapshots first, then the log, then the
+   * metadata naming the replacement: a crash in between leaves a room with
+   * both kinds of keys, which its owner's device reads with both and writes
+   * anew again.
+   */
+  rewrite(frames: Map<number, Uint8Array>, snapshots: Map<number, Uint8Array>): Promise<void> {
+    return this.queue(async () => {
+      await ensureDir(this.dir)
+      for (const [uptoSeq, data] of snapshots) await writeDurable(this.snapshotFile(uptoSeq), data)
+      const next = this.frames.map((frame) => ({ ...frame, data: frames.get(frame.seq) ?? frame.data }))
+      const log = Buffer.concat(next.map(encodeFrame))
+      await writeDurable(this.logFile, log)
+      this.bytes = log.length
+      this.damaged = false
+      this.frames.splice(0, this.frames.length, ...next)
+      await this.writeMeta()
     })
   }
 

@@ -4,6 +4,26 @@ import { generatePassword, judgePassword } from './password'
 import { busy, type BusyButton } from '../busy'
 import { PasswordReveal } from './reveal'
 
+/** What the window says: changing the password, or replacing every key with it. */
+export interface PasswordModalTexts {
+  title: string
+  /** Paragraphs above the fields. */
+  intro: string[]
+  note: string
+  button: string
+  done: string
+  failed: string
+}
+
+const CHANGE_TEXTS: PasswordModalTexts = {
+  title: 'Change password',
+  intro: [],
+  note: 'Your other devices will ask you to sign in again. Your notes stay encrypted as they are.',
+  button: 'Change',
+  done: 'Password changed.',
+  failed: 'Changing the password failed'
+}
+
 /** Asks for the current and a new password. The change itself happens on this device. */
 export class PasswordModal extends Modal {
   private current = ''
@@ -13,13 +33,15 @@ export class PasswordModal extends Modal {
 
   constructor(
     app: App,
-    private readonly change: (current: string, next: string) => Promise<void>
+    private readonly change: (current: string, next: string) => Promise<void>,
+    private readonly texts: PasswordModalTexts = CHANGE_TEXTS
   ) {
     super(app)
   }
 
   onOpen(): void {
-    this.titleEl.setText('Change password')
+    this.titleEl.setText(this.texts.title)
+    for (const paragraph of this.texts.intro) this.contentEl.createEl('p', { text: paragraph })
     const reveal = new PasswordReveal()
     const field = (name: string, set: (value: string) => void): HTMLInputElement => {
       const setting = new Setting(this.contentEl).setName(name)
@@ -48,13 +70,10 @@ export class PasswordModal extends Modal {
           reveal.set(true)
         })
       )
-    this.contentEl.createEl('p', {
-      cls: 'setting-item-description',
-      text: 'Your other devices will ask you to sign in again. Your notes stay encrypted as they are.'
-    })
+    this.contentEl.createEl('p', { cls: 'setting-item-description', text: this.texts.note })
     new Setting(this.contentEl).addButton((button) =>
       button
-        .setButtonText('Change')
+        .setButtonText(this.texts.button)
         .setCta()
         .onClick(() => void this.submit(button))
     )
@@ -74,10 +93,10 @@ export class PasswordModal extends Modal {
     this.busy = true
     try {
       await busy(button, () => this.change(this.current, this.next))
-      new Notice('Password changed.')
+      new Notice(this.texts.done)
       this.close()
     } catch (error) {
-      new Notice(`Changing the password failed: ${error instanceof Error ? error.message : String(error)}`)
+      new Notice(`${this.texts.failed}: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       this.busy = false
     }

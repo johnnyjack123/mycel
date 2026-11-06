@@ -131,10 +131,14 @@ someone's notes. Treat them as rules, not preferences.
     base: a note emptied on purpose is empty too.
 19. **A seq number alone does not identify a log position.** A server restored
     from a backup numbers new frames from where the backup ended, and a device
-    that was away took them for frames it had. Every cursor keeps the
-    fingerprint of its last frame, and every subscribe asks for that frame
-    again (`afterSeq = lastSeq - 1`); gone or different means the log is
-    another one - except that a snapshot reaching up to or past it is
+    that was away took them for frames it had. Every cursor keeps two
+    fingerprints of its last frame - its bytes, and what it says (author, time,
+    change) for when replacing an account's keys wrote it anew - and every
+    subscribe asks for that frame again (`afterSeq = lastSeq - 1`); gone or
+    different means the log is another one; other bytes it cannot open yet
+    mean nothing (`unreadable`: nothing sent, caught up again). Never compare
+    by what it says alone: that needs its key, and a key missing for a moment
+    left rooms unconfirmed and unsent (0.9.6) - except that a snapshot reaching up to or past it is
     compaction, which folded the frame in: one ending exactly at the last
     frame (a note untouched for longer than the retention) was once taken for
     another server, and every old note was held and asked about. So is a
@@ -264,8 +268,8 @@ someone's notes. Treat them as rules, not preferences.
 - The device keeps the token in `data.json`, the master key, the account bundle
   and sealed keys in Obsidian's per-vault `localStorage`, so it starts offline.
 - **Signing the other devices out** (`docs/PHASE5.md`): every token carries the
-  account's session generation (`sessions` in `accounts.json`, `gen` in the token,
-  absent = 0), and only the current one is accepted. A password change moves it and
+  account's session generation (`sessions` in `accounts.json`, `gen` in the token;
+  a token without one is refused), and only the current one is accepted. A password change moves it and
   the server closes the account's sockets with `4401`, also its own device's: the
   close arrives before the new token, so `Session.stillSignedIn` waits for the
   device's own request (`Session.move`) before asking whether it is signed out - and
@@ -277,6 +281,22 @@ someone's notes. Treat them as rules, not preferences.
   a new name and password; using it spends it and signs out every other device.
   Making, replacing or deleting one needs the current password, never a token
   alone: a planted code would let its holder replace the account's keys.
+- ***Replace all keys*** (0.9.6, `docs/PHASE8.md` S2; `account/KeyReplacement.ts`): after
+  a suspected theft, the password, account secret, identity, signing key, every vault
+  key and the recovery code are replaced on the server in one step (`POST
+  /auth/replace`, the current password required, every device signed out). Then every
+  room the account owns is **written anew in place** under the new keys (`/log/:room/whole`,
+  `/log/:room/rewrite`, under a vault lock of kind `replace`): each frame at its seq and
+  epoch - the account's own signed anew, a writer's re-certified, anything no signature
+  holds for an empty change, anything no key opens stops it all -, every snapshot, every
+  member's keys sealed anew; a room others write in moves to a new epoch at that moment.
+  Every file is uploaded anew and the content before purged. Until a device finished, the
+  bundle carries `replacing` (the old secret wrapped under the new), and any device of the
+  account signing in carries it on before anything syncs; a room done is marked
+  `rewrittenBy`. A vault keeps its id - devices find it by its sealed name. Contacts hear
+  `contact-replaced`, trust nothing in its name and seal nothing to it until a new friend
+  code confirmed the new keys (`Contacts.markReplaced`, `pin`); their device then reseals
+  and rotates what it shares with it (`renewFor`, kept as `renewNeeded` until done).
 - **Two-factor sign-in** (TOTP, optional) guards the sign-in only - nothing is
   encrypted with it, and it cannot be: six digits that change every 30 seconds,
   checked by the server. The right password answers `403` with a challenge (a token
@@ -776,6 +796,7 @@ npm run test:recovery  # a server that lost its data, one restored from a backup
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
 npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too), the vault lock, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
+npm run test:replace   # every key of an account replaced: the vaults and files written anew, the other device, a contact confirming again, a replacement carried on by another device — in-process server
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by OBSIDIAN_CONNECT_RESTIC (where it lies here: docs/PROGRESS.md)
 # needs a server that lets tests create accounts:
@@ -953,7 +974,7 @@ between two snapshots, never a merge.
   | 0.6 | recovery codes and 2FA |
   | 0.7 | the backup server (`docs/PHASE6.md`) |
   | 0.8 | sharing a folder, and the small fixes listed for it in `docs/PROGRESS.md`; then the Time Machine (`docs/TIMEMACHINE.md`, the user, 2026-10-25) |
-  | 0.9 | hardening and a security audit: signatures per author, every note live, durable writes on the server (fsync before the ack, a lock against the admin CLI), a name without "Obsidian" |
+  | 0.9 | hardening and a security audit: signatures per author, every note live, durable writes on the server (fsync before the ack, a lock against the admin CLI), a clean slate, replacing every key, a name without "Obsidian" (Mycel); the audit by a separate agent once all of it is built |
   | 1.0.0 | all of the above done and verified on devices |
   | later | syncing plugins and their settings (moved back by the user, 2026-10-14) |
 - **Rebuild after anything that swaps the sources.** A bundle built during a

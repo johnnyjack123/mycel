@@ -33,6 +33,7 @@ const { ConnectApi, fetchHttp } = await import('../src/account/api.js')
 const { Session } = await import('../src/account/Session.js')
 const { probeServer } = await import('../src/account/probe.js')
 const { KeyRing } = await import('../src/account/KeyRing.js')
+const { KeyReplacement } = await import('../src/account/KeyReplacement.js')
 const { hashWasmArgon2id } = await import('../src/account/argon2.js')
 const { DocStore } = await import('../src/sync/DocStore.js')
 const { AttachmentIndex } = await import('../src/sync/AttachmentIndex.js')
@@ -201,6 +202,8 @@ export class Device {
   private indexTimer: ReturnType<typeof setTimeout> | null = null
   readonly views: ViewT[] = []
   private carriedHeld: { vaultId: string; held: Map<string, Set<string>> } | null = null
+  /** Shares being sealed anew to a contact confirmed again; the tests wait for it. */
+  renewing: Promise<void> = Promise.resolve()
 
   constructor(
     /** A recovery may choose another. */
@@ -224,9 +227,11 @@ export class Device {
       this.askedForCode.push(again)
       return this.authenticator ? this.authenticator.code() : null
     }
-    const unlocked =
+    let unlocked =
       (await this.session.unlock()) ??
       (this.signUp && !this.accountId ? await register() : await this.session.login(this.username, this.password, askCode))
+    // What main.ts's `carryOnReplacement` does before anything syncs.
+    if (unlocked.previous) unlocked = await this.carryOnReplacement(unlocked)
     this.unlocked = unlocked
     this.accountId = unlocked.accountId
     const openVault = await this.session.openVault(unlocked, VAULT)
@@ -249,6 +254,7 @@ export class Device {
         // Caught, as main.ts's `processContacts` does: the next notice reads the inbox again.
         if (kind === 'contact') void this.contacts?.processInbox().catch(() => undefined)
         else if (kind === 'contact-removed') this.contacts?.forget((payload as { account: string }).account)
+        else if (kind === 'contact-replaced') this.contacts?.markReplaced((payload as { account: string }).account)
         // What main.ts's `refreshAccount` does.
         else if (kind === 'account-changed') void this.refreshAccount()
         else if (kind.startsWith('folder-')) void this.folders?.onNotify(kind, payload as never).then(() => this.editors.refresh())
@@ -331,6 +337,21 @@ export class Device {
       },
       settings
     )
+    // What main.ts's `renewShares` does.
+    const renew = async (account: string): Promise<void> => {
+      socket.retryStalled()
+      try {
+        await sharing.renewFor(account)
+        await folders.renewFor(account)
+        contacts.renewed(account)
+      } catch (error) {
+        console.warn(`sealing the shares with ${account.slice(0, 8)} anew failed`, error)
+      }
+    }
+    this.renewing = Promise.resolve()
+    contacts.onConfirmed((account) => {
+      this.renewing = this.renewing.then(() => renew(account))
+    })
     this.contacts = contacts
     const attachmentIndex = new AttachmentIndex(index.doc, (path, generation) => keys.fileId(path, generation))
     this.maxFileBytes = (await this.api.config()).maxFileBytes ?? 0
@@ -495,12 +516,37 @@ export class Device {
     }
     if (started) {
       await contacts.processInbox()
+      for (const account of contacts.awaitingRenewal()) await renew(account)
       await sharing.checkEnded()
       await sharing.checkIncoming()
       await folders.checkIncoming()
     }
     this.editors.refresh()
     return started
+  }
+
+  /**
+   * What *Replace all keys* does, the device shut down first: every key
+   * replaced on the server, then the vaults written anew - unless
+   * `writeAnew` is false, as a device that broke off right after.
+   */
+  async replaceKeys(next: string, writeAnew = true): Promise<void> {
+    if (!this.unlocked) throw new Error('not signed in')
+    const { unlocked, recoveryCode } = await this.session.replaceKeys(this.unlocked, this.password, next)
+    this.unlocked = unlocked
+    this.recoveryCode = recoveryCode
+    this.password = next
+    if (writeAnew) this.unlocked = await this.carryOnReplacement(unlocked)
+  }
+
+  private async carryOnReplacement(unlocked: Unlocked): Promise<Unlocked> {
+    await new KeyReplacement(this.api, unlocked, await this.session.allVaults(unlocked), { device: this.username }).run()
+    return this.session.finishReplacement(unlocked)
+  }
+
+  /** Whether a replacement of the keys is under way, as this device last heard. */
+  get replacing(): boolean {
+    return Boolean(this.unlocked?.previous)
   }
 
   /** What the password dialog does. The other devices of the account are not told the new one. */

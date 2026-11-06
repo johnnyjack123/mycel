@@ -302,8 +302,14 @@ export class BlobStore {
    * Lets go of these blobs, except those uploaded within the grace period.
    * Answers which went and which were kept; any other was not there.
    */
-  async purge(account: string, vault: string, ids: unknown, now = Date.now()): Promise<{ purged: string[]; kept: string[] }> {
+  /**
+   * `withoutGrace`: the account's keys are being replaced - every other device
+   * is signed out, so nothing is on its way in under the keys before, and
+   * nothing under them may stay.
+   */
+  async purge(account: string, vault: string, ids: unknown, now = Date.now(), withoutGrace = false): Promise<{ purged: string[]; kept: string[] }> {
     if (!Array.isArray(ids)) throw new BlobError(400, 'ids must be a list')
+    const grace = withoutGrace ? 0 : this.limits.purgeGraceMs
     const purged: string[] = []
     const kept: string[] = []
     for (const value of ids) {
@@ -315,11 +321,11 @@ export class BlobStore {
           // An upload under way is another device's file on its way in.
           const uploads = join(dir, UPLOADS)
           const touchedAt = await this.uploadTouched(uploads, value)
-          if (touchedAt !== null && now - touchedAt < this.limits.purgeGraceMs) return 'kept'
+          if (touchedAt !== null && now - touchedAt < grace) return 'kept'
           await this.dropUpload(uploads, value)
           return 'absent'
         }
-        if (now - (meta.touchedAt ?? meta.createdAt) < this.limits.purgeGraceMs) return 'kept'
+        if (now - (meta.touchedAt ?? meta.createdAt) < grace) return 'kept'
         // Someone else may still fetch it through a note shared with them.
         if (this.attached(account, vault, value)) return 'kept'
         // The record first: from then on the blob does not exist for anyone.

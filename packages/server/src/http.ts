@@ -51,7 +51,11 @@ import {
   type IncomingSharesResponse,
   type AccountBundle,
   type LoginRequest,
+  type OwnedRoomsResponse,
   type PasswordChangeRequest,
+  type ReplaceKeysRequest,
+  type RewriteRequest,
+  type WholeLogResponse,
   type RecoverCommitRequest,
   type RecoverRequest,
   type RecoverResponse,
@@ -327,6 +331,30 @@ export function createHttpApp(
       await accounts.changePassword(accountId, request.body as PasswordChangeRequest)
       hub.disconnect(accountId)
       return session(accountId)
+    })
+  })
+
+  // Every key replaced: the account's devices are signed out, its open codes
+  // and what waits in its inbox go, and its contacts are told to trust nothing
+  // in its name until they confirmed it again.
+  app.post(API.replaceKeys, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return guarded(request, reply, async () => {
+      await accounts.replaceKeys(accountId, request.body as ReplaceKeysRequest)
+      hub.disconnect(accountId)
+      for (const contact of await contacts.replaced(accountId)) hub.notify(contact, 'contact-replaced', { account: accountId })
+      return session(accountId)
+    })
+  })
+
+  app.post(`${API.replaceKeys}/done`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return guarded(request, reply, async () => {
+      const { id } = (request.body ?? {}) as { id?: unknown }
+      const account = await accounts.finishReplacement(accountId, id)
+      return accounts.bundle(account)
     })
   })
 
@@ -719,6 +747,20 @@ export function createHttpApp(
     return { ok: true }
   })
 
+  // The owner's, while its keys are replaced: everything the room holds, and the room written anew.
+  app.get<{ Params: RoomParams }>(`${API.log}/:room/whole`, async (request, reply): Promise<WholeLogResponse | undefined> => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return hub.wholeLog(accountId, request.params.room)
+  })
+
+  app.post<{ Params: RoomParams }>(`${API.log}/:room/rewrite`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    await hub.rewrite(accountId, request.params.room, request.body as RewriteRequest)
+    return { ok: true }
+  })
+
   // The owner's: which epochs each member holds a key of, and those keys sealed anew and signed (0.9.3).
   app.get<{ Params: RoomParams }>(`${API.keys}/:room/sealed`, async (request, reply): Promise<SealedEpochsResponse | undefined> => {
     const accountId = await user(request, reply)
@@ -830,8 +872,10 @@ export function createHttpApp(
 
   app.post<{ Params: StoreParams }>(`${API.blobs}/:account/:vaultId/purge`, async (request, reply): Promise<BlobPurgeResponse | undefined> => {
     if (!(await ownStore(request, reply))) return undefined
-    const body = (request.body ?? {}) as Partial<BlobIdsRequest>
-    return blobs.purge(request.params.account, request.params.vaultId, body.ids)
+    const body = (request.body ?? {}) as Partial<BlobIdsRequest> & { replacing?: unknown }
+    // Only the replacement under way may skip the grace a blob just uploaded has.
+    const replacing = body.replacing !== undefined && (await accounts.get(request.params.account))?.replacing?.id === body.replacing
+    return blobs.purge(request.params.account, request.params.vaultId, body.ids, Date.now(), replacing)
   })
 
   app.post<{ Params: StoreParams }>(`${API.blobs}/:account/:vaultId/touch`, async (request, reply): Promise<BlobTouchResponse | undefined> => {
@@ -900,6 +944,14 @@ export function createHttpApp(
     const accountId = await vaultOwner(request, reply)
     if (!accountId) return undefined
     const response: VaultLockResponse = { lock: hub.currentLock(accountId, request.params.vaultId) }
+    return response
+  })
+
+  // The rooms the account owns in the vault, for writing them anew under replaced keys.
+  app.get<{ Params: { vaultId: string } }>(`${API.vaults}/:vaultId/rooms`, async (request, reply) => {
+    const accountId = await vaultOwner(request, reply)
+    if (!accountId) return undefined
+    const response: OwnedRoomsResponse = { rooms: await hub.ownedRooms(accountId, request.params.vaultId) }
     return response
   })
 
