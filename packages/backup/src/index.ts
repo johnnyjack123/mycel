@@ -1,21 +1,21 @@
 // The backup server, as the image runs it, and its operator's commands.
 //
-//   obsidian-connect-backup                     run: register at the sync server, back up on schedule and on request
-//   obsidian-connect-backup invite [label]      a one-time invitation for one person to connect one vault
-//   obsidian-connect-backup status              whether it reaches the sync server, and which invitations it answers
-//   obsidian-connect-backup check               try the way to the sync server's relay from here, now, step by step
-//   obsidian-connect-backup invites             the invitations not used yet
-//   obsidian-connect-backup revoke <id>         withdraw an invitation
-//   obsidian-connect-backup vaults              the vaults connected
-//   obsidian-connect-backup disconnect <vault>  forget a vault: it is backed up no more
+//   mycel-backup                     run: register at the sync server, back up on schedule and on request
+//   mycel-backup invite [label]      a one-time invitation for one person to connect one vault
+//   mycel-backup status              whether it reaches the sync server, and which invitations it answers
+//   mycel-backup check               try the way to the sync server's relay from here, now, step by step
+//   mycel-backup invites             the invitations not used yet
+//   mycel-backup revoke <id>         withdraw an invitation
+//   mycel-backup vaults              the vaults connected
+//   mycel-backup disconnect <vault>  forget a vault: it is backed up no more
 //
 // Settings come from the environment; see docs/BACKUP.md.
 import { rm } from 'node:fs/promises'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isHexId } from '@obsidian-connect/shared'
+import { isHexId } from '@mycel/shared'
 import pkg from '../package.json' with { type: 'json' }
-import { backupRouteKeys } from '@obsidian-connect/shared/crypto'
+import { backupRouteKeys } from '@mycel/shared/crypto'
 import { writable } from './config.js'
 import { Invites } from './invites.js'
 import { log } from './log.js'
@@ -25,17 +25,17 @@ import { listVaults } from './service.js'
 import { STATUS_EVERY_MS, readStatus, type ServerStatus } from './status.js'
 
 const env = process.env
-const dataDir = env.OBSIDIAN_CONNECT_BACKUP_DATA ?? '/data'
+const dataDir = env.MYCEL_BACKUP_DATA ?? '/data'
 
 const USAGE = `usage:
-  obsidian-connect-backup                     run the backup server
-  obsidian-connect-backup invite [label]      a one-time invitation for one person to connect one vault (valid 7 days)
-  obsidian-connect-backup status              whether it reaches the sync server, and which invitations it answers
-  obsidian-connect-backup check               try the way to the sync server's relay from here, now, step by step
-  obsidian-connect-backup invites             the invitations not used yet
-  obsidian-connect-backup revoke <id>         withdraw an invitation
-  obsidian-connect-backup vaults              the vaults connected: whose, which, their folders, the last backup
-  obsidian-connect-backup disconnect <vault>  forget a vault - its repository and decrypted copy stay`
+  mycel-backup                     run the backup server
+  mycel-backup invite [label]      a one-time invitation for one person to connect one vault (valid 7 days)
+  mycel-backup status              whether it reaches the sync server, and which invitations it answers
+  mycel-backup check               try the way to the sync server's relay from here, now, step by step
+  mycel-backup invites             the invitations not used yet
+  mycel-backup revoke <id>         withdraw an invitation
+  mycel-backup vaults              the vaults connected: whose, which, their folders, the last backup
+  mycel-backup disconnect <vault>  forget a vault - its repository and decrypted copy stay`
 
 const day = (ms: number): string => new Date(ms).toISOString().slice(0, 16).replace('T', ' ')
 
@@ -58,17 +58,17 @@ function describeStatus(status: ServerStatus | null): string[] {
 const SAME_HOST = [
   'On the same host as the sync server, a container often reaches neither its public address nor its LAN',
   'address. What works:',
-  '  - both compose files in one folder (one compose project, one network): ws://obsidian-connect:1234',
+  '  - both compose files in one folder (one compose project, one network): ws://mycel:1234',
   '  - or "network_mode: host" for the backup server in docker-compose.backup.yml: ws://127.0.0.1:1234',
   'ws://, not wss://, on the sync server\'s own port; wss:// is for an address with TLS in front of it.',
-  'A reverse proxy must pass WebSocket upgrades on /relay. "obsidian-connect-backup check" tries it again.'
+  'A reverse proxy must pass WebSocket upgrades on /relay. "mycel-backup check" tries it again.'
 ]
 
 /** Why an invitation is not answered yet, and what to look at. */
 function diagnose(status: ServerStatus | null): string[] {
   const lines = describeStatus(status)
   if (status && !status.connected && status.error) lines.push(...SAME_HOST)
-  lines.push('obsidian-connect-backup status shows it again; the log has every attempt.')
+  lines.push('mycel-backup status shows it again; the log has every attempt.')
   return lines
 }
 
@@ -81,7 +81,7 @@ async function main(argv: string[]): Promise<number> {
       const { code, invite } = await invites.create(label)
       console.log(`Invitation${label ? ` for ${label}` : ''}, valid until ${day(invite.expiresAt)}, once:`)
       console.log(`  ${code}`)
-      console.log('In Obsidian: Settings -> Obsidian Connect -> Backups -> Connect a backup server, with this invitation.')
+      console.log('In Obsidian: Settings -> Mycel -> Backups -> Connect a backup server, with this invitation.')
       console.log('Whoever enters it connects a vault of theirs to this backup server; pass it on as you would a password.')
       // The running backup server takes it up from the data folder and registers it at the sync server; wait for that.
       const routeId = (await backupRouteKeys(Invites.secretOf(invite))).routeId
@@ -102,8 +102,8 @@ async function main(argv: string[]): Promise<number> {
     }
     case 'check': {
       // From this container, now, whatever the running backup server last saw.
-      const server = env.OBSIDIAN_CONNECT_SERVER?.trim() ?? ''
-      console.log(`backup server ${pkg.version}, sync server: ${server || '(OBSIDIAN_CONNECT_SERVER is not set)'}`)
+      const server = env.MYCEL_SERVER?.trim() ?? ''
+      console.log(`backup server ${pkg.version}, sync server: ${server || '(MYCEL_SERVER is not set)'}`)
       if (!server) return 1
       const checked = await checkRelay(server)
       for (const line of checked.lines) console.log(`  ${line}`)
@@ -154,7 +154,7 @@ async function main(argv: string[]): Promise<number> {
     case 'disconnect': {
       const vaultId = rest[0] ?? ''
       if (!isHexId(vaultId)) {
-        console.error('usage: obsidian-connect-backup disconnect <vaultId>   (see: obsidian-connect-backup vaults)')
+        console.error('usage: mycel-backup disconnect <vaultId>   (see: mycel-backup vaults)')
         return 1
       }
       // The running backup server notices its folder gone within seconds.
@@ -170,13 +170,13 @@ async function main(argv: string[]): Promise<number> {
       return command === 'help' || command === '--help' ? 0 : 1
   }
 
-  const server = env.OBSIDIAN_CONNECT_SERVER?.trim()
+  const server = env.MYCEL_SERVER?.trim()
   if (!server) {
-    console.error('OBSIDIAN_CONNECT_SERVER is not set: the sync server, e.g. wss://sync.example.com')
+    console.error('MYCEL_SERVER is not set: the sync server, e.g. wss://sync.example.com')
     return 1
   }
   if (!/^(wss?|https?):\/\/[^/\s]+/i.test(server)) {
-    console.error(`OBSIDIAN_CONNECT_SERVER is "${server}": give it with its scheme, e.g. wss://sync.example.com or ws://192.168.1.10:1234`)
+    console.error(`MYCEL_SERVER is "${server}": give it with its scheme, e.g. wss://sync.example.com or ws://192.168.1.10:1234`)
     return 1
   }
   // The image's entrypoint hands the folder over; started as another user, nobody did.
@@ -187,8 +187,8 @@ async function main(argv: string[]): Promise<number> {
     )
     return 1
   }
-  const encryptedRoot = env.OBSIDIAN_CONNECT_BACKUP_ENCRYPTED ?? '/encrypted'
-  const decryptedRoot = env.OBSIDIAN_CONNECT_BACKUP_DECRYPTED ?? '/decrypted'
+  const encryptedRoot = env.MYCEL_BACKUP_ENCRYPTED ?? '/encrypted'
+  const decryptedRoot = env.MYCEL_BACKUP_DECRYPTED ?? '/decrypted'
   // Not fatal: a vault backing up to a cloud needs neither, and a device setting up a task hears the same.
   for (const [folder, what] of [
     [encryptedRoot, 'repositories on this backup server'],
@@ -202,14 +202,14 @@ async function main(argv: string[]): Promise<number> {
     dataDir,
     encryptedRoot,
     decryptedRoot,
-    workDir: env.OBSIDIAN_CONNECT_BACKUP_WORK ?? (process.platform === 'linux' ? '/run/obsidian-connect-backup' : join(tmpdir(), 'obsidian-connect-backup')),
-    resticBinary: env.OBSIDIAN_CONNECT_RESTIC ?? 'restic',
-    name: env.OBSIDIAN_CONNECT_BACKUP_NAME ?? hostname(),
+    workDir: env.MYCEL_BACKUP_WORK ?? (process.platform === 'linux' ? '/run/mycel-backup' : join(tmpdir(), 'mycel-backup')),
+    resticBinary: env.MYCEL_RESTIC ?? 'restic',
+    name: env.MYCEL_BACKUP_NAME ?? hostname(),
     version: pkg.version
   })
   const vaults = running.service.pairings().length
   log.info(`backup server ${pkg.version} for ${server}, ${vaults} vault(s) connected`)
-  if (vaults === 0) log.info('to connect a vault, make an invitation: obsidian-connect-backup invite <name>')
+  if (vaults === 0) log.info('to connect a vault, make an invitation: mycel-backup invite <name>')
   await new Promise<void>((resolve) => {
     for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => resolve())
   })

@@ -25,8 +25,8 @@ import {
   type ShareNotice,
   type VaultLockInfo,
   type VaultLockNotice
-} from '@obsidian-connect/shared'
-import { bytes, randomBytes, toHex } from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared'
+import { bytes, randomBytes, toHex } from '@mycel/shared/crypto'
 import { ConnectApi, type HttpClient } from './account/api'
 import { judgePassword } from './account/password'
 import { probeServer, type ServerProbe } from './account/probe'
@@ -83,7 +83,7 @@ import { ReviewListModal, ReviewModal } from './history/ReviewModal'
 import { VaultIndex } from './sync/VaultIndex'
 import { VaultSocket, type SocketStatus } from './sync/VaultSocket'
 import { LockSeal, inLockScope, lockNonce, takeVaultLock, type LockPurpose, type LockScope } from './sync/VaultLock'
-import { ObsidianConnectSettingTab, DEFAULT_SETTINGS, MOBILE_DOWNLOAD_LIMIT_MB, type ObsidianConnectSettings } from './settings'
+import { MycelSettingTab, DEFAULT_SETTINGS, MOBILE_DOWNLOAD_LIMIT_MB, type MycelSettings } from './settings'
 import { log, withSummary } from './log'
 
 // Settings of earlier versions that moved to the account, and are handed over
@@ -148,7 +148,7 @@ const SYNC_STATUS: Record<SyncState, { label: string; note?: string; file?: stri
 
 // Obsidian's menus have no headings; this section, under a label naming the
 // plugin, keeps its items together and says where they come from.
-const MENU_SECTION = 'obsidian-connect'
+const MENU_SECTION = 'mycel'
 
 interface MenuAction {
   title: string
@@ -186,8 +186,8 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
-export default class ObsidianConnectPlugin extends Plugin {
-  settings: ObsidianConnectSettings = { ...DEFAULT_SETTINGS }
+export default class MycelPlugin extends Plugin {
+  settings: MycelSettings = { ...DEFAULT_SETTINGS }
 
   private readonly secrets: SecretStore = {
     load: (key) => {
@@ -293,7 +293,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   private history: HistoryStore | null = null
   private recovery: Recovery | null = null
   private movedSettings: Partial<SharedSettings> | null = null
-  private settingTab: ObsidianConnectSettingTab | null = null
+  private settingTab: MycelSettingTab | null = null
   private statusBar!: HTMLElement
   private noteStatus!: HTMLElement
   private shareStatus!: HTMLElement
@@ -329,10 +329,10 @@ export default class ObsidianConnectPlugin extends Plugin {
 
     this.statusBar = this.addStatusBarItem()
     this.noteStatus = this.addStatusBarItem()
-    this.noteStatus.addClass('connect-note-status')
+    this.noteStatus.addClass('mycel-note-status')
     this.noteStatus.addEventListener('click', (event) => this.openConnectMenu(event))
     this.shareStatus = this.addStatusBarItem()
-    this.shareStatus.addClass('connect-share-status')
+    this.shareStatus.addClass('mycel-share-status')
     this.shareStatus.addEventListener('click', () => this.openAccess())
     this.register(this.timeMachine.onChange(() => this.renderStatus()))
     this.register(() => this.unmarkReadOnlyViews())
@@ -369,7 +369,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         if (info.file) this.noteMenu(menu, info.file)
       })
     )
-    this.settingTab = new ObsidianConnectSettingTab(this.app, this)
+    this.settingTab = new MycelSettingTab(this.app, this)
     this.addSettingTab(this.settingTab)
     this.register(this.backupServers.onChange(() => this.settingTab?.refresh()))
     // Obsidian adds this to every Markdown editor and keeps it there across
@@ -421,9 +421,9 @@ export default class ObsidianConnectPlugin extends Plugin {
     )
     this.addNotificationsRibbon()
 
-    this.addRibbonIcon('refresh-cw', 'Obsidian Connect status', () => this.showStatus())
+    this.addRibbonIcon('refresh-cw', 'Mycel status', () => this.showStatus())
     this.addCommand({ id: 'show-status', name: 'Show sync status', callback: () => this.showStatus() })
-    this.addCommand({ id: 'notifications', name: 'Open Connect: notifications and rollbacks', callback: () => void this.openNotifications() })
+    this.addCommand({ id: 'notifications', name: 'Open notifications and rollbacks', callback: () => void this.openNotifications() })
     this.addCommand({
       id: 'time-machine-note',
       name: 'Open the Time Machine for this note',
@@ -566,21 +566,21 @@ export default class ObsidianConnectPlugin extends Plugin {
 
   /** Everything still only on the server, whatever this device's limit. */
   async downloadAllAttachments(): Promise<number> {
-    if (!this.attachments?.isReady) throw new Error('Obsidian Connect is not connected yet.')
+    if (!this.attachments?.isReady) throw new Error('Mycel is not connected yet.')
     return this.attachments.fetchAll()
   }
 
   /** The recent log, onto the clipboard - for a bug report. */
   async copyLog(): Promise<void> {
-    const header = `Obsidian Connect ${this.manifest.version}${Platform.isMobile ? ' on mobile' : ''}, log of today and yesterday (UTC)`
+    const header = `Mycel ${this.manifest.version}${Platform.isMobile ? ' on mobile' : ''}, log of today and yesterday (UTC)`
     await navigator.clipboard.writeText(withSummary(await log.recent(), header))
-    new Notice('Obsidian Connect: the log of today and yesterday is on the clipboard.')
+    new Notice('Mycel: the log of today and yesterday is on the clipboard.')
   }
 
   private async loadSettings(): Promise<void> {
     const stored = ((await this.loadData()) ?? {}) as Record<string, unknown>
     const settings = { ...DEFAULT_SETTINGS }
-    for (const key of Object.keys(DEFAULT_SETTINGS) as Array<keyof ObsidianConnectSettings>) {
+    for (const key of Object.keys(DEFAULT_SETTINGS) as Array<keyof MycelSettings>) {
       const value = stored[key]
       if (typeof value === typeof DEFAULT_SETTINGS[key]) (settings as Record<string, unknown>)[key] = value
     }
@@ -658,7 +658,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     if (!username || !password) throw new Error('Enter your name and password.')
     await this.stopSync()
     await this.session.login(username, password, (again) => askTotpCode(this.app, again))
-    new Notice(`Obsidian Connect: signed in as ${this.settings.username}.`)
+    new Notice(`Mycel: signed in as ${this.settings.username}.`)
     await this.startSync()
   }
 
@@ -681,7 +681,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     if (password !== repeat) throw new Error('The passwords differ.')
     await this.stopSync()
     const { recoveryCode } = await this.session.register(username, password, invite)
-    new Notice(`Obsidian Connect: account ${this.settings.username} created. Keep the password safe.`, 8_000)
+    new Notice(`Mycel: account ${this.settings.username} created. Keep the password safe.`, 8_000)
     new RecoveryCodeModal(
       this.app,
       recoveryCode,
@@ -706,7 +706,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     // Already, not only once sync started: the offer below may come first.
     this.unlocked = unlocked
     const withCode = unlocked.bundle.totp ? ' and a code from your authenticator app, as before' : ''
-    new Notice(`Obsidian Connect: account recovered, signed in as ${this.settings.username}. Your other devices sign in again with the new password${withCode}.`, 12_000)
+    new Notice(`Mycel: account recovered, signed in as ${this.settings.username}. Your other devices sign in again with the new password${withCode}.`, 12_000)
     // The recovery turned two-factor sign-in off - the phone was lost, or
     // its entry. Offered again once the new code is written down.
     const offerTotp = totpWasOn
@@ -781,7 +781,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         if (!this.unlocked) throw new Error('Sign in first.')
         this.unlocked = await this.session.disableTotp(this.unlocked, password)
         this.settingTab?.refresh()
-        new Notice('Obsidian Connect: two-factor sign-in is off.')
+        new Notice('Mycel: two-factor sign-in is off.')
       },
       true
     ).open()
@@ -823,7 +823,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         if (!this.unlocked) throw new Error('Sign in first.')
         this.unlocked = await this.session.deleteRecoveryCode(this.unlocked, password)
         this.settingTab?.refresh()
-        new Notice('Obsidian Connect: the recovery code is deleted.')
+        new Notice('Mycel: the recovery code is deleted.')
       },
       true
     ).open()
@@ -836,7 +836,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     await this.session.signOut()
     this.unlocked = null
     this.renderStatus()
-    new Notice('Obsidian Connect: signed out. Your notes stay in this vault.')
+    new Notice('Mycel: signed out. Your notes stay in this vault.')
   }
 
   /**
@@ -858,7 +858,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.renderStatus()
     this.settingTab?.refresh()
     new Notice(
-      'Obsidian Connect: this device was signed out - on another device the password was changed, the account recovered or two-factor sign-in turned on. Sign in again in the plugin settings.',
+      'Mycel: this device was signed out - on another device the password was changed, the account recovered or two-factor sign-in turned on. Sign in again in the plugin settings.',
       0
     )
   }
@@ -921,17 +921,17 @@ export default class ObsidianConnectPlugin extends Plugin {
    * not done; it goes on with the next start.
    */
   private async carryOnReplacement(unlocked: Unlocked): Promise<Unlocked | null> {
-    const notice = new Notice('Obsidian Connect: writing your vaults anew under the new keys…', 0)
+    const notice = new Notice('Mycel: writing your vaults anew under the new keys…', 0)
     try {
       const vaults = await this.session.allVaults(unlocked)
       await new KeyReplacement(this.api, unlocked, vaults, {
         device: Platform.isMobile ? 'a phone or tablet' : 'a computer',
-        progress: ({ vault, what, done, of }) => notice.setMessage(`Obsidian Connect: writing "${vault}" anew under the new keys - ${what} ${done} of ${of}`)
+        progress: ({ vault, what, done, of }) => notice.setMessage(`Mycel: writing "${vault}" anew under the new keys - ${what} ${done} of ${of}`)
       }).run()
       const finished = await this.session.finishReplacement(unlocked)
       notice.hide()
       new Notice(
-        'Obsidian Connect: every vault is written anew under your new keys. Give each contact a new friend code - until they redeemed it, what you share waits - and invite your backup servers again.',
+        'Mycel: every vault is written anew under your new keys. Give each contact a new friend code - until they redeemed it, what you share waits - and invite your backup servers again.',
         0
       )
       return finished
@@ -939,7 +939,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       notice.hide()
       log.error('writing the vaults anew under the new keys failed', error)
       const why = error instanceof KeyReplacementError ? error.message : `It goes on with the next start. (${error instanceof Error ? error.message : String(error)})`
-      new Notice(`Obsidian Connect: your vaults are not written anew under the new keys yet; nothing syncs until they are. ${why}`, 0)
+      new Notice(`Mycel: your vaults are not written anew under the new keys yet; nothing syncs until they are. ${why}`, 0)
       return null
     }
   }
@@ -954,7 +954,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       await sharing.renewFor(account)
       await folders.renewFor(account)
       contacts.renewed(account)
-      new Notice(`Obsidian Connect: what you share with ${contacts.name(account)} is sealed to their new keys.`)
+      new Notice(`Mycel: what you share with ${contacts.name(account)} is sealed to their new keys.`)
     } catch (error) {
       log.warn(`sealing the shares with ${account.slice(0, 8)} anew failed; tried again at the next start`, error)
     }
@@ -970,7 +970,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   /** `again`: one paired before whose key ended; it gets a new one with the password. */
   openBackupConnect(again: { routeId: string; label: string } | null = null): void {
     if (!this.backupsOf()) {
-      new Notice('Obsidian Connect: backups are set up while this vault syncs.')
+      new Notice('Mycel: backups are set up while this vault syncs.')
       return
     }
     new BackupConnectModal(
@@ -980,7 +980,7 @@ export default class ObsidianConnectPlugin extends Plugin {
         this.settingTab?.refresh()
         // A backup server backs up nothing before it has a task: that comes next, unless it carried one over.
         if (connected && !this.accountSettings?.backupTask(connected.routeId)) void this.openBackupTask(connected.routeId)
-        else if (connected) new Notice(`Obsidian Connect: ${connected.label} is connected and backs up as before.`, 8_000)
+        else if (connected) new Notice(`Mycel: ${connected.label} is connected and backs up as before.`, 8_000)
       },
       again
     ).open()
@@ -996,15 +996,15 @@ export default class ObsidianConnectPlugin extends Plugin {
   private async backUpNow(): Promise<void> {
     const servers = this.backupsOf()?.servers() ?? []
     if (servers.length === 0) {
-      new Notice('Obsidian Connect: this vault has no backup server. Connect one in the settings.')
+      new Notice('Mycel: this vault has no backup server. Connect one in the settings.')
       return
     }
     for (const server of servers) {
       try {
         await this.backupServers.runNow(server.routeId)
-        new Notice(`Obsidian Connect: ${server.label} is backing up the vault.`)
+        new Notice(`Mycel: ${server.label} is backing up the vault.`)
       } catch (error) {
-        new Notice(`Obsidian Connect: ${server.label} - ${error instanceof Error ? error.message : String(error)}`, 10_000)
+        new Notice(`Mycel: ${server.label} - ${error instanceof Error ? error.message : String(error)}`, 10_000)
       }
     }
   }
@@ -1019,8 +1019,8 @@ export default class ObsidianConnectPlugin extends Plugin {
     // The server ended the sessions opened with the old token; new ones carry the new.
     this.backupServers.closeSessions()
     const done = await this.backupServers.reconnectAll(password)
-    if (done === servers.length) new Notice(`Obsidian Connect: your backup server(s) got new keys and back up as before.`)
-    else new Notice(`Obsidian Connect: ${servers.length - done} backup server(s) could not be reached and need connecting again - see the settings.`, 0)
+    if (done === servers.length) new Notice(`Mycel: your backup server(s) got new keys and back up as before.`)
+    else new Notice(`Mycel: ${servers.length - done} backup server(s) could not be reached and need connecting again - see the settings.`, 0)
   }
 
   /**
@@ -1050,7 +1050,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       const problems = await backups.problems()
       if (problems.length === 0) return
       const held = backups.servers().filter((server) => backups.heldCopy(server.routeId))
-      const notice = new Notice(`Obsidian Connect - backups:\n${problems.join('\n')}${held.length > 0 ? '\nClick here to decide what the decrypted copy does.' : ''}`, 0)
+      const notice = new Notice(`Mycel - backups:\n${problems.join('\n')}${held.length > 0 ? '\nClick here to decide what the decrypted copy does.' : ''}`, 0)
       if (held.length > 0) {
         notice.noticeEl.addEventListener('click', () => {
           for (const server of held) if (this.openCopyWaits(server.routeId, true)) break
@@ -1089,7 +1089,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     if (stopped()) return
     if (!unlocked) {
       if (this.settings.username) {
-        new Notice('Obsidian Connect: sign in again in the plugin settings.', 10_000)
+        new Notice('Mycel: sign in again in the plugin settings.', 10_000)
         await this.storeToken(null, null)
       }
       this.renderStatus()
@@ -1112,7 +1112,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     } catch (error) {
       if (stopped()) return
       log.error('opening the vault failed', error)
-      new Notice(`Obsidian Connect could not open the vault "${this.vaultName()}". Is the server reachable?`, 10_000)
+      new Notice(`Mycel could not open the vault "${this.vaultName()}". Is the server reachable?`, 10_000)
       return
     }
     if (stopped()) return
@@ -1148,7 +1148,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     this.accountSettings = accountSettings
     this.frozenSettings?.destroy()
     this.frozenSettings = null
-    const settingsStore = openIndexedDb(`obsidian-connect/${vault.vaultId}/set`, accountSettings.doc)
+    const settingsStore = openIndexedDb(`mycel/${vault.vaultId}/set`, accountSettings.doc)
     this.settingsStore = settingsStore
     await settingsStore.whenSynced
     if (stopped()) return
@@ -1341,7 +1341,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       this.started = started
       if (!this.started) {
         new Notice(
-          `Obsidian Connect: no answer from ${this.settings.serverUrl}. Nothing is synced until it responds.`,
+          `Mycel: no answer from ${this.settings.serverUrl}. Nothing is synced until it responds.`,
           8_000
         )
         // A slow index is not a dead server; start the moment it arrives.
@@ -1384,7 +1384,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       }
     } catch (error) {
       log.error('starting sync failed', error)
-      new Notice('Obsidian Connect could not start; see the console.')
+      new Notice('Mycel could not start; see the console.')
     } finally {
       if (this.store === store) this.starting = false
     }
@@ -1440,7 +1440,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   /** Everything deleted - or only what was deleted in `folder`. */
   openTrash(folder: string | null = null): void {
     if (!this.trash || !this.store?.ready) {
-      new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
+      new Notice(this.settings.username ? 'Mycel is not connected yet.' : 'Sign in to Mycel first.')
       return
     }
     new TrashModal(this.app, this.trash, this.shared().historyRetentionDays, folder).open()
@@ -1452,7 +1452,7 @@ export default class ObsidianConnectPlugin extends Plugin {
    */
   async openTimeMachine(scope: TimeMachineScope): Promise<void> {
     if (!this.timeMachine.current && !this.prepareTimeMachine(false)) {
-      new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
+      new Notice(this.settings.username ? 'Mycel is not connected yet.' : 'Sign in to Mycel first.')
       return
     }
     await this.timeMachine.open(scope)
@@ -1582,7 +1582,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   private applyAt(folder: string, at: number, held: HandedLock): void {
     const { store, keys, accountSettings } = this
     if (!store || !keys || !accountSettings) {
-      new Notice('Obsidian Connect is not connected yet.')
+      new Notice('Mycel is not connected yet.')
       void held.release()
       return
     }
@@ -1793,7 +1793,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   /** What a delete for everyone in a shared folder took, back for everyone - its notice's *Undo*, also from the notification center. */
   private async undoFolderDelete(batch: DeletedBatch): Promise<void> {
     const folders = this.folders
-    if (!folders) throw new Error('Obsidian Connect is not syncing.')
+    if (!folders) throw new Error('Mycel is not syncing.')
     try {
       await folders.undoDeleted(batch)
       new Notice(`${batch.names.length === 1 ? `"${batch.names[0]}" is` : 'They are'} back, for everyone.`)
@@ -1806,9 +1806,9 @@ export default class ObsidianConnectPlugin extends Plugin {
   // --- the notification center ------------------------------------------------------------
 
   private addNotificationsRibbon(): void {
-    const ribbon = this.addRibbonIcon('bell', 'Connect: notifications and rollbacks', () => void this.openNotifications())
-    ribbon.addClass('connect-notices-ribbon')
-    this.noticeBadge = ribbon.createSpan({ cls: 'connect-notices-badge' })
+    const ribbon = this.addRibbonIcon('bell', 'Mycel: notifications and rollbacks', () => void this.openNotifications())
+    ribbon.addClass('mycel-notices-ribbon')
+    this.noticeBadge = ribbon.createSpan({ cls: 'mycel-notices-badge' })
     const update = (): void => {
       const unseen = notices.unseen()
       this.noticeBadge?.setText(unseen > 99 ? '99+' : String(unseen))
@@ -1832,7 +1832,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     const active = this.app.workspace.getActiveFile()
     const target = file ?? (active instanceof TFile ? active : null)
     if (!this.attachments?.isReady) {
-      new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
+      new Notice(this.settings.username ? 'Mycel is not connected yet.' : 'Sign in to Mycel first.')
       return
     }
     if (!target || target.extension === 'md') {
@@ -2003,7 +2003,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       place.kind === 'note'
         ? (this.store?.entry(place.docId)?.path ?? place.docId)
         : (this.index?.folder(place.folderId)?.path ?? place.folderId)
-    new Notice(`Obsidian Connect: "${where}" could not move to a new key - the server lists someone in it who is not one of your contacts, and nothing was sealed for them.`, 10_000)
+    new Notice(`Mycel: "${where}" could not move to a new key - the server lists someone in it who is not one of your contacts, and nothing was sealed for them.`, 10_000)
     new UnknownMembersModal(this.app, {
       where,
       kind: place.kind,
@@ -2091,7 +2091,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   /** A note and its id - the active one unless given - or a notice saying why there is none. */
   private activeNote(file: TFile | null = this.activeFile()): { file: TFile; docId: string } | null {
     if (!this.store?.ready) {
-      new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
+      new Notice(this.settings.username ? 'Mycel is not connected yet.' : 'Sign in to Mycel first.')
       return null
     }
     if (!file) {
@@ -2237,7 +2237,7 @@ export default class ObsidianConnectPlugin extends Plugin {
 
   private openShareFolder(path: string): void {
     if (!this.folders || !this.sharing || !this.store?.ready) {
-      new Notice(this.settings.username ? 'Obsidian Connect is not connected yet.' : 'Sign in to Obsidian Connect first.')
+      new Notice(this.settings.username ? 'Mycel is not connected yet.' : 'Sign in to Mycel first.')
       return
     }
     const sharing = this.sharing
@@ -2271,7 +2271,7 @@ export default class ObsidianConnectPlugin extends Plugin {
   private async openReviews(): Promise<void> {
     const reviews = this.reviews
     if (!reviews) {
-      new Notice('Sign in to Obsidian Connect first.')
+      new Notice('Sign in to Mycel first.')
       return
     }
     new ReviewListModal(this.app, await reviews.list(), (review) => this.showReview(review)).open()
@@ -2295,7 +2295,7 @@ export default class ObsidianConnectPlugin extends Plugin {
 
   private openIncoming(): void {
     if (!this.sharing || !this.store?.ready) {
-      new Notice('Sign in to Obsidian Connect first.')
+      new Notice('Sign in to Mycel first.')
       return
     }
     new IncomingModal(this.app, this.sharing, this.vault?.name ?? this.vaultName(), this.folders).open()
@@ -2329,7 +2329,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       const account = (payload as ContactNotice).account
       if (this.contacts?.markReplaced(account)) {
         new Notice(
-          `Obsidian Connect: ${this.contacts.name(account)} replaced all their keys. What you share with each other waits until you exchange a new friend code with them.`,
+          `Mycel: ${this.contacts.name(account)} replaced all their keys. What you share with each other waits until you exchange a new friend code with them.`,
           0
         )
         this.settingTab?.refresh()
@@ -2364,7 +2364,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     try {
       const added = (await this.contacts?.processInbox()) ?? 0
       if (added > 0) {
-        new Notice(`Obsidian Connect: ${added} contact(s) added.`)
+        new Notice(`Mycel: ${added} contact(s) added.`)
         this.settingTab?.refresh()
       }
     } catch (error) {
@@ -2433,11 +2433,11 @@ export default class ObsidianConnectPlugin extends Plugin {
 
   private renderStatus(): void {
     if (this.timeMachine.current) {
-      this.statusBar.setText('Connect: Time Machine - sync stopped')
+      this.statusBar.setText('Mycel: Time Machine - sync stopped')
       return
     }
     if (!this.store) {
-      this.statusBar.setText(this.settings.username ? '' : 'Connect: signed out')
+      this.statusBar.setText(this.settings.username ? '' : 'Mycel: signed out')
       return
     }
     // Receiving goes on under another device's lock; sending waits (0.8.16: it said "synced").
@@ -2447,7 +2447,7 @@ export default class ObsidianConnectPlugin extends Plugin {
     const moving = [transfers?.uploads ? `↑${transfers.uploads}` : '', transfers?.downloads ? `↓${transfers.downloads}` : '']
       .filter(Boolean)
       .join(' ')
-    this.statusBar.setText(`Connect: ${label} · ${this.store.loadedCount()}/${this.store.trackedCount()}${moving ? ` · ${moving}` : ''}`)
+    this.statusBar.setText(`Mycel: ${label} ·${this.store.loadedCount()}/${this.store.trackedCount()}${moving ? ` · ${moving}` : ''}`)
   }
 
   /** The note or file in front of you and where it stands; null when it is not synced at all. */
@@ -2533,7 +2533,7 @@ export default class ObsidianConnectPlugin extends Plugin {
       const share = view.file ? this.shareState(view.file) : null
       const locked = view.file ? this.editLocks.lockOf(view.file.path) : null
       // Framed as well, in reading view too - the editor's bar is the editor's only (0.8.16).
-      view.containerEl.toggleClass('connect-locked-view', Boolean(view.file && this.lockBanner(view.file.path)))
+      view.containerEl.toggleClass('mycel-locked-view', Boolean(view.file && this.lockBanner(view.file.path)))
       const text = locked?.why ?? (share?.readOnly ? share.text : null)
       const mark = this.readOnlyMarks.get(view)
       if (mark?.text === text) return
@@ -2553,15 +2553,15 @@ export default class ObsidianConnectPlugin extends Plugin {
   private unmarkReadOnlyViews(): void {
     for (const mark of this.readOnlyMarks.values()) mark.el.remove()
     this.readOnlyMarks.clear()
-    this.app.workspace.containerEl.doc.querySelectorAll('.connect-locked-view').forEach((el) => el.removeClass('connect-locked-view'))
+    this.app.workspace.containerEl.doc.querySelectorAll('.mycel-locked-view').forEach((el) => el.removeClass('mycel-locked-view'))
   }
 
   private showStatus(): void {
     if (!this.store) {
       new Notice(
         this.settings.username
-          ? 'Obsidian Connect is not syncing. Enable it in the plugin settings.'
-          : 'Obsidian Connect: sign in in the plugin settings.'
+          ? 'Mycel is not syncing. Enable it in the plugin settings.'
+          : 'Mycel: sign in in the plugin settings.'
       )
       return
     }
@@ -2588,7 +2588,7 @@ export default class ObsidianConnectPlugin extends Plugin {
 
   private openBackups(): void {
     if (!this.backups) {
-      new Notice('Obsidian Connect is off.')
+      new Notice('Mycel is off.')
       return
     }
     new BackupModal(this.app, this.backups).open()

@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { FOLDER_FILES_FIELD, FOLDER_META_FIELD, FOLDER_NOTES_FIELD, type FolderFile, type FolderNote } from '@obsidian-connect/shared'
+import { FOLDER_FILES_FIELD, FOLDER_META_FIELD, FOLDER_NOTES_FIELD, type FolderFile, type FolderNote } from '@mycel/shared'
 
 // A shared folder's own document: which notes and files are in it and where,
 // relative to the folder - the same for everyone in it, wherever each of them

@@ -34,9 +34,9 @@ const server = await startServer(
   loadConfig({
     HOST: '127.0.0.1',
     PORT: '0',
-    OBSIDIAN_CONNECT_DATA_DIR: join(root, 'server'),
-    OBSIDIAN_CONNECT_REGISTRATION: 'open',
-    OBSIDIAN_CONNECT_JWT_SECRET: 'timemachine-selftest'
+    MYCEL_DATA_DIR: join(root, 'server'),
+    MYCEL_REGISTRATION: 'open',
+    MYCEL_JWT_SECRET: 'timemachine-selftest'
   }),
   { logger: false, paceMs: 0 }
 )
@@ -247,19 +247,19 @@ try {
       })
     })
     check(
-      await eventually(() => view.state.readOnly && parent.querySelector('.connect-lock-banner-text')?.textContent === banner?.text),
+      await eventually(() => view.state.readOnly && parent.querySelector('.mycel-lock-banner-text')?.textContent === banner?.text),
       'a locked note shows why at the top of its editor',
       parent.innerHTML.slice(0, 400)
     )
-    const panel = parent.querySelector('.connect-lock-banner')
+    const panel = parent.querySelector('.mycel-lock-banner')
     view.dispatch({ changes: { from: view.state.doc.length, insert: 'arrived from elsewhere\n' } })
-    check(parent.querySelector('.connect-lock-banner') === panel, 'and keeps that bar while the note changes under it, rather than drawing it again')
-    parent.querySelector<HTMLButtonElement>('.connect-lock-banner button')?.click()
+    check(parent.querySelector('.mycel-lock-banner') === panel, 'and keeps that bar while the note changes under it, rather than drawing it again')
+    parent.querySelector<HTMLButtonElement>('.mycel-lock-banner button')?.click()
     check(unlocked === 1, 'its Unlock… opens the window that lifts the lock')
     banner = null
     for (const listener of listeners) listener()
     check(
-      await eventually(() => !view.state.readOnly && parent.querySelector('.connect-lock-banner') === null),
+      await eventually(() => !view.state.readOnly && parent.querySelector('.mycel-lock-banner') === null),
       'once the lock ends, the bar goes and the note can be edited again'
     )
     view.destroy()
@@ -429,7 +429,7 @@ try {
       })
     })
     check(
-      await eventually(() => view.state.readOnly && parent.querySelector('.connect-tm-now-lines')?.textContent === 'hello, changed' && parent.querySelector('.connect-tm-then-line') !== null),
+      await eventually(() => view.state.readOnly && parent.querySelector('.mycel-tm-now-lines')?.textContent === 'hello, changed' && parent.querySelector('.mycel-tm-then-line') !== null),
       'its editor is read-only and marks what it said then and what it says now',
       parent.innerHTML
     )

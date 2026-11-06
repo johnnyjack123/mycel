@@ -7,7 +7,7 @@ import {
   VERSIONS_FIELD,
   type AttachmentEntry,
   type AttachmentVersion
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 
 /** The content a file of a shared note had when this vault last agreed with the note's list, and where. */
 export interface SharedBase {

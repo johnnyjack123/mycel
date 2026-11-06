@@ -1,4 +1,4 @@
-import { docRoom, folderRoom, indexRoom, settingsRoom, tiesAscend, type FolderTie, type KeysResponse } from '@obsidian-connect/shared'
+import { docRoom, folderRoom, indexRoom, settingsRoom, tiesAscend, type FolderTie, type KeysResponse } from '@mycel/shared'
 import {
   aesKey,
   blobIdFor,
@@ -25,14 +25,14 @@ import {
   type Bytes,
   type OpenedFrame,
   type WriterCert
-} from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared/crypto'
 import type { FrameVerdict, RoomCrypto } from '../sync/VaultSocket.js'
 import type { ConnectApi } from './api.js'
 import type { OpenVault, SecretStore, Unlocked } from './Session.js'
 import { log } from '../log.js'
 
-const SEALED_PREFIX = 'obsidian-connect:sealed:'
-const TIES_PREFIX = 'obsidian-connect:ties:'
+const SEALED_PREFIX = 'mycel:sealed:'
+const TIES_PREFIX = 'mycel:ties:'
 
 /**
  * Which of a note's epochs it spent in a shared folder, and with which folder

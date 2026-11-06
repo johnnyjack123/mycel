@@ -1,4 +1,4 @@
-import { roomKind, roomSubject } from '@obsidian-connect/shared'
+import { roomKind, roomSubject } from '@mycel/shared'
 import type { AccountSettings, RecoveryDecision } from './AccountSettings.js'
 import type { DocStore } from './DocStore.js'
 import type { VaultSocket } from './VaultSocket.js'

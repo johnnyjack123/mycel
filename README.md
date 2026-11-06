@@ -1,4 +1,4 @@
-# Obsidian Connect for Obsidian
+# Mycel for Obsidian
 
 End-to-end encrypted, CRDT-based (Yjs) vault synchronization and live
 collaboration.
@@ -21,17 +21,17 @@ running a backup server and `docs/CHANGELOG.md` for what each version changed.
 
 ## Run the server
 
-CI publishes the server image as `ghcr.io/johnnyjack123/obsidian-connect-server` on
+CI publishes the server image as `ghcr.io/johnnyjack123/mycel-server` on
 every push to `main`. On the server, next to `docker-compose.yml`:
 
 ```bash
-cp server.env .env           # from docs/; set OBSIDIAN_CONNECT_JWT_SECRET
+cp server.env .env           # from docs/; set MYCEL_JWT_SECRET
 docker compose up -d
-docker compose exec obsidian-connect obsidian-connect invite
+docker compose exec mycel mycel invite
 ```
 
 `invite` prints a code that lets one person create one account. With
-`OBSIDIAN_CONNECT_REGISTRATION=open` in `.env`, people can create accounts
+`MYCEL_REGISTRATION=open` in `.env`, people can create accounts
 themselves instead. Everything else — the other account commands, what the
 server can and cannot see — is in `docs/SERVER.md`.
 
@@ -44,13 +44,13 @@ npm run cli -- invite         # in a second terminal: a code for one new account
 ```
 
 The running server accepts the code at once. Server and CLI keep their data in
-`packages/server/data` - set `OBSIDIAN_CONNECT_DATA_DIR` for both, or neither.
+`packages/server/data` - set `MYCEL_DATA_DIR` for both, or neither.
 The other account commands work the same way: `npm run cli -- user list`,
 `npm run cli -- user remove <accountId>`.
 
 ## Back up a vault
 
-A backup server of your own (`ghcr.io/johnnyjack123/obsidian-connect-backup`, next
+A backup server of your own (`ghcr.io/johnnyjack123/mycel-backup`, next
 to `docker-compose.backup.yml`) pulls a vault, decrypts it in its memory and keeps
 it in a restic repository - on the backup server or in a cloud -, every backup for as
 long as you choose, and optionally a decrypted copy of the newest version. It reads and never
@@ -68,11 +68,11 @@ npm run build:plugin
 Output is `packages/plugin/main.js`. Copy the plugin folder into your vault:
 
 ```
-<vault>/.obsidian/plugins/obsidian-connect/
+<vault>/.obsidian/plugins/mycel/
 ```
 
 Required files: `manifest.json`, `main.js`, `styles.css` (add `versions.json` for
-release). Then enable **Obsidian Connect** in Obsidian's community plugins settings.
+release). Then enable **Mycel** in Obsidian's community plugins settings.
 
 For development with rebuild-on-save:
 
@@ -86,10 +86,10 @@ npm run dev:plugin
 
 - Every push to `main` refreshes the **`latest-build`** pre-release with two zips
   plus the loose `main.js`, `manifest.json` and `styles.css`:
-  - `obsidian-connect-<version>.zip` contains the plugin folder — unzip it into
+  - `mycel-<version>.zip` contains the plugin folder — unzip it into
     `<vault>/.obsidian/plugins/` for a **first install**.
-  - `obsidian-connect-<version>-update.zip` contains the three files at the root
-    — unzip it straight into `<vault>/.obsidian/plugins/obsidian-connect/` and
+  - `mycel-<version>-update.zip` contains the three files at the root
+    — unzip it straight into `<vault>/.obsidian/plugins/mycel/` and
     overwrite to **update** an existing install. Settings and local state stay.
 - Pushing a tag publishes a normal release with the same assets.
 - Pushes on other branches only upload a build artifact, no release.
@@ -98,7 +98,7 @@ npm run dev:plugin
 
 ## Use it
 
-1. *Settings → Obsidian Connect*: enter the server URL (`ws://…` or `wss://…`).
+1. *Settings → Mycel*: enter the server URL (`ws://…` or `wss://…`).
 2. **Create account** with your name, the invite code and a password — or
    **Sign in** if the account exists. The vault name defaults to the Obsidian
    vault's name.
@@ -138,7 +138,7 @@ Commands: *Show sync status*, *Open version history* (a note's or a file's),
 resync of this note*, *Reconnect and rescan the vault*, *Copy the log*, and the
 sharing commands below. Sharing, access, history and comparing versions are also
 in every file's "…" menu and right-click menu, in a section of their own under
-*Obsidian Connect*.
+*Mycel*.
 
 The cloud in the status bar shows where the note or file in front of you stands:
 green when the server has everything written here, red while it does not yet,
@@ -219,7 +219,7 @@ device's text is made before the server's older state is taken.
 
 ### Contacts
 
-Notes are shared with contacts only. Under *Settings → Obsidian Connect →
+Notes are shared with contacts only. Under *Settings → Mycel →
 Contacts*, one of you creates a friend code and sends it by any other channel;
 the other enters it. A code works once and for 7 days. It carries a fingerprint
 of its creator's key, so the server cannot slip in a key of its own. Names are
@@ -270,7 +270,7 @@ Run the server for tests on its own port and data directory, never against the
 one you use:
 
 ```bash
-PORT=1235 OBSIDIAN_CONNECT_REGISTRATION=open OBSIDIAN_CONNECT_DATA_DIR=/tmp/oc-test-data npm run start:server
+PORT=1235 MYCEL_REGISTRATION=open MYCEL_DATA_DIR=/tmp/oc-test-data npm run start:server
 npm run test:vault -- ws://localhost:1235
 ```
 

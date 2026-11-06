@@ -1,6 +1,6 @@
 import * as Y from 'yjs'
-import { frameAad, roomKind, roomSubject, snapshotAad } from '@obsidian-connect/shared'
-import { decrypt, encrypt, fromBase64, toBase64, unpackFrame } from '@obsidian-connect/shared/crypto'
+import { frameAad, roomKind, roomSubject, snapshotAad } from '@mycel/shared'
+import { decrypt, encrypt, fromBase64, toBase64, unpackFrame } from '@mycel/shared/crypto'
 import type { ConnectApi } from '../account/api.js'
 import type { KeyRing } from '../account/KeyRing.js'
 import type { RoomCrypto } from './VaultSocket.js'

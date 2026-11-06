@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { backupRouteKeys, fromBase64, toBase64 } from '@obsidian-connect/shared/crypto'
+import { backupRouteKeys, fromBase64, toBase64 } from '@mycel/shared/crypto'
 import { Invites } from './invites.js'
 import { log } from './log.js'
 import { RelayLink } from './relay.js'
@@ -44,7 +44,7 @@ export interface RunningBackupServer {
 const REGISTER_WAIT_MS = 10_000
 
 export async function startBackupServer(options: BackupServerOptions): Promise<RunningBackupServer> {
-  const restic = new Restic(options.resticBinary, join(options.dataDir, 'restic-cache'), 'obsidian-connect-backup')
+  const restic = new Restic(options.resticBinary, join(options.dataDir, 'restic-cache'), 'mycel-backup')
   const invites = new Invites(options.dataDir)
   const service = await BackupService.open({
     server: options.server,

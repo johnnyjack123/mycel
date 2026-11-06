@@ -1,5 +1,5 @@
-import type { BackupConnected, BackupDataEvent, BackupGrant, BackupSnapshotRef, BackupTaskSetting } from '@obsidian-connect/shared'
-import { SessionCipher, answerSession, sameMac, sessionProof, type Bytes, type SessionHello, type SessionKeys } from '@obsidian-connect/shared/crypto'
+import type { BackupConnected, BackupDataEvent, BackupGrant, BackupSnapshotRef, BackupTaskSetting } from '@mycel/shared'
+import { SessionCipher, answerSession, sameMac, sessionProof, type Bytes, type SessionHello, type SessionKeys } from '@mycel/shared/crypto'
 import { log } from './log.js'
 import type { IncomingSession } from './relay.js'
 import type { BackupService } from './service.js'

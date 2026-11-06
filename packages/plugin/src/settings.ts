@@ -12,11 +12,11 @@ import {
   type BackupRunStatus,
   type BackupTaskSetting,
   type BackupVaultStatus
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 import { describeGuard, describeKeep, describeRepository } from './backup/BackupModals'
 import { NO_LONGER_HAS_VAULT, defaultSchedule, deviceZone, type Backups } from './backup/Backups'
 import type { TickChoice } from './history/TimeMachine'
-import type ObsidianConnectPlugin from './main'
+import type MycelPlugin from './main'
 import type { OpenCode } from './share/Contacts'
 import type { SharedSettings } from './sync/AccountSettings'
 
@@ -99,7 +99,7 @@ function describeCopy(task: BackupTaskSetting, trusted: BackupRunStatus['trusted
  * What stays on this device. Everything that must match across an account's
  * devices lives in the account settings document instead.
  */
-export interface ObsidianConnectSettings {
+export interface MycelSettings {
   serverUrl: string
   /** The account this device is signed in to; empty when signed out. */
   username: string
@@ -127,7 +127,7 @@ export interface ObsidianConnectSettings {
   timeMachineMarks: boolean
 }
 
-export const DEFAULT_SETTINGS: ObsidianConnectSettings = {
+export const DEFAULT_SETTINGS: MycelSettings = {
   serverUrl: 'ws://localhost:1234',
   username: '',
   token: '',
@@ -161,7 +161,7 @@ const TABS: ReadonlyArray<{ id: Tab; label: string; signedIn: boolean }> = [
   { id: 'all', label: 'All devices', signedIn: true }
 ]
 
-export class ObsidianConnectSettingTab extends PluginSettingTab {
+export class MycelSettingTab extends PluginSettingTab {
   private screen: Screen = 'overview'
   /** Kept while the plugin runs: the tab opens where it was left. */
   private tab: Tab = 'account'
@@ -195,7 +195,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
 
   constructor(
     app: App,
-    private readonly plugin: ObsidianConnectPlugin
+    private readonly plugin: MycelPlugin
   ) {
     super(app, plugin)
   }
@@ -214,15 +214,15 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     this.reveal = new PasswordReveal(this.reveal.revealed)
     const signedIn = Boolean(this.plugin.settings.username)
     if (signedIn) this.screen = 'overview'
-    containerEl.createEl('p', { cls: 'setting-item-description', text: `Obsidian Connect ${this.plugin.manifest.version}` })
+    containerEl.createEl('p', { cls: 'setting-item-description', text: `Mycel ${this.plugin.manifest.version}` })
 
     const tabs = TABS.filter((tab) => signedIn || !tab.signedIn)
     // Signing in, creating an account and recovering are the account's.
     if (this.screen !== 'overview' || !tabs.some((tab) => tab.id === this.tab)) this.tab = 'account'
-    const bar = containerEl.createDiv({ cls: 'connect-tabs', attr: { role: 'tablist' } })
+    const bar = containerEl.createDiv({ cls: 'mycel-tabs', attr: { role: 'tablist' } })
     for (const tab of tabs) {
       const active = tab.id === this.tab
-      const button = bar.createEl('button', { cls: 'connect-tab', text: tab.label, attr: { role: 'tab', 'aria-selected': String(active) } })
+      const button = bar.createEl('button', { cls: 'mycel-tab', text: tab.label, attr: { role: 'tab', 'aria-selected': String(active) } })
       if (active) button.addClass('is-active')
       button.addEventListener('click', () => this.show(tab.id))
     }
@@ -372,7 +372,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     try {
       await busy(button, task)
     } catch (error) {
-      new Notice(`Obsidian Connect: ${error instanceof Error ? error.message : String(error)}`, 8_000)
+      new Notice(`Mycel: ${error instanceof Error ? error.message : String(error)}`, 8_000)
     } finally {
       this.busy = false
       this.display()
@@ -410,7 +410,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     const settings = this.plugin.settings
     new Setting(containerEl)
       .setName('Server URL')
-      .setDesc('WebSocket endpoint of your Obsidian Connect server, e.g. wss://notes.example.com')
+      .setDesc('WebSocket endpoint of your Mycel server, e.g. wss://notes.example.com')
       .addText((text) =>
         text
           .setPlaceholder('ws://localhost:1234')
@@ -472,7 +472,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       const ids = this.plugin.ids()
       if (ids) {
         // The server knows no names; these are what it knows, and what the
-        // admin's `obsidian-connect user list` shows.
+        // admin's `mycel user list` shows.
         new Setting(containerEl)
           .setName('Account ID')
           .setDesc(ids.account)
@@ -580,7 +580,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
         .onChange((value) => {
           this.recoveryCode = value.trim()
         })
-      text.inputEl.addClass('connect-code')
+      text.inputEl.addClass('mycel-code')
       this.gated.push(text)
     })
     this.nameField(containerEl)
@@ -701,7 +701,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     if (this.inviteNeeded()) {
       new Setting(containerEl)
         .setName('Invite code')
-        .setDesc('This server creates accounts only with a code from its admin (obsidian-connect invite).')
+        .setDesc('This server creates accounts only with a code from its admin (mycel invite).')
         .addText((text) => {
           text.setValue(this.invite).onChange((value) => {
             this.invite = value.trim()
@@ -753,7 +753,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
               }, button)
           )
       )
-    const codes = containerEl.createDiv({ cls: 'connect-open-codes' })
+    const codes = containerEl.createDiv({ cls: 'mycel-open-codes' })
     void this.plugin.contactCodes().then((open) => this.renderCodes(codes, open))
 
     new Setting(containerEl)
@@ -831,7 +831,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
             .setTooltip('Delete: nobody can redeem it any more')
             .onClick(() => void this.run(() => this.plugin.revokeContactCode(open.codeId), button))
         )
-      setting.nameEl.addClass('connect-code')
+      setting.nameEl.addClass('mycel-code')
     }
   }
 
@@ -857,7 +857,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     if (servers.length === 0) {
       new Setting(containerEl)
         .setName('Connect a backup server')
-        .setDesc("With an invitation from its operator. It runs on a computer of yours or someone's you trust, with Docker - see the Obsidian Connect documentation.")
+        .setDesc("With an invitation from its operator. It runs on a computer of yours or someone's you trust, with Docker - see the Mycel documentation.")
         .addButton((button) => button.setButtonText('Connect…').onClick(() => this.plugin.openBackupConnect()))
     } else {
       new Setting(containerEl)
@@ -903,7 +903,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
             () =>
               void this.run(async () => {
                 await backups.runNow(routeId)
-                new Notice(`Obsidian Connect: ${view.setting.label} is backing up the vault.`)
+                new Notice(`Mycel: ${view.setting.label} is backing up the vault.`)
               }, button)
           )
       )
@@ -921,7 +921,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
             void this.run(() => backups.disconnect(routeId), button)
           })
       )
-      .settingEl.addClass('connect-backup-server')
+      .settingEl.addClass('mycel-backup-server')
 
     const task = view.task
     if (!task) {
@@ -967,7 +967,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
         const row = new Setting(containerEl)
           .setName('Repository password')
           .setDesc('Write it down, or keep it in a password manager: without it nobody can read the repository, not even you.')
-        row.controlEl.createEl('code', { cls: 'connect-code', text: task.password })
+        row.controlEl.createEl('code', { cls: 'mycel-code', text: task.password })
       }
       if (task.decrypted) {
         new Setting(containerEl)
@@ -980,7 +980,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName('The decrypted copy follows the vault')
         .setDesc('Backing up, and bringing the copy level with the vault - as long as a backup takes. A notice says when it is done.')
-        .settingEl.addClass('connect-copy-waits')
+        .settingEl.addClass('mycel-copy-waits')
     } else if (backups.heldCopy(routeId)) {
       const row = new Setting(containerEl)
         .setName('The decrypted copy waits')
@@ -991,7 +991,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
             .setWarning()
             .onClick(() => this.plugin.openCopyWaits(routeId, true))
         )
-      row.settingEl.addClass('connect-copy-waits')
+      row.settingEl.addClass('mycel-copy-waits')
     }
     for (const problem of status?.problems ?? []) {
       new Setting(containerEl).setName(status?.ready ? 'Note' : 'Not carried out').setDesc(problem)
@@ -1032,11 +1032,11 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
     const minutes = task.at.minutes
     const chosen = new Set(scheduleDays(task.at))
     const days = new Setting(containerEl)
-    days.settingEl.addClass('connect-schedule')
-    const buttons = days.infoEl.createDiv({ cls: 'connect-days', attr: { role: 'group', 'aria-label': 'Days' } })
+    days.settingEl.addClass('mycel-schedule')
+    const buttons = days.infoEl.createDiv({ cls: 'mycel-days', attr: { role: 'group', 'aria-label': 'Days' } })
     let saving: number | null = null
     for (const day of WEEK_FROM_MONDAY) {
-      const button = buttons.createEl('button', { cls: 'connect-day', text: DAY_SHORT[day], attr: { type: 'button', title: DAY_NAMES[day] ?? '' } })
+      const button = buttons.createEl('button', { cls: 'mycel-day', text: DAY_SHORT[day], attr: { type: 'button', title: DAY_NAMES[day] ?? '' } })
       const show = (): void => {
         button.toggleClass('is-active', chosen.has(day))
         button.setAttr('aria-pressed', String(chosen.has(day)))
@@ -1056,14 +1056,14 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
       })
     }
 
-    days.controlEl.addClass('connect-time')
-    days.controlEl.createSpan({ cls: 'connect-time-word', text: 'at' })
+    days.controlEl.addClass('mycel-time')
+    days.controlEl.createSpan({ cls: 'mycel-time-word', text: 'at' })
     days.addDropdown((hour) => {
       for (let value = 0; value < 24; value += 1) hour.addOption(String(value), String(value).padStart(2, '0'))
       hour.setValue(String(Math.floor(minutes / 60))).onChange((value) => set(timed(Array.from(chosen), Number(value) * 60 + (minutes % 60))))
       hour.selectEl.setAttr('aria-label', 'Hour')
     })
-    days.controlEl.createSpan({ cls: 'connect-time-word', text: ':' })
+    days.controlEl.createSpan({ cls: 'mycel-time-word', text: ':' })
     days.addDropdown((minute) => {
       const options = new Set([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, minutes % 60])
       for (const value of Array.from(options).sort((a, b) => a - b)) minute.addOption(String(value), String(value).padStart(2, '0'))
@@ -1137,7 +1137,7 @@ export class ObsidianConnectSettingTab extends PluginSettingTab {
           () =>
             void busy(button, async () => {
               const fetched = await this.plugin.downloadAllAttachments()
-              new Notice(fetched > 0 ? `Obsidian Connect: ${fetched} attachment(s) downloaded.` : 'Obsidian Connect: every attachment is already here.')
+              new Notice(fetched > 0 ? `Mycel: ${fetched} attachment(s) downloaded.` : 'Mycel: every attachment is already here.')
             })
         )
       )

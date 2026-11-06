@@ -23,7 +23,7 @@ export class FolderMarks {
     const css = [...own, ...theirs].map((path) => rule(path, 'var(--text-muted)')).join('\n')
     if (css === this.last) return
     this.last = css
-    this.style ??= document.head.createEl('style', { attr: { id: 'obsidian-connect-folder-marks' } })
+    this.style ??= document.head.createEl('style', { attr: { id: 'mycel-folder-marks' } })
     this.style.textContent = css
   }
 

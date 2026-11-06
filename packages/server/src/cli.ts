@@ -1,22 +1,22 @@
-// Account administration, meant for `docker exec <container> obsidian-connect …`.
+// Account administration, meant for `docker exec <container> mycel …`.
 // Works on the data directory directly; the running server notices the change.
 //
 // The server knows no names, so neither does this: an invite code names
 // nobody, and accounts are listed by id. Everyone sees their own account id
 // in the plugin's settings.
 //
-//   obsidian-connect invite                    a code for one new account
-//   obsidian-connect user list
-//   obsidian-connect user remove <accountId>
-//   obsidian-connect user 2fa-off <accountId>
+//   mycel invite                    a code for one new account
+//   mycel user list
+//   mycel user remove <accountId>
+//   mycel user 2fa-off <accountId>
 import { AccountError, AccountStore, isAccountId } from './accounts.js'
 import { loadConfig, loadEnvFile } from './config.js'
 
 const USAGE = `usage:
-  obsidian-connect invite                    print a code that lets one person create an account
-  obsidian-connect user list                 every account: id, created, number of vaults, recovery code, 2fa, backup keys
-  obsidian-connect user remove <accountId>   delete an account (its id is shown in the plugin's settings)
-  obsidian-connect user 2fa-off <accountId>  turn off two-factor sign-in, for a lost phone without a recovery code`
+  mycel invite                    print a code that lets one person create an account
+  mycel user list                 every account: id, created, number of vaults, recovery code, 2fa, backup keys
+  mycel user remove <accountId>   delete an account (its id is shown in the plugin's settings)
+  mycel user 2fa-off <accountId>  turn off two-factor sign-in, for a lost phone without a recovery code`
 
 async function main(argv: string[]): Promise<number> {
   const [scope, command, id] = argv
@@ -28,7 +28,7 @@ async function main(argv: string[]): Promise<number> {
   if (scope === 'invite') {
     const code = await accounts.invite()
     console.log(`Invite code: ${code}`)
-    console.log('In Obsidian: Settings -> Obsidian Connect -> Create a new account, with this code.')
+    console.log('In Obsidian: Settings -> Mycel -> Create a new account, with this code.')
     return 0
   }
   if (scope !== 'user' || !command) {
@@ -54,7 +54,7 @@ async function main(argv: string[]): Promise<number> {
     }
     case 'remove': {
       if (!isAccountId(id)) {
-        console.error('usage: obsidian-connect user remove <accountId>')
+        console.error('usage: mycel user remove <accountId>')
         return 1
       }
       const removed = await accounts.remove(id)
@@ -67,7 +67,7 @@ async function main(argv: string[]): Promise<number> {
     }
     case '2fa-off': {
       if (!isAccountId(id)) {
-        console.error('usage: obsidian-connect user 2fa-off <accountId>')
+        console.error('usage: mycel user 2fa-off <accountId>')
         return 1
       }
       const turnedOff = await accounts.turnOffTotp(id)

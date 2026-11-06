@@ -1,7 +1,7 @@
 import type { WebSocket } from 'ws'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { MUX, type FolderTie, type Notice, type NotifyKind } from '@obsidian-connect/shared'
+import { MUX, type FolderTie, type Notice, type NotifyKind } from '@mycel/shared'
 import type { Frame } from './log.js'
 import type { RoomClient, RoomHub } from './rooms.js'
 
@@ -34,7 +34,7 @@ function serializer(): (task: () => Promise<void>) => void {
   let chain: Promise<void> = Promise.resolve()
   return (task) => {
     chain = chain.then(task).catch((error) => {
-      console.error('[obsidian-connect] websocket message failed', error)
+      console.error('[mycel] websocket message failed', error)
     })
   }
 }
@@ -220,7 +220,7 @@ export function setupVaultConnection(ws: WebSocket, account: string, vaultId: st
             entries.push({ room: decoding.readVarString(decoder), seq: decoding.readVarUint(decoder) })
           }
           // Not waited for: reading heads from the disk after a restart must not hold up the connection.
-          void hub.watch(connection, entries).catch((error: unknown) => console.error('[obsidian-connect] watching failed', error))
+          void hub.watch(connection, entries).catch((error: unknown) => console.error('[mycel] watching failed', error))
           return
         }
         case MUX.unwatch: {

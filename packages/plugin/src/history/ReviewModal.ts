@@ -37,7 +37,7 @@ export class ReviewModal extends Modal {
   }
 
   onOpen(): void {
-    this.modalEl.addClass('connect-review-modal')
+    this.modalEl.addClass('mycel-review-modal')
     this.titleEl.setText(`Compare versions: ${this.review.path}`)
     this.hunks = compare(this.review.mine, this.review.theirs)
     this.choices = this.hunks.filter((hunk) => !hunk.same).map((): Choice => 'both')
@@ -61,15 +61,15 @@ export class ReviewModal extends Modal {
       .addButton((button) => button.setButtonText('The other version').onClick(() => this.chooseAll('theirs')))
       .addButton((button) => button.setButtonText('Both').onClick(() => this.chooseAll('both')))
 
-    const list = contentEl.createDiv({ cls: 'connect-review-list' })
+    const list = contentEl.createDiv({ cls: 'mycel-review-list' })
     let index = 0
     for (const hunk of this.hunks) {
       if (hunk.same) this.renderSame(list, hunk.mine)
       else this.renderHunk(list, hunk, index++)
     }
 
-    contentEl.createEl('div', { cls: 'connect-review-heading', text: 'The note will say' })
-    this.preview = contentEl.createEl('pre', { cls: 'connect-history-preview' })
+    contentEl.createEl('div', { cls: 'mycel-review-heading', text: 'The note will say' })
+    this.preview = contentEl.createEl('pre', { cls: 'mycel-history-preview' })
     this.updatePreview()
 
     new Setting(contentEl)
@@ -93,21 +93,21 @@ export class ReviewModal extends Modal {
       all.length <= CONTEXT_LINES * 2 + 1
         ? all
         : [...all.slice(0, CONTEXT_LINES), `… ${all.length - CONTEXT_LINES * 2} unchanged lines …`, ...all.slice(-CONTEXT_LINES)]
-    parent.createEl('pre', { cls: 'connect-review-same', text: shown.join('\n') })
+    parent.createEl('pre', { cls: 'mycel-review-same', text: shown.join('\n') })
   }
 
   private renderHunk(parent: HTMLElement, hunk: Hunk, index: number): void {
-    const box = parent.createDiv({ cls: 'connect-review-hunk' })
-    const sides = box.createDiv({ cls: 'connect-review-sides' })
+    const box = parent.createDiv({ cls: 'mycel-review-hunk' })
+    const sides = box.createDiv({ cls: 'mycel-review-sides' })
     for (const [label, text, cls] of [
       ['This device', hunk.mine, 'is-mine'],
       ['Other version', hunk.theirs, 'is-theirs']
     ] as const) {
-      const side = sides.createDiv({ cls: `connect-review-side ${cls}` })
-      side.createDiv({ cls: 'connect-review-label', text: label })
+      const side = sides.createDiv({ cls: `mycel-review-side ${cls}` })
+      side.createDiv({ cls: 'mycel-review-label', text: label })
       side.createEl('pre', { text: text.length > 0 ? text.replace(/\n$/, '') : '(nothing)' })
     }
-    const buttons = box.createDiv({ cls: 'connect-review-choices' })
+    const buttons = box.createDiv({ cls: 'mycel-review-choices' })
     for (const { choice, label } of CHOICES) {
       const button = buttons.createEl('button', { text: label })
       if (this.choices[index] === choice) button.addClass('is-active')

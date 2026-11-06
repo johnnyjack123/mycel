@@ -34,7 +34,7 @@ with a second factor, that factor's TOTP secret, and when a code was last used.
 - **Turning 2FA on signs out every other device**; they sign in again with a code.
 - **A lost second factor:** the recovery code signs in without it, sets a new
   password, turns 2FA off and offers to set it up again. The admin can turn it off
-  too (`obsidian-connect user 2fa-off <accountId>`); the password stays needed, so
+  too (`mycel user 2fa-off <accountId>`); the password stays needed, so
   that only lowers the sign-in to what it was without 2FA.
 - **A recovery may keep 2FA** (asked by the user after the first device run of
   0.6.2, built in 0.6.3): a forgotten password is no reason to set up the app again.
@@ -158,7 +158,7 @@ server needs an update, and registration simply shows no code.
 - The secret is 20 random bytes, made on the device and shown three ways: a QR code
   (for a phone next to the computer), an `otpauth://` link (a phone running Obsidian
   cannot scan its own screen; the link opens the authenticator app) and the base32
-  text to type. The label is "Obsidian Connect" and the name - made on the device; the
+  text to type. The label is "Mycel" and the name - made on the device; the
   server never sees the URI.
 - The server keeps the secret in `accounts.json`. Whoever can read that file has the
   ciphertext already; 2FA guards reaching it through the API.
@@ -217,7 +217,7 @@ In the settings, signed in:
   (`account-changed`, also for a recovery code made or deleted), and their settings
   show it at once.
 - By a recovery without a code from the app (above).
-- By the admin: `obsidian-connect user 2fa-off <accountId>`.
+- By the admin: `mycel user 2fa-off <accountId>`.
 
 *As built:* the setup checks the password on the device first - the master key it
 derives must be the one in use - so a typo shows before the QR code, not after. The

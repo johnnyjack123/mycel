@@ -8,6 +8,20 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.7** (2026-11-06) - **the name: Mycel** (`docs/PHASE8.md`, N; the user, 2026-11-05).
+  Since the user starts once afresh, everything is renamed, the internal names included -
+  nothing has to stay readable: the plugin (id `mycel`, name *Mycel*, its folder
+  `.obsidian/plugins/mycel/`), the packages (`@mycel/shared`, `@mycel/server`, `@mycel/plugin`,
+  `@mycel/backup`), the environment variables (`OBSIDIAN_CONNECT_*` → `MYCEL_*`), the images
+  (`ghcr.io/<owner>/mycel-server`, `mycel-backup`), the command lines (`mycel`, `mycel-backup`),
+  every key derivation's label (`mycel salt`, `mycel login`, …), the `localStorage` keys and
+  IndexedDB names, the tokens' issuer, the server's `/health` answer, restic's host and tag,
+  the log prefix `[mycel]`, the CSS classes (`mycel-…`), the notification center's title. The
+  historical design documents keep the names they were written with only where they discuss
+  the choice of a name; this changelog keeps them for everything before 0.9.7. The repository
+  on GitHub keeps its name until the user renames it. Checked by every suite, run under the
+  new names.
+
 - **0.9.6** (2026-11-05) - ***Replace all keys*** (`docs/PHASE8.md`, S2, as the user decided
   on 2026-11-05). A new password signs every other device out, but whoever had the keys
   before could still read what they got of the notes. A button in the account's settings now

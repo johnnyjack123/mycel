@@ -135,7 +135,7 @@ export class ApplyModal extends Modal {
 
   private list(title: string, paths: string[]): void {
     if (paths.length === 0) return
-    const details = this.contentEl.createEl('details', { cls: 'connect-rollback-list' })
+    const details = this.contentEl.createEl('details', { cls: 'mycel-rollback-list' })
     details.createEl('summary', { text: `${title}: ${paths.length}` })
     const ul = details.createEl('ul')
     for (const path of paths.slice(0, LIST_MAX)) ul.createEl('li', { text: path })

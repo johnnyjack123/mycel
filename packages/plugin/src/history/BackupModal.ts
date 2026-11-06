@@ -21,7 +21,7 @@ export class BackupModal extends Modal {
   }
 
   async onOpen(): Promise<void> {
-    this.titleEl.setText('Obsidian Connect backups')
+    this.titleEl.setText('Mycel backups')
     this.contentEl.createEl('p', { text: 'Loading…' })
     try {
       this.records = await this.backups.list()
@@ -76,19 +76,19 @@ export class BackupModal extends Modal {
       text: `${this.records.length} backup(s). "local" is what this device had, "remote" the shared document, "merged" the result.`
     })
 
-    const list = contentEl.createDiv({ cls: 'connect-history-list' })
+    const list = contentEl.createDiv({ cls: 'mycel-history-list' })
     for (const record of this.records.slice(0, 300)) {
-      const row = list.createDiv({ cls: 'connect-history-row' })
+      const row = list.createDiv({ cls: 'mycel-history-row' })
       if (this.selected?.path === record.path) row.addClass('is-selected')
       row.createSpan({ text: `${record.day} · ${record.note}` })
-      row.createSpan({ cls: 'connect-history-size', text: record.kind })
+      row.createSpan({ cls: 'mycel-history-size', text: record.kind })
       row.onclick = () => void this.select(record)
     }
 
     if (this.selected) {
       const selected = this.selected
       contentEl.createEl('h4', { text: `${selected.note} (${selected.kind})` })
-      contentEl.createEl('pre', { cls: 'connect-history-preview' }).setText(this.preview.slice(0, 5_000))
+      contentEl.createEl('pre', { cls: 'mycel-history-preview' }).setText(this.preview.slice(0, 5_000))
       new Setting(contentEl).addButton((button) =>
         button
           .setButtonText('Write this back to the note')

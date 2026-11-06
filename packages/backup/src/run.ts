@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, rm, utimes, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { BACKUP_GUARD_DEFAULT, type BackupGrant, type KeepPolicy } from '@obsidian-connect/shared'
+import { BACKUP_GUARD_DEFAULT, type BackupGrant, type KeepPolicy } from '@mycel/shared'
 import { Cache } from './cache.js'
 import { bytesOf, chunksOf, hashOf, sizeOf } from './content.js'
 import { fetchBlobs, fetchRooms } from './fetch.js'
@@ -163,7 +163,7 @@ interface JobState {
 const DAY_MS = 24 * 60 * 60 * 1000
 const WEEK_MS = 7 * DAY_MS
 const COUNTS_KEPT = 500
-const TAG = 'obsidian-connect'
+const TAG = 'mycel'
 
 async function readState(path: string): Promise<JobState> {
   try {

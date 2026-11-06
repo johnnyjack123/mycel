@@ -3,7 +3,7 @@
 // local repositories, read back with restic and tar and compared with the
 // vault. The server runs here so the test can restore an old copy of it.
 //
-//   npm run test:backup            (restic on the PATH, or OBSIDIAN_CONNECT_RESTIC naming it)
+//   npm run test:backup            (restic on the PATH, or MYCEL_RESTIC naming it)
 import { execFile, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -30,18 +30,18 @@ const { startBackupServer } = await import('../../backup/src/server.js')
 const { Invites } = await import('../../backup/src/invites.js')
 const { readStatus } = await import('../../backup/src/status.js')
 /** The operator's command, as the image has it. */
-const BACKUP_BIN = fileURLToPath(new URL('../../backup/bin/obsidian-connect-backup.mjs', import.meta.url))
+const BACKUP_BIN = fileURLToPath(new URL('../../backup/bin/mycel-backup.mjs', import.meta.url))
 const { listVaults } = await import('../../backup/src/service.js')
-const { backupRouteKeys, encodeBackupInvite, fromBase64, newBackupSecret, openSession } = await import('@obsidian-connect/shared/crypto')
-const { backupSettingsText, docRoom, scheduleHours } = await import('@obsidian-connect/shared')
-type BackupConnected = import('@obsidian-connect/shared').BackupConnected
+const { backupRouteKeys, encodeBackupInvite, fromBase64, newBackupSecret, openSession } = await import('@mycel/shared/crypto')
+const { backupSettingsText, docRoom, scheduleHours } = await import('@mycel/shared')
+type BackupConnected = import('@mycel/shared').BackupConnected
 
 type RunReport = Awaited<ReturnType<typeof runBackup>>
 
-const RESTIC = process.env.OBSIDIAN_CONNECT_RESTIC ?? 'restic'
+const RESTIC = process.env.MYCEL_RESTIC ?? 'restic'
 const probe = spawnSync(RESTIC, ['version'], { encoding: 'utf8' })
 if (probe.status !== 0) {
-  console.log(`FAIL: restic is needed: put it on the PATH or name it in OBSIDIAN_CONNECT_RESTIC (tried "${RESTIC}")`)
+  console.log(`FAIL: restic is needed: put it on the PATH or name it in MYCEL_RESTIC (tried "${RESTIC}")`)
   process.exit(1)
 }
 console.log(`using ${probe.stdout.trim()}`)
@@ -56,11 +56,11 @@ async function serve(dataDir: string) {
     loadConfig({
       HOST: '127.0.0.1',
       PORT: String(port),
-      OBSIDIAN_CONNECT_DATA_DIR: dataDir,
-      OBSIDIAN_CONNECT_REGISTRATION: 'open',
-      OBSIDIAN_CONNECT_JWT_SECRET: 'backup-selftest',
+      MYCEL_DATA_DIR: dataDir,
+      MYCEL_REGISTRATION: 'open',
+      MYCEL_JWT_SECRET: 'backup-selftest',
       // A clean-up purges at once: a rollback has to find content only a backup still has.
-      OBSIDIAN_CONNECT_PURGE_GRACE_S: '0'
+      MYCEL_PURGE_GRACE_S: '0'
     }),
     { logger: false, paceMs: 0 }
   )
@@ -158,7 +158,7 @@ function untar(archive: string, into: string): boolean {
   )
   check(refused instanceof TrustedRefused && readFileSync(join(foreign, 'mine.txt'), 'utf8') === 'not yours', 'the trusted copy never takes over a folder someone else filled')
   check(
-    copyPath('V/a/b.md', 'V') === 'a/b.md' && copyPath('V (trash)/a.md', 'V') === '.obsidian-connect/trash/a.md' && copyPath('V settings.json', 'V') === '.obsidian-connect/settings.json',
+    copyPath('V/a/b.md', 'V') === 'a/b.md' && copyPath('V (trash)/a.md', 'V') === '.mycel/trash/a.md' && copyPath('V settings.json', 'V') === '.mycel/settings.json',
     'the decrypted copy holds the vault at its top - it opens as a vault -, its trash and settings in a hidden folder'
   )
 
@@ -328,7 +328,7 @@ const trustedDir = join(root, 'trusted')
 const options = {
   dataDir: join(root, 'backup-server'),
   workDir: join(root, 'ram'),
-  restic: new Restic(RESTIC, join(root, 'restic-cache'), 'obsidian-connect-backup'),
+  restic: new Restic(RESTIC, join(root, 'restic-cache'), 'mycel-backup'),
   samples: 3
 }
 const folder = vaultFolder(VAULT)
@@ -358,7 +358,7 @@ function expectedVault(device: Device, prefix = `${folder}/`): Map<string, Buffe
 
 /** The vault in a decrypted copy: everything but its hidden folder and its list of what it wrote. */
 function vaultInCopy(dir: string): Map<string, Buffer> {
-  return new Map(Array.from(filesBelow(dir)).filter(([path]) => !path.startsWith('.obsidian-connect')))
+  return new Map(Array.from(filesBelow(dir)).filter(([path]) => !path.startsWith('.mycel')))
 }
 
 /** The notes snapshot restored and the files stream unpacked into one folder, as a person would restore. */
@@ -441,7 +441,7 @@ try {
   {
     const { missing, differ } = sameFiles(vaultInCopy(trustedDir), expectedVault(A1, ''), '')
     check(missing.length === 0 && differ.length === 0, 'the trusted copy holds the vault', { missing, differ })
-    check(readFileSync(join(trustedDir, '.obsidian-connect', 'settings.json'), 'utf8').includes('historyRetentionDays'), 'and its settings beside it')
+    check(readFileSync(join(trustedDir, '.mycel', 'settings.json'), 'utf8').includes('historyRetentionDays'), 'and its settings beside it')
   }
   {
     // The backup server's disk: the cache and the state - nothing readable.
@@ -540,7 +540,7 @@ try {
       Array.from(restored.keys())
     )
     check(
-      !existsSync(join(trustedDir, 'Projects', 'Plan.md')) && readFileSync(join(trustedDir, '.obsidian-connect', 'trash', 'Projects', 'Plan.md'), 'utf8') === 'the plan\n',
+      !existsSync(join(trustedDir, 'Projects', 'Plan.md')) && readFileSync(join(trustedDir, '.mycel', 'trash', 'Projects', 'Plan.md'), 'utf8') === 'the plan\n',
       'and the trusted copy follows, the note in its trash'
     )
   }
@@ -618,7 +618,7 @@ try {
     const repo = { repository: destinations[0].repository, password: destinations[0].password }
     const before = (await options.restic.snapshots(repo, 'files')).length
     const broken = await options.restic
-      .backupStream(repo, 'broken.tar', ['obsidian-connect', 'files'], async (stdin) => {
+      .backupStream(repo, 'broken.tar', ['mycel', 'files'], async (stdin) => {
         stdin.write(Buffer.alloc(100_000, 1))
         await delay(200)
         throw new Error('the producer failed')
@@ -794,7 +794,7 @@ try {
     // Not spawnSync: the backup server runs in this process, and has to take the invitation up meanwhile.
     const operator = (args: string[], dataDir = backupData, server?: string): Promise<string> =>
       new Promise((resolve) => {
-        const env = { ...process.env, OBSIDIAN_CONNECT_BACKUP_DATA: dataDir, ...(server ? { OBSIDIAN_CONNECT_SERVER: server } : {}) }
+        const env = { ...process.env, MYCEL_BACKUP_DATA: dataDir, ...(server ? { MYCEL_SERVER: server } : {}) }
         execFile(process.execPath, [BACKUP_BIN, ...args], { env, encoding: 'utf8', timeout: 60_000 }, (_error, stdout, stderr) => resolve(`${stdout}${stderr}`))
       })
     const invited = await operator(['invite', 'from', 'the', 'shell'])

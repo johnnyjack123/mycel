@@ -2,7 +2,7 @@
 // merge logic and the encryption; and asking a server whether it can be used.
 // No server, no DOM, no Obsidian.
 //
-//   npm run test:merge -w @obsidian-connect/plugin
+//   npm run test:merge -w @mycel/plugin
 import * as Y from 'yjs'
 import {
   API,
@@ -12,8 +12,8 @@ import {
   splitLines,
   textEdits,
   threeWayMerge
-} from '@obsidian-connect/shared'
-import * as e2e from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared'
+import * as e2e from '@mycel/shared/crypto'
 import { hashWasmArgon2id } from '../src/account/argon2.js'
 import { Replay } from '../src/history/RoomHistory.js'
 import { additiveEdits, reconcile } from '../src/sync/Reconciler.js'
@@ -413,7 +413,7 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
       inFolder !== (await e2e.deriveDocId(await e2e.folderKeys.ids(f1), 'Plan.md', 0)),
     'everyone in a folder derives the same id for a new note, and a later epoch another'
   )
-  const { tiesAscend } = await import('@obsidian-connect/shared')
+  const { tiesAscend } = await import('@mycel/shared')
   const tie = (folder: string, epoch: number): { folder: string; epoch: number } => ({ folder, epoch })
   check(
     tiesAscend({ '1': tie('a', 0), '2': tie('a', 1), '3': tie('a', 1), '5': tie('b', 0), '6': tie('a', 4) }) && tiesAscend({}),
@@ -452,7 +452,7 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
 
 // --- blobs: the encrypted content of attachments ---------------------------------------
 {
-  const { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, blobChunkCount } = await import('@obsidian-connect/shared')
+  const { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, blobChunkCount } = await import('@mycel/shared')
   const vaultKey = e2e.randomBytes(32)
   const fileId = await e2e.deriveFileId(vaultKey, 'Assets/diagram.png', 0)
   check(
@@ -568,9 +568,9 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   const codes = await Promise.all(vectors.map(([seconds]) => e2e.totpCode(rfc, e2e.totpStep(seconds * 1000))))
   check(codes.join() === vectors.map(([, code]) => code).join(), "the device's codes match RFC 6238's test vectors", codes)
   check(e2e.totpKeyText(rfc) === 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', 'the key an app is given to type is RFC 4648 base32')
-  const uri = e2e.totpUri(rfc, 'anna', 'Obsidian Connect')
+  const uri = e2e.totpUri(rfc, 'anna', 'Mycel')
   check(
-    uri === 'otpauth://totp/Obsidian%20Connect:anna?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Obsidian%20Connect&algorithm=SHA1&digits=6&period=30',
+    uri === 'otpauth://totp/Mycel:anna?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Mycel&algorithm=SHA1&digits=6&period=30',
     'and the link an app opens names the secret, the issuer and the account',
     uri
   )
@@ -832,7 +832,7 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
       )
     )
   const ok = (json: unknown): Answer => ({ status: 200, json })
-  const current = { ok: true, service: 'obsidian-connect-server', protocol: PROTOCOL_VERSION }
+  const current = { ok: true, service: 'mycel-server', protocol: PROTOCOL_VERSION }
 
   check((await probeWith({ [API.health]: 'unreachable' })).state === 'unreachable', 'a server that does not answer is unreachable')
   check((await probeWith({})).state === 'incompatible', 'something answering 404 is not taken for a server')
@@ -950,21 +950,21 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     runs += 1
     return new Promise<void>((resolve) => (release = resolve))
   })
-  check(classes.has('connect-busy') && disabled.join() === 'true', 'a clicked button is greyed out and spins at once')
+  check(classes.has('mycel-busy') && disabled.join() === 'true', 'a clicked button is greyed out and spins at once')
   await busy(button, async () => {
     runs += 1
   })
   check(runs === 1, 'and a second click meanwhile starts nothing')
   release()
   await first
-  check(!classes.has('connect-busy') && disabled.at(-1) === false, 'once the work is done it is a button again')
+  check(!classes.has('mycel-busy') && disabled.at(-1) === false, 'once the work is done it is a button again')
   const failed = await busy(button, async () => {
     throw new Error('refused')
   }).then(
     () => null,
     (error: unknown) => (error instanceof Error ? error.message : String(error))
   )
-  check(failed === 'refused' && !classes.has('connect-busy') && disabled.at(-1) === false, 'also when it failed, and the error still reaches the caller')
+  check(failed === 'refused' && !classes.has('mycel-busy') && disabled.at(-1) === false, 'also when it failed, and the error still reaches the caller')
 }
 
 // --- the log for a bug report ---------------------------------------------------------------
@@ -976,13 +976,13 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     '2026-10-13T20:00:42.000Z ERROR Typing.md: two versions kept (conflict); choose with "Compare versions"',
     '2026-10-13T20:00:43.000Z WARN  presence for doc:1 could not be read Error: bad',
     'Error: bad',
-    '    at somewhere (plugin:obsidian-connect:1:1)',
+    '    at somewhere (plugin:mycel:1:1)',
     ''
   ].join('\n')
-  const report = withSummary(text, 'Obsidian Connect 0.6.4')
+  const report = withSummary(text, 'Mycel 0.6.4')
   const [head, rest] = report.split('\n\nThe whole log:\n')
   check(
-    head === 'Obsidian Connect 0.6.4\n\nErrors and warnings (2):\n' + `${text.split('\n')[2]}\n${text.split('\n')[3]}`,
+    head === 'Mycel 0.6.4\n\nErrors and warnings (2):\n' + `${text.split('\n')[2]}\n${text.split('\n')[3]}`,
     'a copied log starts with its errors and warnings, one line each, without stacks',
     head
   )

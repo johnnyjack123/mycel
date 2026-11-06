@@ -1,4 +1,4 @@
-import type { RelayFrame } from '@obsidian-connect/shared'
+import type { RelayFrame } from '@mycel/shared'
 import {
   SessionCipher,
   backupRouteKeys,
@@ -10,7 +10,7 @@ import {
   type Bytes,
   type SessionAnswer,
   type SessionKeys
-} from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared/crypto'
 
 // A session with a backup server, through the sync server's relay, on the
 // route of a secret the two share: an invitation, or the vault's pairing. The
@@ -130,7 +130,7 @@ export async function openInviteSession(serverUrl: string, token: string, code: 
     // What the relay says when nothing registered the invitation's route.
     if (error instanceof BackupLinkError && error.message === NOT_CONNECTED) {
       throw new BackupLinkError(
-        'No backup server answers this invitation at the sync server: it does not reach the sync server, the invitation was made on another one, or it was used or withdrawn. On the backup server, "obsidian-connect-backup status" says which.'
+        'No backup server answers this invitation at the sync server: it does not reach the sync server, the invitation was made on another one, or it was used or withdrawn. On the backup server, "mycel-backup status" says which.'
       )
     }
     throw error

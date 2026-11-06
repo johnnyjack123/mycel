@@ -1,6 +1,6 @@
 import { open, readFile, readdir, rename, rm, stat, truncate, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, blobChunkCount, isHexId, type BlobInfo, type BlobListResponse } from '@obsidian-connect/shared'
+import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, blobChunkCount, isHexId, type BlobInfo, type BlobListResponse } from '@mycel/shared'
 import { appendDurable, ensureDir, syncDir, writeDurable } from './durable.js'
 
 // The encrypted contents of a vault's files. The server cannot read them: it

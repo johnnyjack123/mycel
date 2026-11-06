@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { folderRoom, roomKind, type BackupRoom, type FolderTie, type LogResponse } from '@obsidian-connect/shared'
+import { folderRoom, roomKind, type BackupRoom, type FolderTie, type LogResponse } from '@mycel/shared'
 import { lastFrame, type Cache, type CachedBlob, type CachedRoom } from './cache.js'
 import type { VaultKeys } from './keys.js'
 import { SyncError, type SyncClient } from './sync.js'

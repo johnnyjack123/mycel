@@ -1,4 +1,4 @@
-.connect-remote-caret {
+.mycel-remote-caret {
   position: relative;
   margin-left: -1px;
   margin-right: -1px;
@@ -7,7 +7,7 @@
   pointer-events: none;
 }
 
-.connect-remote-caret-label {
+.mycel-remote-caret-label {
   position: absolute;
   top: -1.4em;
   left: -2px;
@@ -22,11 +22,11 @@
   pointer-events: none;
 }
 
-.connect-remote-selection {
+.mycel-remote-selection {
   border-radius: 2px;
 }
 
-.connect-history-list {
+.mycel-history-list {
   max-height: 40vh;
   overflow-y: auto;
   margin: 0.5em 0 1em;
@@ -34,19 +34,19 @@
   border-radius: 6px;
 }
 
-.connect-linked-notes {
+.mycel-linked-notes {
   max-height: 12em;
   overflow-y: auto;
   margin: 0 0 1em;
   font-size: var(--font-ui-small);
 }
 
-.connect-linked-reason {
+.mycel-linked-reason {
   color: var(--text-muted);
 }
 
 /* What sharing a folder means, said before anything is shared. */
-.connect-folder-warning {
+.mycel-folder-warning {
   margin: 0.5em 0 1em;
   padding: 0.25em 0.9em;
   border-left: 3px solid var(--text-warning);
@@ -54,7 +54,7 @@
   border-radius: 4px;
 }
 
-.connect-history-row {
+.mycel-history-row {
   display: flex;
   justify-content: space-between;
   gap: 1em;
@@ -64,26 +64,26 @@
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.connect-history-row:last-child {
+.mycel-history-row:last-child {
   border-bottom: 0;
 }
 
-.connect-history-row:hover {
+.mycel-history-row:hover {
   background-color: var(--background-modifier-hover);
 }
 
-.connect-history-row.is-selected {
+.mycel-history-row.is-selected {
   background-color: var(--background-modifier-active-hover);
   font-weight: 600;
 }
 
-.connect-history-size {
+.mycel-history-size {
   color: var(--text-muted);
   font-size: 0.85em;
   white-space: nowrap;
 }
 
-.connect-version-preview {
+.mycel-version-preview {
   display: block;
   max-width: 100%;
   max-height: 40vh;
@@ -91,7 +91,7 @@
   border-radius: 6px;
 }
 
-.connect-history-preview {
+.mycel-history-preview {
   max-height: 30vh;
   overflow: auto;
   padding: 0.6em;
@@ -104,54 +104,54 @@
 
 /* The cloud in the status bar: where the active note or file stands. Next to
    it, whether the note is shared, and whether only to read. */
-.connect-note-status,
-.connect-share-status {
+.mycel-note-status,
+.mycel-share-status {
   display: flex;
   align-items: center;
   cursor: pointer;
 }
 
-.connect-note-status svg,
-.connect-share-status svg {
+.mycel-note-status svg,
+.mycel-share-status svg {
   width: var(--icon-s);
   height: var(--icon-s);
 }
 
-.connect-share-status {
+.mycel-share-status {
   color: var(--text-muted);
 }
 
-.connect-share-status.is-read-only {
+.mycel-share-status.is-read-only {
   color: var(--color-orange);
 }
 
-.connect-note-status.is-local {
+.mycel-note-status.is-local {
   color: var(--color-orange);
 }
 
-.connect-note-status.is-synced {
+.mycel-note-status.is-synced {
   color: var(--color-green);
 }
 
-.connect-note-status.is-unsent {
+.mycel-note-status.is-unsent {
   color: var(--color-red);
 }
 
-.connect-note-status.is-waiting {
+.mycel-note-status.is-waiting {
   color: var(--text-muted);
 }
 
-.connect-note-status.is-held {
+.mycel-note-status.is-held {
   color: var(--color-orange);
 }
 
-.connect-code {
+.mycel-code {
   font-family: var(--font-monospace);
   user-select: all;
 }
 
 /* The settings' tabs; they wrap on a phone rather than scroll. */
-.connect-tabs {
+.mycel-tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 0.25em;
@@ -159,7 +159,7 @@
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.connect-tabs button.connect-tab {
+.mycel-tabs button.mycel-tab {
   background: none;
   box-shadow: none;
   border: none;
@@ -171,11 +171,11 @@
   cursor: pointer;
 }
 
-.connect-tabs button.connect-tab:hover {
+.mycel-tabs button.mycel-tab:hover {
   color: var(--text-normal);
 }
 
-.connect-tabs button.connect-tab.is-active {
+.mycel-tabs button.mycel-tab.is-active {
   color: var(--text-normal);
   border-bottom-color: var(--interactive-accent);
   font-weight: 600;
@@ -183,16 +183,16 @@
 
 /* The Time Machine (docs/TIMEMACHINE.md): the past in the files, a timeline at the
    right edge of the editors, a bar above them, the overview beside the explorer. */
-.connect-tm {
+.mycel-tm {
   container-type: inline-size;
 }
 
-.connect-tm-quiet {
+.mycel-tm-quiet {
   color: var(--text-muted);
   font-size: var(--font-ui-small);
 }
 
-.connect-tm-switch {
+.mycel-tm-switch {
   display: inline-flex;
   align-items: center;
   gap: 0.3em;
@@ -202,32 +202,32 @@
 }
 
 /* Over the editors, never in the way of the explorer or the sidebars. */
-.connect-tm-ui {
+.mycel-tm-ui {
   position: fixed;
   inset: 0;
   z-index: var(--layer-status-bar);
   pointer-events: none;
 }
 
-.connect-tm-ui > * {
+.mycel-tm-ui > * {
   pointer-events: auto;
 }
 
-body.connect-tm-active .workspace-split.mod-root {
+body.mycel-tm-active .workspace-split.mod-root {
   box-shadow: inset 0 0 0 2px rgba(var(--color-orange-rgb), 0.55);
 }
 
 /* The editors of the top row make room for the bar under their tabs, those of the
    left column for the timeline beside them. */
-body.connect-tm-active .workspace-tabs.connect-tm-below-bar > .workspace-tab-container {
-  margin-top: var(--connect-tm-bar-height, 0);
+body.mycel-tm-active .workspace-tabs.mycel-tm-below-bar > .workspace-tab-container {
+  margin-top: var(--mycel-tm-bar-height, 0);
 }
 
-body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-container {
-  margin-left: var(--connect-tm-strip-width, 56px);
+body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-container {
+  margin-left: var(--mycel-tm-strip-width, 56px);
 }
 
-.connect-tm-unseen {
+.mycel-tm-unseen {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -237,11 +237,11 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
 }
 
 /* The bar above the editors, under their tabs. */
-.connect-tm-bar-top {
+.mycel-tm-bar-top {
   position: absolute;
-  top: var(--connect-tm-top, 0);
-  left: var(--connect-tm-left, 0);
-  right: var(--connect-tm-right, 0);
+  top: var(--mycel-tm-top, 0);
+  left: var(--mycel-tm-left, 0);
+  right: var(--mycel-tm-right, 0);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -252,21 +252,21 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   box-shadow: var(--shadow-s);
 }
 
-.connect-tm-bar-icon {
+.mycel-tm-bar-icon {
   display: inline-flex;
   color: var(--color-orange);
 }
 
-.connect-tm-bar-text {
+.mycel-tm-bar-text {
   flex: 1;
   min-width: 12em;
 }
 
-.connect-tm-bar-title {
+.mycel-tm-bar-title {
   font-weight: 600;
 }
 
-.connect-tm-bar-line2 {
+.mycel-tm-bar-line2 {
   display: flex;
   flex-wrap: wrap;
   gap: 0 0.5em;
@@ -274,15 +274,15 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   font-variant-numeric: tabular-nums;
 }
 
-.connect-tm-bar-moment {
+.mycel-tm-bar-moment {
   color: var(--text-normal);
 }
 
-.connect-tm-bar-detail {
+.mycel-tm-bar-detail {
   color: var(--text-muted);
 }
 
-.connect-tm-bar-buttons {
+.mycel-tm-bar-buttons {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -291,23 +291,23 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   margin-left: auto;
 }
 
-.connect-tm-bar-buttons > button {
+.mycel-tm-bar-buttons > button {
   flex-shrink: 0;
 }
 
-.connect-tm-bar-action.is-active {
+.mycel-tm-bar-action.is-active {
   color: var(--text-accent);
 }
 
 /* The timeline: upright at the left edge, in a column of its own, the oldest at the
    top, now at the bottom. */
-.connect-tm-strip {
-  --connect-tm-base: 14px;
+.mycel-tm-strip {
+  --mycel-tm-base: 14px;
   position: absolute;
-  top: var(--connect-tm-strip-top, 4em);
-  left: var(--connect-tm-left, 0);
-  width: var(--connect-tm-strip-width, 56px);
-  height: var(--connect-tm-strip-height, calc(100vh - 6em));
+  top: var(--mycel-tm-strip-top, 4em);
+  left: var(--mycel-tm-left, 0);
+  width: var(--mycel-tm-strip-width, 56px);
+  height: var(--mycel-tm-strip-height, calc(100vh - 6em));
   border-right: 1px solid var(--background-modifier-border);
   background-color: var(--background-secondary);
   outline: none;
@@ -315,7 +315,7 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   user-select: none;
 }
 
-.connect-tm-strip-bars {
+.mycel-tm-strip-bars {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -325,17 +325,17 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   scrollbar-width: none;
 }
 
-.connect-tm-strip-bars::-webkit-scrollbar {
+.mycel-tm-strip-bars::-webkit-scrollbar {
   display: none;
 }
 
 /* Now at the bottom while they fit; justify-content: flex-end would cut off the
    oldest once they no longer do. */
-.connect-tm-bar:first-child {
+.mycel-tm-bar:first-child {
   margin-top: auto;
 }
 
-.connect-tm-bar {
+.mycel-tm-bar {
   display: flex;
   flex: 0 0 26px;
   align-items: center;
@@ -344,17 +344,17 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   cursor: pointer;
 }
 
-.connect-tm-bar.is-new-day {
+.mycel-tm-bar.is-new-day {
   margin-top: 12px;
 }
 
 /* Longer near the pointer, the wave falling off with the distance. */
-.connect-tm-bar-line {
-  width: calc(var(--connect-tm-base) * var(--connect-tm-scale, 1));
+.mycel-tm-bar-line {
+  width: calc(var(--mycel-tm-base) * var(--mycel-tm-scale, 1));
   height: 2px;
   border-radius: 1px;
   background-color: var(--text-faint);
-  transform: scaleY(calc(0.6 + 0.4 * var(--connect-tm-scale, 1)));
+  transform: scaleY(calc(0.6 + 0.4 * var(--mycel-tm-scale, 1)));
   transition:
     width 90ms ease-out,
     transform 90ms ease-out,
@@ -363,68 +363,68 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
 
 /* The moment before an earlier rollback: cyan and dashed - the accent, which marks
    the moment shown, is purple in Obsidian's own theme (0.8.16). */
-.connect-tm-bar.is-mark .connect-tm-bar-line {
+.mycel-tm-bar.is-mark .mycel-tm-bar-line {
   background: repeating-linear-gradient(90deg, var(--color-cyan) 0 4px, transparent 4px 6px);
 }
 
-.connect-tm-bar.is-backup .connect-tm-bar-line {
+.mycel-tm-bar.is-backup .mycel-tm-bar-line {
   background-color: var(--color-orange);
 }
 
-.connect-tm-bar.is-now .connect-tm-bar-line {
+.mycel-tm-bar.is-now .mycel-tm-bar-line {
   background-color: var(--text-muted);
 }
 
-.connect-tm-bar:hover .connect-tm-bar-line {
+.mycel-tm-bar:hover .mycel-tm-bar-line {
   background: var(--text-normal);
 }
 
 /* The moment shown: long and thick whatever the pointer does, on a band of its own. */
-.connect-tm-bar.is-current {
+.mycel-tm-bar.is-current {
   background-color: var(--background-modifier-hover);
 }
 
-.connect-tm-bar.is-current .connect-tm-bar-line {
-  width: max(40px, calc(var(--connect-tm-base) * var(--connect-tm-scale, 1)));
+.mycel-tm-bar.is-current .mycel-tm-bar-line {
+  width: max(40px, calc(var(--mycel-tm-base) * var(--mycel-tm-scale, 1)));
   height: 6px;
   border-radius: 3px;
   background: var(--interactive-accent);
   transform: none;
 }
 
-.connect-tm-strip:focus-visible .connect-tm-bar.is-current .connect-tm-bar-line {
+.mycel-tm-strip:focus-visible .mycel-tm-bar.is-current .mycel-tm-bar-line {
   box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
 }
 
 /* What the colors on the timeline mean, in the bar above. */
-.connect-tm-legend {
+.mycel-tm-legend {
   display: inline-flex;
   align-items: center;
   gap: 0.3em;
   color: var(--text-muted);
 }
 
-.connect-tm-legend-swatch {
+.mycel-tm-legend-swatch {
   display: inline-block;
   width: 14px;
   height: 3px;
   border-radius: 1px;
 }
 
-.connect-tm-legend-swatch.is-mark {
+.mycel-tm-legend-swatch.is-mark {
   background: repeating-linear-gradient(90deg, var(--color-cyan) 0 4px, transparent 4px 6px);
 }
 
-.connect-tm-legend-swatch.is-backup {
+.mycel-tm-legend-swatch.is-backup {
   background-color: var(--color-orange);
 }
 
 /* A note locked by another device, or being restored here: framed, and a bar at the top of its editor. */
-.workspace-leaf-content.connect-locked-view > .view-content {
+.workspace-leaf-content.mycel-locked-view > .view-content {
   box-shadow: inset 0 0 0 2px rgba(var(--color-orange-rgb), 0.55);
 }
 
-.connect-lock-banner {
+.mycel-lock-banner {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -437,13 +437,13 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   font-size: var(--font-ui-small);
 }
 
-.connect-lock-banner-text {
+.mycel-lock-banner-text {
   flex: 1;
   min-width: 12em;
 }
 
 /* The moment under the pointer, to the second. */
-.connect-tm-strip-tip {
+.mycel-tm-strip-tip {
   position: absolute;
   left: 100%;
   margin-left: 6px;
@@ -462,16 +462,16 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   transition: opacity 80ms;
 }
 
-.connect-tm-strip-tip.is-shown {
+.mycel-tm-strip-tip.is-shown {
   opacity: 1;
 }
 
 /* A note showing its past, in its own editor: there then and not now, and there now and not then. */
-.connect-tm-then-line {
+.mycel-tm-then-line {
   background-color: rgba(var(--color-green-rgb), 0.14);
 }
 
-.connect-tm-now-lines {
+.mycel-tm-now-lines {
   padding: 0 0.5em;
   border-left: 3px solid rgba(var(--color-red-rgb), 0.6);
   background-color: rgba(var(--color-red-rgb), 0.08);
@@ -481,26 +481,26 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
 }
 
 /* Opening it, step by step. */
-.connect-tm-steps {
+.mycel-tm-steps {
   min-height: 2em;
   margin: 0.75em 0;
 }
 
-.connect-tm-step {
+.mycel-tm-step {
   color: var(--text-muted);
 }
 
 /* The overview: what differs from now. */
-.connect-tm-tree-head {
+.mycel-tm-tree-head {
   margin-bottom: 0.4em;
 }
 
-.connect-tm-tree {
+.mycel-tm-tree {
   max-height: 60vh;
   overflow-y: auto;
 }
 
-.connect-tm-item {
+.mycel-tm-item {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -510,31 +510,31 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   cursor: pointer;
 }
 
-.connect-tm-item:hover {
+.mycel-tm-item:hover {
   background-color: var(--background-modifier-hover);
 }
 
-.connect-tm-item.is-selected {
+.mycel-tm-item.is-selected {
   background-color: var(--background-modifier-active-hover);
 }
 
 /* Not there then: it would go. */
-.connect-tm-item.is-later .connect-tm-name {
+.mycel-tm-item.is-later .mycel-tm-name {
   color: var(--text-muted);
   text-decoration: line-through;
 }
 
-.connect-tm-icon {
+.mycel-tm-icon {
   display: inline-flex;
   color: var(--text-muted);
 }
 
-.connect-tm-icon svg {
+.mycel-tm-icon svg {
   width: 14px;
   height: 14px;
 }
 
-.connect-tm-folder > summary {
+.mycel-tm-folder > summary {
   display: flex;
   align-items: center;
   gap: 0.35em;
@@ -542,11 +542,11 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   cursor: pointer;
 }
 
-.connect-tm-children {
+.mycel-tm-children {
   padding-left: 1em;
 }
 
-.connect-tm-badge {
+.mycel-tm-badge {
   padding: 0 0.4em;
   border-radius: var(--radius-s);
   background-color: var(--background-modifier-border);
@@ -554,51 +554,51 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   font-size: 0.75em;
 }
 
-.connect-tm-badge.is-back {
+.mycel-tm-badge.is-back {
   color: var(--color-green);
 }
 
-.connect-tm-badge.is-goes {
+.mycel-tm-badge.is-goes {
   color: var(--color-red);
 }
 
-.connect-tm-badge.is-moved {
+.mycel-tm-badge.is-moved {
   color: var(--color-blue);
 }
 
-.connect-tm-badge.is-changed {
+.mycel-tm-badge.is-changed {
   color: var(--color-orange);
 }
 
-.connect-tm-badge.is-unsure {
+.mycel-tm-badge.is-unsure {
   opacity: 0.7;
 }
 
-.connect-tm-badge.is-foreign {
+.mycel-tm-badge.is-foreign {
   color: var(--color-purple);
 }
 
-.connect-tm-actions {
+.mycel-tm-actions {
   margin-top: 1em;
   padding-top: 0.75em;
   border-top: 1px solid var(--background-modifier-border);
 }
 
-.connect-tm-chosen {
+.mycel-tm-chosen {
   margin-bottom: 0.3em;
   font-weight: 600;
   word-break: break-word;
 }
 
 /* The notification center: the notices, and the rollbacks under a tab of their own. */
-.connect-notices-tabs {
+.mycel-notices-tabs {
   display: flex;
   gap: 0.25em;
   margin-bottom: 0.6em;
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.connect-notices-tabs > .connect-notices-tab {
+.mycel-notices-tabs > .mycel-notices-tab {
   margin-bottom: -1px;
   border: none;
   border-bottom: 2px solid transparent;
@@ -608,23 +608,23 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   color: var(--text-muted);
 }
 
-.connect-notices-tabs > .connect-notices-tab.is-active {
+.mycel-notices-tabs > .mycel-notices-tab.is-active {
   border-bottom-color: var(--interactive-accent);
   color: var(--text-normal);
 }
 
-.connect-notices-head {
+.mycel-notices-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 
-.connect-notices-quiet {
+.mycel-notices-quiet {
   color: var(--text-muted);
   font-size: var(--font-ui-small);
 }
 
-.connect-notices-day {
+.mycel-notices-day {
   margin: 0.9em 0 0.3em;
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
@@ -633,64 +633,64 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   letter-spacing: 0.04em;
 }
 
-.connect-notices-entry {
+.mycel-notices-entry {
   display: flex;
   gap: 0.5em;
   padding: 0.45em 0.5em;
   border-radius: var(--radius-s);
 }
 
-.connect-notices-entry.is-new {
+.mycel-notices-entry.is-new {
   background-color: var(--background-modifier-hover);
 }
 
-.connect-notices-entry.is-link {
+.mycel-notices-entry.is-link {
   cursor: pointer;
 }
 
-.connect-notices-entry.is-link:hover {
+.mycel-notices-entry.is-link:hover {
   background-color: var(--background-modifier-active-hover);
 }
 
-.connect-notices-icon {
+.mycel-notices-icon {
   display: inline-flex;
   flex: none;
   color: var(--text-muted);
 }
 
-.connect-notices-entry.is-error .connect-notices-icon {
+.mycel-notices-entry.is-error .mycel-notices-icon {
   color: var(--color-red);
 }
 
-.connect-notices-icon svg {
+.mycel-notices-icon svg {
   width: 15px;
   height: 15px;
 }
 
-.connect-notices-body {
+.mycel-notices-body {
   min-width: 0;
 }
 
-.connect-notices-text {
+.mycel-notices-text {
   word-break: break-word;
 }
 
-.connect-notices-time {
+.mycel-notices-time {
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
   font-variant-numeric: tabular-nums;
 }
 
-.connect-notices-action {
+.mycel-notices-action {
   margin-top: 0.3em;
 }
 
 /* How many notices were not seen, on the bell. */
-.connect-notices-ribbon {
+.mycel-notices-ribbon {
   position: relative;
 }
 
-.connect-notices-badge {
+.mycel-notices-badge {
   position: absolute;
   top: 0;
   right: 0;
@@ -705,16 +705,16 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   pointer-events: none;
 }
 
-.connect-notices-badge.is-hidden {
+.mycel-notices-badge.is-hidden {
   display: none;
 }
 
 /* What a rollback changes, one list per kind, folded. */
-.connect-rollback-list {
+.mycel-rollback-list {
   margin: 0.25em 0;
 }
 
-.connect-rollback-list ul {
+.mycel-rollback-list ul {
   max-height: 12em;
   overflow-y: auto;
   margin: 0.25em 0 0.5em;
@@ -723,50 +723,50 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
 }
 
 /* A backup server's own rows below its name. */
-.connect-backup-server {
+.mycel-backup-server {
   margin-top: 1em;
 }
 
-.connect-backup-server .setting-item-name {
+.mycel-backup-server .setting-item-name {
   font-weight: 600;
 }
 
 /* A decrypted copy the guard holds, or one being let follow: not a row to scroll past. */
-.connect-copy-waits {
+.mycel-copy-waits {
   border-left: 3px solid var(--color-orange);
   padding-left: 0.75em;
 }
 
 /* What vanished, in the window that asks about it. */
-.connect-shrunk {
+.mycel-shrunk {
   margin: 0.5em 0 0.75em;
   padding-left: 1.25em;
 }
 
-.connect-shrunk li {
+.mycel-shrunk li {
   margin: 0.2em 0;
   font-variant-numeric: tabular-nums;
 }
 
-.connect-follow-status:empty {
+.mycel-follow-status:empty {
   display: none;
 }
 
 /* The days a backup runs on, one button each, and the time beside them; they wrap on a phone. */
-.connect-schedule {
+.mycel-schedule {
   flex-wrap: wrap;
   gap: 0.75em;
   border-top: none;
   padding-top: 0;
 }
 
-.connect-days {
+.mycel-days {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35em;
 }
 
-.connect-days button.connect-day {
+.mycel-days button.mycel-day {
   min-width: 2.6em;
   padding: 0.3em 0.55em;
   border: 1px solid var(--background-modifier-border);
@@ -778,44 +778,44 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   cursor: pointer;
 }
 
-.connect-days button.connect-day:hover {
+.mycel-days button.mycel-day:hover {
   color: var(--text-normal);
   border-color: var(--interactive-accent);
 }
 
-.connect-days button.connect-day.is-active {
+.mycel-days button.mycel-day.is-active {
   background: var(--interactive-accent);
   border-color: var(--interactive-accent);
   color: var(--text-on-accent);
   font-weight: 600;
 }
 
-.connect-time {
+.mycel-time {
   gap: 0.3em;
 }
 
-.connect-time .connect-time-word {
+.mycel-time .mycel-time-word {
   color: var(--text-muted);
 }
 
-.connect-time select.dropdown {
+.mycel-time select.dropdown {
   min-width: 4em;
   font-variant-numeric: tabular-nums;
 }
 
 /* Dark on light whatever the theme, with a quiet zone: scanners need both. */
-.connect-qr {
+.mycel-qr {
   width: min(240px, 70vw);
   margin: 0.5em auto;
 }
 
-.connect-qr svg {
+.mycel-qr svg {
   display: block;
   width: 100%;
   height: auto;
 }
 
-.connect-recovery-code {
+.mycel-recovery-code {
   font-size: 1.3em;
   letter-spacing: 0.05em;
   text-align: center;
@@ -827,89 +827,89 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
 }
 
 /* Comparing the two versions of a note. */
-.connect-review-modal {
+.mycel-review-modal {
   width: min(900px, 95vw);
 }
 
-.connect-review-list {
+.mycel-review-list {
   max-height: 50vh;
   overflow-y: auto;
   margin: 0.5em 0 1em;
 }
 
-.connect-review-list pre,
-.connect-review-same {
+.mycel-review-list pre,
+.mycel-review-same {
   margin: 0;
   font-size: 0.85em;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.connect-review-same {
+.mycel-review-same {
   padding: 0.25em 0.6em;
   color: var(--text-muted);
 }
 
-.connect-review-hunk {
+.mycel-review-hunk {
   margin: 0.4em 0;
   padding: 0.5em;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
 }
 
-.connect-review-sides {
+.mycel-review-sides {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.5em;
 }
 
-.connect-review-side {
+.mycel-review-side {
   padding: 0.4em 0.6em;
   border-radius: 4px;
   background-color: var(--background-secondary);
 }
 
-.connect-review-side.is-mine {
+.mycel-review-side.is-mine {
   border-left: 3px solid var(--color-blue);
 }
 
-.connect-review-side.is-theirs {
+.mycel-review-side.is-theirs {
   border-left: 3px solid var(--color-purple);
 }
 
-.connect-review-label,
-.connect-review-heading {
+.mycel-review-label,
+.mycel-review-heading {
   margin-bottom: 0.25em;
   color: var(--text-muted);
   font-size: 0.8em;
   font-weight: 600;
 }
 
-.connect-review-choices {
+.mycel-review-choices {
   display: flex;
   gap: 0.4em;
   margin-top: 0.5em;
 }
 
-.connect-review-choices button.is-active {
+.mycel-review-choices button.is-active {
   background-color: var(--interactive-accent);
   color: var(--text-on-accent);
 }
 
 @media (max-width: 600px) {
-  .connect-review-sides {
+  .mycel-review-sides {
     grid-template-columns: 1fr;
   }
 }
 
 /* A button whose click is still being worked on: greyed out, spinning. */
-.connect-busy {
+.mycel-busy {
   opacity: 0.6;
   cursor: progress;
   pointer-events: none;
 }
 
-.connect-busy::after {
+.mycel-busy::after {
   content: '';
   display: inline-block;
   width: 0.9em;
@@ -919,10 +919,10 @@ body.connect-tm-active .workspace-tabs.connect-tm-beside-strip > .workspace-tab-
   border-right-color: transparent;
   border-radius: 50%;
   vertical-align: -0.15em;
-  animation: connect-spin 0.7s linear infinite;
+  animation: mycel-spin 0.7s linear infinite;
 }
 
-@keyframes connect-spin {
+@keyframes mycel-spin {
   to {
     transform: rotate(360deg);
   }

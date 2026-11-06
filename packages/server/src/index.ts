@@ -12,7 +12,7 @@ import { startServer } from './server.js'
 async function writable(folder: string): Promise<string | null> {
   try {
     await mkdir(folder, { recursive: true })
-    const probe = join(folder, `.obsidian-connect-probe-${process.pid}`)
+    const probe = join(folder, `.mycel-probe-${process.pid}`)
     await writeFile(probe, '')
     await rm(probe, { force: true })
     return null
@@ -26,12 +26,12 @@ const config = loadConfig()
 const unwritable = await writable(config.dataDir)
 if (unwritable) {
   console.error(
-    `[obsidian-connect] ${unwritable}. The image hands its data folder to PUID:PGID by itself - unless it is started as another user ("user:" in compose): then give the folder to that user (chown -R <uid>:<gid> <folder>), or leave "user:" out.`
+    `[mycel] ${unwritable}. The image hands its data folder to PUID:PGID by itself - unless it is started as another user ("user:" in compose): then give the folder to that user (chown -R <uid>:<gid> <folder>), or leave "user:" out.`
   )
   process.exit(1)
 }
 const server = await startServer(config)
-if (envFile) console.info(`[obsidian-connect] settings from ${envFile}`)
+if (envFile) console.info(`[mycel] settings from ${envFile}`)
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {

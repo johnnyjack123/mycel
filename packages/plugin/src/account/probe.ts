@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, type RegistrationMode } from '@obsidian-connect/shared'
+import { PROTOCOL_VERSION, type RegistrationMode } from '@mycel/shared'
 import { ApiError, type ConnectApi } from './api.js'
 
 // Asked before anyone signs in, so the settings can say why signing in cannot
@@ -10,7 +10,7 @@ export type ServerProbe =
   | { state: 'unreachable'; reason: string }
   | { state: 'incompatible'; reason: string }
 
-const SERVICE = 'obsidian-connect-server'
+const SERVICE = 'mycel-server'
 
 /** `pinned`: the server id this device knows for the address; null for none. */
 export async function probeServer(api: ConnectApi, pinned: string | null = null): Promise<ServerProbe> {
@@ -19,13 +19,13 @@ export async function probeServer(api: ConnectApi, pinned: string | null = null)
     health = await api.health()
   } catch (error) {
     if (error instanceof ApiError && error.status !== 0) {
-      return { state: 'incompatible', reason: `Something answers there, but not an Obsidian Connect server (HTTP ${error.status}).` }
+      return { state: 'incompatible', reason: `Something answers there, but not an Mycel server (HTTP ${error.status}).` }
     }
     return { state: 'unreachable', reason: error instanceof Error ? error.message : String(error) }
   }
   const { service, protocol } = (health ?? {}) as { service?: unknown; protocol?: unknown }
   if (service !== SERVICE) {
-    return { state: 'incompatible', reason: 'Something answers there, but not an Obsidian Connect server.' }
+    return { state: 'incompatible', reason: 'Something answers there, but not an Mycel server.' }
   }
   if (protocol !== PROTOCOL_VERSION) {
     const older = typeof protocol === 'number' && protocol < PROTOCOL_VERSION

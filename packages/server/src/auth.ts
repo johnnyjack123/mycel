@@ -27,7 +27,7 @@ export class TokenService {
     const token = await new SignJWT({ scope: 'user', gen })
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(accountId)
-      .setIssuer('obsidian-connect')
+      .setIssuer('mycel')
       .setIssuedAt()
       .setExpirationTime(`${this.ttlSeconds}s`)
       .sign(this.key)
@@ -48,7 +48,7 @@ export class TokenService {
     return new SignJWT({ scope: '2fa', gen })
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(accountId)
-      .setIssuer('obsidian-connect')
+      .setIssuer('mycel')
       .setIssuedAt()
       .setExpirationTime(`${CHALLENGE_SECONDS}s`)
       .sign(this.key)
@@ -67,7 +67,7 @@ export class TokenService {
     const token = await new SignJWT({ scope: 'backup', gen, vault: vaultId, kid: keyId })
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(accountId)
-      .setIssuer('obsidian-connect')
+      .setIssuer('mycel')
       .setIssuedAt()
       .setExpirationTime(`${BACKUP_SECONDS}s`)
       .sign(this.key)
@@ -75,7 +75,7 @@ export class TokenService {
   }
 
   async verifyBackup(token: string): Promise<BackupSession> {
-    const { payload } = await jwtVerify(token, this.key, { issuer: 'obsidian-connect' })
+    const { payload } = await jwtVerify(token, this.key, { issuer: 'mycel' })
     if (
       payload.scope !== 'backup' ||
       typeof payload.sub !== 'string' ||
@@ -89,7 +89,7 @@ export class TokenService {
   }
 
   private async check(token: string, scope: 'user' | '2fa'): Promise<TokenSession> {
-    const { payload } = await jwtVerify(token, this.key, { issuer: 'obsidian-connect' })
+    const { payload } = await jwtVerify(token, this.key, { issuer: 'mycel' })
     if (payload.scope !== scope || typeof payload.sub !== 'string' || typeof payload.gen !== 'number') throw new Error(`not a ${scope} token`)
     return { accountId: payload.sub, gen: payload.gen }
   }

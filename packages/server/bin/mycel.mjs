@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// `obsidian-connect user add <name>` and friends. Runs the TypeScript CLI
+// `mycel user add <name>` and friends. Runs the TypeScript CLI
 // through tsx, the same way the server itself runs.
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'

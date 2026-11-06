@@ -3,7 +3,7 @@
 // time - a missing export, a bad top-level call - which in Obsidian shows up
 // only as a plugin that silently refuses to start.
 //
-//   npm run build:plugin && npm run test:load -w @obsidian-connect/plugin
+//   npm run build:plugin && npm run test:load -w @mycel/plugin
 import Module from 'node:module'
 import { createRequire } from 'node:module'
 import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs'
@@ -16,7 +16,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 // parse main.js as ESM. Obsidian evaluates it as CommonJS itself; the .cjs copy
 // reproduces that.
 const source = join(here, '..', 'main.js')
-const bundle = join(mkdtempSync(join(tmpdir(), 'connect-load-')), 'main.cjs')
+const bundle = join(mkdtempSync(join(tmpdir(), 'mycel-load-')), 'main.cjs')
 copyFileSync(source, bundle)
 
 class Stub {
@@ -73,7 +73,7 @@ const obsidian = {
           else localStorageStub.set(key, value)
         }
       }
-      this.manifest = { id: 'obsidian-connect', dir: '.obsidian/plugins/obsidian-connect' }
+      this.manifest = { id: 'mycel', dir: '.obsidian/plugins/mycel' }
     }
     addStatusBarItem() {
       return { setText: fn, addClass: fn, removeClass: fn, addEventListener: fn, empty: fn, hide: fn, show: fn, setAttribute: fn }
@@ -274,12 +274,12 @@ if (exported) {
       registered.commands
     )
     check(
-      registered.views.includes('obsidian-connect-time-machine') && ['time-machine', 'time-machine-note', 'time-machine-close'].every((id) => registered.commands.includes(id)),
+      registered.views.includes('mycel-time-machine') && ['time-machine', 'time-machine-note', 'time-machine-close'].every((id) => registered.commands.includes(id)),
       "it registers the Time Machine's overview and its commands",
       { views: registered.views, commands: registered.commands }
     )
     check(
-      registered.views.includes('obsidian-connect-notifications') && registered.commands.includes('notifications'),
+      registered.views.includes('mycel-notifications') && registered.commands.includes('notifications'),
       'and the notification center, with its command',
       { views: registered.views, commands: registered.commands }
     )

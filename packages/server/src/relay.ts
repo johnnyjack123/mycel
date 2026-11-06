@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { WebSocket } from 'ws'
-import { CLOSE_SIGNED_OUT, type RelayFrame } from '@obsidian-connect/shared'
+import { CLOSE_SIGNED_OUT, type RelayFrame } from '@mycel/shared'
 import { heartbeat } from './wshub.js'
 
 // Brings a device and a backup server together, so the backup server needs no

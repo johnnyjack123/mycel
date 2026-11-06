@@ -1,12 +1,12 @@
 import { App, Modal, Setting, TextComponent } from 'obsidian'
 import { Notice } from '../notices.js'
 import qrcode from 'qrcode-generator'
-import { newTotpSecret, totpKeyText, totpMatches, totpUri, type Bytes } from '@obsidian-connect/shared/crypto'
+import { newTotpSecret, totpKeyText, totpMatches, totpUri, type Bytes } from '@mycel/shared/crypto'
 import { busy, type BusyButton } from '../busy'
 import { PasswordReveal } from './reveal'
 import type { KeepProblem } from './Session.js'
 
-const ISSUER = 'Obsidian Connect'
+const ISSUER = 'Mycel'
 const SVG = 'http://www.w3.org/2000/svg'
 
 /** A QR code as an SVG of its own, dark on light whatever the theme: scanners need the contrast. */
@@ -37,7 +37,7 @@ function renderQr(container: HTMLElement, text: string): void {
   modules.setAttribute('d', d)
   modules.setAttribute('fill', '#000000')
   svg.appendChild(modules)
-  container.createDiv({ cls: 'connect-qr' }).appendChild(svg)
+  container.createDiv({ cls: 'mycel-qr' }).appendChild(svg)
 }
 
 /** A text field for a six-digit code, as phones offer to fill one in. */
@@ -47,7 +47,7 @@ function codeField(setting: Setting, onChange: (value: string) => void, onEnter:
   text.inputEl.inputMode = 'numeric'
   text.inputEl.autocomplete = 'one-time-code'
   text.inputEl.maxLength = 7
-  text.inputEl.addClass('connect-code')
+  text.inputEl.addClass('mycel-code')
   text.inputEl.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') onEnter()
   })
@@ -81,7 +81,7 @@ class TotpCodeModal extends Modal {
     this.contentEl.createEl('p', {
       text: this.again
         ? 'That code was not right, or was used already. Enter the one your authenticator app shows now.'
-        : 'Your password is right. Now enter the six-digit code your authenticator app shows for Obsidian Connect.'
+        : 'Your password is right. Now enter the six-digit code your authenticator app shows for Mycel.'
     })
     const field = codeField(
       new Setting(this.contentEl).setName('Code'),
@@ -153,7 +153,7 @@ class KeepTotpModal extends Modal {
         text:
           this.problem === 'wrong'
             ? 'That code was not right, or was used already. Enter the one your authenticator app shows now.'
-            : 'Two-factor sign-in is on for this account. Still have Obsidian Connect in your authenticator app? Enter the code it shows now, and it stays on with that entry - your devices sign in with it, as before.'
+            : 'Two-factor sign-in is on for this account. Still have Mycel in your authenticator app? Enter the code it shows now, and it stays on with that entry - your devices sign in with it, as before.'
       })
       const field = codeField(
         new Setting(this.contentEl).setName('Code from the app'),
@@ -266,7 +266,7 @@ export class TotpSetupModal extends Modal {
     try {
       await busy(button, task)
     } catch (error) {
-      new Notice(`Obsidian Connect: ${error instanceof Error ? error.message : String(error)}`, 8_000)
+      new Notice(`Mycel: ${error instanceof Error ? error.message : String(error)}`, 8_000)
     } finally {
       this.busy = false
     }
@@ -340,7 +340,7 @@ export class TotpSetupModal extends Modal {
     this.contentEl.createEl('p', {
       text: 'Your new recovery code - the one before it no longer works. It opens your account on its own; keep it apart from your password and your phone.'
     })
-    this.contentEl.createDiv({ cls: 'connect-recovery-code connect-code', text: this.recoveryCode })
+    this.contentEl.createDiv({ cls: 'mycel-recovery-code mycel-code', text: this.recoveryCode })
     let next: { setDisabled(disabled: boolean): unknown } | null = null
     new Setting(this.contentEl).addButton((button) =>
       button.setButtonText('Copy').onClick(() => {
@@ -372,7 +372,7 @@ export class TotpSetupModal extends Modal {
     const secret = (this.secret ??= newTotpSecret())
     const uri = totpUri(secret, this.setup.label(), ISSUER)
     this.contentEl.createEl('p', {
-      text: 'Add Obsidian Connect to your authenticator app (Aegis, 2FAS, Google Authenticator, …): scan the code with your phone.'
+      text: 'Add Mycel to your authenticator app (Aegis, 2FAS, Google Authenticator, …): scan the code with your phone.'
     })
     renderQr(this.contentEl, uri)
     const onPhone = this.contentEl.createEl('p', { cls: 'setting-item-description' })
@@ -390,7 +390,7 @@ export class TotpSetupModal extends Modal {
           )
         })
       )
-      .nameEl.addClass('connect-code')
+      .nameEl.addClass('mycel-code')
     let action: BusyButton | null = null
     const turnOn = (): void =>
       void this.busyWith(async () => {
@@ -401,7 +401,7 @@ export class TotpSetupModal extends Modal {
           throw new Error('That code does not fit. Is the time on your phone set automatically?')
         }
         await this.setup.enable(this.password, secret, this.code)
-        new Notice('Obsidian Connect: two-factor sign-in is on. Your other devices sign in again, with a code.', 10_000)
+        new Notice('Mycel: two-factor sign-in is on. Your other devices sign in again, with a code.', 10_000)
         this.close()
       }, action)
     const field = codeField(

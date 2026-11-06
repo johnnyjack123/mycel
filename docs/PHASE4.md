@@ -83,8 +83,8 @@ interface AttachmentEntry {
 
 ```
 hash     = SHA-256(plaintext)
-blobId   = HMAC(HKDF(vaultKey, "obsidian-connect blob-id"), hash)    128 bits, hex
-blobKey  = HKDF(vaultKey, "obsidian-connect blob:<blobId>")
+blobId   = HMAC(HKDF(vaultKey, "mycel blob-id"), hash)    128 bits, hex
+blobKey  = HKDF(vaultKey, "mycel blob:<blobId>")
 ```
 
 - **Content-addressed:** the same content gives the same blob. Uploading again changes
@@ -148,9 +148,9 @@ caller's unless stated otherwise *(as built)*:
 - `POST /blobs/:account/:vaultId/purge {ids}`: deletes those blobs and keeps every one
   still attached to a room. Answers which ones went.
 - `.env`:
-  - `OBSIDIAN_CONNECT_MAX_FILE_MB`: default 100, shown in `/auth/config` so the
+  - `MYCEL_MAX_FILE_MB`: default 100, shown in `/auth/config` so the
     plugin does not try larger files.
-  - `OBSIDIAN_CONNECT_QUOTA_MB`: per account, default none. With open registration,
+  - `MYCEL_QUOTA_MB`: per account, default none. With open registration,
     this is what keeps a stranger from filling the disk.
   - Over a limit the server answers 413 or 507. The device keeps the file, says so
     once, and tries again later.
@@ -279,7 +279,7 @@ devices *(as built)*:
   ends; then every record goes. Nothing leaves the index before the server confirms
   the content gone.
 - **The server keeps a blob for 10 minutes after its last upload**, whatever it is
-  asked (`OBSIDIAN_CONNECT_PURGE_GRACE_S`); uploading content it has restarts that.
+  asked (`MYCEL_PURGE_GRACE_S`); uploading content it has restarts that.
   A device that uploads content the server already has names it a moment later, and
   another device cleaning up just then would delete it underneath. The purge answers
   what it kept, and that is asked about again next time.

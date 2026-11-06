@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { DECLINED_FIELD, FOLDERS_FIELD, INDEX_FIELD, type IndexEntry, type ShareRole, type VaultFolder } from '@obsidian-connect/shared'
+import { DECLINED_FIELD, FOLDERS_FIELD, INDEX_FIELD, type IndexEntry, type ShareRole, type VaultFolder } from '@mycel/shared'
 
 // The index is the only thing that knows which file a document belongs to.
 // Keying rooms by path instead would turn every rename into a new, empty

@@ -1,6 +1,6 @@
 import { App, Modal, Setting, type TFile } from 'obsidian'
 import { Notice } from '../notices.js'
-import type { ShareMembersResponse, ShareRole } from '@obsidian-connect/shared'
+import type { ShareMembersResponse, ShareRole } from '@mycel/shared'
 import { busy } from '../busy.js'
 import type { Sharing } from './Sharing.js'
 import { log } from '../log.js'

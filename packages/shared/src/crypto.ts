@@ -127,7 +127,7 @@ export function normalizeName(name: string): string {
  * keeps one precomputed table from attacking everyone at once.
  */
 export async function accountSalt(serverId: string, username: string): Promise<Bytes> {
-  return (await sha256(utf8(`obsidian-connect salt::${serverId}::${normalizeName(username)}`))).slice(0, 16)
+  return (await sha256(utf8(`mycel salt::${serverId}::${normalizeName(username)}`))).slice(0, 16)
 }
 
 export interface PasswordKeys {
@@ -161,8 +161,8 @@ export async function derivePasswordKeys(
     })
   )
   return {
-    loginKey: await hkdf(stretched, 'obsidian-connect login'),
-    masterKey: await hkdf(stretched, 'obsidian-connect master')
+    loginKey: await hkdf(stretched, 'mycel login'),
+    masterKey: await hkdf(stretched, 'mycel master')
   }
 }
 
@@ -171,19 +171,19 @@ export async function derivePasswordKeys(
  * A password change re-wraps only the secret; vaults stay as they are.
  */
 export const accountKeys = {
-  vaultWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect vault-wrap'),
+  vaultWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'mycel vault-wrap'),
   /** Wraps the account's signing key: a password change or a recovery re-wraps the secret only. */
-  signingWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect signing-wrap'),
+  signingWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'mycel signing-wrap'),
   /**
    * Wraps the account secret a replacement of every key replaced, under the
    * new one, until the vaults are written anew: a password change or a
    * recovery meanwhile leaves it readable.
    */
-  previousWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect previous-wrap'),
-  vaultName: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'obsidian-connect vault-name'),
+  previousWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'mycel previous-wrap'),
+  vaultName: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'mycel vault-name'),
   /** The same on every device of the account, and meaningless to everyone else. */
   vaultId: async (secret: Bytes, vaultName: string): Promise<string> =>
-    toHex((await hmac(await hkdf(secret, 'obsidian-connect vault-id'), `vault::${vaultName.trim()}`)).subarray(0, 16))
+    toHex((await hmac(await hkdf(secret, 'mycel vault-id'), `vault::${vaultName.trim()}`)).subarray(0, 16))
 }
 
 /**
@@ -222,21 +222,21 @@ export async function blobIdFor(blobIdKey: Bytes, hash: string): Promise<string>
 
 /** Everything the owner encrypts with comes from the vault key. */
 export const vaultKeys = {
-  blobId: (vaultKey: Bytes): Promise<Bytes> => hkdf(vaultKey, 'obsidian-connect blob-id'),
+  blobId: (vaultKey: Bytes): Promise<Bytes> => hkdf(vaultKey, 'mycel blob-id'),
   /** Derived, so a blob's key is never stored; it leaves the vault only inside a shared note. */
-  blob: (vaultKey: Bytes, blobId: string): Promise<Bytes> => hkdf(vaultKey, `obsidian-connect blob:${blobId}`),
-  index: (vaultKey: Bytes): Promise<Bytes> => hkdf(vaultKey, 'obsidian-connect idx'),
-  settings: (vaultKey: Bytes): Promise<Bytes> => hkdf(vaultKey, 'obsidian-connect set'),
+  blob: (vaultKey: Bytes, blobId: string): Promise<Bytes> => hkdf(vaultKey, `mycel blob:${blobId}`),
+  index: (vaultKey: Bytes): Promise<Bytes> => hkdf(vaultKey, 'mycel idx'),
+  settings: (vaultKey: Bytes): Promise<Bytes> => hkdf(vaultKey, 'mycel set'),
   /**
    * One key per note and epoch. The owner can always derive every epoch, which
    * is what keeps the whole history readable to them; moving to a new epoch
    * is just counting up.
    */
   doc: (vaultKey: Bytes, docId: string, epoch: number): Promise<Bytes> =>
-    hkdf(vaultKey, `obsidian-connect doc:${docId}:${epoch}`),
+    hkdf(vaultKey, `mycel doc:${docId}:${epoch}`),
   /** One key per shared folder and folder epoch; members get it sealed. */
   folder: (vaultKey: Bytes, folderId: string, epoch: number): Promise<Bytes> =>
-    hkdf(vaultKey, `obsidian-connect fld:${folderId}:${epoch}`)
+    hkdf(vaultKey, `mycel fld:${folderId}:${epoch}`)
 }
 
 /**
@@ -246,17 +246,17 @@ export const vaultKeys = {
  */
 export const folderKeys = {
   /** The folder room's own key in that epoch. */
-  room: (folderKey: Bytes): Promise<Bytes> => hkdf(folderKey, 'obsidian-connect folder-room'),
+  room: (folderKey: Bytes): Promise<Bytes> => hkdf(folderKey, 'mycel folder-room'),
   /** A note's key for an epoch it spent in the folder while the folder was in this one. */
   doc: (folderKey: Bytes, docId: string, epoch: number): Promise<Bytes> =>
-    hkdf(folderKey, `obsidian-connect doc:${docId}:${epoch}`),
+    hkdf(folderKey, `mycel doc:${docId}:${epoch}`),
   /**
    * The key ids of notes and files created in the folder are derived under
    * (`deriveDocId`, `deriveFileId`, on the path relative to the folder): the same
    * for everyone in it, and new with every epoch, so someone revoked cannot
    * compute the ids still to come and claim their rooms first.
    */
-  ids: (folderKey: Bytes): Promise<Bytes> => hkdf(folderKey, 'obsidian-connect folder-ids')
+  ids: (folderKey: Bytes): Promise<Bytes> => hkdf(folderKey, 'mycel folder-ids')
 }
 
 // --- symmetric ---------------------------------------------------------------------
@@ -322,7 +322,7 @@ function importPublicKey(raw: Bytes): Promise<CryptoKey> {
 async function sealingKey(shared: ArrayBuffer, ephemeral: Bytes, recipient: Bytes): Promise<CryptoKey> {
   // Both public keys go into the derivation, so a sealed box only opens for
   // the pair it was made for.
-  return aesKey(await hkdf(concat(new Uint8Array(shared), ephemeral, recipient), 'obsidian-connect seal'))
+  return aesKey(await hkdf(concat(new Uint8Array(shared), ephemeral, recipient), 'mycel seal'))
 }
 
 /**
@@ -656,9 +656,9 @@ export interface ContactKeys {
 
 export async function contactKeys(secret: Bytes): Promise<ContactKeys> {
   return {
-    codeId: toHex(await hkdf(secret, 'obsidian-connect contact-id', 16)),
-    redeemKey: await hkdf(secret, 'obsidian-connect contact-redeem'),
-    macKey: await hkdf(secret, 'obsidian-connect contact-mac')
+    codeId: toHex(await hkdf(secret, 'mycel contact-id', 16)),
+    redeemKey: await hkdf(secret, 'mycel contact-redeem'),
+    macKey: await hkdf(secret, 'mycel contact-mac')
   }
 }
 
@@ -755,7 +755,7 @@ type CodeKind = 'recovery' | 'backup-invite'
  * typo, not a request the server counts against the address.
  */
 async function codeCheck(secret: Bytes, kind: CodeKind): Promise<Bytes> {
-  const label = kind === 'recovery' ? 'obsidian-connect recovery-check' : 'obsidian-connect backup-invite-check'
+  const label = kind === 'recovery' ? 'mycel recovery-check' : 'mycel backup-invite-check'
   const check = (await sha256(concat(utf8(label), secret))).slice(0, RECOVERY_CHECK_BYTES)
   check[RECOVERY_CHECK_BYTES - 1] &= 0xfc
   return check
@@ -867,8 +867,8 @@ export async function totpMatches(secret: Bytes, code: string, nowMs: number): P
 
 export async function recoveryKeys(secret: Bytes): Promise<RecoveryKeys> {
   return {
-    recoveryKey: await hkdf(secret, 'obsidian-connect recovery-login'),
-    wrapKey: await hkdf(secret, 'obsidian-connect recovery-wrap')
+    recoveryKey: await hkdf(secret, 'mycel recovery-login'),
+    wrapKey: await hkdf(secret, 'mycel recovery-wrap')
   }
 }
 
@@ -909,11 +909,11 @@ export interface BackupRouteKeys {
 }
 
 export async function backupRouteKeys(secret: Bytes): Promise<BackupRouteKeys> {
-  const routeToken = await hkdf(secret, 'obsidian-connect backup-route')
+  const routeToken = await hkdf(secret, 'mycel backup-route')
   return {
     routeToken,
     routeId: toHex(await sha256(routeToken)),
-    psk: await hkdf(secret, 'obsidian-connect backup-pair')
+    psk: await hkdf(secret, 'mycel backup-pair')
   }
 }
 
@@ -948,13 +948,13 @@ function other(role: SessionRole): SessionRole {
 async function sessionKeys(role: SessionRole, privateKey: CryptoKey, peer: Bytes, psk: Bytes, transcript: string): Promise<SessionKeys> {
   const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: await importPublicKey(peer) }, privateKey, 256))
   const material = concat(shared, psk)
-  const key = async (from: SessionRole): Promise<CryptoKey> => aesKey(await hkdf(material, `obsidian-connect backup-session ${from} ${transcript}`))
+  const key = async (from: SessionRole): Promise<CryptoKey> => aesKey(await hkdf(material, `mycel backup-session ${from} ${transcript}`))
   return { send: await key(role), receive: await key(other(role)), transcript }
 }
 
 /** Proves knowledge of the code for this session only: the transcript holds both fresh keys. */
 export async function sessionProof(psk: Bytes, from: SessionRole, transcript: string): Promise<string> {
-  return toHex(await hmac(psk, `obsidian-connect backup-proof ${from} ${transcript}`))
+  return toHex(await hmac(psk, `mycel backup-proof ${from} ${transcript}`))
 }
 
 /** The plugin opens a session. Its private half stays here until `finishSession`. */

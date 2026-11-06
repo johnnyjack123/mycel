@@ -1,4 +1,4 @@
-import type { InboxItem } from '@obsidian-connect/shared'
+import type { InboxItem } from '@mycel/shared'
 import {
   contactContext,
   contactKeys,
@@ -17,7 +17,7 @@ import {
   unseal,
   utf8,
   type Bytes
-} from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared/crypto'
 import type { ConnectApi } from '../account/api.js'
 import type { AccountSettings, Contact } from '../sync/AccountSettings.js'
 import { log } from '../log.js'

@@ -1,6 +1,6 @@
 import { App, Modal, Setting } from 'obsidian'
 import { Notice } from '../notices.js'
-import type { IncomingFolder, IncomingShare } from '@obsidian-connect/shared'
+import type { IncomingFolder, IncomingShare } from '@mycel/shared'
 import { busy } from '../busy.js'
 import type { Folders } from './Folders.js'
 import type { Sharing } from './Sharing.js'

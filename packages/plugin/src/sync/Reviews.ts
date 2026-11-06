@@ -1,5 +1,5 @@
 import type { DataAdapter } from 'obsidian'
-import { lineDiff } from '@obsidian-connect/shared'
+import { lineDiff } from '@mycel/shared'
 import { log } from '../log.js'
 
 // A note that differed on two devices with nothing to tell which side changed

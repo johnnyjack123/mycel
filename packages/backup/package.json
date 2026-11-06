@@ -1,17 +1,17 @@
 {
-  "name": "@obsidian-connect/backup",
-  "version": "0.9.6",
+  "name": "@mycel/backup",
+  "version": "0.9.7",
   "private": true,
   "type": "module",
   "bin": {
-    "obsidian-connect-backup": "bin/obsidian-connect-backup.mjs"
+    "mycel-backup": "bin/mycel-backup.mjs"
   },
   "scripts": {
     "start": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@obsidian-connect/shared": "*",
+    "@mycel/shared": "*",
     "tsx": "^4.19.1",
     "yjs": "^13.6.20"
   },

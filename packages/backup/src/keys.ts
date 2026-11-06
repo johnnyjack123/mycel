@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { folderRoom, frameAad, roomKind, roomSubject, snapshotAad, type BackupGrant } from '@obsidian-connect/shared'
+import { folderRoom, frameAad, roomKind, roomSubject, snapshotAad, type BackupGrant } from '@mycel/shared'
 import {
   aesKey,
   blobIdFor,
@@ -14,7 +14,7 @@ import {
   unseal,
   vaultKeys,
   type Bytes
-} from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared/crypto'
 import type { CachedRoom } from './cache.js'
 
 // Every key one vault uses, from what a device granted: the vault key derives

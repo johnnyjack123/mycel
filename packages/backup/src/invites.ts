@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { encodeBackupInvite, fromBase64, newBackupSecret, toBase64 } from '@obsidian-connect/shared/crypto'
+import { encodeBackupInvite, fromBase64, newBackupSecret, toBase64 } from '@mycel/shared/crypto'
 
 // The operator's invitations: each lets one person connect one vault, once,
 // within a week. The command line writes them into the data volume and the

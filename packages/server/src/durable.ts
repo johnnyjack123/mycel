@@ -145,7 +145,7 @@ export async function withFileLock<T>(path: string, task: () => Promise<T>, opti
       () => null
     )
     if (age !== null && age > staleMs) {
-      console.warn(`[obsidian-connect] ${path} was left by a process that stopped; taken over`)
+      console.warn(`[mycel] ${path} was left by a process that stopped; taken over`)
       await unlink(path).catch(() => undefined)
       continue
     }
@@ -189,19 +189,19 @@ export async function takeServerLock(dataDir: string, beatMs = SERVER_LOCK_BEAT_
       () => null
     )
     if (age !== null && age > staleMs) {
-      console.warn(`[obsidian-connect] ${path} was left by a server that stopped; taken over`)
+      console.warn(`[mycel] ${path} was left by a server that stopped; taken over`)
       await unlink(path).catch(() => undefined)
       continue
     }
     if (Date.now() > deadline) {
       throw new Error(`another server runs on ${dataDir} (${path} is kept fresh); stop it first`)
     }
-    if (age !== null) console.info(`[obsidian-connect] ${path} exists; waiting to see whether its server still runs`)
+    if (age !== null) console.info(`[mycel] ${path} exists; waiting to see whether its server still runs`)
     await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, staleMs)))
   }
   const beat = setInterval(() => {
     const now = new Date()
-    void utimes(path, now, now).catch((error: unknown) => console.error(`[obsidian-connect] keeping ${path} fresh failed`, error))
+    void utimes(path, now, now).catch((error: unknown) => console.error(`[mycel] keeping ${path} fresh failed`, error))
   }, beatMs)
   beat.unref()
   return {

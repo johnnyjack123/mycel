@@ -7,7 +7,7 @@ import type {
   ReplaceKeysRequest,
   SessionResponse,
   VaultRecord
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 import {
   CURRENT_KDF_VERSION,
   KDF_VERSIONS,
@@ -36,7 +36,7 @@ import {
   wrapSecret,
   type Argon2id,
   type Bytes
-} from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared/crypto'
 import { ApiError, type ConnectApi } from './api.js'
 
 // Signing in without the server ever learning a name. The device derives the
@@ -84,10 +84,10 @@ export interface OpenVault {
   key: Bytes
 }
 
-const MASTER = 'obsidian-connect:master'
-const BUNDLE = 'obsidian-connect:bundle'
-const NAME = 'obsidian-connect:name'
-const SERVER = 'obsidian-connect:server'
+const MASTER = 'mycel:master'
+const BUNDLE = 'mycel:bundle'
+const NAME = 'mycel:name'
+const SERVER = 'mycel:server'
 const PRIVATE_KEY = 'private-key'
 const ACCOUNT_SECRET = 'account-secret'
 // The recovery code's wrappings, under contexts of their own: neither can

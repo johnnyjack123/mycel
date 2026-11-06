@@ -25,7 +25,7 @@ const rangeProto = dom.window.Range.prototype as unknown as { getClientRects?: (
 rangeProto.getClientRects ??= () => []
 
 // Imported after the DOM globals exist; CodeMirror reads them at module scope.
-const { settingsRoom, userColor } = await import('@obsidian-connect/shared')
+const { settingsRoom, userColor } = await import('@mycel/shared')
 const { AccountSettings } = await import('../src/sync/AccountSettings.js')
 const { LocalCursor } = await import('../src/sync/DocHandle.js')
 const { Recovery } = await import('../src/sync/Recovery.js')
@@ -285,7 +285,7 @@ export class Device {
     // As main.ts: a restore from the Time Machine starts the sync under the lock it holds.
     if (this.heldLockId) socket.holdLock(this.heldLockId)
     const settings = new AccountSettings()
-    const settingsStore = this.locals.open(`obsidian-connect/${openVault.vaultId}/set`, settings.doc)
+    const settingsStore = this.locals.open(`mycel/${openVault.vaultId}/set`, settings.doc)
     this.settingsCursor = await LocalCursor.load(settingsStore)
     this.settingsStore = settingsStore
     this.settings = settings
@@ -570,7 +570,7 @@ export class Device {
   }
 
   /** What connecting a backup server does on the device: a backup key for this vault, and the grant it hands over. */
-  async makeBackupGrant(label = 'backup server', password = this.password): Promise<import('@obsidian-connect/shared').BackupGrant> {
+  async makeBackupGrant(label = 'backup server', password = this.password): Promise<import('@mycel/shared').BackupGrant> {
     if (!this.unlocked) throw new Error('not signed in')
     const vault = await this.session.openVault(this.unlocked, VAULT)
     const made = await this.session.makeBackupGrant(this.unlocked, password, vault, label)

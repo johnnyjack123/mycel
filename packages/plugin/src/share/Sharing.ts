@@ -16,7 +16,7 @@ import {
   type ShareMembersResponse,
   type ShareNotice,
   type ShareRole
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 import {
   aesKey,
   decrypt,
@@ -25,7 +25,7 @@ import {
   toBase64,
   unpackFrame,
   type Bytes
-} from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared/crypto'
 import { ApiError, type ConnectApi } from '../account/api.js'
 import type { KeyRing, Recipient } from '../account/KeyRing.js'
 import type { DocStore } from '../sync/DocStore.js'
@@ -150,7 +150,7 @@ export class Sharing {
   /** The key of someone a note or folder is shared with now: pinned when the contact was made. */
   recipientKey(account: string): Recipient {
     const pinned = this.contacts.publicKey(account)
-    if (!pinned) throw new Error('Notes are shared with contacts only. Add them under Settings → Obsidian Connect → Contacts first.')
+    if (!pinned) throw new Error('Notes are shared with contacts only. Add them under Settings → Mycel → Contacts first.')
     if (this.contacts.isReplaced(account)) throw new Error(replacedMessage([this.nameOf(account)]))
     return { account, publicKey: pinned }
   }

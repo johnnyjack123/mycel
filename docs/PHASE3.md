@@ -50,7 +50,7 @@ on a device.
 
 ## Accounts without names (built)
 
-- `salt = H("obsidian-connect" ‖ serverId ‖ username)`. `serverId` is 128 random
+- `salt = H("mycel" ‖ serverId ‖ username)`. `serverId` is 128 random
   bits the server draws on its very first start and keeps in its data directory —
   derived from nothing, so it moves with the data when the server moves. Public via
   `/auth/config`, and pinned by the plugin on first

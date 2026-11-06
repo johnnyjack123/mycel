@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { CONTENT_FIELD } from '@obsidian-connect/shared'
+import { CONTENT_FIELD } from '@mycel/shared'
 
 // Filling an empty document from the file it was made for. Every device that
 // seeds a note with the same text derives the same insertion - same client id,

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import type { Writable } from 'node:stream'
-import type { KeepPolicy } from '@obsidian-connect/shared'
+import type { KeepPolicy } from '@mycel/shared'
 
 // restic as the backup server runs it: one repository per call, its password
 // and credentials in the environment of that call only. restic encrypts
@@ -57,7 +57,7 @@ const INCOMPLETE = 3
 function environment(repo: ResticRepo, cacheDir: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(process.env)) {
-    if (!key.startsWith('RESTIC_') && !key.startsWith('OBSIDIAN_CONNECT_')) env[key] = value
+    if (!key.startsWith('RESTIC_') && !key.startsWith('MYCEL_')) env[key] = value
   }
   Object.assign(env, repo.env ?? {})
   env.RESTIC_REPOSITORY = repo.repository

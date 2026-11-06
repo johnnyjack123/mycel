@@ -72,7 +72,7 @@ import {
   type VaultLockResponse,
   type VaultLockTaken,
   type VaultRecord
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 
 export interface HttpRequest {
   method: 'GET' | 'POST' | 'PUT'

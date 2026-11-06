@@ -7,7 +7,7 @@ import type { PastItem, TimeMachineSession } from './TimeMachine.js'
 // just this* takes one back alone. The earlier rollbacks are listed in the
 // notification center since 0.8.16, each opening the Time Machine before it.
 
-export const TIME_MACHINE_VIEW = 'obsidian-connect-time-machine'
+export const TIME_MACHINE_VIEW = 'mycel-time-machine'
 
 export interface OverviewHost {
   session(): TimeMachineSession | null
@@ -49,7 +49,7 @@ export class TimeMachineView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
-    this.contentEl.addClass('connect-tm')
+    this.contentEl.addClass('mycel-tm')
     this.unwatch = this.host.onChange(() => this.schedule())
     this.render()
   }
@@ -71,12 +71,12 @@ export class TimeMachineView extends ItemView {
 
   private render(): void {
     const el = this.contentEl
-    const scrolled = el.querySelector('.connect-tm-tree')?.scrollTop ?? 0
+    const scrolled = el.querySelector('.mycel-tm-tree')?.scrollTop ?? 0
     el.empty()
     const session = this.host.session()
     if (!session) {
       el.createEl('p', {
-        cls: 'connect-tm-quiet',
+        cls: 'mycel-tm-quiet',
         text: "The Time Machine is closed. Open it from a folder's menu, a note's menu, the command palette or Settings → Backups."
       })
       return
@@ -85,14 +85,14 @@ export class TimeMachineView extends ItemView {
     el.createEl('h4', { text: position?.tick ? session.describe(position) : 'Now' })
     if (!position?.tick) {
       el.createEl('p', {
-        cls: 'connect-tm-quiet',
+        cls: 'mycel-tm-quiet',
         text: 'Move along the timeline at the left of the editors: the explorer and every note show that moment, and this lists what differs from now.'
       })
       return
     }
-    if (session.progress) el.createDiv({ cls: 'connect-tm-quiet', text: `Showing it: ${session.progress.done} of ${session.progress.of} notes and files filled in…` })
-    const head = el.createDiv({ cls: 'connect-tm-tree-head' })
-    const label = head.createEl('label', { cls: 'connect-tm-switch' })
+    if (session.progress) el.createDiv({ cls: 'mycel-tm-quiet', text: `Showing it: ${session.progress.done} of ${session.progress.of} notes and files filled in…` })
+    const head = el.createDiv({ cls: 'mycel-tm-tree-head' })
+    const label = head.createEl('label', { cls: 'mycel-tm-switch' })
     const toggle = label.createEl('input', { type: 'checkbox' })
     toggle.checked = this.onlyDiffering
     label.appendText(' Only what differs from now')
@@ -104,8 +104,8 @@ export class TimeMachineView extends ItemView {
     const items = session.items
     const differs = (item: PastItem): boolean => item.back || item.goes || item.moved || item.changed !== false
     const differing = items.filter(differs).length
-    head.createDiv({ cls: 'connect-tm-quiet', text: `${differing} differ${differing === 1 ? 's' : ''} from now.` })
-    const tree = el.createDiv({ cls: 'connect-tm-tree' })
+    head.createDiv({ cls: 'mycel-tm-quiet', text: `${differing} differ${differing === 1 ? 's' : ''} from now.` })
+    const tree = el.createDiv({ cls: 'mycel-tm-tree' })
     this.renderTree(tree, (this.onlyDiffering ? items.filter(differs) : items).slice(), session)
     tree.scrollTop = scrolled
     const chosen = this.selected ? items.find((item) => (item.pathThen ?? item.pathNow) === this.selected) : undefined
@@ -114,7 +114,7 @@ export class TimeMachineView extends ItemView {
 
   private renderTree(el: HTMLElement, shown: PastItem[], session: TimeMachineSession): void {
     if (shown.length === 0) {
-      el.createEl('p', { cls: 'connect-tm-quiet', text: 'Everything here is as it is now.' })
+      el.createEl('p', { cls: 'mycel-tm-quiet', text: 'Everything here is as it is now.' })
       return
     }
     shown.sort((a, b) => (a.pathThen ?? a.pathNow ?? '').localeCompare(b.pathThen ?? b.pathNow ?? ''))
@@ -141,29 +141,29 @@ export class TimeMachineView extends ItemView {
     const draw = (folder: Folder, into: HTMLElement, at: string): void => {
       for (const [name, child] of Array.from(folder.folders).sort(([a], [b]) => a.localeCompare(b))) {
         const path = at ? `${at}/${name}` : name
-        const details = into.createEl('details', { cls: 'connect-tm-folder' })
+        const details = into.createEl('details', { cls: 'mycel-tm-folder' })
         details.open = this.folderOpen.get(path) ?? this.onlyDiffering
         details.addEventListener('toggle', () => this.folderOpen.set(path, details.open))
         const summary = details.createEl('summary')
-        setIcon(summary.createSpan({ cls: 'connect-tm-icon' }), 'folder')
+        setIcon(summary.createSpan({ cls: 'mycel-tm-icon' }), 'folder')
         summary.createSpan({ text: name })
-        draw(child, details.createDiv({ cls: 'connect-tm-children' }), path)
+        draw(child, details.createDiv({ cls: 'mycel-tm-children' }), path)
       }
       for (const item of folder.items) this.renderItem(into, item)
     }
-    draw(root, el.createDiv({ cls: 'connect-tm-list' }), '')
-    if (shown.length > TREE_MAX) el.createEl('p', { cls: 'connect-tm-quiet', text: `… and ${shown.length - TREE_MAX} more.` })
+    draw(root, el.createDiv({ cls: 'mycel-tm-list' }), '')
+    if (shown.length > TREE_MAX) el.createEl('p', { cls: 'mycel-tm-quiet', text: `… and ${shown.length - TREE_MAX} more.` })
   }
 
   private renderItem(into: HTMLElement, item: PastItem): void {
     const path = item.pathThen ?? item.pathNow ?? ''
-    const row = into.createDiv({ cls: 'connect-tm-item' })
+    const row = into.createDiv({ cls: 'mycel-tm-item' })
     if (this.selected === path) row.addClass('is-selected')
     if (item.goes) row.addClass('is-later')
-    setIcon(row.createSpan({ cls: 'connect-tm-icon' }), item.kind === 'note' ? 'file-text' : 'file')
-    row.createSpan({ cls: 'connect-tm-name', text: nameOf(path) })
+    setIcon(row.createSpan({ cls: 'mycel-tm-icon' }), item.kind === 'note' ? 'file-text' : 'file')
+    row.createSpan({ cls: 'mycel-tm-name', text: nameOf(path) })
     const mark = (cls: string, text: string, tip: string): void => {
-      row.createSpan({ cls: `connect-tm-badge ${cls}`, text, attr: { 'aria-label': tip } })
+      row.createSpan({ cls: `mycel-tm-badge ${cls}`, text, attr: { 'aria-label': tip } })
     }
     if (item.back) mark('is-back', 'deleted since', 'Gone now; Restore this version brings it back')
     if (item.goes) mark('is-goes', 'added since', 'Not there then; Restore this version moves it to the trash')
@@ -181,20 +181,20 @@ export class TimeMachineView extends ItemView {
   }
 
   private renderChosen(el: HTMLElement, item: PastItem, session: TimeMachineSession): void {
-    const box = el.createDiv({ cls: 'connect-tm-actions' })
-    box.createDiv({ cls: 'connect-tm-chosen', text: item.pathThen ?? item.pathNow ?? '' })
+    const box = el.createDiv({ cls: 'mycel-tm-actions' })
+    box.createDiv({ cls: 'mycel-tm-chosen', text: item.pathThen ?? item.pathNow ?? '' })
     const lines: string[] = []
     if (item.goes) lines.push('It did not exist then, so the explorer does not show it now.')
     if (item.back) lines.push('It is gone now; the explorer shows it as it was.')
     if (item.moved) lines.push(`It is at ${item.pathNow} now.`)
     if (item.foreign) lines.push("It is someone else's, shared with you: Restore this version leaves it as it is - its owner takes it back, for everyone.")
-    for (const line of lines) box.createDiv({ cls: 'connect-tm-quiet', text: line })
+    for (const line of lines) box.createDiv({ cls: 'mycel-tm-quiet', text: line })
     const restorable =
       !item.goes && item.pathThen !== null && (item.back || item.changed !== false) && !item.readOnly && !(item.foreign && item.pathNow === null)
     if (restorable && !session.folderOwner) {
       const button = box.createEl('button', { text: item.kind === 'note' ? 'Restore just this note' : 'Restore just this file' })
       button.onclick = () => this.host.restore(item)
-      box.createDiv({ cls: 'connect-tm-quiet', text: 'A backup of what it is now comes first; everything else goes back as it is now.' })
+      box.createDiv({ cls: 'mycel-tm-quiet', text: 'A backup of what it is now comes first; everything else goes back as it is now.' })
     }
   }
 }

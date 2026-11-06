@@ -13,8 +13,8 @@ import {
   type IndexEntry,
   type LogResponse,
   type VaultFolder
-} from '@obsidian-connect/shared'
-import { bytes, contentHash, fromUtf8, randomBytes, toHex, utf8 } from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared'
+import { bytes, contentHash, fromUtf8, randomBytes, toHex, utf8 } from '@mycel/shared/crypto'
 import { ApiError } from '../account/api.js'
 import { RoomHistory } from '../history/RoomHistory.js'
 import type { AccountSettings, RollbackRecord } from './AccountSettings.js'

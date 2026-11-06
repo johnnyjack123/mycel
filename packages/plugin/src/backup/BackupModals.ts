@@ -8,7 +8,7 @@ import {
   type BackupServerSetting,
   type BackupTaskSetting,
   type KeepPolicy
-} from '@obsidian-connect/shared'
+} from '@mycel/shared'
 import { generatePassword } from '../account/password'
 import { PasswordReveal } from '../account/reveal'
 import { busy, type BusyButton } from '../busy'
@@ -47,7 +47,7 @@ export class BackupConnectModal extends Modal {
       return
     }
     this.contentEl.createEl('p', {
-      text: 'A backup server keeps this vault in a restic repository - on the backup server or in a cloud. Its operator gives you an invitation for it (obsidian-connect-backup invite); it works once, for one vault, within a week.'
+      text: 'A backup server keeps this vault in a restic repository - on the backup server or in a cloud. Its operator gives you an invitation for it (mycel-backup invite); it works once, for one vault, within a week.'
     })
     this.contentEl.createEl('p', {
       cls: 'setting-item-description',
@@ -64,7 +64,7 @@ export class BackupConnectModal extends Modal {
       text.setPlaceholder('XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX').onChange((value) => {
         this.code = value.trim()
       })
-      text.inputEl.addClass('connect-code')
+      text.inputEl.addClass('mycel-code')
       window.setTimeout(() => text.inputEl.focus(), 0)
     })
     new Setting(this.contentEl)
@@ -111,7 +111,7 @@ export class BackupConnectModal extends Modal {
       await busy(button, async () => {
         if (this.again) {
           await this.backups.rekey(this.again.routeId, this.password)
-          new Notice(`Obsidian Connect: ${this.again.label} has a new key and backs up as before.`, 8_000)
+          new Notice(`Mycel: ${this.again.label} has a new key and backs up as before.`, 8_000)
           return
         }
         connected = await this.backups.connect(this.code, this.password, this.label)
@@ -419,7 +419,7 @@ export class BackupTaskModal extends Modal {
         const guard = this.decrypted && this.guard !== BACKUP_GUARD_DEFAULT ? this.guard : undefined
         if (this.existing) {
           await this.backups.updateTask(this.routeId, { keep: this.keepPolicy(), env: this.credentials(), decrypted: this.decrypted, guard })
-          new Notice('Obsidian Connect: saved.')
+          new Notice('Mycel: saved.')
           return
         }
         const task: Omit<BackupTaskSetting, 'server' | 'createdAt' | 'everyHours'> = { where: this.where, password: this.password, decrypted: this.decrypted }
@@ -433,7 +433,7 @@ export class BackupTaskModal extends Modal {
         // The first backup at once: it shows whether everything works, and the vault need not wait for the night.
         await this.backups.runNow(this.routeId).catch(() => undefined)
         new Notice(
-          `Obsidian Connect: ${made.created ? 'the repository was made, and ' : ''}the first backup runs now; from then on every night at three - the settings change when.`,
+          `Mycel: ${made.created ? 'the repository was made, and ' : ''}the first backup runs now; from then on every night at three - the settings change when.`,
           10_000
         )
       })

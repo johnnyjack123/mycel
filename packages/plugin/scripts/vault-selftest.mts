@@ -5,21 +5,21 @@
 // reload the way Obsidian does, because that interplay is what doubled text
 // before.
 //
-//   PORT=1235 OBSIDIAN_CONNECT_REGISTRATION=open OBSIDIAN_CONNECT_DATA_DIR=<scratch> npm run start:server
+//   PORT=1235 MYCEL_REGISTRATION=open MYCEL_DATA_DIR=<scratch> npm run start:server
 //   npm run test:vault -- ws://localhost:1235
 import { check, delay, Device, eventually, failures, useServer } from './harness.mjs'
 
 // Imported after the harness set up the DOM; CodeMirror reads it at module scope.
 const { Notice } = await import('obsidian')
-const { BLOB_CHUNK_BYTES, MUX, docRoom, frameAad, indexRoom } = await import('@obsidian-connect/shared')
-const { aesKey, contentHash, encrypt, epochKeyContext, packSignedFrame, randomBytes, seal } = await import('@obsidian-connect/shared/crypto')
+const { BLOB_CHUNK_BYTES, MUX, docRoom, frameAad, indexRoom } = await import('@mycel/shared')
+const { aesKey, contentHash, encrypt, epochKeyContext, packSignedFrame, randomBytes, seal } = await import('@mycel/shared/crypto')
 const Y = await import('yjs')
 const encoding = await import('lib0/encoding')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
 const { landingTitle, linkedNotes } = await import('../src/share/LinkedNotes.js')
 
-const serverUrl = process.argv[2] ?? process.env.OBSIDIAN_CONNECT_URL ?? 'ws://localhost:1234'
+const serverUrl = process.argv[2] ?? process.env.MYCEL_URL ?? 'ws://localhost:1234'
 useServer(serverUrl)
 const run = Date.now().toString(36)
 
@@ -799,7 +799,7 @@ try {
     check(await eventually(() => !trashed(B).includes('Doomed.md')), 'and no device offers it any more', trashed(B))
     // The device that purged cleared its own copy; the others hold theirs until their trash pass.
     {
-      const database = `obsidian-connect/${B.keys?.vaultId}/${doomedId}`
+      const database = `mycel/${B.keys?.vaultId}/${doomedId}`
       const heldThere = B.locals.has(database) && (await B.locals.history.entries(docRoom(doomedId))).length > 0
       await B.trash?.purge()
       check(
@@ -1081,11 +1081,11 @@ try {
       aTogether.text()
     )
     check(
-      await eventually(() => cTogether.view.dom.querySelector('.connect-remote-caret-label')?.textContent === alice),
+      await eventually(() => cTogether.view.dom.querySelector('.mycel-remote-caret-label')?.textContent === alice),
       "C sees Alice's cursor"
     )
     check(
-      await eventually(() => aTogether.view.dom.querySelector('.connect-remote-caret-label')?.textContent === carol),
+      await eventually(() => aTogether.view.dom.querySelector('.mycel-remote-caret-label')?.textContent === carol),
       "A sees Carol's cursor"
     )
 
@@ -1094,7 +1094,7 @@ try {
     {
       const carolAt = 'and Carol'.length
       const carolOnA = (): number => {
-        const caret = aTogether.view.dom.querySelector('.connect-remote-caret')
+        const caret = aTogether.view.dom.querySelector('.mycel-remote-caret')
         return caret ? aTogether.view.posAtDOM(caret) : -1
       }
       check(await eventually(() => carolOnA() === carolAt), "A sees Carol's caret where she stopped typing", carolOnA())
@@ -1107,7 +1107,7 @@ try {
       // Carets that only move, nobody typing: typing redraws the carets
       // anyway, so the checks above could not tell.
       const aliceOnC = (): number => {
-        const caret = cTogether.view.dom.querySelector('.connect-remote-caret')
+        const caret = cTogether.view.dom.querySelector('.mycel-remote-caret')
         return caret ? cTogether.view.posAtDOM(caret) : -1
       }
       cTogether.view.dispatch({ selection: { anchor: 2 } })
@@ -1118,7 +1118,7 @@ try {
       // Alice's other device in the same shared note: Carol's caret, never Alice's own.
       const bTogether = B.open('Together.md')
       const labelsOnB = (): string[] =>
-        Array.from(bTogether.view.dom.querySelectorAll('.connect-remote-caret-label')).map((label) => label.textContent ?? '')
+        Array.from(bTogether.view.dom.querySelectorAll('.mycel-remote-caret-label')).map((label) => label.textContent ?? '')
       cTogether.view.dispatch({ selection: { anchor: 3 } })
       aTogether.view.dispatch({ selection: { anchor: 6 } })
       check(await eventually(() => labelsOnB().join() === carol), "Alice's other device shows Carol's caret, not Alice's own", labelsOnB())
@@ -1135,7 +1135,7 @@ try {
     )
     aWelcome.type(' caret?')
     await delay(600)
-    check(bWelcome.view.dom.querySelector('.connect-remote-caret') === null, 'and shows no cursor between them')
+    check(bWelcome.view.dom.querySelector('.mycel-remote-caret') === null, 'and shows no cursor between them')
     {
       const welcome = await B.store?.handle(A.index?.docIdForPath('Welcome.md') as string)
       check(welcome?.awareness.getLocalState()?.user === undefined, 'nor announces anyone')

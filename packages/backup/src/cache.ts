@@ -1,6 +1,6 @@
 import { mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, type FolderTie, type LogFrame, type LogSnapshot } from '@obsidian-connect/shared'
+import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, type FolderTie, type LogFrame, type LogSnapshot } from '@mycel/shared'
 
 // What the backup server keeps of a vault between runs: the ciphertext, as
 // the sync server has it. Without it every run would download every

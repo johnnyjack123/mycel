@@ -90,7 +90,7 @@ export function indexedDbHistory(vaultId: string): HistoryStore {
   let opened: Promise<IDBDatabase> | null = null
   const database = (): Promise<IDBDatabase> => {
     opened ??= new Promise((resolve, reject) => {
-      const open = indexedDB.open(`obsidian-connect-history/${vaultId}`, 1)
+      const open = indexedDB.open(`mycel-history/${vaultId}`, 1)
       open.onupgradeneeded = () => {
         const store = open.result.createObjectStore(STORE, { keyPath: 'key' })
         store.createIndex('room', 'room')

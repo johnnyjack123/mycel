@@ -9,8 +9,8 @@ import {
   type BackupSnapshotRef,
   type BackupTaskSetting,
   type BackupVaultStatus
-} from '@obsidian-connect/shared'
-import { backupRouteKeys, newBackupSecret, toBase64 } from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared'
+import { backupRouteKeys, newBackupSecret, toBase64 } from '@mycel/shared/crypto'
 import { fetchSettings, readConfig, repositoryOf, writable, type VaultConfig, type VaultFolders } from './config.js'
 import { VaultKeys } from './keys.js'
 import { log } from './log.js'

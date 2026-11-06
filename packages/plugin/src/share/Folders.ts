@@ -16,8 +16,8 @@ import {
   type NotifyKind,
   type ShareRole,
   type VaultFolder
-} from '@obsidian-connect/shared'
-import { aesKey, deriveDocId, encrypt, toBase64 } from '@obsidian-connect/shared/crypto'
+} from '@mycel/shared'
+import { aesKey, deriveDocId, encrypt, toBase64 } from '@mycel/shared/crypto'
 import { ApiError, type ConnectApi } from '../account/api.js'
 import type { KeyRing } from '../account/KeyRing.js'
 import { LocalCursor, type LocalStore, type OpenLocalStore } from '../sync/DocHandle.js'
@@ -435,7 +435,7 @@ export class Folders {
     const folder = this.index.folder(folderId)
     if (!folder || folder.endedAt || folder.leftAt || this.stopped) return null
     const index = new FolderIndex(folderId)
-    const local = this.openLocal(`obsidian-connect/${this.keys.vaultId}/fld-${folderId}`, index.doc)
+    const local = this.openLocal(`mycel/${this.keys.vaultId}/fld-${folderId}`, index.doc)
     await local.whenSynced
     const cursor = await LocalCursor.load(local)
     const still = this.index.folder(folderId)

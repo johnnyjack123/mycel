@@ -1,5 +1,5 @@
 import type { TFile } from 'obsidian'
-import { docRoom } from '@obsidian-connect/shared'
+import { docRoom } from '@mycel/shared'
 import { ApiError, type ConnectApi } from '../account/api.js'
 import type { AttachmentStore } from './AttachmentStore.js'
 import type { DocStore } from './DocStore.js'
