@@ -147,6 +147,10 @@ class VaultConnection implements RoomClient {
     this.message(MUX.locked, room, (encoder) => encoding.writeVarUint(encoder, ref))
   }
 
+  sendFull(room: string, ref: number): void {
+    this.message(MUX.full, room, (encoder) => encoding.writeVarUint(encoder, ref))
+  }
+
   sendNotify(kind: NotifyKind, payload: Notice): void {
     this.message(MUX.notify, null, (encoder) => {
       encoding.writeVarString(encoder, kind)

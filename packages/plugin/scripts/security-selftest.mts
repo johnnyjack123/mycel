@@ -6,15 +6,20 @@
 // in this process, on a port and in a scratch directory of its own.
 //
 //   npm run test:security -w @mycel/plugin
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { check, delay, Device, eventually, failures, useServer } from './harness.mjs'
 
-const { isFilePath, isNotePath, isVaultPath, vaultPathProblem, NOTE_ATTACHMENTS_FIELD } = await import('@mycel/shared')
+const { isFilePath, isNotePath, isVaultPath, vaultPathProblem, CONTENT_FIELD, NOTE_ATTACHMENTS_FIELD, frameAad } = await import('@mycel/shared')
 const { gateApp, PathRefused } = await import('../src/guard.js')
+const { aesKey, encrypt, seal, titleContext, toBase64 } = await import('@mycel/shared/crypto')
+const Y = await import('yjs')
 const { envOf, locationProblem, repositoryOf } = await import('../../backup/src/config.js')
 const { safePath } = await import('../../backup/src/layout.js')
+const { allowedHosts, isInternalAddress, networkProblem } = await import('../../backup/src/network.js')
+const { VaultKeys } = await import('../../backup/src/keys.js')
+const { AUTHOR_LAG_MS, changeTime } = await import('../src/sync/VaultSocket.js')
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
 
@@ -177,23 +182,79 @@ const { startServer } = await import('../../server/src/server.js')
   ] as const) {
     check(safePath(path) === expected, `a backup writes ${JSON.stringify(path)} below its folder, as ${expected}`, safePath(path))
   }
+
+  // A cloud location in the backup server's own network: restic knocked on a router, a NAS, a metadata service.
+  const names: Record<string, string[]> = {
+    'nas.lan': ['192.168.1.20'],
+    'x.blob.nas.lan': ['192.168.1.21'],
+    'cloud.example': ['93.184.216.34'],
+    'rebind.example': ['93.184.216.34', '127.0.0.1']
+  }
+  const resolve = async (host: string): Promise<string[]> => names[host] ?? Promise.reject(new Error('unknown'))
+  const none = new Set<string>()
+  for (const [location, env] of [
+    ['rest:http://192.168.1.1:8000/', {}],
+    ['rest:https://user:pw@[::1]:8000/repo', {}],
+    ['rest:http://169.254.169.254/latest/', {}],
+    ['s3:http://10.0.0.5:9000/bucket', {}],
+    ['s3:nas.lan/bucket', {}],
+    ['sftp:backup@nas.lan:/srv/restic', {}],
+    ['sftp://backup@127.0.0.1:2222//srv', {}],
+    ['s3:rebind.example/bucket', {}],
+    ['swift:container:/path', { OS_AUTH_URL: 'http://172.16.0.1:5000/v3' }],
+    ['azure:container:/path', { AZURE_ACCOUNT_NAME: 'x', AZURE_ENDPOINT_SUFFIX: 'nas.lan' }]
+  ] as const) {
+    check((await networkProblem(location, env, none, resolve)) !== null, `a task cannot point restic at ${location} in the backup server's network`)
+  }
+  for (const location of ['s3:cloud.example/bucket', 'rest:https://cloud.example/', 'b2:bucket:vault', 'rclone:pcloud:vault', '/encrypted/vault']) {
+    check((await networkProblem(location, {}, none, resolve)) === null, `it takes ${location}`)
+  }
+  check((await networkProblem('sftp:backup@nas.lan:/srv/restic', {}, allowedHosts('nas.lan, 10.0.0.9'), resolve)) === null, 'unless the operator allowed that host')
+  check(isInternalAddress('::ffff:127.0.0.1') && isInternalAddress('fd00::1') && isInternalAddress('100.64.0.1') && !isInternalAddress('8.8.8.8'), 'mapped, unique-local and shared addresses count as internal')
 }
 
 // ===============================================================================
-// 4. End to end: a contact who shares with you, and one you share with.
+// 4. When a change counts as made: a writer's clock is not the history's.
+// ===============================================================================
+{
+  const serverTs = Date.UTC(2026, 10, 7, 12)
+  const year = 365 * 24 * 60 * 60 * 1000
+  check(
+    changeTime({ author: 'writer', authorTs: serverTs - year }, serverTs, 'me') === serverTs - AUTHOR_LAG_MS,
+    "a writer dating a change a year back gets it no earlier than an hour before the server took it - out of every rollback's past"
+  )
+  check(changeTime({ author: 'writer', authorTs: serverTs - 60_000 }, serverTs, 'me') === serverTs - 60_000, "a writer's own time stands within that hour")
+  check(changeTime({ author: 'me', authorTs: serverTs - year }, serverTs, 'me') === serverTs - year, "this account's own changes keep their time - a device away for a week, history uploaded again")
+}
+
+// ===============================================================================
+// 5. End to end: a contact who shares with you, and one you share with.
 // ===============================================================================
 const root = mkdtempSync(join(tmpdir(), 'mycel-plugin-security-'))
-const server = await startServer(
-  loadConfig({
-    HOST: '127.0.0.1',
-    PORT: '0',
-    MYCEL_DATA_DIR: join(root, 'server'),
-    MYCEL_REGISTRATION: 'open',
-    MYCEL_JWT_SECRET: 'plugin-security-selftest-secret-0123456789'
-  }),
-  { logger: false, paceMs: 0, maxFailures: 1000 }
-)
-useServer(`ws://127.0.0.1:${server.port}`)
+const serve = (port: number): ReturnType<typeof startServer> =>
+  startServer(
+    loadConfig({
+      HOST: '127.0.0.1',
+      PORT: String(port),
+      MYCEL_DATA_DIR: join(root, 'server'),
+      MYCEL_REGISTRATION: 'open',
+      MYCEL_JWT_SECRET: 'plugin-security-selftest-secret-0123456789'
+    }),
+    { logger: false, paceMs: 0, maxFailures: 1000 }
+  )
+let server = await serve(0)
+const port = server.port
+useServer(`ws://127.0.0.1:${port}`)
+
+/** Where the server keeps a note's metadata - to play a server that moves it back. */
+function noteMetaFile(owner: string, docId: string): string | null {
+  const vaults = join(root, 'server', 'users', owner)
+  for (const vault of existsSync(vaults) ? readdirSync(vaults) : []) {
+    const file = join(vaults, vault, 'notes', docId, 'meta.json')
+    if (existsSync(file)) return file
+  }
+  return null
+}
 const run = Date.now().toString(36)
 const binary = (seed: number, length = 2_000): Uint8Array => new Uint8Array(length).map((_byte, index) => (index * seed + 7) & 255)
 
@@ -268,6 +329,79 @@ try {
   const listed = handle ? Array.from(handle.doc.getMap(NOTE_ATTACHMENTS_FIELD).keys()) : []
   check(!listed.includes('passport.pdf'), "a link someone else typed does not share the victim's file of that name", listed)
   check(!mallory.vault.attachmentPaths().some((path) => path.endsWith('passport.pdf')), 'and the attacker never gets it', mallory.vault.attachmentPaths())
+
+  // --- the name a share lands under ----------------------------------------------
+  {
+    // Anyone can seal to a public key: the server chose the title a share landed under.
+    const victorKey = mallory.contacts?.publicKey(victor.accountId)
+    const someId = '00112233445566778899aabbccddeeff'
+    if (victorKey && mallory.keys && victor.keys) {
+      const genuine = await mallory.keys.sealTitle(someId, 'Meeting notes', { account: victor.accountId, publicKey: victorKey })
+      check((await victor.keys.openTitle(someId, genuine, mallory.accountId)) === 'Meeting notes', 'a title its owner sealed and signed opens')
+      const unsigned = await seal(victorKey, new TextEncoder().encode('../Evil'), titleContext(someId))
+      check((await victor.keys.openTitle(someId, unsigned, mallory.accountId)) === '', 'a title nobody signed - the server sealed it - is not taken')
+      check((await victor.keys.openTitle(someId, genuine, victor.accountId)) === '', 'nor one signed by anyone but the owner the share names')
+      check((await victor.keys.openTitle('ffeeddccbbaa99887766554433221100', genuine, mallory.accountId)) === '', "nor one sealed for another note's share")
+    } else {
+      check(false, 'the two hold each other as contacts')
+    }
+  }
+
+  // --- a frame in a backup that nobody who may write signed ---------------------
+  {
+    // The backup server read a vault without checking signatures: the sync server, or
+    // someone revoked who still holds a key, had its own frames backed up and restored.
+    const diaryId = victor.index?.docIdForPath('Private/Diary.md') as string
+    const room = `doc:${diaryId}`
+    const log = await victor.api.log(room)
+    const grant = await victor.makeBackupGrant('security test')
+    const cached = { room, owner: victor.accountId, tag: '', epoch: log.epoch, headSeq: log.headSeq, snapshot: log.snapshot, frames: log.frames, sealed: {} }
+    const keys = await VaultKeys.open(grant)
+    const genuine = await keys.replay(cached, victor.accountId)
+    check(genuine.doc.getText(CONTENT_FIELD).toString() === 'my diary\n' && genuine.unsigned === 0, "the backup server reads the victim's note as the victim wrote it", genuine.unsigned)
+    const forgedDoc = new Y.Doc()
+    forgedDoc.getText(CONTENT_FIELD).insert(0, 'FORGED ')
+    const plaintext = await (mallory.keys as NonNullable<typeof mallory.keys>).packAsOwner(room, log.epoch, Date.now(), Y.encodeStateAsUpdate(forgedDoc))
+    const key = await aesKey(await (victor.keys as NonNullable<typeof victor.keys>).ownDocKey(diaryId, log.epoch))
+    const data = toBase64(await encrypt(key, plaintext, frameAad(room, log.epoch)))
+    const withForged = { ...cached, frames: [...cached.frames, { seq: log.headSeq + 1, ts: Date.now(), epoch: log.epoch, data }] }
+    const read = await keys.replay(withForged, victor.accountId)
+    check(!read.doc.getText(CONTENT_FIELD).toString().includes('FORGED') && read.unsigned === 1, 'a frame someone else signed under the key is left out of the backup', read.doc.getText(CONTENT_FIELD).toString())
+    const unchecked = await VaultKeys.open({ ...grant, signingPublicKey: undefined })
+    check(
+      (await unchecked.replay(withForged, victor.accountId)).doc.getText(CONTENT_FIELD).toString().includes('FORGED'),
+      'as it went into every backup before (a pairing without the signing key)'
+    )
+  }
+
+  // --- a caret in someone else's name -------------------------------------------
+  {
+    const theirs = await mallory.store?.handle(sharedId)
+    const mine = await victor.store?.handle(sharedId)
+    const users = (): Array<Record<string, unknown>> =>
+      Array.from(mine?.awareness.getStates().values() ?? []).map((state) => (state as { user?: Record<string, unknown> }).user ?? {})
+    check(
+      await eventually(() => users().some((user) => user.id === mallory.accountId), 10_000),
+      "the attacker's own caret reaches the victim, signed",
+      users()
+    )
+    const someoneElse = '0123456789abcdef0123456789abcdef'
+    theirs?.awareness.setLocalStateField('user', { id: someoneElse, name: 'The owner', color: '#ff0000', colorLight: '#ff000033' })
+    await delay(2_500)
+    check(!users().some((user) => user.id === someoneElse), "a caret claiming another account's id is not drawn", users())
+    check(
+      users().every((user) => user.id !== mallory.accountId || user.name !== 'The owner'),
+      'and a contact shows under the name this account calls them',
+      users()
+    )
+    theirs?.awareness.setLocalStateField('user', { id: mallory.accountId, name: 'The owner', color: '#ff0000', colorLight: '#ff000033' })
+    await delay(2_500)
+    check(
+      users().some((user) => user.id === mallory.accountId && user.name !== 'The owner'),
+      "a name of the attacker's choosing does not replace the one the victim knows them by",
+      users()
+    )
+  }
   mallory.close(view)
 
   // --- a folder naming one of the victim's own notes ---------------------------
@@ -285,6 +419,45 @@ try {
       'nor does deleting it there delete it',
       victor.index?.entry(sharedId)
     )
+  }
+
+  // --- a server that moves a note back to an epoch the revoked person holds -------
+  {
+    const room = `doc:${sharedId}`
+    await victor.sharing?.revoke(sharedId, mallory.accountId)
+    const revokedAt = (await victor.api.log(room)).epoch
+    check(await eventually(() => victor.socket?.epochOf(room) === revokedAt, 10_000), 'the victim revokes the attacker; the note moves to an epoch the attacker never gets', revokedAt)
+    // The attacker's copy goes on as their own, a fork, before the server goes down under it.
+    await eventually(() => {
+      const forked = mallory.index?.docIdForPath('Shared/Shared with M.md')
+      return forked !== undefined && forked !== sharedId
+    }, 15_000)
+    await delay(1_000)
+    // The server, working with the attacker, takes the note back to the epoch before.
+    await server.close()
+    const metaFile = noteMetaFile(victor.accountId, sharedId)
+    check(metaFile !== null, "the note's metadata is on the server's disk")
+    if (metaFile) {
+      const meta = JSON.parse(readFileSync(metaFile, 'utf8')) as { epoch: number }
+      writeFileSync(metaFile, JSON.stringify({ ...meta, epoch: revokedAt - 1 }, null, 2))
+    }
+    server = await serve(port)
+    const headBefore = (await eventually(async () => (await victor.api.log(room).catch(() => null)) !== null, 10_000)) ? (await victor.api.log(room)).headSeq : 0
+    const view = victor.open('Notes/Shared with M.md')
+    view.type('\nwritten after the revocation\n')
+    check(
+      await eventually(async () => (await victor.api.log(room)).headSeq > headBefore, 20_000),
+      'what the victim writes still reaches the server',
+      (await victor.api.log(room)).headSeq
+    )
+    const after = await victor.api.log(room)
+    const newer = after.frames.filter((frame) => frame.seq > headBefore)
+    check(
+      newer.length > 0 && newer.every((frame) => frame.epoch > revokedAt) && after.epoch > revokedAt,
+      'but never under the earlier epoch the server went back to: the victim moves the note past it first',
+      { revokedAt, epoch: after.epoch, frames: newer.map((frame) => frame.epoch) }
+    )
+    victor.close(view)
   }
 } catch (error) {
   console.error(error)

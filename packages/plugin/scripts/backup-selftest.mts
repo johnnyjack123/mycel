@@ -33,7 +33,7 @@ const { readStatus } = await import('../../backup/src/status.js')
 const BACKUP_BIN = fileURLToPath(new URL('../../backup/bin/mycel-backup.mjs', import.meta.url))
 const { listVaults } = await import('../../backup/src/service.js')
 const { backupRouteKeys, encodeBackupInvite, fromBase64, newBackupSecret, openSession } = await import('@mycel/shared/crypto')
-const { backupSettingsText, docRoom, scheduleHours } = await import('@mycel/shared')
+const { backupSettingsText, docRoom, scheduleHours, socketProtocols } = await import('@mycel/shared')
 type BackupConnected = import('@mycel/shared').BackupConnected
 
 type RunReport = Awaited<ReturnType<typeof runBackup>>
@@ -976,7 +976,7 @@ try {
 
   // Whoever knows only the route - the sync server itself - gets an answer, and no further.
   {
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/relay?token=${encodeURIComponent(B.accessToken)}`)
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/relay`, socketProtocols(B.accessToken))
     const frames: Array<Record<string, unknown>> = []
     socket.addEventListener('message', (event) => frames.push(JSON.parse(String(event.data)) as Record<string, unknown>))
     await new Promise((resolve) => socket.addEventListener('open', resolve))

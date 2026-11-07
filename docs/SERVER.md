@@ -85,7 +85,7 @@ A template sits in `docs/server.env`:
 | `MYCEL_TOKEN_TTL` | `2592000` | Seconds a device stays signed in without being used. |
 | `MYCEL_LOG_UPDATES` | `false` | A log line per document frame. |
 | `MYCEL_MAX_FILE_MB` | `100` | The largest attachment taken. Larger files stay on their device. |
-| `MYCEL_QUOTA_MB` | none | What one account may store in attachments. Worth setting with open registration. |
+| `MYCEL_QUOTA_MB` | none | What one account may store: its attachments and, since 0.9.9, the rooms it owns - every note's log and snapshots, index, settings, folders, each room counted with 4 KB more. Past it a device keeps what it writes and offers it again later. Set it with open registration (the server warns at its start otherwise): a stranger could fill the disk. |
 | `MYCEL_PURGE_GRACE_S` | `600` | How long an attachment's content survives being cleaned up after its last upload. Leave it. |
 | `PORT` | `1234` | Published port. |
 
@@ -149,9 +149,12 @@ request bodies of at least 8 MB - attachments travel in chunks of 4 MB, and ngin
 refuses anything over 1 MB unless told otherwise (`client_max_body_size 64m;`, which
 also covers large note snapshots). Set `MYCEL_TRUST_PROXY` to the proxy's address, so
 that a sign-in that keeps failing blocks its sender and not everyone behind the proxy.
-The access token travels in the WebSocket URL: keep the proxy's access log off for
-`/vault/` and `/relay`, or out of anyone else's reach (Nginx Proxy Manager keeps one per
-host under `/data/logs`).
+Since 0.9.9 a device sends its access token as a WebSocket subprotocol
+(`Sec-WebSocket-Protocol`), a header no access log writes; before, it was in the URL, and the
+server still reads it there from older plugins - as long as one of those is in use, keep the
+proxy's access log off for `/vault/` and `/relay`, or out of anyone else's reach (Nginx Proxy
+Manager keeps one per host under `/data/logs`). A proxy has to pass that header on, as every
+WebSocket proxy does.
 
 What the server takes is bounded (0.9.8, `docs/AUDIT.md`): requests without a valid
 token are turned away before their body is read, signing in takes 64 KB at most, a

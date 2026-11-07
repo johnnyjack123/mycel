@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import proxyAddr from '@fastify/proxy-addr'
 import { WebSocketServer, type WebSocket } from 'ws'
-import { CLOSE_SIGNED_OUT, isHexId } from '@mycel/shared'
+import { CLOSE_SIGNED_OUT, WS_PROTOCOL, isHexId, tokenFromProtocols } from '@mycel/shared'
 import { AccountStore, sessionOf } from './accounts.js'
 import { TokenService, type TokenSession } from './auth.js'
 import { BlobStore } from './blobs.js'
@@ -59,6 +59,19 @@ const SECRET_FILE = 'jwt-secret'
 function reject(socket: Duplex, status: string): void {
   socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`)
   socket.destroy()
+}
+
+/**
+ * The token a WebSocket upgrade carries: among its subprotocols, where no
+ * access log writes it - or, from a plugin before 0.9.9, in the URL.
+ */
+function upgradeToken(request: IncomingMessage, url: URL): string {
+  return tokenFromProtocols(request.headers['sec-websocket-protocol']) ?? url.searchParams.get('token') ?? ''
+}
+
+/** The subprotocol answered: never the token, which would only travel back. */
+function chooseProtocol(protocols: Set<string>): string | false {
+  return protocols.has(WS_PROTOCOL) ? WS_PROTOCOL : false
 }
 
 /**
@@ -118,6 +131,9 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
     purgeGraceMs: config.purgeGraceMs
   })
   blobs.protect((account, vault, blob) => hub.isAttached(account, vault, blob))
+  // One quota for everything an account stores: its files and its rooms' logs.
+  blobs.shareQuota((account) => hub.usageOf(account))
+  hub.limitStorage(config.quotaBytes, async (account) => (await blobs.usageOf(account)) + (await hub.usageOf(account)))
   const app = createHttpApp(config, tokens, accounts, hub, contacts, blobs, {
     trustProxy: config.trustProxy ?? undefined,
     logger: options.logger ?? true,
@@ -132,10 +148,10 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
   }
   const sweeper = setInterval(sweep, options.sweepMs ?? SWEEP_MS)
   sweeper.unref()
-  const wss = new WebSocketServer({ noServer: true, maxPayload: VAULT_MAX_BYTES })
+  const wss = new WebSocketServer({ noServer: true, maxPayload: VAULT_MAX_BYTES, handleProtocols: chooseProtocol })
   // A session's frames are small - keys, settings, a status, a backup read back in
   // pieces of 192 KiB - so a large one is a mistake or worse.
-  const relayWss = new WebSocketServer({ noServer: true, maxPayload: RELAY_MAX_BYTES })
+  const relayWss = new WebSocketServer({ noServer: true, maxPayload: RELAY_MAX_BYTES, handleProtocols: chooseProtocol })
   const relay = new Relay()
   hub.onDisconnect((account) => relay.signOut(account))
 
@@ -160,7 +176,7 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
     }
     let session: TokenSession | null = null
     try {
-      session = await tokens.verify(url.searchParams.get('token') ?? '')
+      session = await tokens.verify(upgradeToken(request, url))
     } catch {
       // answered below
     }
@@ -187,7 +203,7 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
       const vaultId = decodeURIComponent(url.pathname.slice(VAULT_PREFIX.length))
       let session: TokenSession | null = null
       try {
-        session = await tokens.verify(url.searchParams.get('token') ?? '')
+        session = await tokens.verify(upgradeToken(request, url))
       } catch {
         // answered below
       }
@@ -222,6 +238,9 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
   })
 
   if (secret.made) app.log.info(`MYCEL_JWT_SECRET is not set; a token secret was made and kept in ${join(config.dataDir, SECRET_FILE)}`)
+  if (config.registration === 'open' && config.quotaBytes === null) {
+    app.log.warn('registration is open and MYCEL_QUOTA_MB is not set: anyone who reaches this server can fill its disk')
+  }
   // The rooms and the vault locks kept over the restart, before anyone asks.
   await hub.started()
   try {

@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { SignJWT } from 'jose'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { MUX } from '@mycel/shared'
+import { MUX, WS_PROTOCOL, socketProtocols } from '@mycel/shared'
 import { loadConfig, type ServerConfig } from '../src/config.js'
 import { startServer, type RunningServer } from '../src/server.js'
 
@@ -146,9 +146,14 @@ class Socket {
     })
   }
 
-  static open(url: string): Promise<Socket> {
+  /** The subprotocol the server answered with. */
+  get protocol(): string {
+    return this.ws.protocol
+  }
+
+  static open(url: string, protocols?: string[]): Promise<Socket> {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url)
+      const ws = new WebSocket(url, protocols)
       const socket = new Socket(ws)
       ws.addEventListener('open', () => resolve(socket), { once: true })
       ws.addEventListener('error', () => reject(new Error(`could not open ${url}`)), { once: true })
@@ -204,10 +209,14 @@ class Socket {
     })
   }
 
-  async next(type: number, room: string, timeoutMs = 3000): Promise<Incoming | null> {
+  next(type: number, room: string, timeoutMs = 3000): Promise<Incoming | null> {
+    return this.nextOf([type], room, timeoutMs)
+  }
+
+  async nextOf(types: number[], room: string, timeoutMs = 3000): Promise<Incoming | null> {
     const until = Date.now() + timeoutMs
     while (Date.now() < until) {
-      const found = this.received.findIndex((message) => message.type === type && message.room === room)
+      const found = this.received.findIndex((message) => types.includes(message.type) && message.room === room)
       if (found >= 0) return this.received.splice(found, 1)[0] as Incoming
       if (this.closed) return null
       await delay(10)
@@ -269,14 +278,15 @@ function rawUpgrade(port: number, path: string, bytes: Buffer | null): Promise<v
   })
 }
 
-const vaultUrl = (ws: string, account: Account, vaultId = account.vaultId): string =>
-  `${ws}/vault/${vaultId}?token=${encodeURIComponent(account.token)}`
+/** A vault socket as a device opens it: the token among the subprotocols, out of the URL. */
+const openVault = (ws: string, account: Account, vaultId = account.vaultId): Promise<Socket> =>
+  Socket.open(`${ws}/vault/${vaultId}`, socketProtocols(account.token))
 
 /** A note of `owner`'s own with one frame in it. */
 async function noteOf(ws: string, owner: Account): Promise<{ docId: string; room: string; socket: Socket }> {
   const docId = hexId()
   const room = `doc:${docId}`
-  const socket = await Socket.open(vaultUrl(ws, owner))
+  const socket = await openVault(ws, owner)
   socket.subscribe(room)
   const ready = await socket.answer(room)
   if (ready?.type !== MUX.caughtUp) throw new Error(`creating ${room} failed: ${JSON.stringify(ready)}`)
@@ -484,7 +494,7 @@ try {
     // room before its owner's first device did.
     const claimed = await call(base, 'POST', '/vaults', { token: mallory.token, body: { vaultId: alice.vaultId, sealedName: b64(32), wrappedKey: b64(48) } })
     check(claimed.status === 409, "nobody registers someone else's vault id as its own", claimed)
-    const foreign = await Socket.open(vaultUrl(ws, mallory, alice.vaultId)).catch(() => null)
+    const foreign = await openVault(ws, mallory, alice.vaultId).catch(() => null)
     if (foreign) {
       foreign.subscribe(`idx:${alice.vaultId}`)
       const index = await foreign.answer(`idx:${alice.vaultId}`)
@@ -493,7 +503,7 @@ try {
     } else {
       check(true, "someone else's vault index stays closed")
     }
-    const socket = await Socket.open(vaultUrl(ws, mallory))
+    const socket = await openVault(ws, mallory)
     socket.subscribe(`idx:${alice.vaultId}`)
     const index = await socket.answer(`idx:${alice.vaultId}`)
     check(index?.type === MUX.denied, "nor does a vault's socket carry another vault's index", index)
@@ -508,6 +518,21 @@ try {
     const stranger = await Socket.open(`${ws}/vault/${alice.vaultId}?token=${encodeURIComponent('not-a-token')}`)
     const closed = await stranger.whenClosed()
     check(closed?.code === 4401, 'a vault socket without a valid token is closed as signed out', closed)
+    const forged = await Socket.open(`${ws}/vault/${alice.vaultId}`, socketProtocols('not-a-token'))
+    const forgedClosed = await forged.whenClosed()
+    check(forgedClosed?.code === 4401, 'and so is one naming an invalid token as its subprotocol', forgedClosed)
+
+    // A reverse proxy writes every URL into its access log: a token in the URL
+    // (until 0.9.9) signed in as its account for whoever reads that log.
+    const own = await openVault(ws, alice)
+    own.subscribe(`idx:${alice.vaultId}`)
+    const caught = await own.answer(`idx:${alice.vaultId}`)
+    check(caught?.type === MUX.caughtUp && own.protocol === WS_PROTOCOL, 'a device signs in with its token among the subprotocols, not in the URL', { caught, protocol: own.protocol })
+    own.close()
+    const relay = await Socket.open(`${ws}/relay`, socketProtocols(alice.token))
+    await delay(200)
+    check(relay.closed === null && relay.protocol === WS_PROTOCOL, "and the relay takes a device's token the same way", relay.closed)
+    relay.close()
   }
 
   // ===============================================================================
@@ -526,7 +551,7 @@ try {
       const answer = await call(base, 'GET', path, { token: alice.token })
       check(answer.status >= 400 && answer.status < 500 && !JSON.stringify(answer.body).includes('loginHash'), `no file outside the store through ${path}`, answer)
     }
-    const socket = await Socket.open(vaultUrl(ws, alice))
+    const socket = await openVault(ws, alice)
     for (const room of ['doc:../../accounts', 'doc:', 'idx:../x', 'fld:%2e%2e', 'nonsense']) {
       socket.subscribe(room)
       const answer = await socket.answer(room)
@@ -600,7 +625,7 @@ try {
     check((await share({})).status === 200, 'an ordinary share goes through')
 
     // Mallory can read Bob's note; writing into it is refused.
-    const socket = await Socket.open(vaultUrl(ws, mallory))
+    const socket = await openVault(ws, mallory)
     socket.subscribe(bobsNote.room, false)
     const ready = await socket.answer(bobsNote.room)
     check(ready?.type === MUX.caughtUp, 'the reader reads the note it was given', ready)
@@ -621,7 +646,7 @@ try {
   // 7. Frames: a frame of hundreds of megabytes is no frame.
   // ===============================================================================
   {
-    const socket = await Socket.open(vaultUrl(ws, alice))
+    const socket = await openVault(ws, alice)
     socket.subscribe(alicesNote.room)
     await socket.answer(alicesNote.room)
     socket.push(alicesNote.room, 2, 0, new Uint8Array(40 * 1024 * 1024))
@@ -630,6 +655,42 @@ try {
     const log = await call(base, 'GET', `/log/${alicesNote.room}`, { token: alice.token })
     const frames = (log.body.frames as unknown[] | undefined) ?? []
     check(frames.length === 1, 'and nothing of it is in the log', frames.length)
+  }
+
+  // ===============================================================================
+  // 8. Storage: the quota covers the rooms an account makes, not only its files.
+  // ===============================================================================
+  {
+    // MYCEL_QUOTA_MB covered attachments alone: with open registration a
+    // stranger filled the disk with notes, or with empty rooms by the million.
+    const limited = await serve('quota', { MYCEL_QUOTA_MB: '1' })
+    servers.push(limited.server)
+    const filler = await register(limited.base)
+    const socket = await openVault(limited.ws, filler)
+    const room = `doc:${hexId()}`
+    socket.subscribe(room)
+    await socket.answer(room)
+    let acked = 0
+    let full: Incoming | null = null
+    for (let ref = 1; ref <= 12 && !full; ref += 1) {
+      socket.push(room, ref, 0, new Uint8Array(200 * 1024))
+      const answer = await socket.nextOf([MUX.ack, MUX.full], room)
+      if (answer?.type === MUX.ack) acked += 1
+      else full = answer
+    }
+    check(full !== null && acked >= 3 && acked <= 5, 'frames past the quota are refused as full, and kept by the device', { acked, full })
+    // Filled up to the last few kilobytes: no room for another room either.
+    for (let ref = 100; ref < 400; ref += 1) {
+      socket.push(room, ref, 0, new Uint8Array(2 * 1024))
+      if ((await socket.nextOf([MUX.ack, MUX.full], room))?.type !== MUX.ack) break
+    }
+    const another = `doc:${hexId()}`
+    socket.subscribe(another)
+    const refused = await socket.answer(another)
+    check(refused?.type === MUX.denied && refused.text === 'full', 'and so is a new room', refused)
+    const usage = await call(limited.base, 'GET', `/blobs/${filler.id}/usage`, { token: filler.token })
+    check(typeof usage.body.roomBytes === 'number' && (usage.body.roomBytes as number) > 600 * 1024, 'the account sees what its rooms take', usage.body)
+    socket.close()
   }
 
   alicesNote.socket.close()

@@ -121,6 +121,9 @@ export async function buildLayout(cache: Cache, keys: VaultKeys, now: number): P
   const settings = settingsRoomCache ? await keys.replay(settingsRoomCache) : null
   try {
     const settingsMap = settings?.doc.getMap<unknown>(SETTINGS_FIELD)
+    // Before any note is read: a contact's frames are checked against the key the account pinned.
+    if (settingsMap) keys.learnContacts(settingsMap)
+    if (!keys.checksSignatures) layout.problems.push('the pairing predates 0.9.9: frames are not checked against their signatures until a device hands over a new grant (a password change does)')
     const retention = settingsMap?.get('historyRetentionDays')
     const days = typeof retention === 'number' && Number.isInteger(retention) && retention >= 0 ? retention : DEFAULT_RETENTION_DAYS
     const since = days > 0 ? now - days * DAY_MS : 0
@@ -147,11 +150,15 @@ export async function buildLayout(cache: Cache, keys: VaultKeys, now: number): P
         layout.incomplete.add(path)
         return null
       }
-      const replayed = await keys.replay(cached)
+      // Whose the note is as the index has it, never as the sync server says.
+      const replayed = await keys.replay(cached, notes.get(docId)?.owner ?? keys.grant.accountId)
       try {
         if (replayed.unreadable > 0) {
           layout.problems.push(`${replayed.unreadable} change(s) of the note ${docId} could not be decrypted`)
           layout.incomplete.add(path)
+        }
+        if (replayed.unsigned > 0) {
+          layout.problems.push(`${replayed.unsigned} change(s) of the note ${docId} are not signed by anyone who may write in it; left out, as every device leaves them out`)
         }
         return { text: replayed.doc.getText(CONTENT_FIELD).toString(), changedAt: replayed.changedAt }
       } finally {

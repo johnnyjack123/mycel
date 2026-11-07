@@ -15,6 +15,8 @@ import { Notice, noticeWithAction, notices } from './notices.js'
 import { gateApp } from './guard.js'
 import {
   roomKind,
+  roomSubject,
+  type BlobUsageResponse,
   settingsRoom,
   userColor,
   type BackupTaskSetting,
@@ -27,7 +29,7 @@ import {
   type VaultLockInfo,
   type VaultLockNotice
 } from '@mycel/shared'
-import { bytes, randomBytes, toHex } from '@mycel/shared/crypto'
+import { bytes, randomBytes, toBase64, toHex } from '@mycel/shared/crypto'
 import { ConnectApi, type HttpClient } from './account/api'
 import { judgePassword } from './account/password'
 import { probeServer, type ServerProbe } from './account/probe'
@@ -38,6 +40,7 @@ import { PasswordModal } from './account/PasswordModal'
 import { PasswordPromptModal, RecoveryCodeModal } from './account/RecoveryModals'
 import { TotpSetupModal, askKeepTotp, askTotpCode } from './account/TotpModals'
 import { Session, type OpenVault, type SecretStore, type Unlocked } from './account/Session'
+import { SetupWizard } from './account/SetupWizard'
 import { Backups } from './backup/Backups'
 import { BackupConnectModal, BackupTaskModal } from './backup/BackupModals'
 import { CopyWaitsModal } from './backup/CopyWaitsModal'
@@ -228,6 +231,7 @@ export default class MycelPlugin extends Plugin {
       if (!this.unlocked) throw new Error('Sign in first.')
       this.unlocked = await this.session.deleteBackupKey(this.unlocked, keyId)
     },
+    signingPublicKey: () => (this.unlocked ? toBase64(this.unlocked.signing.publicKey) : null),
     lastGood: () => this.settings.backupLastGood,
     saveLastGood: async (value) => {
       this.settings.backupLastGood = value
@@ -435,6 +439,7 @@ export default class MycelPlugin extends Plugin {
     this.addNotificationsRibbon()
 
     this.addRibbonIcon('refresh-cw', 'Mycel status', () => this.showStatus())
+    this.addCommand({ id: 'setup', name: 'Set up this device…', callback: () => this.openSetup() })
     this.addCommand({ id: 'show-status', name: 'Show sync status', callback: () => this.showStatus() })
     this.addCommand({ id: 'notifications', name: 'Open notifications and rollbacks', callback: () => void this.openNotifications() })
     this.addCommand({
@@ -487,6 +492,7 @@ export default class MycelPlugin extends Plugin {
     // the sync would take it for edits and send it everywhere.
     this.app.workspace.onLayoutReady(() => {
       this.installExplorerGuard()
+      if (!this.unloaded && this.offersSetup()) this.openSetup()
       void this.timeMachine.recoverAtStart().then((free) => {
         if (free) void this.startSync()
       })
@@ -667,12 +673,21 @@ export default class MycelPlugin extends Plugin {
 
   // --- account -------------------------------------------------------------
 
-  async signIn(username: string, password: string): Promise<void> {
+  /**
+   * `signedIn`: told as soon as the account is open, before the sync starts -
+   * the first start reads the whole vault, and the setup wizard goes on meanwhile.
+   */
+  async signIn(username: string, password: string, signedIn?: () => void): Promise<void> {
     if (!username || !password) throw new Error('Enter your name and password.')
     await this.stopSync()
     await this.session.login(username, password, (again) => askTotpCode(this.app, again))
     new Notice(`Mycel: signed in as ${this.settings.username}.`)
-    await this.startSync()
+    // Whatever the caller draws, signed in means syncing.
+    try {
+      signedIn?.()
+    } finally {
+      await this.startSync()
+    }
   }
 
   /** Whether the configured server can be signed in to, and how it takes new accounts. */
@@ -686,7 +701,12 @@ export default class MycelPlugin extends Plugin {
     log.info(`the server at ${this.settings.serverUrl} is taken as a new one`)
   }
 
-  async createAccount(username: string, password: string, repeat: string, invite: string): Promise<void> {
+  /**
+   * `showCode`: shows the new account's recovery code, before the sync starts -
+   * the first start reads the whole vault. Without it, a window of its own does;
+   * the setup wizard shows it as one of its steps.
+   */
+  async createAccount(username: string, password: string, repeat: string, invite: string, showCode?: (code: string) => void): Promise<void> {
     if (!username) throw new Error('Choose a name.')
     const verdict = judgePassword(password, [username])
     if (!verdict.ok) throw new Error(verdict.reason)
@@ -695,12 +715,38 @@ export default class MycelPlugin extends Plugin {
     await this.stopSync()
     const { recoveryCode } = await this.session.register(username, password, invite)
     new Notice(`Mycel: account ${this.settings.username} created. Keep the password safe.`, 8_000)
-    new RecoveryCodeModal(
-      this.app,
-      recoveryCode,
-      'Your account is ready. If you ever forget your password - or the name you signed up with - this code gets you back in.'
-    ).open()
-    await this.startSync()
+    // Whatever the caller draws, signed in means syncing.
+    try {
+      if (showCode) showCode(recoveryCode)
+      else {
+        new RecoveryCodeModal(
+          this.app,
+          recoveryCode,
+          'Your account is ready. If you ever forget your password - or the name you signed up with - this code gets you back in.'
+        ).open()
+      }
+    } finally {
+      await this.startSync()
+    }
+  }
+
+  /**
+   * Offered by itself once, on a device never connected: nobody signed in and
+   * the address never changed from the default. A device signed out later -
+   * by hand, or by the server - keeps its address and is not asked.
+   */
+  private offersSetup(): boolean {
+    const settings = this.settings
+    return !settings.setupShown && !settings.username && !settings.token && settings.serverUrl === DEFAULT_SETTINGS.serverUrl
+  }
+
+  /** The setup wizard: how Mycel works, and this device connected step by step. */
+  openSetup(): void {
+    if (!this.settings.setupShown) {
+      this.settings.setupShown = true
+      void this.saveSettings()
+    }
+    new SetupWizard(this.app, this, () => this.settingTab?.afterSetup()).open()
   }
 
   /**
@@ -1134,6 +1180,8 @@ export default class MycelPlugin extends Plugin {
     this.keys = keys
     // A key sealed by a contact opens only with their signature, checked against their pinned signing key.
     keys.setSigners((account) => this.contacts?.signingKey(account) ?? null)
+    // A contact's caret carries the name this account calls them, not the one their device sends.
+    keys.setNames((account) => (this.contacts?.isContact(account) ? this.contacts.name(account) : null))
 
     const root = this.pluginDir()
     this.state = new StateStore(this.app.vault.adapter, root)
@@ -1149,7 +1197,8 @@ export default class MycelPlugin extends Plugin {
       denied: (room, reason) => log.error(`${room} was refused: ${reason}`),
       diverged: (room) => this.recovery?.diverged(room),
       signedOut: () => void this.checkSignedIn(socket),
-      locked: () => void this.checkVaultLock()
+      locked: () => void this.checkVaultLock(),
+      full: (room) => this.storageFull(room)
     })
     // A restore from the Time Machine starts the sync under the lock it holds: named before anything is sent.
     if (this.heldLockId) socket.holdLock(this.heldLockId)
@@ -1165,6 +1214,9 @@ export default class MycelPlugin extends Plugin {
     this.settingsStore = settingsStore
     await settingsStore.whenSynced
     if (stopped()) return
+    // Epochs only go forward, on every device of the vault: a server moving a room back is caught here.
+    keys.setEpochRecord({ floor: (room) => accountSettings.epochFloor(room), raise: (room, epoch) => accountSettings.raiseEpochFloor(room, epoch) })
+    keys.onEpochBehind((room) => this.epochBehind(room))
     const settingsCursor = await LocalCursor.load(settingsStore)
     if (stopped()) return
     this.settingsCursor = settingsCursor
@@ -1212,7 +1264,8 @@ export default class MycelPlugin extends Plugin {
         username: unlocked.username,
         publicKey: unlocked.publicKey,
         privateKey: unlocked.privateKey,
-        signingPublicKey: unlocked.signing.publicKey
+        signingPublicKey: unlocked.signing.publicKey,
+        signingKey: unlocked.signing.privateKey
       },
       accountSettings
     )
@@ -1746,6 +1799,38 @@ export default class MycelPlugin extends Plugin {
     }
   }
 
+  /**
+   * The server named an epoch below one this account knew a room in. A room of
+   * this account's moves on past it; in anyone else's, nothing is written until
+   * its owner's device did that.
+   */
+  private epochBehind(room: string): void {
+    const subject = roomSubject(room)
+    const kind = roomKind(room)
+    if (kind === 'doc') {
+      const entry = this.store?.entry(subject)
+      if (entry && !entry.owner) void this.sharing?.catchUpEpoch(subject)
+    } else if (kind === 'fld') {
+      void this.folders?.catchUpEpoch(subject)
+    }
+  }
+
+  /** When the user was last told the server is full: once an hour is enough, it is refused per room. */
+  private fullNoticeAt = 0
+
+  /** The server refused a change or a new note: the room's owner used up what it lets them store. */
+  private storageFull(room: string): void {
+    if (Date.now() - this.fullNoticeAt < 60 * 60 * 1000) return
+    this.fullNoticeAt = Date.now()
+    const own = !this.store?.entry(roomSubject(room))?.owner
+    new Notice(
+      own
+        ? 'Mycel: the server has no room left for your account. What you write stays on this device and goes out once there is room again - delete files or old history, or ask whoever runs the server for more.'
+        : 'Mycel: the server has no room left for the owner of a note shared with you. What you write in it stays on this device until there is room again.',
+      15_000
+    )
+  }
+
   // --- the vault lock on the other devices ---------------------------------------------
 
   private async checkVaultLock(): Promise<void> {
@@ -1867,7 +1952,7 @@ export default class MycelPlugin extends Plugin {
   }
 
   /** What this account stores in attachments, as the server reports it; null while unknown. */
-  async attachmentUsage(): Promise<{ bytes: number; quotaBytes: number | null } | null> {
+  async attachmentUsage(): Promise<BlobUsageResponse | null> {
     if (!this.unlocked || !this.attachments?.isReady) return null
     try {
       return await this.api.blobUsage(this.unlocked.accountId)
@@ -2357,8 +2442,16 @@ export default class MycelPlugin extends Plugin {
       return
     }
     if (kind === 'contact-removed') {
-      this.contacts?.forget((payload as ContactNotice).account)
-      this.settingTab?.refresh()
+      const notice = payload as ContactNotice
+      void this.contacts?.forget(notice).then((forgotten) => {
+        if (!forgotten && this.contacts) {
+          new Notice(
+            `Mycel: the server says ${this.contacts.name(notice.account)} removed you as a contact, but without their signature. They stay in your contacts; remove them yourself if that is right.`,
+            0
+          )
+        }
+        this.settingTab?.refresh()
+      })
       return
     }
     if (kind === 'account-changed') {

@@ -8,6 +8,45 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.9** (2026-11-07) - **the audit's residual risks closed** (R1 to R9 in `docs/AUDIT.md`,
+  asked for by the user) **and a setup wizard.** No device writes under an epoch below the
+  highest one its account knew a room in - a server moving a note back to a key someone
+  revoked still holds had new text written under it - and the owner's device moves the room
+  past it (invariant 33). `MYCEL_QUOTA_MB` covers an account's rooms and their logs, not only
+  its files (`full`). The access token travels as a WebSocket subprotocol instead of in the URL a
+  proxy logs. Presence and a share's title are signed; a caret is drawn only for someone this
+  device can tell, under the name it knows them by. The backup server checks every frame's
+  signature, and refuses a cloud location in its own network (`MYCEL_BACKUP_ALLOW_HOSTS`).
+  Someone else's change counts as made no earlier than an hour before the server took it. A
+  contact goes only on their own signature. A link typed on another of the account's devices
+  counts as typed here (P4). Small: the settings sent an invite code to a server that wanted
+  none, and "an Mycel server". **Server, backup server and devices together**: a 0.9.9 device
+  needs a 0.9.9 server for its token; an older device still signs in to a 0.9.9 server, but
+  its carets and contact removals are not taken. Checked by putting the bugs back for R1 (the
+  victim's device wrote under the revoked epoch), R4 (a caret in another account's id was
+  drawn) and R6 (a forged frame went into the backup); the rest by checks of their own in
+  `test:security` and `test:merge`.
+
+- **The setup wizard** (`account/SetupWizard.ts`; asked for by the user): a window that says
+  in a few sentences what Mycel is and connects a device step by step. The server's address,
+  checked against the server as the settings check it (`describeProbe`, now shared with the
+  settings tab; an `https://` address copied from a browser is taken as `wss://`); the vault's
+  name - before the account, since signing in starts the sync under that name, and every other
+  device gives the same one; creating an account (the password's strength said while typing,
+  the generator, an invite code when the server asks for one) or signing in (the 2FA code
+  asked for over it, as from the settings); a new account's recovery code as a step of its own
+  (`showRecoveryCode`, the block its own window shows too), with why to keep it apart from the
+  password, and *Next* only once "I have written it down" is on; then what next - the cloud,
+  other devices, contacts and sharing, backups, two-factor sign-in. It calls what the settings
+  tab calls (`signIn`, `createAccount`, which now tell their caller once the account is open,
+  before the sync's first start), so the device ends up as the tab would leave it. It opens by
+  itself once, on a device never connected - nobody signed in and the address still the default
+  (`setupShown` in `data.json`); a device signed out later keeps its address and is not asked.
+  Otherwise: the command *Set up this device…*, and a button on the Account tab while signed
+  out. Checked headlessly: the bundle loads, the command is registered, and the decision to
+  open it by itself (`test:load`); the window itself only on a device. Built by a separate
+  agent on `feat/setup-wizard` and merged into 0.9.9.
+
 - **0.9.8** (2026-11-07) - **the security audit** (`docs/PHASE8.md`, A; every finding with its
   fix and its check in **`docs/AUDIT.md`**, the attacks kept as `npm run test:security`).
   Server: one malformed or oversized WebSocket message - to `/relay?role=backup`, no token

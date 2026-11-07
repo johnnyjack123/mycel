@@ -3,7 +3,7 @@ import { frameAad, roomKind, roomSubject, snapshotAad } from '@mycel/shared'
 import { decrypt, encrypt, fromBase64, toBase64, unpackFrame } from '@mycel/shared/crypto'
 import type { ConnectApi } from '../account/api.js'
 import type { KeyRing } from '../account/KeyRing.js'
-import type { RoomCrypto } from './VaultSocket.js'
+import { changeTime, type RoomCrypto } from './VaultSocket.js'
 import { log, log as logger } from '../log.js'
 
 // History retention, done by the owner's client because only it can read the
@@ -93,7 +93,8 @@ export class Compactor {
         if (verdict === 'unknown') return false
         if (verdict === 'ok' && change) {
           Y.applyUpdate(doc, change.update)
-          newest = Math.max(newest, change.authorTs)
+          // Never later than the server took it: a writer dating a change into the future put every moment out of reach.
+          newest = Math.max(newest, Math.min(changeTime(change, frame.ts, crypto.self), frame.ts))
         } else {
           logger.error(`${room}: frame #${frame.seq} is not signed by someone who may write there; not folded in`)
         }

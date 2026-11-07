@@ -1,4 +1,4 @@
-import type { RelayFrame } from '@mycel/shared'
+import { socketProtocols, type RelayFrame } from '@mycel/shared'
 import {
   SessionCipher,
   backupRouteKeys,
@@ -26,10 +26,10 @@ export type BackupEvent = { ev: string; p: unknown }
 const OPEN_TIMEOUT_MS = 15_000
 const CALL_TIMEOUT_MS = 60_000
 
-/** `/relay` on the sync server a device signs in to. */
-function relayUrl(serverUrl: string, token: string): string {
+/** `/relay` on the sync server a device signs in to; the token goes as a subprotocol, out of every access log. */
+function relayUrl(serverUrl: string): string {
   const base = serverUrl.trim().replace(/\/+$/, '').replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')
-  return `${base}/relay?token=${encodeURIComponent(token)}`
+  return `${base}/relay`
 }
 
 export class BackupSession {
@@ -151,7 +151,7 @@ export function openPairingSession(serverUrl: string, token: string, pairing: st
 async function openBackupSession(serverUrl: string, token: string, secret: Bytes, timeoutMs: number): Promise<BackupSession> {
   const keys = await backupRouteKeys(secret)
   const opening = await openSession()
-  const socket = new WebSocket(relayUrl(serverUrl, token))
+  const socket = new WebSocket(relayUrl(serverUrl), socketProtocols(token))
 
   return new Promise<BackupSession>((resolve, reject) => {
     let sessionId = 0

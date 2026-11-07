@@ -25,7 +25,8 @@ const rangeProto = dom.window.Range.prototype as unknown as { getClientRects?: (
 rangeProto.getClientRects ??= () => []
 
 // Imported after the DOM globals exist; CodeMirror reads them at module scope.
-const { settingsRoom, userColor } = await import('@mycel/shared')
+const { roomKind, roomSubject, settingsRoom, userColor } = await import('@mycel/shared')
+const { toBase64 } = await import('@mycel/shared/crypto')
 const { AccountSettings } = await import('../src/sync/AccountSettings.js')
 const { LocalCursor } = await import('../src/sync/DocHandle.js')
 const { Recovery } = await import('../src/sync/Recovery.js')
@@ -238,6 +239,7 @@ export class Device {
     const openVault = await this.session.openVault(unlocked, VAULT)
     const keys = new KeyRing(openVault, unlocked, this.api, this.secrets)
     keys.setSigners((account) => this.contacts?.signingKey(account) ?? null)
+    keys.setNames((account) => (this.contacts?.isContact(account) ? this.contacts.name(account) : null))
     const vault = this.vault
     // Leaves showing files that are not notes - a canvas, a PDF - as far as
     // attachments care: which file each one shows.
@@ -256,7 +258,7 @@ export class Device {
       notify: (kind, payload) => {
         // Caught, as main.ts's `processContacts` does: the next notice reads the inbox again.
         if (kind === 'contact') void this.contacts?.processInbox().catch(() => undefined)
-        else if (kind === 'contact-removed') this.contacts?.forget((payload as { account: string }).account)
+        else if (kind === 'contact-removed') void this.contacts?.forget(payload as { account: string })
         else if (kind === 'contact-replaced') this.contacts?.markReplaced((payload as { account: string }).account)
         // What main.ts's `refreshAccount` does.
         else if (kind === 'account-changed') void this.refreshAccount()
@@ -293,7 +295,8 @@ export class Device {
     this.settingsStore = settingsStore
     this.settings = settings
     socket.register(settingsRoom(openVault.vaultId), settings.doc, { crypto: keys.settingsCrypto(), cursor: this.settingsCursor })
-    const user = { id: this.username, name: this.username, ...userColor(this.username) }
+    // As main.ts: the account id, which a signed caret must name.
+    const user = { id: unlocked.accountId, name: this.username, ...userColor(this.username) }
     const store = new DocStore(
       app as never,
       socket,
@@ -336,7 +339,8 @@ export class Device {
         username: unlocked.username,
         publicKey: unlocked.publicKey,
         privateKey: unlocked.privateKey,
-        signingPublicKey: unlocked.signing.publicKey
+        signingPublicKey: unlocked.signing.publicKey,
+        signingKey: unlocked.signing.privateKey
       },
       settings
     )
@@ -424,6 +428,13 @@ export class Device {
       attachments
     )
     this.folders = folders
+    // As main.ts: epochs only go forward, and a room of this account's moves past one the server went back from.
+    keys.setEpochRecord({ floor: (room) => settings.epochFloor(room), raise: (room, epoch) => settings.raiseEpochFloor(room, epoch) })
+    keys.onEpochBehind((room) => {
+      const subject = roomSubject(room)
+      if (roomKind(room) === 'fld') void folders.catchUpEpoch(subject)
+      else if (roomKind(room) === 'doc' && store.entry(subject) && !store.entry(subject)?.owner) void sharing.catchUpEpoch(subject)
+    })
     const sharedFiles = new SharedFiles(app as never, store, attachments, this.api, keys, {
       folder: () => 'Shared',
       syncTimeoutMs: 4_000,
@@ -599,6 +610,7 @@ export class Device {
       settings: () => this.settings,
       makeGrant: (password, label) => this.makeBackupGrant(label, password),
       deleteKey: (keyId) => this.deleteBackupKey(keyId),
+      signingPublicKey: () => (this.keys ? toBase64(this.keys.signingPublicKey) : null),
       lastGood: () => this.backupLastGood,
       saveLastGood: async (value) => {
         this.backupLastGood = value

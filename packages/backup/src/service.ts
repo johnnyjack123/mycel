@@ -332,6 +332,26 @@ export class BackupService {
   }
 
   /**
+   * The account's signing key for a grant made before 0.9.9, which had none:
+   * from then on every frame is checked against it. Public, so a device of the
+   * account hands it over the pairing without the password - and it is taken
+   * only once: a grant that has one keeps it until the next rekey.
+   */
+  async learnSigningKey(vaultId: string, key: unknown): Promise<void> {
+    const vault = this.vaults.get(vaultId)
+    if (!vault) throw new Error('this backup server no longer has this vault')
+    if (typeof key !== 'string' || !/^[A-Za-z0-9+/]{80,100}={0,2}$/.test(key)) throw new Error('that is not a signing key')
+    if (vault.grant.signingPublicKey) {
+      if (vault.grant.signingPublicKey === key) return
+      throw new Error('this vault has its signing key; a new one comes with a new grant')
+    }
+    const grant = { ...vault.grant, signingPublicKey: key }
+    await writeJson(join(vaultDir(this.options.dataDir, vaultId), 'grant.json'), grant, 0o600)
+    vault.grant = grant
+    log.info(`vault ${vaultId}: its frames are checked against their signatures from now on`)
+  }
+
+  /**
    * Forgets a vault: its keys, its cache, its runs. Its repository and
    * decrypted copy stay where they are. `announce`: drop its route now - a
    * session on that route answers first and announces it after

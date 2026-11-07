@@ -98,6 +98,9 @@ class Client implements RoomClient {
   sendLocked(room: string, ref: number): void {
     this.messages.push({ type: 'locked', room, ref })
   }
+  sendFull(room: string, ref: number): void {
+    this.messages.push({ type: 'full', room, ref })
+  }
   sendNotify(kind: NotifyKind, _payload: Notice): void {
     this.messages.push({ type: 'notify', kind })
   }
@@ -849,7 +852,8 @@ try {
     bobDevice.take()
     const rotate = (account: string, epoch: number, keys: Record<string, string>) => hub.rotateNote(account, { docId: turning, rotation: { epoch, keys } })
     check((await status(() => rotate(bob, 1, { [bob]: 'k1' }))) === 403, 'only the owner moves a note to its next epoch')
-    check((await status(() => rotate(alice, 2, { [bob]: 'k2' }))) === 409, 'to the next one only')
+    check((await status(() => rotate(alice, 0, { [bob]: 'k0' }))) === 409, 'never to the epoch it is in, or an earlier one')
+    check((await status(() => rotate(alice, 2 ** 21, { [bob]: 'kx' }))) === 409, 'nor past all reason')
     check((await status(() => rotate(alice, 1, {}))) === 400, 'with a key for everyone in it')
     await rotate(alice, 1, { [bob]: 'k1' })
     const held = await hub.keys(bob, turningRoom)
@@ -861,6 +865,11 @@ try {
     check(whole.frames.length === 0 && whole.members.join() === bob && whole.keys[bob]?.join() === '0,1', 'with who holds which epoch', whole)
     const rewrite = { replacement: 'ab'.repeat(16), lockId: 'none', headSeq: whole.headSeq, epoch: whole.epoch, frames: [], snapshots: [], keys: {} }
     check((await status(() => hub.rewrite(alice, turningRoom, rewrite))) === 409, 'a room is not written anew without a replacement of the keys under way')
+
+    // A device that knew the note in a later epoch than the server has (one restored from a
+    // backup, or moving it back) takes it past that one at once (invariant 33).
+    await rotate(alice, 4, { [bob]: 'k4' })
+    check((await hub.keys(bob, turningRoom)).epoch === 4, 'and past epochs it never had, in one step', (await hub.keys(bob, turningRoom)).epoch)
   }
 
   // --- replacing every key of an account ---------------------------------------------------

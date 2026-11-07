@@ -31,8 +31,8 @@ running it in **`docs/BACKUP.md`**; sharing a folder and the small fixes of 0.8 
 second round, 0.8.13, U1 to U5, V1 to V6, W1 to W3) in **`docs/TIMEMACHINE.md`**.
 A new milestone gets its design document written with the user before it is built: 0.9's
 is **`docs/PHASE8.md`** (decided 2026-11-03; being built, its order in `docs/PROGRESS.md`).
-The security audit (0.9.8) - every finding, its fix, its check, and what is known and not
-fixed - is **`docs/AUDIT.md`**.
+The security audit (0.9.8) and its residual risks closed in 0.9.9 - every finding, its fix,
+its check, and what is known and not fixed - is **`docs/AUDIT.md`**.
 Licence: AGPL-3.0-or-later (`LICENSE.md`, the user, 2026-11-03).
 
 ## Non-negotiable invariants
@@ -263,7 +263,21 @@ someone's notes. Treat them as rules, not preferences.
     and a file of this vault goes into a shared note's list only for a link typed
     here, a note shared from here with its files, or the user's yes (`SharedFiles.approve`).
     A folder's document moves, revives or deletes only notes that are in that folder.
-    A friend code binds its creator's account id with the keys.
+    A friend code binds its creator's account id with the keys. Nothing anyone else
+    shows this device is taken on the server's word either (0.9.9): presence is signed
+    by its sender and drawn only for this account, a contact or a certified writer,
+    under the name this account knows them by (`checkPresence`); a share's title is
+    signed by its owner (`openTitle`); a contact goes only on their signed word
+    (`Contacts.forget`); someone else's change counts as made no earlier than an hour
+    before the server took it (`changeTime`); the backup server checks every frame's
+    signature as a device does.
+33. **A room's epoch only goes forward.** No device writes under an epoch below the
+    highest one it, any device of its vault (`AccountSettings.epochFloor`) or a key
+    sealed to the account knew (`KeyRing.epochFloor`, `epochHolds`): a server moving a
+    note back had new text written under a key someone revoked still holds. The
+    owner's device moves the room past it (`catchUpEpoch`, a jump the server accepts,
+    `isLaterEpoch`); everyone else waits. Every new epoch is `KeyRing.nextEpoch` -
+    past the server's and past the floor -, never the server's plus one.
 
 ## Architecture
 
@@ -910,6 +924,15 @@ its tabs and its buttons.
 - **Every WebSocket the server accepts has an `error` listener** (`heard` in
   `server.ts`): one without took the whole process down on a single malformed message,
   from anyone (the relay takes backup servers without a token).
+- **A device's token travels as a WebSocket subprotocol** (`socketProtocols`,
+  `mycel.token.<jwt>`), never in the URL, which every reverse proxy logs (0.9.9). The
+  server answers with `mycel` alone and still reads a URL token from older plugins.
+- **`MYCEL_QUOTA_MB` covers rooms too** (0.9.9): `RoomHub.usageOf` counts an account's
+  rooms from the disk now and then and adds what was written since; a push past it is
+  answered `full`, a new room `denied full` - neither final, the device keeps what it wrote.
+- **A backup task's cloud location never reaches the backup server's own network**
+  (`backup/src/network.ts`, checked in `Restic.run` before every start), unless
+  `MYCEL_BACKUP_ALLOW_HOSTS` names the host.
 - **The server reads the `.env` in the repository root** (`loadEnvFile`), for
   npm and the CLI alike; compose reads the same file. Shell variables win, so a
   local `.env` cannot redirect the self-tests. Writing `.env*` is blocked by a

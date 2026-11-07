@@ -34,6 +34,8 @@ export interface BackupsDeps {
   /** A backup key for this vault and the grant around it; needs the password. */
   makeGrant: (password: string, label: string) => Promise<BackupGrant>
   deleteKey: (keyId: string) => Promise<void>
+  /** The account's signing key, public half, base64; null while signed out. */
+  signingPublicKey: () => string | null
   /** When this device last saw a good backup per backup server, kept on the device. */
   lastGood: () => Record<string, number>
   saveLastGood: (value: Record<string, number>) => Promise<void>
@@ -150,6 +152,11 @@ export class Backups {
       session.onEvent((event) => {
         if (event.ev === 'finished') void this.ask(routeId)
       })
+      // A pairing made before 0.9.9 has no signing key of the account's to check frames
+      // with; it is public, so the pairing carries it over without the password. A
+      // backup server before 0.9.9 does not know the request, and nothing changes.
+      const signingKey = this.deps.signingPublicKey()
+      if (signingKey) void session.call('signingKey', { key: signingKey }).catch(() => undefined)
       return session
     })()
     this.sessions.set(routeId, opening)

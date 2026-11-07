@@ -1383,7 +1383,7 @@ export class Folders {
     await this.retrying(async () => {
       const members = await this.api.members(docId)
       const state = await this.api.folderState(folderId)
-      const epoch = members.epoch + 1
+      const epoch = this.keys.nextEpoch(docRoom(docId), members.epoch)
       const tie: FolderTie = { folder: folderId, epoch: state.epoch }
       const keys = await this.sealForMembers(docId, members.members.map((member) => member.account), epoch, tie)
       const snapshot = state.members.length > 0 ? await this.startingPoint(docId, epoch, tie) : undefined
@@ -1416,7 +1416,7 @@ export class Folders {
     const people = await this.peopleOf(folderId)
     await this.retrying(async () => {
       const members = await this.api.members(docId)
-      const epoch = members.epoch + 1
+      const epoch = this.keys.nextEpoch(docRoom(docId), members.epoch)
       const keys = await this.sealForMembers(docId, members.members.map((member) => member.account), epoch, null)
       await this.api.leaveFolderNote(folderId, { docId, rotation: { epoch, keys } })
     })
@@ -1576,7 +1576,7 @@ export class Folders {
     if (opened.index.linkedFiles) {
       for (const { docId, entry } of this.index.live()) if (inside(entry.path, path)) this.sharing.approveFilesOf(docId)
     }
-    const title = await this.keys.sealTitle(folderId, opened.index.name || baseName(path), recipientKey.publicKey)
+    const title = await this.keys.sealTitle(folderId, opened.index.name || baseName(path), recipientKey)
     const wasWriter = this.sharing.roleOf(folderRoom(folderId), account) === 'write'
     if (withHistory) {
       await this.retrying(async () => {
@@ -1646,8 +1646,32 @@ export class Folders {
     return used as unknown as FolderRotation
   }
 
+  /** Folders being moved past an epoch the server went back from. */
+  private readonly catchingUp = new Set<string>()
+
+  /**
+   * The server says a folder of this vault's is in an epoch below one this
+   * account knew it in: nothing is written under it (`KeyRing`), and it moves
+   * on, every note along, as at any rotation.
+   */
+  async catchUpEpoch(folderId: string): Promise<void> {
+    const folder = this.index.folder(folderId)
+    if (this.catchingUp.has(folderId) || !folder || folder.owner) return
+    this.catchingUp.add(folderId)
+    try {
+      const state = await this.api.folderState(folderId)
+      if (state.epoch >= this.keys.epochFloor(folderRoom(folderId))) return
+      await this.rotate(folderId)
+      log.info(`${this.index.folder(folderId)?.path ?? folderId}: moved on past the epoch the server went back from`)
+    } catch (error) {
+      log.error(`${this.index.folder(folderId)?.path ?? folderId}: moving it past the epoch the server went back from failed`, error)
+    } finally {
+      this.catchingUp.delete(folderId)
+    }
+  }
+
   private async rotationFor(folderId: string, state: FolderStateResponse, leaving?: string): Promise<FolderRotation> {
-    const epoch = state.epoch + 1
+    const epoch = this.keys.nextEpoch(folderRoom(folderId), state.epoch)
     const staying = state.members.filter((member) => member.account !== leaving)
     const keys: Record<string, string> = {}
     for (const [member, key] of await this.sharing.memberKeys(staying, { kind: 'folder', folderId })) {
@@ -1656,7 +1680,7 @@ export class Folders {
     const notes: Record<string, NoteRotation> = {}
     for (const note of this.ownNotesIn(folderId, state)) {
       if (note.members.length === 0) continue
-      const next = note.epoch + 1
+      const next = this.keys.nextEpoch(docRoom(note.docId), note.epoch)
       notes[note.docId] = { epoch: next, keys: await this.sealForMembers(note.docId, note.members, next, { folder: folderId, epoch }) }
     }
     return { epoch, keys, notes }
@@ -1748,7 +1772,8 @@ export class Folders {
       const notes: Record<string, NoteRotation> = {}
       for (const note of state.notes ?? []) {
         if (note.members.length === 0) continue
-        notes[note.docId] = { epoch: note.epoch + 1, keys: await this.sealForMembers(note.docId, note.members, note.epoch + 1, null) }
+        const next = this.keys.nextEpoch(docRoom(note.docId), note.epoch)
+        notes[note.docId] = { epoch: next, keys: await this.sealForMembers(note.docId, note.members, next, null) }
       }
       await this.api.endFolder(folderId, { notes })
     })
@@ -1863,7 +1888,7 @@ export class Folders {
     const existing = this.index.folder(incoming.folderId)
     let path = existing && !existing.endedAt && !existing.leftAt ? existing.path : null
     if (!path) {
-      const title = (await this.keys.openTitle(incoming.folderId, incoming.title)) || 'Shared folder'
+      const title = (await this.keys.openTitle(incoming.folderId, incoming.title, incoming.owner)) || 'Shared folder'
       const root = this.options.shareFolder().replace(/^\/+|\/+$/g, '')
       path = this.freeFolderPath(joinPath(root, safeName(title)))
       this.index.setFolder(incoming.folderId, { path, owner: incoming.owner, role: incoming.role, updatedAt: Date.now() })

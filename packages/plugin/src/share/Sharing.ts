@@ -334,7 +334,7 @@ export class Sharing {
     // Without the room's current state there is nothing to hand over, and
     // without it on the server there is no room to share yet.
     if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs))) throw new Error('The server is not reachable.')
-    const title = await this.keys.sealTitle(docId, landing || titleOf(entry.path), recipientKey.publicKey)
+    const title = await this.keys.sealTitle(docId, landing || titleOf(entry.path), recipientKey)
     const room = docRoom(docId)
     const wasWriter = this.roleOf(room, account) === 'write'
 
@@ -352,7 +352,7 @@ export class Sharing {
             title
           })
         } else {
-          const epoch = members.epoch + 1
+          const epoch = this.keys.nextEpoch(room, members.epoch)
           const tie = await this.nextTie(docId)
           const next = { epoch, tie }
           const others = members.members.filter((member) => member.account !== account)
@@ -459,7 +459,7 @@ export class Sharing {
   async revoke(docId: string, account: string): Promise<void> {
     const members = await this.api.members(docId)
     const staying = members.members.filter((member) => member.account !== account)
-    const rotation = await this.rotationFor(docId, members.epoch + 1, staying)
+    const rotation = await this.rotationFor(docId, this.keys.nextEpoch(docRoom(docId), members.epoch), staying)
     await this.api.revoke({ docId, account, rotation })
     this.recordRole(docRoom(docId), account, null)
     log.info(`${this.store.entry(docId)?.path ?? docId}: access of ${account} revoked, now epoch ${rotation.epoch}`)
@@ -479,12 +479,37 @@ export class Sharing {
     return rotation
   }
 
+  /** Notes being moved past an epoch the server went back from (`catchUpEpoch`). */
+  private readonly catchingUp = new Set<string>()
+
+  /**
+   * The server says a note of this account's is in an epoch below one this
+   * account already knew it in - restored from a backup, or moved back to a key
+   * someone who left still holds. Nothing is written under it (`KeyRing`); the
+   * note moves on to an epoch past both, sealed to the members this account
+   * recorded, and everyone writes again.
+   */
+  async catchUpEpoch(docId: string): Promise<void> {
+    if (this.catchingUp.has(docId)) return
+    this.catchingUp.add(docId)
+    try {
+      const members = await this.api.members(docId)
+      if (members.epoch >= this.keys.epochFloor(docRoom(docId))) return
+      await this.rotate(docId)
+      log.info(`${this.store.entry(docId)?.path ?? docId}: moved on past the epoch the server went back from`)
+    } catch (error) {
+      log.error(`${this.store.entry(docId)?.path ?? docId}: moving it past the epoch the server went back from failed`, error)
+    } finally {
+      this.catchingUp.delete(docId)
+    }
+  }
+
   /** The note to its next epoch, everyone keeping access - each with a certificate as recorded now. */
   private async rotate(docId: string): Promise<void> {
     for (let attempt = 0; ; attempt += 1) {
       try {
         const members = await this.api.members(docId)
-        await this.api.rotateNote({ docId, rotation: await this.rotationFor(docId, members.epoch + 1, members.members) })
+        await this.api.rotateNote({ docId, rotation: await this.rotationFor(docId, this.keys.nextEpoch(docRoom(docId), members.epoch), members.members) })
         return
       } catch (error) {
         if (error instanceof ApiError && error.status === 409 && attempt < STALE_RETRIES) {
@@ -524,7 +549,7 @@ export class Sharing {
 
   /** Adds a note someone shared into this vault. */
   async accept(share: IncomingShare, announce = true): Promise<TFile | null> {
-    const title = (await this.keys.openTitle(share.docId, share.title)) || 'Shared note'
+    const title = (await this.keys.openTitle(share.docId, share.title, share.owner)) || 'Shared note'
     const file = await this.store.acceptShare(
       { docId: share.docId, owner: share.owner, role: share.role, title },
       this.options.folder()

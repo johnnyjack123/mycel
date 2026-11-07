@@ -7,7 +7,7 @@ import {
 } from 'y-protocols/awareness'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, type FolderTie, type Notice, type NotifyKind } from '@mycel/shared'
+import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, socketProtocols, type FolderTie, type Notice, type NotifyKind } from '@mycel/shared'
 import { bytes, concat, decrypt, encrypt, sha256, toHex, unpackFrame, utf8, type Bytes, type OpenedFrame } from '@mycel/shared/crypto'
 import type { HistoryEntry } from './History.js'
 import { log } from '../log.js'
@@ -28,9 +28,13 @@ const STALL_RETRY_MS = 2_000
 const STALL_TRIES = 3
 // A change this device may not sign yet is offered again this much later.
 const UNSIGNED_RETRY_MS = 5_000
+// A change the server had no room for is offered again this much later.
+const FULL_RETRY_MS = 60_000
 
 /** Keys of one room, by epoch. Null: this device may not read that epoch. */
 export interface RoomCrypto {
+  /** The account this device writes as: its own frames keep the time they carry (`changeTime`). */
+  self?: string
   key(epoch: number): Promise<CryptoKey | null>
   /**
    * What the server said the epoch it is in belongs to: a shared folder's
@@ -58,9 +62,42 @@ export interface RoomCrypto {
    * the room is caught up again later. `forged`: dropped.
    */
   check(kind: 'frame' | 'snapshot', seq: number, epoch: number, frame: OpenedFrame): Promise<FrameVerdict>
+  /** Presence this device sends, signed by its account; null: not sent. Absent: sent as it is. */
+  packPresence?(epoch: number, update: Uint8Array): Promise<Bytes | null>
+  /**
+   * Presence read: whose it is, when its signature holds and this device can
+   * tell - its own account, a contact, a writer the owner certified -, and the
+   * name to show for them; null drops it. Absent: taken as it is.
+   */
+  checkPresence?(epoch: number, plaintext: Uint8Array): Promise<CheckedPresence | null>
+}
+
+export interface CheckedPresence {
+  author: string
+  /** What this account calls them; null: the name they gave. */
+  name: string | null
+  update: Uint8Array
 }
 
 export type FrameVerdict = 'ok' | 'forged' | 'unknown'
+
+/** How long after its author's time a frame of someone else's may reach the server and still keep that time. */
+export const AUTHOR_LAG_MS = 60 * 60 * 1000
+
+/**
+ * When a change counts as made, for the history and the Time Machine. The
+ * author's clock, signed inside the frame - the server's could be faked, and
+ * re-uploaded history would scramble it. But someone else's clock only down to
+ * an hour before the server took the frame: a writer could otherwise date a
+ * change back as far as they liked, into every moment a rollback went back
+ * to. Later is the server's to make anyway - it can hold a frame back. This
+ * account's own devices are taken at their word: one offline for a week sends
+ * a week of changes at once, and history uploaded again carries its old times.
+ */
+export function changeTime(frame: Pick<OpenedFrame, 'author' | 'authorTs'>, serverTs: number, self: string | undefined): number {
+  if (self !== undefined && frame.author === self) return frame.authorTs
+  return Math.max(frame.authorTs, serverTs - AUTHOR_LAG_MS)
+}
 
 /** Where a room's position in the log and its unacknowledged changes are kept. */
 export interface RoomCursor {
@@ -128,6 +165,8 @@ export interface RoomOptions {
   create?: boolean
   /** A missing note is created in this shared folder, owned by the folder's owner. */
   folder?: string | null
+  /** A frame taken from the log, before it is applied: its change, and whether this account signed it. */
+  authored?: ((update: Uint8Array, own: boolean) => void) | null
 }
 
 export interface SocketHandlers {
@@ -149,6 +188,8 @@ export interface SocketHandlers {
   signedOut?(): void
   /** A push was refused because the vault is locked - this device may not have heard of the lock yet. */
   locked?(): void
+  /** A push or a new room was refused: the room's owner has used up what the server lets them store. */
+  full?(room: string): void
 }
 
 /** `unreadable`: the frame to compare came, but no key opened it - the log is neither confirmed nor refuted. */
@@ -195,6 +236,8 @@ interface Registration {
   sendTimer: number | null
   /** How many were present when last logged; presence is logged when that changes. */
   present: number
+  /** Presence client id -> the account whose signature first named it; nobody else speaks for it. */
+  presenceAuthors: Map<number, string>
   dead: boolean
   /** Waiting to catch up again after a frame there was no key for (`stall`). */
   stalled: boolean
@@ -248,9 +291,10 @@ export class VaultSocket {
     for (const listener of this.statusListeners) listener(status)
   }
 
+  /** The token goes as a subprotocol (`socketProtocols`), never into the URL a proxy logs. */
   private url(): string {
     const base = this.serverUrl.replace(/\/+$/, '')
-    return `${base}/vault/${encodeURIComponent(this.vaultId)}?token=${encodeURIComponent(this.token())}`
+    return `${base}/vault/${encodeURIComponent(this.vaultId)}`
   }
 
   connect(): void {
@@ -258,7 +302,7 @@ export class VaultSocket {
     this.emit('connecting')
     let socket: WebSocket
     try {
-      socket = new WebSocket(this.url())
+      socket = new WebSocket(this.url(), socketProtocols(this.token()))
     } catch (error) {
       log.error('opening the vault socket failed', error)
       this.scheduleReconnect()
@@ -468,10 +512,11 @@ export class VaultSocket {
     switch (type) {
       case MUX.frame: {
         const seq = decoding.readVarUint(decoder)
-        decoding.readVarUint(decoder) // the server's clock; the history view asks for it separately
+        // The server's clock: someone else's change counts as made no earlier than an hour before it (`changeTime`).
+        const serverTs = decoding.readVarUint(decoder)
         const epoch = decoding.readVarUint(decoder)
         const data = decoding.readVarUint8Array(decoder)
-        this.enqueue(registration, () => this.applyFrame(registration, seq, epoch, data))
+        this.enqueue(registration, () => this.applyFrame(registration, seq, epoch, data, serverTs))
         return
       }
       case MUX.snapshot: {
@@ -591,6 +636,24 @@ export class VaultSocket {
         })
         return
       }
+      case MUX.full: {
+        const ref = decoding.readVarUint(decoder)
+        this.enqueue(registration, async () => {
+          if (registration.inflight !== ref) return
+          // Not taken: it stays in `sending`, as offline, and is offered again later.
+          registration.inflight = null
+          registration.inflightFrame = null
+          log.warn(`${room}: the server has no room for it - its owner used up their storage; kept here`)
+          this.handlers.full?.(room)
+          if (registration.sendTimer === null) {
+            registration.sendTimer = window.setTimeout(() => {
+              registration.sendTimer = null
+              this.scheduleSend(registration)
+            }, FULL_RETRY_MS)
+          }
+        })
+        return
+      }
       case MUX.revoked:
         log.info(`${room}: access ended (${decoding.readVarString(decoder)})`)
         registration.dead = true
@@ -599,7 +662,13 @@ export class VaultSocket {
       case MUX.denied: {
         const reason = decoding.readVarString(decoder)
         // Missing is not final: the server lost a note someone else owns, and
-        // it may come back once they reconnect. Asked again on every connect.
+        // it may come back once they reconnect. Full neither: there may be room
+        // later. Both asked again on every connect.
+        if (reason === 'full') {
+          log.warn(`the server has no room for ${room}: its owner used up their storage`)
+          this.handlers.full?.(room)
+          return
+        }
         if (reason !== 'missing') registration.dead = true
         log.error(`the server refused ${room}: ${reason}`)
         this.handlers.denied?.(room, reason)
@@ -678,7 +747,7 @@ export class VaultSocket {
     }
   }
 
-  private async applyFrame(registration: Registration, seq: number, epoch: number, data: Uint8Array): Promise<void> {
+  private async applyFrame(registration: Registration, seq: number, epoch: number, data: Uint8Array, serverTs: number): Promise<void> {
     const cursor = registration.options.cursor
     const hash = await fingerprint(data)
     // Other bytes than this device saw: only what the frame says can tell, once it is open.
@@ -711,8 +780,14 @@ export class VaultSocket {
       log.error(`${registration.room}: frame #${seq} is not signed by someone who may write here; dropped`)
     } else {
       log.debug(`${registration.room}: frame #${seq}, ${frame.update.length} B, epoch ${epoch}`)
-      this.applyRemote(registration.doc, frame.update, frame.authorTs)
-      registration.options.history?.({ authorTs: frame.authorTs, update: frame.update })
+      const madeAt = changeTime(frame, serverTs, registration.options.crypto.self)
+      try {
+        registration.options.authored?.(frame.update, frame.author === registration.options.crypto.self)
+      } catch (error) {
+        log.debug(`${registration.room}: who wrote frame #${seq} could not be told`, error)
+      }
+      this.applyRemote(registration.doc, frame.update, madeAt)
+      registration.options.history?.({ authorTs: madeAt, update: frame.update })
     }
     cursor.lastSeq = seq
     cursor.lastHash = hash
@@ -799,7 +874,18 @@ export class VaultSocket {
         log.debug(`${registration.room}: presence under epoch ${epoch} dropped`)
         return
       }
-      applyAwarenessUpdate(awareness, plaintext, this)
+      const crypto = registration.options.crypto
+      let update: Uint8Array | null = plaintext
+      if (crypto.checkPresence) {
+        const checked = await crypto.checkPresence(epoch, plaintext)
+        if (!checked) {
+          log.debug(`${registration.room}: presence nobody this device can tell signed; dropped`)
+          return
+        }
+        update = this.presenceOf(registration, awareness, checked)
+      }
+      if (!update || registration.options.awareness !== awareness) return
+      applyAwarenessUpdate(awareness, update, this)
       // Every client renews its presence every 15 seconds; only who comes and goes is news.
       const present = awareness.getStates().size
       if (present !== registration.present) log.debug(`${registration.room}: ${present} present, epoch ${epoch}`)
@@ -807,6 +893,48 @@ export class VaultSocket {
     } catch (error) {
       log.warn(`presence for ${registration.room} could not be read`, error)
     }
+  }
+
+  /**
+   * What of a signed presence update its signer may say: their own clients
+   * only - a client id another account named first stays that account's, and
+   * this device's own is its own -, each naming the signer as its user, under
+   * the name this device knows them by. An update in y-protocols' format:
+   * count, then client id, clock and state as JSON each.
+   */
+  private presenceOf(registration: Registration, awareness: Awareness, checked: CheckedPresence): Uint8Array | null {
+    const kept: Array<{ clientId: number; clock: number; json: string }> = []
+    try {
+      const decoder = decoding.createDecoder(checked.update)
+      const count = decoding.readVarUint(decoder)
+      for (let index = 0; index < count; index += 1) {
+        const clientId = decoding.readVarUint(decoder)
+        const clock = decoding.readVarUint(decoder)
+        const json = decoding.readVarString(decoder)
+        if (clientId === awareness.clientID) continue
+        const speaker = registration.presenceAuthors.get(clientId)
+        if (speaker !== undefined && speaker !== checked.author) continue
+        const state = JSON.parse(json) as { user?: Record<string, unknown> } | null
+        if (state !== null) {
+          if (!state.user || typeof state.user !== 'object' || state.user.id !== checked.author) continue
+          if (checked.name !== null) state.user.name = checked.name
+        }
+        registration.presenceAuthors.set(clientId, checked.author)
+        kept.push({ clientId, clock, json: JSON.stringify(state) })
+      }
+    } catch (error) {
+      log.debug(`${registration.room}: a presence update could not be read`, error)
+      return null
+    }
+    if (kept.length === 0) return null
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint(encoder, kept.length)
+    for (const entry of kept) {
+      encoding.writeVarUint(encoder, entry.clientId)
+      encoding.writeVarUint(encoder, entry.clock)
+      encoding.writeVarString(encoder, entry.json)
+    }
+    return encoding.toUint8Array(encoder)
   }
 
   // --- outgoing ------------------------------------------------------------------
@@ -889,12 +1017,17 @@ export class VaultSocket {
       return
     }
     const epoch = registration.options.cursor.epoch
+    // Where a caret is, is text too: never under an epoch moved back, or a folder's key the index does not agree with.
+    if ((await registration.options.crypto.mayEncrypt?.(epoch)) === false) return
     const key = await registration.options.crypto.key(epoch)
     if (!key) {
       log.warn(`${registration.room}: no key to send presence under epoch ${epoch}`)
       return
     }
-    const data = await encrypt(key, bytes(update), awarenessAad(registration.room, epoch))
+    const crypto = registration.options.crypto
+    const plaintext = crypto.packPresence ? await crypto.packPresence(epoch, update) : bytes(update)
+    if (!plaintext || !this.connected) return
+    const data = await encrypt(key, plaintext, awarenessAad(registration.room, epoch))
     this.send((encoder) => {
       encoding.writeVarUint(encoder, MUX.awareness)
       encoding.writeVarString(encoder, registration.room)
@@ -997,6 +1130,7 @@ export class VaultSocket {
       verify: { seq: 0, hash: null, content: null, state: 'none' },
       sendTimer: null,
       present: 0,
+      presenceAuthors: new Map(),
       dead: false,
       stalled: false,
       stalls: 0,

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { readFile, rm, stat } from 'node:fs/promises'
+import { readFile, readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   CLOSE_SIGNED_OUT,
@@ -90,6 +90,8 @@ export interface RoomClient {
   sendDenied(room: string, reason: string): void
   /** The push `ref` was refused because the vault is locked; the device keeps it. */
   sendLocked(room: string, ref: number): void
+  /** The push `ref` was refused because the room's owner used up their storage; the device keeps it. */
+  sendFull(room: string, ref: number): void
   sendNotify(kind: NotifyKind, payload: Notice): void
   /** A note the connection watches has frames past what it knows (`MUX.changed`). */
   sendChanged(room: string, headSeq: number): void
@@ -160,6 +162,16 @@ const ATTACH_PER_REQUEST_MAX = 256
 const ATTACHMENTS_MAX = 4_096
 /** A frame could not be stored; the device reconnects and sends it again. */
 const CLOSE_WRITE_FAILED = 1011
+/**
+ * What a room costs its owner's quota besides its bytes: its folder, its
+ * metadata. Counted by their bytes alone, empty rooms by the million cost
+ * nothing - and filled the disk's inodes.
+ */
+const ROOM_CHARGE = 4 * 1024
+/** A frame on the disk: its bytes and the header around them. */
+const FRAME_CHARGE = 32
+/** How long the rooms' usage counted from the disk stands; what was written since is added to it. */
+const USAGE_RECOUNT_MS = 10 * 60 * 1000
 
 function toBase64(data: Uint8Array): string {
   return Buffer.from(data).toString('base64')
@@ -185,6 +197,18 @@ function epochKeysOf(keys: unknown, lastEpoch: number, what: string): Record<str
     checked[epoch] = sealed
   }
   return checked
+}
+
+/**
+ * How far an owner may move a room's epoch at once. Usually by one; further
+ * when a device knew the room in a later epoch than the server now has - one
+ * restored from a backup, or one working with someone who left, whose key the
+ * earlier epochs are under: the device moves it past every epoch it knew.
+ */
+const MAX_EPOCH_JUMP = 1 << 20
+
+function isLaterEpoch(current: number, proposed: unknown): boolean {
+  return typeof proposed === 'number' && Number.isInteger(proposed) && proposed > current && proposed <= current + MAX_EPOCH_JUMP
 }
 
 function fromBase64(value: unknown, what: string): Uint8Array {
@@ -223,6 +247,10 @@ export class RoomHub {
    */
   private readonly heads = new Map<string, number>()
   private readonly ready: Promise<void>
+  /** What an account may store, rooms and attachments together (`limitStorage`); null: no limit. */
+  private storage: { quotaBytes: number; used: (account: string) => Promise<number> } | null = null
+  /** account -> what the rooms it owns take on the disk, and when that was counted. */
+  private readonly usage = new Map<string, { bytes: Promise<number>; at: number }>
 
   constructor(
     private readonly options: RoomHubOptions,
@@ -299,6 +327,55 @@ export class RoomHub {
   /** Whether a shared note names this blob; such a blob is never purged. */
   isAttached(account: string, vault: string, blob: string): boolean {
     return this.attached.has(`${account}/${vault}/${blob}`)
+  }
+
+  // --- storage -----------------------------------------------------------------
+  // `MYCEL_QUOTA_MB` covered attachments alone: the rooms an account made and the
+  // bytes of their logs had no limit, and with open registration a stranger could
+  // fill the disk. It now covers what an account owns in all.
+
+  /** The quota rooms and attachments share; `used` counts both for an account. */
+  limitStorage(quotaBytes: number | null, used: (account: string) => Promise<number>): void {
+    this.storage = quotaBytes === null ? null : { quotaBytes, used }
+  }
+
+  /**
+   * What the rooms an account owns take on the disk: counted from it now and
+   * then, what was written since added on. Compaction and purges show only at
+   * the next count - the count errs on the side of the disk.
+   */
+  usageOf(account: string): Promise<number> {
+    const known = this.usage.get(account)
+    if (known && Date.now() - known.at < USAGE_RECOUNT_MS) return known.bytes
+    const bytes = this.countRooms(account)
+    this.usage.set(account, { bytes, at: Date.now() })
+    bytes.catch(() => this.usage.delete(account))
+    return bytes
+  }
+
+  private grew(account: string, bytes: number): void {
+    const known = this.usage.get(account)
+    if (known) known.bytes = known.bytes.then((before) => before + bytes)
+  }
+
+  private async countRooms(account: string): Promise<number> {
+    await this.ready
+    let total = 0
+    for (const meta of Array.from(this.metas.values())) {
+      if (meta.owner !== account) continue
+      total += ROOM_CHARGE
+      const dir = roomDir(this.options.dataDir, meta)
+      for (const name of await readdir(dir).catch(() => [] as string[])) {
+        total += (await stat(join(dir, name)).catch(() => null))?.size ?? 0
+      }
+    }
+    return total
+  }
+
+  /** Whether `bytes` more fit into what `account` may store. */
+  private async fits(account: string, bytes: number): Promise<boolean> {
+    if (!this.storage) return true
+    return (await this.storage.used(account)) + bytes <= this.storage.quotaBytes
   }
 
   // --- rooms -------------------------------------------------------------------
@@ -383,6 +460,7 @@ export class RoomHub {
       if (folder) meta.folder = folder
       if (ties) meta.ties = ties
       this.metas.set(room, meta)
+      this.grew(owner, ROOM_CHARGE)
       const log = await RoomLog.create(this.options.dataDir, meta)
       const created: OpenRoom = { log, subscribers: new Set(), idleTimer: null }
       this.rooms.set(room, created)
@@ -662,6 +740,15 @@ export class RoomHub {
       return
     }
     let open = loaded
+    if (!open && this.storage) {
+      // A new room is its owner's: the folder's owner for a note made in their folder.
+      const owner = folder !== undefined && kind === 'doc' && isHexId(folder) ? (this.metas.get(folderRoom(folder))?.owner ?? client.account) : client.account
+      if (!(await this.fits(owner, ROOM_CHARGE))) {
+        // Not final: asked again on every connection, as a missing room is.
+        client.sendDenied(room, 'full')
+        return
+      }
+    }
     if (!open && folder !== undefined && kind === 'doc') {
       open = await this.claimInFolder(client, room, folder)
       if (!open) {
@@ -727,6 +814,11 @@ export class RoomHub {
       client.sendDenied(room, 'not subscribed')
       return
     }
+    // Before every other check: from the epoch's on, nothing is awaited until the frame is appended.
+    if (this.storage && !(await this.fits(open.log.meta.owner, data.length + FRAME_CHARGE))) {
+      client.sendFull(room, ref)
+      return
+    }
     if (this.lockedOut(client)) {
       client.sendLocked(room, ref)
       return
@@ -755,6 +847,7 @@ export class RoomHub {
       client.close(CLOSE_WRITE_FAILED, 'the server could not store a change')
       return
     }
+    this.grew(open.log.meta.owner, data.length + FRAME_CHARGE)
     if (this.options.logUpdates) {
       console.info(`[mycel] ${room}: #${frame.seq} ${data.length}B -> ${open.subscribers.size - 1} peer(s)`)
     }
@@ -893,7 +986,7 @@ export class RoomHub {
       fromSeq = 0
     } else {
       const rotation = request.rotation
-      if (!rotation || rotation.epoch !== meta.epoch + 1) throw new HubError(409, 'the note moved to another epoch; try again')
+      if (!rotation || !isLaterEpoch(meta.epoch, rotation.epoch)) throw new HubError(409, 'the note moved to another epoch; try again')
       if (!rotation.snapshot || rotation.snapshot.uptoSeq !== open.log.headSeq) {
         throw new HubError(409, 'the note changed meanwhile; try again')
       }
@@ -980,7 +1073,7 @@ export class RoomHub {
     const account = isAccountId(request.account) ? request.account : null
     if (!account || !meta.members[account]) throw new HubError(404, 'not a member')
     const rotation = request.rotation
-    if (!rotation || rotation.epoch !== meta.epoch + 1) throw new HubError(409, 'the note moved to another epoch; try again')
+    if (!rotation || !isLaterEpoch(meta.epoch, rotation.epoch)) throw new HubError(409, 'the note moved to another epoch; try again')
     const remaining = Object.keys(meta.members).filter((name) => name !== account)
     for (const member of remaining) {
       if (!isSealed(rotation.keys?.[member])) throw new HubError(400, `the new key for ${member} is missing`)
@@ -1025,7 +1118,7 @@ export class RoomHub {
     const open = await this.owned(owner, request.docId)
     const meta = open.log.meta
     const rotation = request.rotation
-    if (!rotation || rotation.epoch !== meta.epoch + 1) throw new HubError(409, 'the note moved to another epoch; try again')
+    if (!rotation || !isLaterEpoch(meta.epoch, rotation.epoch)) throw new HubError(409, 'the note moved to another epoch; try again')
     for (const member of Object.keys(meta.members)) {
       const sealed = rotation.keys?.[member]
       if (typeof sealed !== 'string' || sealed.length === 0 || sealed.length > SEALED_MAX) throw new HubError(400, `the new key for ${member} is missing`)
@@ -1249,7 +1342,7 @@ export class RoomHub {
       if (members.length === 0) continue
       const docId = roomSubject(meta.room)
       const rotation = rotations?.[docId]
-      if (!rotation || rotation.epoch !== meta.epoch + 1) throw new HubError(409, `${docId} moved to another epoch; try again`)
+      if (!rotation || !isLaterEpoch(meta.epoch, rotation.epoch)) throw new HubError(409, `${docId} moved to another epoch; try again`)
       for (const member of members) {
         if (!isSealed(rotation.keys?.[member])) throw new HubError(400, `the new key of ${docId} for ${member} is missing`)
       }
@@ -1266,7 +1359,7 @@ export class RoomHub {
   }
 
   private checkFolderRotation(folder: RoomMeta, notes: RoomMeta[], rotation: FolderRotation | undefined, leaving?: string): FolderRotation {
-    if (!rotation || rotation.epoch !== folder.epoch + 1) throw new HubError(409, 'the folder moved to another epoch; try again')
+    if (!rotation || !isLaterEpoch(folder.epoch, rotation.epoch)) throw new HubError(409, 'the folder moved to another epoch; try again')
     for (const member of Object.keys(folder.members)) {
       if (member !== leaving && !isSealed(rotation.keys?.[member])) throw new HubError(400, `the new key for ${member} is missing`)
     }
@@ -1473,7 +1566,10 @@ export class RoomHub {
       throw new HubError(409, `the starting point (#${uptoSeq}) does not fit the log (epoch from #${meta.epochSince ?? 0}, older frames up to #${older}, head #${head}); try again`)
     }
     if ((meta.epochSince ?? 0) > head) console.warn(`[mycel] ${room}: its epoch began after #${meta.epochSince}, but its head is #${head}`)
-    await open.log.addJoinSnapshot(uptoSeq, request.epoch, fromBase64(request.data, 'the snapshot'))
+    const data = fromBase64(request.data, 'the snapshot')
+    await open.log.addJoinSnapshot(uptoSeq, request.epoch, data)
+    // Counted, never refused: a share without its starting point reads nothing.
+    this.grew(owner, data.length)
   }
 
   /**
@@ -1491,7 +1587,7 @@ export class RoomHub {
       if (meta.folder.id === id) return
       throw new HubError(409, 'the note is in another folder')
     }
-    if (request.epoch !== meta.epoch + 1) throw new HubError(409, 'the note moved to another epoch; try again')
+    if (!isLaterEpoch(meta.epoch, request.epoch)) throw new HubError(409, 'the note moved to another epoch; try again')
     if (request.folderEpoch !== folder.epoch) throw new HubError(409, 'the folder moved to another epoch; try again')
     for (const member of Object.keys(meta.members)) {
       if (!isSealed(request.keys?.[member])) throw new HubError(400, `the new key for ${member} is missing`)
@@ -1521,7 +1617,7 @@ export class RoomHub {
     const meta = open.log.meta
     if (meta.folder?.id !== id) throw new HubError(404, 'the note is not in this folder')
     const rotation = request.rotation
-    if (!rotation || rotation.epoch !== meta.epoch + 1) throw new HubError(409, 'the note moved to another epoch; try again')
+    if (!rotation || !isLaterEpoch(meta.epoch, rotation.epoch)) throw new HubError(409, 'the note moved to another epoch; try again')
     for (const member of Object.keys(meta.members)) {
       if (!isSealed(rotation.keys?.[member])) throw new HubError(400, `the new key for ${member} is missing`)
     }
@@ -1892,7 +1988,11 @@ export class RoomHub {
     for (const frame of frames) {
       if (frame.epoch !== 0) throw new HubError(400, 'a new room starts in epoch 0')
     }
-    if (frames.length > 0) await open.log.appendAll(0, frames.map((frame) => fromBase64(frame.data, 'a frame')))
+    const datas = frames.map((frame) => fromBase64(frame.data, 'a frame'))
+    const bytes = datas.reduce((sum, data) => sum + data.length + FRAME_CHARGE, 0)
+    if (!(await this.fits(account, bytes))) throw new HubError(507, 'the account has used up its storage')
+    if (datas.length > 0) await open.log.appendAll(0, datas)
+    this.grew(account, bytes)
     return open.log.headSeq
   }
 

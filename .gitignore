@@ -9,3 +9,6 @@ main.js.map
 packages/server/data/
 # Sketches and screenshots the user hands over for a design, not part of the code
 reference/
+# Claude Code's local settings and the worktrees its agents work in
+.claude/settings.local.json
+.claude/worktrees/

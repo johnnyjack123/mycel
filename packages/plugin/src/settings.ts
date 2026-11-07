@@ -1,7 +1,7 @@
 import { App, ButtonComponent, PluginSettingTab, Setting } from 'obsidian'
 import { Notice } from './notices.js'
 import { generatePassword } from './account/password'
-import type { ServerProbe } from './account/probe'
+import { describeProbe, type ServerProbe } from './account/probe'
 import { PasswordReveal } from './account/reveal'
 import { busy, type BusyButton } from './busy'
 import {
@@ -125,6 +125,8 @@ export interface MycelSettings {
   timeMachineTicks: TickChoice
   /** Whether a note showing its past marks the changes against now. */
   timeMachineMarks: boolean
+  /** The setup wizard was opened on this device: it never opens by itself again. */
+  setupShown: boolean
 }
 
 export const DEFAULT_SETTINGS: MycelSettings = {
@@ -141,7 +143,8 @@ export const DEFAULT_SETTINGS: MycelSettings = {
   backupLastGood: {},
   timeMachineBackups: false,
   timeMachineTicks: 'auto',
-  timeMachineMarks: true
+  timeMachineMarks: true,
+  setupShown: false
 }
 
 /** Where a phone starts: its storage and data plan are not a desktop's. */
@@ -294,6 +297,19 @@ export class MycelSettingTab extends PluginSettingTab {
     this.display()
   }
 
+  /**
+   * The setup wizard closed or signed in. It may have changed the server's
+   * address underneath the tab, so what the tab knew of the server is stale.
+   */
+  afterSetup(): void {
+    if (!this.shown) return
+    if (this.probeTimer !== null) window.clearTimeout(this.probeTimer)
+    this.probeTimer = null
+    this.probing = 0
+    this.probe = undefined
+    this.refresh()
+  }
+
   /** Asked again every time the settings open: the server may have come up meanwhile. */
   hide(): void {
     this.shown = false
@@ -347,22 +363,7 @@ export class MycelSettingTab extends PluginSettingTab {
     const changed = probe?.state === 'ok' && probe.changed
     for (const control of this.gated) control.setDisabled(this.busy || probe?.state !== 'ok' || changed)
     if (this.useServerButton) this.useServerButton.buttonEl.style.display = changed ? '' : 'none'
-    if (!this.serverStatus) return
-    if (!probe) {
-      this.serverStatus.setDesc('Checking the server…')
-    } else if (probe.state === 'ok' && probe.changed) {
-      this.serverStatus.setDesc(
-        'Reachable, but not the server this device knew: its id changed. If you set it up again yourself, or chose another server at this address, use it. If not, someone may be posing as your server - do not sign in.'
-      )
-    } else if (probe.state === 'ok') {
-      this.serverStatus.setDesc(
-        `Reachable. ${probe.registration === 'open' ? 'Anyone can create an account here.' : 'New accounts need an invite code.'}`
-      )
-    } else if (probe.state === 'unreachable') {
-      this.serverStatus.setDesc(`Not reachable: ${probe.reason}`)
-    } else {
-      this.serverStatus.setDesc(probe.reason)
-    }
+    this.serverStatus?.setDesc(describeProbe(probe))
   }
 
   /** `button`: the one clicked, greyed out and spinning until the task is done. */
@@ -408,6 +409,12 @@ export class MycelSettingTab extends PluginSettingTab {
 
   private account(containerEl: HTMLElement): void {
     const settings = this.plugin.settings
+    if (!settings.username) {
+      new Setting(containerEl)
+        .setName('Set up step by step')
+        .setDesc('A short guide: how Mycel works, then this device connected to your server - the address, your account, the vault.')
+        .addButton((button) => button.setButtonText('Open the guide…').onClick(() => this.plugin.openSetup()))
+    }
     new Setting(containerEl)
       .setName('Server URL')
       .setDesc('WebSocket endpoint of your Mycel server, e.g. wss://notes.example.com')
@@ -718,7 +725,8 @@ export class MycelSettingTab extends PluginSettingTab {
           .onClick(
             () =>
               void this.run(async () => {
-                await this.plugin.createAccount(this.username, this.password, this.repeat, this.invite)
+                // A code typed for another server that wanted one would be checked, and refused, by one that does not.
+                await this.plugin.createAccount(this.username, this.password, this.repeat, this.inviteNeeded() ? this.invite : '')
                 this.forgetPasswords()
                 this.screen = 'overview'
               }, button)
@@ -1233,8 +1241,11 @@ export class MycelSettingTab extends PluginSettingTab {
         return
       }
       const mb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(1)} MB`
+      // Since 0.9.9 the quota covers the notes' history too.
+      const notes = answer.roomBytes === undefined ? '' : `; notes and their history ${mb(answer.roomBytes)}`
+      const used = answer.bytes + (answer.roomBytes ?? 0)
       usage.setDesc(
-        `${mb(answer.bytes)}, encrypted, including earlier versions and deleted files${answer.quotaBytes === null ? '' : `, of ${mb(answer.quotaBytes)} this server allows your account`}.`
+        `${mb(answer.bytes)}, encrypted, including earlier versions and deleted files${notes}${answer.quotaBytes === null ? '' : `. ${mb(used)} of ${mb(answer.quotaBytes)} this server allows your account`}.`
       )
     })
 

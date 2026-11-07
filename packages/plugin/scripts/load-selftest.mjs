@@ -283,6 +283,27 @@ if (exported) {
       'and the notification center, with its command',
       { views: registered.views, commands: registered.commands }
     )
+    check(registered.commands.includes('setup'), "and the setup wizard's command", registered.commands)
+    // By itself only on a device never connected, and once: a device set up, or
+    // signed out later with its address kept, is never interrupted by it.
+    {
+      const kept = instance.settings
+      const base = { ...kept, serverUrl: 'ws://localhost:1234', username: '', token: '', setupShown: false }
+      const offers = (patch) => {
+        instance.settings = { ...base, ...patch }
+        return instance.offersSetup()
+      }
+      const fresh = offers({})
+      const seen = offers({ setupShown: true })
+      const signedIn = offers({ username: 'someone', token: 'token' })
+      const addressed = offers({ serverUrl: 'wss://notes.example.com' })
+      instance.settings = kept
+      check(
+        fresh && !seen && !signedIn && !addressed,
+        'the setup wizard opens by itself on a device never connected, once - never on one signed in or given an address',
+        { fresh, seen, signedIn, addressed }
+      )
+    }
 
     try {
       for (const callback of registered.layoutReady) await callback()

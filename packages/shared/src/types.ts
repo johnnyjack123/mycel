@@ -742,6 +742,12 @@ export interface BackupGrant {
   publicKey: string
   /** PKCS#8. */
   privateKey: string
+  /**
+   * The account's signing key, public half: the backup server checks every
+   * frame's signature with it and the contacts' keys from the settings, as the
+   * devices do. Absent from a grant made before 0.9.9.
+   */
+  signingPublicKey?: string
   backupKey: string
   keyId: string
 }
@@ -898,6 +904,21 @@ export interface FolderNotice {
 /** For `contact` (something waits in the inbox), `contact-removed` and `account-changed`. */
 export interface ContactNotice {
   account: string
+  /**
+   * For `contact-removed`: when the account removed this one, and its
+   * signature over that (`signContactRemoval`). A device forgets a contact only
+   * on that signature: the server's word alone took contacts away. Absent from
+   * a device or server before 0.9.9.
+   */
+  at?: number
+  signature?: string
+}
+
+/** `POST /contacts/remove`: who, and - since 0.9.9 - this account's signed word for it, which the server hands on. */
+export interface RemoveContactRequest {
+  account: string
+  at?: number
+  signature?: string
 }
 
 /** For `vault-lock`: the vault was locked, the lock renewed hands on, or it ended (`lock: null`). */
@@ -1314,5 +1335,10 @@ export interface BlobTouchResponse {
 export interface BlobUsageResponse {
   /** Ciphertext bytes the account keeps, over all its vaults. */
   bytes: number
+  /**
+   * What the rooms the account owns take - notes' logs and snapshots, index,
+   * settings, folders. The quota covers both since 0.9.9; absent from an older server.
+   */
+  roomBytes?: number
   quotaBytes: number | null
 }

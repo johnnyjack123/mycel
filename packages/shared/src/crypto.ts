@@ -417,6 +417,19 @@ export async function verifySignature(publicKey: Bytes, message: string | Bytes,
   }
 }
 
+/** What an account signs when it removes a contact: who removed whom, and when. */
+function contactRemovalMessage(remover: string, removed: string, at: number): string {
+  return `contact-removed|${remover}|${removed}|${at}`
+}
+
+export function signContactRemoval(signingKey: CryptoKey, remover: string, removed: string, at: number): Promise<string> {
+  return sign(signingKey, contactRemovalMessage(remover, removed, at))
+}
+
+export function verifyContactRemoval(publicKey: Bytes, remover: string, removed: string, at: number, signature: string): Promise<boolean> {
+  return verifySignature(publicKey, contactRemovalMessage(remover, removed, at), signature)
+}
+
 /** What the owner signs for a key it seals: which room and epoch, for whom, and the sealed box itself. */
 async function sealedKeyMessage(room: string, epoch: number, recipient: string, sealed: string): Promise<string> {
   return `sealed-key|${room}|${epoch}|${recipient}|${toHex(await sha256(utf8(sealed)))}`
@@ -575,6 +588,34 @@ export function unpackFrame(data: Uint8Array): OpenedFrame | null {
 /** Whether a frame's signature holds under `publicKey` - the owner's, or the one its certificate names. */
 export function verifyFrame(publicKey: Bytes, room: string, epoch: number, frame: OpenedFrame): Promise<boolean> {
   return verifySignature(publicKey, frameMessage(room, epoch, frame.authorTs, frame.author, frame.update), toBase64(frame.signature))
+}
+
+// Presence - carets, selections, the name beside them - travels in the frame's
+// format, under a signature of its own kind: one made for a caret is never one
+// for a change. Unsigned, anyone holding a note's key, a reader too, drew a caret
+// in any account's name and hid their own behind it (0.9.9).
+
+function presenceMessage(room: string, epoch: number, authorTs: number, author: string, update: Uint8Array): Bytes {
+  return concat(utf8(`presence|${room}|${epoch}|${authorTs}|${author}|`), update)
+}
+
+/** A presence update's plaintext, signed by whoever sends it; a writer adds the owner's certificate, as on a frame. */
+export async function packSignedPresence(
+  signingKey: CryptoKey,
+  room: string,
+  epoch: number,
+  author: string,
+  cert: WriterCert | null,
+  authorTs: number,
+  update: Uint8Array
+): Promise<Bytes> {
+  const signature = fromBase64(await sign(signingKey, presenceMessage(room, epoch, authorTs, author, update)))
+  return assembleFrame(author, cert, authorTs, signature, update)
+}
+
+/** Whether a presence update's signature holds under `publicKey`. Read with `unpackFrame`. */
+export function verifyPresence(publicKey: Bytes, room: string, epoch: number, presence: OpenedFrame): Promise<boolean> {
+  return verifySignature(publicKey, presenceMessage(room, epoch, presence.authorTs, presence.author, presence.update), toBase64(presence.signature))
 }
 
 // --- blobs -------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 import * as Y from 'yjs'
 import { frameAad, snapshotAad, type LogResponse } from '@mycel/shared'
 import { decrypt, fromBase64, unpackFrame } from '@mycel/shared/crypto'
-import type { RoomCrypto } from '../sync/VaultSocket.js'
+import { changeTime, type RoomCrypto } from '../sync/VaultSocket.js'
 
 // A room's history as the server keeps it - the vault index, a note -,
 // decrypted here and replayed to any moment it reaches. Ordered by when each
@@ -53,7 +53,7 @@ export async function readLog(api: { log(room: string): Promise<LogResponse> }, 
       unreadable += 1
       continue
     }
-    steps.push({ seq: frame.seq, ts: change.authorTs, update: change.update })
+    steps.push({ seq: frame.seq, ts: changeTime(change, frame.ts, crypto.self), update: change.update })
   }
   steps.sort((a, b) => a.ts - b.ts || a.seq - b.seq)
   return { base, steps, unreadable }
