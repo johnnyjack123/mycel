@@ -38,14 +38,14 @@ export class UnknownMembersModal extends Modal {
     contentEl.empty()
     const who = accounts.map((account) => account.slice(0, 8)).join(', ')
     contentEl.createEl('p', {
-      text: `The server lists ${accounts.length === 1 ? `an account (${who})` : `${accounts.length} accounts (${who})`} as member of "${where}" - and ${accounts.length === 1 ? 'it is' : 'they are'} not one of your contacts.`
+      text: `The server lists ${accounts.length === 1 ? `an account (${who})` : `${accounts.length} accounts (${who})`} as member of "${where}" - and ${accounts.length === 1 ? 'it is' : 'they are'} not one of your contacts, or not one you shared it with.`
     })
     contentEl.createEl('p', {
       text: `Nothing was sealed for ${accounts.length === 1 ? 'it' : 'them'}, so what was just done - sharing, revoking, the ${kind} moving to a new key - did not happen. The ${kind} keeps the key it had.`
     })
     contentEl.createEl('p', {
       cls: 'setting-item-description',
-      text: 'Notes are only ever shared with contacts, and removing a contact ends every share with them. So this is either a contact removed on another device whose shares did not all end, or a server that should not be trusted with this share.'
+      text: 'Notes are only ever shared with contacts, every share is recorded on your devices, and removing a contact ends every share with them. So this is either a contact removed or a share ended on another device that did not reach the server, or a server that should not be trusted with this share.'
     })
     if (accounts.length > 1) {
       contentEl.createEl('p', {

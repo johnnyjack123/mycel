@@ -324,12 +324,17 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
 
     // An identity is both keys: a code's fingerprint covers the signing key too.
     const signing = await e2e.generateSigningKeys()
-    const identity = await e2e.identityFingerprint(alice.publicKey, signing.publicKey)
+    const identity = await e2e.identityFingerprint(aliceId, alice.publicKey, signing.publicKey)
     check(
-      e2e.toHex(identity) === e2e.toHex(await e2e.identityFingerprint(alice.publicKey, signing.publicKey)) &&
-        e2e.toHex(identity) !== e2e.toHex(await e2e.identityFingerprint(alice.publicKey, other.publicKey)) &&
-        e2e.toHex(identity) !== e2e.toHex(await e2e.identityFingerprint(bob.publicKey, signing.publicKey)),
+      e2e.toHex(identity) === e2e.toHex(await e2e.identityFingerprint(aliceId, alice.publicKey, signing.publicKey)) &&
+        e2e.toHex(identity) !== e2e.toHex(await e2e.identityFingerprint(aliceId, alice.publicKey, other.publicKey)) &&
+        e2e.toHex(identity) !== e2e.toHex(await e2e.identityFingerprint(aliceId, bob.publicKey, signing.publicKey)),
       "an identity's fingerprint changes with either of its keys"
+    )
+    // And with the account: a server naming another contact as a code's creator is caught.
+    check(
+      e2e.toHex(identity) !== e2e.toHex(await e2e.identityFingerprint(ownerId, alice.publicKey, signing.publicKey)),
+      "an identity's fingerprint changes with its account id"
     )
 
     // Signed frames: the author signs inside the encryption; a writer carries the owner's certificate.

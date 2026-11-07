@@ -8,6 +8,34 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.8** (2026-11-07) - **the security audit** (`docs/PHASE8.md`, A; every finding with its
+  fix and its check in **`docs/AUDIT.md`**, the attacks kept as `npm run test:security`).
+  Server: one malformed or oversized WebSocket message - to `/relay?role=backup`, no token
+  needed - ended the whole process (every socket has an `error` listener now); without
+  `MYCEL_JWT_SECRET` tokens were signed with a secret from the sources (now a random one kept
+  in the data folder; a configured one needs 32 characters, or the server does not start);
+  behind a proxy ten wrong passwords from anyone blocked everybody's sign-in
+  (`MYCEL_TRUST_PROXY`); bodies of 64 MiB were parsed before any token was looked at; friend
+  codes' answers without size or number could make contacts.json unreadable for everyone;
+  titles, keys and attachment lists of any size went into a room's metadata; frames of
+  100 MiB were taken; another account's vault id could be registered. Plugin: paths in a
+  shared folder's document wrote outside the folder - `../../.obsidian/plugins/mycel/main.js`,
+  code that runs at the next start - and every file operation now passes a gate that allows
+  the vault's own files and the plugin's folder only (`guard.ts`, invariant 31); a folder's
+  document naming another note of the victim took it over and deleted it; a link typed into a
+  shared note had the other devices publish their own files of that name (now only links
+  typed here, a note shared from here with its files, or the user's yes); a friend code did
+  not bind its creator's account; keys were sealed to whoever the server listed, taken from
+  any contact, and written under any folder tie the server named (invariant 32); a caret's
+  colour went into a style attribute as it came. Backup server: a task's environment reached
+  restic whole (`LD_PRELOAD`, `RCLONE_CONFIG` - code on the backup server), and an `sftp:` or
+  `rclone:` location starting with `-` was an option to ssh or rclone. **Friend codes made
+  before 0.9.8 no longer redeem; every device and the server need 0.9.8 together.** Checked
+  by putting the bugs back (S1 to S9, P1, P3, P4 in `docs/AUDIT.md`): the old server failed 17
+  checks and exited on the relay message, the old plugin wrote the plugin's `main.js` through
+  the folder and deleted the victim's note; every other suite passes with the fixes and with
+  the gate in front of the test devices.
+
 - **0.9.7** (2026-11-06) - **the name: Mycel** (`docs/PHASE8.md`, N; the user, 2026-11-05).
   Since the user starts once afresh, everything is renamed, the internal names included -
   nothing has to stay readable: the plugin (id `mycel`, name *Mycel*, its folder

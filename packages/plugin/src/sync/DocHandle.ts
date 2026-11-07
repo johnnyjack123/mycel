@@ -139,6 +139,12 @@ export class DocHandle {
   readonly doc = new Y.Doc()
   readonly ytext: Y.Text
   /**
+   * Client ids besides the document's own that wrote on this device in this
+   * session: the seed of a note made from a file here (`seed.ts`). What they
+   * wrote counts as written here - a link in it may share a file of this vault.
+   */
+  readonly localClients = new Set<number>()
+  /**
    * Exists for every note but is registered with the socket only while the
    * note is shared: syncing your own devices must not broadcast a caret.
    */

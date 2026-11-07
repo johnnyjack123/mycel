@@ -47,6 +47,12 @@ export interface RoomCrypto {
    */
   pack(epoch: number, authorTs: number, update: Uint8Array): Promise<Bytes | null>
   /**
+   * Whether this device may encrypt anything under the epoch's key - false
+   * while the server ties it to a folder this vault does not have the note in.
+   * Absent: always.
+   */
+  mayEncrypt?(epoch: number): Promise<boolean>
+  /**
    * Whether a frame or snapshot read from the log is taken: its author may
    * write here and signed it. `unknown`: a key this device does not have yet -
    * the room is caught up again later. `forged`: dropped.

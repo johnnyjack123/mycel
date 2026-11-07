@@ -20,6 +20,8 @@ const USAGE = `usage:
 
 async function main(argv: string[]): Promise<number> {
   const [scope, command, id] = argv
+  // As the server writes accounts.json: its user's alone.
+  process.umask(0o077)
   // The same settings as the server, or it would write to another data directory.
   loadEnvFile()
   const config = loadConfig()

@@ -27,7 +27,7 @@ const server = await startServer(
     PORT: '0',
     MYCEL_DATA_DIR: join(root, 'server'),
     MYCEL_REGISTRATION: 'open',
-    MYCEL_JWT_SECRET: 'rollback-selftest'
+    MYCEL_JWT_SECRET: 'rollback-selftest-secret-of-32-characters'
   }),
   { logger: false, paceMs: 0 }
 )

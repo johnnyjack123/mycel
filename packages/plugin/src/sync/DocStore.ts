@@ -15,7 +15,7 @@ import {
 import { additiveEdits, reconcile, type ReconcileOutcome } from './Reconciler.js'
 import { matchesGlob } from './glob.js'
 import { FORK_ORIGIN, RESTORE_ORIGIN, SYNC_ORIGIN } from './origin.js'
-import { seedUpdate } from './seed.js'
+import { seedClientId, seedUpdate } from './seed.js'
 import { memoryHistory, type HistoryEntry, type HistoryStore } from './History.js'
 import type { BackupStore } from './BackupStore.js'
 import type { Review, ReviewKind } from './Reviews.js'
@@ -830,6 +830,7 @@ export class DocStore {
       this.applyToDocument(handle, mergeAdditively(current, text))
       return handle.text()
     }
+    handle.localClients.add(seedClientId(handle.docId, text))
     Y.applyUpdate(handle.doc, seedUpdate(handle.docId, text), SYNC_ORIGIN)
     // A seed applied and deleted before is a no-op in Yjs. `reconcile` seeds
     // only documents that never carried anything, so that should not happen -
@@ -1810,7 +1811,11 @@ export class DocStore {
    * out of the share folder.
    */
   private freePath(folder: string, title: string): string {
-    const segments = title.split('/').filter((segment) => !['', '.', '..'].includes(segment.trim()))
+    // Leading and trailing dots go too: a hidden name is nothing Obsidian lists, and `.. ` is `..` on Windows.
+    const segments = title
+      .split(/[/\\]/)
+      .map((segment) => segment.replace(/^[. ]+|[. ]+$/g, ''))
+      .filter((segment) => segment !== '')
     const name = (segments.length > 0 ? segments : [title]).map(safeFileName).join('/')
     const prefix = folder.replace(/^\/+|\/+$/g, '')
     const at = (suffix: string): string => `${prefix ? `${prefix}/` : ''}${name}${suffix}.md`

@@ -26,7 +26,7 @@ const server = await startServer(
     PORT: '0',
     MYCEL_DATA_DIR: root,
     MYCEL_REGISTRATION: 'open',
-    MYCEL_JWT_SECRET: 'replace-selftest'
+    MYCEL_JWT_SECRET: 'replace-selftest-secret-of-32-characters'
   }),
   { logger: false, paceMs: 0, maxFailures: 1_000 }
 )

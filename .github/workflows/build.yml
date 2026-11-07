@@ -48,6 +48,11 @@ jobs:
       - name: Rooms and accounts self-test
         run: npm run test:rooms
 
+      # Every attack found in the security audit, against a running server, the
+      # plugin's paths and the backup server's task: a FAIL means one works again.
+      - name: Security self-test
+        run: npm run test:security
+
       # The editor binding on its own, through an in-process relay: a view
       # plugin that throws while being constructed is silently deactivated,
       # remote changes must stay out of undo, a wholesale reload must not
@@ -106,7 +111,7 @@ jobs:
       - name: Start the sync server
         env:
           MYCEL_REGISTRATION: open
-          MYCEL_JWT_SECRET: ci-only-secret
+          MYCEL_JWT_SECRET: ci-only-secret-of-at-least-32-characters
         run: |
           npm run start:server > server.log 2>&1 &
           for _ in $(seq 1 30); do
@@ -259,7 +264,7 @@ jobs:
       - name: Smoke test
         run: |
           set -euo pipefail
-          docker run -d --name smoke -p 1234:1234 -e MYCEL_JWT_SECRET=smoke-only mycel-server:smoke
+          docker run -d --name smoke -p 1234:1234 -e MYCEL_JWT_SECRET=smoke-only-secret-of-at-least-32-characters mycel-server:smoke
           healthy=false
           for _ in $(seq 1 30); do
             if curl -sf http://localhost:1234/health > /dev/null; then
@@ -284,7 +289,7 @@ jobs:
           # handed over at start; the admin command, run as root through docker exec,
           # writes as the server's user too; and the server itself does not run as root.
           mkdir -p hostdata
-          docker run -d --name smoke-bind -p 1235:1234 -e MYCEL_JWT_SECRET=smoke-only -v "$PWD/hostdata:/data" mycel-server:smoke
+          docker run -d --name smoke-bind -p 1235:1234 -e MYCEL_JWT_SECRET=smoke-only-secret-of-at-least-32-characters -v "$PWD/hostdata:/data" mycel-server:smoke
           for _ in $(seq 1 30); do curl -sf http://localhost:1235/health > /dev/null && break; sleep 1; done
           docker exec smoke-bind mycel invite
           owners=$(docker exec smoke-bind stat -c '%u' /data /data/accounts.json /proc/1 | sort -u)
@@ -299,7 +304,7 @@ jobs:
           # Started as another user nothing is handed over: a folder it cannot write
           # stops it at once, saying what to do.
           mkdir -p unwritable && chmod 755 unwritable
-          if out=$(docker run --rm --user 4321:4321 -e MYCEL_JWT_SECRET=smoke-only -v "$PWD/unwritable:/data" mycel-server:smoke 2>&1); then
+          if out=$(docker run --rm --user 4321:4321 -e MYCEL_JWT_SECRET=smoke-only-secret-of-at-least-32-characters -v "$PWD/unwritable:/data" mycel-server:smoke 2>&1); then
             echo "::error::the server started with a data folder it cannot write"
             exit 1
           fi
@@ -427,7 +432,7 @@ jobs:
         run: |
           set -euo pipefail
           npm ci
-          MYCEL_JWT_SECRET=ci-only-secret npm run start:server > server.log 2>&1 &
+          MYCEL_JWT_SECRET=ci-only-secret-of-at-least-32-characters npm run start:server > server.log 2>&1 &
           for _ in $(seq 1 30); do curl -sf http://localhost:1234/health > /dev/null && break; sleep 1; done
           # Bind-mounted folders that are the runner's, as a fresh setup's would be someone else's:
           # handed over at start, and an invitation made through docker exec - as root - read by

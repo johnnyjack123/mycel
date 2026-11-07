@@ -1,7 +1,7 @@
 import { TFile, getLinkpath, type App } from 'obsidian'
 import { Notice } from '../notices.js'
 import * as Y from 'yjs'
-import { NOTE_ATTACHMENTS_FIELD, NOTE_SHARE_FIELD, docRoom, type AttachmentEntry, type SharedAttachment } from '@mycel/shared'
+import { NOTE_ATTACHMENTS_FIELD, NOTE_SHARE_FIELD, docRoom, isFilePath, vaultPathProblem, type AttachmentEntry, type SharedAttachment } from '@mycel/shared'
 import type { ConnectApi } from '../account/api.js'
 import type { AttachmentStore } from '../sync/AttachmentStore.js'
 import type { DocHandle } from '../sync/DocHandle.js'
@@ -38,6 +38,8 @@ export interface SharedFilesOptions {
     linkedFilesOf(docId: string): boolean | null
     linksIntoFolder(docId: string, ref: string, target: string | null): boolean
   }
+  /** A link not typed here names a file of this vault: the user is asked whether it goes to the note's people. */
+  ask?: (question: { docId: string; ref: string; note: string; file: string }) => void
 }
 
 /** What naming this vault's blobs in a list takes; the key ring in the plugin. */
@@ -74,20 +76,25 @@ function isFileRef(ref: string): boolean {
  * client. A link typed in an earlier session counts as someone else's - it
  * only waits a little longer.
  */
-function typedHere(ytext: Y.Text, ref: string): boolean {
+function typedHere(ytext: Y.Text, ref: string, localClients: ReadonlySet<number>): boolean {
   const doc = ytext.doc
-  if (!doc) return false
+  if (!doc || ref.length === 0) return false
+  const local = (client: number): boolean => client === doc.clientID || localClients.has(client)
   const text = ytext.toString()
   for (let at = text.indexOf(ref); at !== -1; at = text.indexOf(ref, at + 1)) {
+    // Every letter of it: someone else's `assport.pdf` after a `p` typed here is not a link typed here.
+    const end = at + ref.length
     let position = 0
-    for (let item = ytext._start; item; item = item.right) {
+    let own = true
+    for (let item = ytext._start; item && position < end; item = item.right) {
       if (item.deleted || !item.countable) continue
-      if (at < position + item.length) {
-        if (item.id.client === doc.clientID) return true
+      if (position + item.length > at && !local(item.id.client)) {
+        own = false
         break
       }
       position += item.length
     }
+    if (own) return true
   }
   return false
 }
@@ -121,6 +128,10 @@ export class SharedFiles {
   private readonly unlisted = new Map<string, number>()
   private readonly watched = new WeakSet<Y.Doc>()
   private readonly warned = new Set<string>()
+  /** `${docId}:${ref}`: links whose file this device may share (`approve`). */
+  private readonly approved = new Set<string>()
+  /** `${docId}:${ref}`: links the user was asked about this session. */
+  private readonly asked = new Set<string>()
   private stopped = false
   private ready = false
 
@@ -313,13 +324,22 @@ export class SharedFiles {
     if (!listed) {
       if (!local || !note.canWrite) return
       const key = `${docId}:${ref}`
-      const seen = this.unlisted.get(key) ?? Date.now()
-      this.unlisted.set(key, seen)
-      const waited = Date.now() - seen
-      // The device that typed the link names its file at once; any other waits
-      // for it, so a file of the same name of its own never gets there first.
-      if (waited < this.options.claimDelayMs && !typedHere(note.handle.ytext, ref)) {
-        this.schedule(docId, this.options.claimDelayMs - waited + 50)
+      // A link is text anyone who may write in the note can type: one naming a
+      // file of this vault - `![[passport.pdf]]` - had every such device hand
+      // its own file of that name to everyone in the note, unasked. A file goes
+      // out only for a link typed here, one in the note when it was shared from
+      // here, or one the user said yes to.
+      if (typedHere(note.handle.ytext, ref, note.handle.localClients)) this.approved.add(key)
+      if (!this.approved.has(key)) {
+        const seen = this.unlisted.get(key) ?? Date.now()
+        this.unlisted.set(key, seen)
+        const waited = Date.now() - seen
+        // The device that typed the link names its file itself; asked only if none did.
+        if (waited < this.options.claimDelayMs) {
+          this.schedule(docId, this.options.claimDelayMs - waited + 50)
+          return
+        }
+        this.askToShare(note, ref, local.entry.path)
         return
       }
       await this.publish(note, ref, local, undefined)
@@ -365,6 +385,30 @@ export class SharedFiles {
     this.agree(note, ref, listed.hash, local.entry.path)
   }
 
+  /** Once per link and session: whether this vault's file goes to everyone in the note is the user's to say. */
+  private askToShare(note: Note, ref: string, path: string): void {
+    const key = `${note.docId}:${ref}`
+    if (this.asked.has(key)) return
+    this.asked.add(key)
+    log.warn(`${note.file.path}: links ${path} of this vault, a link not typed here; waits for the user before it is shared`)
+    this.options.ask?.({ docId: note.docId, ref, note: note.file.path, file: path })
+  }
+
+  /**
+   * The user's yes for one link - or, without `ref`, for every link the note
+   * has now: it is being shared from here, with what it shows.
+   */
+  approve(docId: string, ref?: string): void {
+    if (ref !== undefined) {
+      this.approved.add(`${docId}:${ref}`)
+    } else {
+      const entry = this.store.entry(docId)
+      const file = entry ? this.app.vault.getAbstractFileByPath(entry.path) : null
+      if (file instanceof TFile) for (const link of this.refsOf(file)) this.approved.add(`${docId}:${link}`)
+    }
+    this.schedule(docId)
+  }
+
   private agree(note: Note, ref: string, hash: string, path: string): void {
     const base = this.attachments.sharedBase(note.docId, ref)
     if (base?.hash !== hash || base.path !== path) this.attachments.setSharedBase(note.docId, ref, { hash, path })
@@ -400,6 +444,7 @@ export class SharedFiles {
       const moved = this.attachments.delivered(note.docId, other)
       if (!moved) continue
       const path = this.deliveryPath(note, ref)
+      if (path === null) return
       this.attachments.reroute(moved.fileId, { docId: note.docId, ref }, path)
       this.attachments.setSharedBase(note.docId, other, null)
       this.attachments.setSharedBase(note.docId, ref, { hash: listed.hash, path })
@@ -407,6 +452,7 @@ export class SharedFiles {
       return
     }
     const path = this.deliveryPath(note, ref)
+    if (path === null) return
     const fileId = await this.attachments.deliver(path, listed, note.room, { docId: note.docId, ref })
     if (fileId) this.attachments.setSharedBase(note.docId, ref, { hash: listed.hash, path })
   }
@@ -416,14 +462,23 @@ export class SharedFiles {
    * its path, so the link resolves as written. For everyone, the owner too:
    * whatever comes in through a share lands in one place.
    */
-  private deliveryPath(note: Note, ref: string): string {
+  private deliveryPath(note: Note, ref: string): string | null {
     const root = [this.options.folder().replace(/^\/+|\/+$/g, ''), 'Attachments'].filter(Boolean).join('/')
+    // The link is written by anyone who may write in the note. A backslash is
+    // a separator on Windows - `..\..\x` passed a filter of `/` segments -, and a
+    // hidden name is nothing Obsidian lists: both made one segment each, and
+    // what does not make a plain segment then goes.
     const clean = ref
-      .split('/')
-      .filter((segment) => segment && segment !== '.' && segment !== '..')
+      .split(/[/\\]/)
+      .map((segment) => segment.replace(/^[. ]+|[. ]+$/g, ''))
+      .filter(Boolean)
       .join('/')
     const taken = (path: string): boolean => Boolean(this.app.vault.getAbstractFileByPath(path) || this.attachments.fileAt(path))
     const first = `${root}/${clean}`
+    if (!isFilePath(first)) {
+      log.error(`${note.file.path}: the link ${JSON.stringify(ref)} makes no file path (${vaultPathProblem(first) ?? 'a note'}); its file is left out`)
+      return null
+    }
     if (!taken(first)) return first
     const second = `${root}/${safeSegment(note.file.basename)}/${clean}`
     let path = second

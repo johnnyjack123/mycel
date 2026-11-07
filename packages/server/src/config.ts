@@ -33,9 +33,20 @@ export function loadEnvFile(path = fileURLToPath(new URL('../../../.env', import
 export interface ServerConfig {
   host: string
   port: number
-  jwtSecret: string
-  /** True while the JWT secret is the built-in one - fine for a laptop, not for a server. */
-  insecureSecret: boolean
+  /**
+   * Signs every token. Null when none is set: the server then makes a random
+   * one in its data folder (`jwt-secret`) and keeps it - there is no built-in
+   * secret any more, since anyone could read that one in the sources and sign
+   * a token for any account.
+   */
+  jwtSecret: string | null
+  /**
+   * Which addresses the server takes `X-Forwarded-For` from - the reverse
+   * proxy in front of it. Without it every request seemed to come from the
+   * proxy, and ten wrong passwords from anyone blocked everybody's sign-in.
+   * Unset, the header is ignored: anyone could write it.
+   */
+  trustProxy: string[] | null
   dataDir: string
   /** `open`: anyone who reaches the server can register. `invite`: only with a code from the CLI. */
   registration: RegistrationMode
@@ -50,7 +61,11 @@ export interface ServerConfig {
   purgeGraceMs: number
 }
 
-const DEV_SECRET = 'dev-insecure-secret-change-me'
+/**
+ * HS256 wants a key of 256 bits (RFC 7518). Every account holds a token signed
+ * with it - all an offline search for a short or human-made secret needs.
+ */
+export const MIN_JWT_SECRET_LENGTH = 32
 const THIRTY_DAYS = 30 * 24 * 60 * 60
 const MB = 1024 * 1024
 const DEFAULT_MAX_FILE_MB = 100
@@ -61,13 +76,21 @@ function parseIntFallback(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+/** `MYCEL_TRUST_PROXY`: addresses or subnets (comma separated), `loopback`, `linklocal`, `uniquelocal` as Fastify reads them. */
+function trustedProxies(value: string | undefined): string[] | null {
+  const list = (value ?? '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+  return list.length > 0 ? list : null
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
-  const jwtSecret = env.MYCEL_JWT_SECRET || DEV_SECRET
   return {
     host: env.HOST ?? '0.0.0.0',
     port: parseIntFallback(env.PORT, 1234),
-    jwtSecret,
-    insecureSecret: jwtSecret === DEV_SECRET,
+    jwtSecret: env.MYCEL_JWT_SECRET ? env.MYCEL_JWT_SECRET : null,
+    trustProxy: trustedProxies(env.MYCEL_TRUST_PROXY),
     dataDir: resolve(env.MYCEL_DATA_DIR ?? './data'),
     registration: env.MYCEL_REGISTRATION === 'open' ? 'open' : 'invite',
     accessTokenTtlSeconds: parseIntFallback(env.MYCEL_TOKEN_TTL, THIRTY_DAYS),

@@ -1,5 +1,5 @@
 import { Notice } from '../notices.js'
-import { folderRoom, type AttachmentEntry, type FolderFile, type VaultFolder } from '@mycel/shared'
+import { folderRoom, isFilePath, vaultPathProblem, type AttachmentEntry, type FolderFile, type VaultFolder } from '@mycel/shared'
 import { deriveFileId, type Bytes } from '@mycel/shared/crypto'
 import type { ConnectApi } from '../account/api.js'
 import type { AttachmentStore } from '../sync/AttachmentStore.js'
@@ -130,6 +130,16 @@ export class FolderFiles {
     log.info(`${entry.path}: shares its ${prev ? 'new version' : 'content'} in its folder, ${entry.size} bytes`)
   }
 
+  private readonly refused = new Set<string>()
+
+  /** A file the folder names under a path no vault may hold: left out, and said once. */
+  private refusePath(folderId: string, file: string, path: unknown): void {
+    const key = `${folderId}:${file}:${String(path)}`
+    if (this.refused.has(key)) return
+    this.refused.add(key)
+    log.error(`a shared folder names a file at ${JSON.stringify(String(path))}: ${vaultPathProblem(path) ?? 'not a file'}; left out`)
+  }
+
   /** Every file of this vault's own inside a folder that is not in it yet - when the folder is first shared. */
   async publishAll(folderId: string, fi: FolderIndex, mount: string, isExcluded: (path: string) => boolean): Promise<number> {
     if (!this.ready) return 0
@@ -174,6 +184,12 @@ export class FolderFiles {
     context: { mount: string; write: boolean; room: string; waits: FileWaits }
   ): Promise<void> {
     const { mount, write, room, waits } = context
+    // Written by anyone who may write in the folder: a path that climbs out of
+    // it or names something hidden would put their file anywhere here.
+    if (!isFilePath(listed.path)) {
+      this.refusePath(folderId, file, listed.path)
+      return
+    }
     const local = this.attachments.linked(folderId, file)
     if (local && waits.pending(local.fileId)) return
     const base = this.attachments.folderBase(folderId, file)

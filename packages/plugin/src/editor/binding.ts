@@ -131,6 +131,29 @@ export function deltaToChanges(delta: Y.YTextEvent['delta']): Change[] {
   return changes
 }
 
+const COLOUR = /^#[0-9a-fA-F]{3,8}$/
+const NAME_MAX = 64
+
+/**
+ * Someone's presence as it may be drawn. Anyone with the note's key writes it
+ * - a reader too - and its light colour went into a style attribute as it
+ * came: `red; background: url(…)` laid a picture of their choice over the
+ * editor, or told them who looked at the note. Colours are hex or the default,
+ * names text of a bounded length.
+ */
+function presentUser(value: unknown): CollabUser | null {
+  if (!value || typeof value !== 'object') return null
+  const user = value as Partial<Record<keyof CollabUser, unknown>>
+  if (typeof user.id !== 'string') return null
+  const colour = (candidate: unknown, fallback: string): string => (typeof candidate === 'string' && COLOUR.test(candidate) ? candidate : fallback)
+  return {
+    id: user.id,
+    name: typeof user.name === 'string' ? user.name.slice(0, NAME_MAX) : '',
+    color: colour(user.color, '#888888'),
+    colorLight: colour(user.colorLight, '#88888833')
+  }
+}
+
 class CaretWidget extends WidgetType {
   constructor(private readonly user: CollabUser) {
     super()
@@ -592,7 +615,7 @@ export class EditorBinding implements PluginValue {
     awareness.getStates().forEach((state, clientId) => {
       if (clientId === awareness.clientID) return
       const cursor = state.cursor as AwarenessCursor | null | undefined
-      const user = state.user as CollabUser | undefined
+      const user = presentUser(state.user)
       // The same account on another device: presence is for the others.
       if (!cursor || !user || user.id === me) return
       let anchor = toIndex(cursor.anchor)

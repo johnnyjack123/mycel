@@ -31,6 +31,8 @@ running it in **`docs/BACKUP.md`**; sharing a folder and the small fixes of 0.8 
 second round, 0.8.13, U1 to U5, V1 to V6, W1 to W3) in **`docs/TIMEMACHINE.md`**.
 A new milestone gets its design document written with the user before it is built: 0.9's
 is **`docs/PHASE8.md`** (decided 2026-11-03; being built, its order in `docs/PROGRESS.md`).
+The security audit (0.9.8) - every finding, its fix, its check, and what is known and not
+fixed - is **`docs/AUDIT.md`**.
 Licence: AGPL-3.0-or-later (`LICENSE.md`, the user, 2026-11-03).
 
 ## Non-negotiable invariants
@@ -241,6 +243,27 @@ someone's notes. Treat them as rules, not preferences.
     files back first (`recoverAtStart`, before `startSync` in `onLayoutReady`);
     anything that could not be put back keeps the sync off. Never write the past
     into a file any other way, and never let the sync start around this.
+31. **A path someone else wrote is checked before it names a file, and the plugin
+    touches nothing but the vault's own files and its own folder.** A shared
+    folder's document, a shared note's links, a sealed title come from other people
+    and from the server: `../../.obsidian/plugins/mycel/main.js` in a folder's
+    document was written there, and would have run at the next start (0.9.8,
+    `docs/AUDIT.md`). Every such path passes `vaultPathProblem` (`shared/paths.ts`)
+    where it is read, and every file operation passes the gate (`plugin/src/guard.ts`:
+    `onload` replaces `app` with one whose vault, adapter and file manager check each
+    path - vault paths that are not hidden, and the plugin's folder). Never go around
+    the gate (`window.require('fs')`, an `app` kept from before `onload`), and never
+    let it refuse what a vault really holds: Obsidian lists no hidden file.
+32. **Only what this account decided goes out, and only a room's owner seals its
+    keys.** The server's lists decide nothing alone: a key is sealed only to a member
+    this account recorded giving the note or folder to (`recordRole`, `memberKeys`),
+    a folder's share covers only notes this vault's index has in it (`ownNotesIn`), a
+    note is written under a folder's key only when the index has it in that folder
+    (`tieAgrees`), a key is taken only when the room's owner sealed it (`openSealed`),
+    and a file of this vault goes into a shared note's list only for a link typed
+    here, a note shared from here with its files, or the user's yes (`SharedFiles.approve`).
+    A folder's document moves, revives or deletes only notes that are in that folder.
+    A friend code binds its creator's account id with the keys.
 
 ## Architecture
 
@@ -797,6 +820,7 @@ npm run test:account   # the account with real devices: signing the other device
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
 npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too), the vault lock, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
 npm run test:replace   # every key of an account replaced: the vaults and files written anew, the other device, a contact confirming again, a replacement carried on by another device — in-process server
+npm run test:security  # every attack of the audit (docs/AUDIT.md): the server attacked over HTTP and WebSocket, the plugin's paths, links, folders and gate, the backup task — in-process servers
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by MYCEL_RESTIC (where it lies here: docs/PROGRESS.md)
 # needs a server that lets tests create accounts:
@@ -879,6 +903,13 @@ its tabs and its buttons.
   (`0xfeff`, `String.fromCharCode`). To look for them, read the files with Node:
   `grep -P` in Git Bash has no UTF-8 locale and fails, which with `2>/dev/null`
   looks exactly like "nothing found".
+- **`MYCEL_JWT_SECRET` needs 32 characters**, or the server does not start (0.9.8);
+  unset, it makes one in its data folder (`jwt-secret`). Every test that sets one sets
+  a long one. Behind a reverse proxy, `MYCEL_TRUST_PROXY` names it - unset, every
+  request seems to come from the proxy, and the sign-in throttle blocks everyone at once.
+- **Every WebSocket the server accepts has an `error` listener** (`heard` in
+  `server.ts`): one without took the whole process down on a single malformed message,
+  from anyone (the relay takes backup servers without a token).
 - **The server reads the `.env` in the repository root** (`loadEnvFile`), for
   npm and the CLI alike; compose reads the same file. Shell variables win, so a
   local `.env` cannot redirect the self-tests. Writing `.env*` is blocked by a
@@ -898,6 +929,8 @@ its tabs and its buttons.
   PORT=1235 MYCEL_REGISTRATION=open MYCEL_DATA_DIR="$TMPDIR/oc-test-data" npm run start:server
   npm run test:vault -- ws://localhost:1235
   ```
+
+  (No `MYCEL_JWT_SECRET` needed there: the server makes one in its scratch folder.)
 
   Check the server log for `EADDRINUSE` before trusting a green run, and stop
   it afterwards with PowerShell — `pkill` from Git Bash does not kill Windows

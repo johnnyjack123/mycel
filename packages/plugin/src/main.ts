@@ -12,6 +12,7 @@ import {
 } from 'obsidian'
 import * as Y from 'yjs'
 import { Notice, noticeWithAction, notices } from './notices.js'
+import { gateApp } from './guard.js'
 import {
   roomKind,
   settingsRoom,
@@ -320,6 +321,10 @@ export default class MycelPlugin extends Plugin {
   private unloaded = false
 
   async onload(): Promise<void> {
+    // Before anything else: every file this plugin touches from here on goes
+    // through the gate - the vault's own notes and files and this plugin's
+    // folder, nothing hidden, nothing outside (`guard.ts`).
+    this.app = gateApp(this.app, this.pluginDir())
     await this.loadSettings()
     log.verbose = this.settings.verboseLog
     await log.attach(this.app.vault.adapter, `${this.pluginDir()}/logs`)
@@ -363,6 +368,14 @@ export default class MycelPlugin extends Plugin {
     this.register(this.timeMachine.onChange(() => this.explorerGuard?.refresh()))
     this.register(notices.handle('folder-undelete', (data) => this.undoFolderDelete(data as DeletedBatch)))
     this.register(notices.handle('rollback-undo', async (data) => this.undoRollback(data as string)))
+    this.register(
+      notices.handle('share-linked-file', async (data) => {
+        const { docId, ref } = (data ?? {}) as { docId?: unknown; ref?: unknown }
+        if (typeof docId !== 'string' || typeof ref !== 'string') return
+        if (!this.sharedFiles) throw new Error('Sync is not running.')
+        this.sharedFiles.approve(docId, ref)
+      })
+    )
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => this.noteMenu(menu, file)))
     this.registerEvent(
       this.app.workspace.on('editor-menu', (menu, _editor, info) => {
@@ -1223,7 +1236,8 @@ export default class MycelPlugin extends Plugin {
         roles: {
           get: (room, account) => accountSettings.shareRole(room, account),
           set: (room, account, role) => accountSettings.setShareRole(room, account, role)
-        }
+        },
+        approveFiles: (docId) => this.sharedFiles?.approve(docId)
       },
       this.contacts
     )
@@ -1267,7 +1281,13 @@ export default class MycelPlugin extends Plugin {
       folder: () => this.shared().sharedFolder,
       syncTimeoutMs: this.settings.syncTimeoutMs,
       claimDelayMs: SHARED_FILES_CLAIM_MS,
-      folders
+      folders,
+      ask: ({ docId, ref, note, file }) =>
+        noticeWithAction(
+          `"${note}" links ${file} of this vault, and the link was not typed on this device. Anyone who may write in a shared note can type a link, so it goes to everyone in the note only if you say so.`,
+          0,
+          { label: `Share ${file.slice(file.lastIndexOf('/') + 1)}`, kind: 'share-linked-file', data: { docId, ref } }
+        )
     })
     this.compactor = new Compactor(this.api, keys, () => this.shared().historyRetentionDays)
     this.trash = new Trash(this.api, store, () => this.shared().historyRetentionDays, this.attachments, folders)

@@ -79,7 +79,8 @@ A template sits in `docs/server.env`:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MYCEL_JWT_SECRET` | — (required with Docker) | Signs access tokens. `openssl rand -base64 48`. |
+| `MYCEL_JWT_SECRET` | — (required with Docker) | Signs access tokens. `openssl rand -base64 48`. At least 32 characters, or the server does not start (0.9.8): every account holds a token, and a short secret falls to an offline search from it. Unset outside Docker, the server makes a random one and keeps it in its data folder (`jwt-secret`). |
+| `MYCEL_TRUST_PROXY` | none | The reverse proxy's address as the server sees it (`10.0.0.1`), a subnet (`10.0.0.0/24`), a list (`10.0.0.1,10.0.0.2`) or `loopback` for one on the same machine. Its `X-Forwarded-For` then names the client: without it every request seems to come from the proxy, and ten wrong passwords from anyone block everybody's sign-in for 15 minutes. Never set it without a proxy in front: anyone could then write the header. |
 | `MYCEL_REGISTRATION` | `invite` | `invite`: accounts only with a code from `invite`. `open`: anyone who reaches the server can create one. |
 | `MYCEL_TOKEN_TTL` | `2592000` | Seconds a device stays signed in without being used. |
 | `MYCEL_LOG_UPDATES` | `false` | A log line per document frame. |
@@ -132,8 +133,9 @@ directory the server uses. Variables set in the shell win over the file, and a b
 order mark at its start (Windows PowerShell 5.1 writes one) is ignored.
 
 Data goes to `packages/server/data`, or `MYCEL_DATA_DIR`. Without
-`MYCEL_JWT_SECRET` the server uses a built-in secret and says so at
-startup — fine on a laptop, never on a reachable server. `HOST` defaults to
+`MYCEL_JWT_SECRET` the server makes a random secret on its first start and keeps
+it in the data folder as `jwt-secret`, readable by its own user only (before 0.9.8
+it used one built into the sources, which anyone could read). `HOST` defaults to
 `0.0.0.0`.
 
 Put TLS in front of it (a reverse proxy) as soon as it leaves your own network:
@@ -145,4 +147,14 @@ seconds, so a proxy's idle timeout (nginx's is a minute) closes none of them; be
 Let the proxy pass
 request bodies of at least 8 MB - attachments travel in chunks of 4 MB, and nginx
 refuses anything over 1 MB unless told otherwise (`client_max_body_size 64m;`, which
-also covers large note snapshots).
+also covers large note snapshots). Set `MYCEL_TRUST_PROXY` to the proxy's address, so
+that a sign-in that keeps failing blocks its sender and not everyone behind the proxy.
+The access token travels in the WebSocket URL: keep the proxy's access log off for
+`/vault/` and `/relay`, or out of anyone else's reach (Nginx Proxy Manager keeps one per
+host under `/data/logs`).
+
+What the server takes is bounded (0.9.8, `docs/AUDIT.md`): requests without a valid
+token are turned away before their body is read, signing in takes 64 KB at most, a
+socket message 32 MiB, a share's title 16 KB and each key sealed with it 4 KB, a
+note's list of attachments 4096 names, open friend codes 50 per account. A malformed
+or oversized WebSocket message ends that connection, never the server.

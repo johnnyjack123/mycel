@@ -65,6 +65,8 @@ export interface SharingOptions {
     get(room: string, account: string): ShareRole | null
     set(room: string, account: string, role: ShareRole | null): void
   }
+  /** A note is shared from here with its files: the files its links show now may go along (`SharedFiles.approve`). */
+  approveFiles?: (docId: string) => void
 }
 
 /** A note or a folder of this account's, whose members a new key is sealed to. */
@@ -186,7 +188,12 @@ export class Sharing {
    */
   async memberKeys(members: Array<{ account: string }>, place: MemberPlace): Promise<Map<string, Recipient>> {
     const accounts = members.map((member) => member.account)
-    const strangers = (): string[] => accounts.filter((account) => !this.contacts.isContact(account))
+    const room = place.kind === 'note' ? docRoom(place.docId) : folderRoom(place.folderId)
+    // A contact the server lists who was never given this note or folder from
+    // here counts as a stranger: the server could otherwise add any contact -
+    // one working with it - and have every later key sealed to them. This
+    // account records everyone it shares with (`recordRole`), on every device.
+    const strangers = (): string[] => accounts.filter((account) => !this.contacts.isContact(account) || this.options.roles.get(room, account) === null)
     if (strangers().length > 0 && this.options.contactsReady && !(await this.options.contactsReady())) {
       throw new Error('Your contacts have not arrived from the server yet. Try again once it is reachable.')
     }
@@ -200,7 +207,6 @@ export class Sharing {
     // Whoever took the keys they replaced would open what is sealed to them now.
     const replaced = accounts.filter((account) => this.contacts.isReplaced(account))
     if (replaced.length > 0) throw new Error(replacedMessage(replaced.map((account) => this.nameOf(account))))
-    const room = place.kind === 'note' ? docRoom(place.docId) : folderRoom(place.folderId)
     const keys = new Map<string, Recipient>()
     for (const { account } of members) {
       const pinned: Recipient = { account, publicKey: this.contacts.publicKey(account) as Bytes }
@@ -296,7 +302,13 @@ export class Sharing {
       throw new Error('The server is not reachable.')
     }
     setAttachmentsShared(handle.doc, shared)
+    if (shared) this.options.approveFiles?.(docId)
     log.info(`${entry.path}: its files ${shared ? 'go along with it' : 'no longer go along with it'}`)
+  }
+
+  /** The files a note of this vault's links now go along with it - the folder sharing it says so. */
+  approveFilesOf(docId: string): void {
+    this.options.approveFiles?.(docId)
   }
 
   /**
@@ -377,6 +389,7 @@ export class Sharing {
     if (wasWriter && role === 'read' && withHistory) await this.rotate(docId)
     this.store.share(docId, true)
     if (withAttachments !== undefined && !handle.pristine) setAttachmentsShared(handle.doc, withAttachments)
+    if (withAttachments) this.options.approveFiles?.(docId)
     log.info(
       `${entry.path}: shared with ${account} to ${role}, ${withHistory ? 'with' : 'without'} history${withAttachments ? ', with its files' : ''}`
     )
@@ -725,7 +738,10 @@ export class Sharing {
   /** What the server kept, decrypted with the keys it kept alongside. */
   private async readKept(docId: string, kept: ForkResponse): Promise<HistoryEntry[]> {
     const room = docRoom(docId)
-    const crypto = this.keys.endedDocCrypto(docId, kept.keys, kept.folder, kept.owner)
+    // Checked against the owner this vault recorded, not the one the server says it kept:
+    // naming another contact let what that contact signed become this account's own note.
+    const owner = this.store.entry(docId)?.owner ?? kept.owner
+    const crypto = this.keys.endedDocCrypto(docId, kept.keys, kept.folder, owner)
     // Only what the live note would have taken: a frame no writer signed does not become this account's own.
     const open = async (kind: 'frame' | 'snapshot', seq: number, epoch: number, data: string, aad: string): Promise<HistoryEntry | null> => {
       try {

@@ -372,6 +372,12 @@ export class AccountStore {
       // First writer wins: a second device creating the same vault at the same
       // moment gets the first one's key back and uses that.
       if (existing) return { vaultId, sealedName: existing.sealedName, wrappedKey: existing.wrappedKey }
+      // An id derived from another account's secret never comes out of this
+      // one's: whoever sends it learned it, and with it would open a vault
+      // socket of that id and claim its index room before its owner's device did.
+      for (const other of Object.values(data.accounts)) {
+        if (other.accountId !== accountId && other.vaults[vaultId]) throw new AccountError(409, 'that vault id is taken')
+      }
       account.vaults[vaultId] = { sealedName: sealedName as string, wrappedKey: wrappedKey as string, createdAt: Date.now() }
       return { vaultId, sealedName: sealedName as string, wrappedKey: wrappedKey as string }
     })

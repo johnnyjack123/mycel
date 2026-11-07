@@ -28,7 +28,7 @@ async function serve(dataDir: string) {
       PORT: String(port),
       MYCEL_DATA_DIR: dataDir,
       MYCEL_REGISTRATION: 'open',
-      MYCEL_JWT_SECRET: 'recovery-selftest',
+      MYCEL_JWT_SECRET: 'recovery-selftest-secret-of-32-characters',
       // Content uploaded seconds ago may go when the test empties the trash.
       MYCEL_PURGE_GRACE_S: '0'
     }),
