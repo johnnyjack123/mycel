@@ -64,14 +64,69 @@ function keepOf(value: unknown): KeepPolicy | undefined {
   return Object.keys(keep).length > 0 ? keep : undefined
 }
 
+/**
+ * The credentials a cloud location may need, and nothing else. Every variable
+ * a task named went into restic's environment before - and restic's, rclone's
+ * and ssh's: `LD_PRELOAD` with a library the person's own decrypted copy put on
+ * this disk, `RCLONE_CONFIG` or `AWS_SHARED_CREDENTIALS_FILE` naming a file of
+ * theirs that runs a command, `SSH_ASKPASS`. Any person paired here could run
+ * code on the backup server, and read every other vault on it.
+ */
+const CREDENTIALS = new Set([
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_DEFAULT_REGION',
+  'AWS_REGION',
+  'B2_ACCOUNT_ID',
+  'B2_ACCOUNT_KEY',
+  'AZURE_ACCOUNT_NAME',
+  'AZURE_ACCOUNT_KEY',
+  'AZURE_ACCOUNT_SAS',
+  'AZURE_ENDPOINT_SUFFIX',
+  'GOOGLE_PROJECT_ID',
+  'GOOGLE_ACCESS_TOKEN',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'RESTIC_REST_USERNAME',
+  'RESTIC_REST_PASSWORD',
+  'RESTIC_COMPRESSION',
+  'RESTIC_PACK_SIZE'
+])
+/** OpenStack Swift's credentials, by their prefixes. */
+const SWIFT = /^(OS|ST)_[A-Z0-9_]+$/
+
+function hasControl(text: string): boolean {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index)
+    if (code < 0x20 || code === 0x7f) return true
+  }
+  return false
+}
+
 export function envOf(value: unknown): Record<string, string> | undefined {
   if (!value || typeof value !== 'object') return undefined
   const env: Record<string, string> = {}
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    // A variable that would point restic elsewhere is the backup server's to set.
-    if (/^[A-Z_][A-Z0-9_]*$/i.test(key) && typeof entry === 'string' && !/^RESTIC_(REPOSITORY|PASSWORD|CACHE_DIR)/i.test(key)) env[key] = entry
+    if (typeof entry !== 'string' || hasControl(entry)) continue
+    if (CREDENTIALS.has(key) || (SWIFT.test(key) && !/(COMMAND|PROGRAM|EXEC)/.test(key))) env[key] = entry
   }
   return Object.keys(env).length > 0 ? env : undefined
+}
+
+/**
+ * Why restic must not be handed a location, or null. restic hands the host of
+ * an `sftp:` location to ssh and the remote of an `rclone:` one to rclone as
+ * arguments of their own: one starting with `-` is an option to them -
+ * `-oProxyCommand=…` runs a command.
+ */
+export function locationProblem(location: string): string | null {
+  if (hasControl(location)) return 'it holds a control character'
+  if (/\s/.test(location)) return 'it holds a space'
+  const rest = location.replace(/^[a-z][a-z0-9+.-]*:/i, '').replace(/^\/\//, '')
+  if (rest.startsWith('-')) return 'it starts with "-"'
+  const at = rest.indexOf('@')
+  if (at >= 0 && rest.slice(at + 1).startsWith('-')) return 'its host starts with "-"'
+  return null
 }
 
 /**
@@ -85,6 +140,8 @@ export function repositoryOf(task: Partial<BackupTaskSetting>, folders: VaultFol
   if (task.where !== 'cloud') return { error: 'the task says neither "local" nor "cloud" for the repository' }
   const location = typeof task.location === 'string' ? task.location.trim() : ''
   if (!isRemote(location)) return { error: `"${location}" is not a cloud location: one restic reaches, such as s3:…, b2:…, rest:… or sftp:…` }
+  const problem = locationProblem(location)
+  if (problem) return { error: `"${location}" is not taken: ${problem}` }
   const destination: Destination = {
     id: `cloud-${createHash('sha256').update(location).digest('hex').slice(0, 12)}`,
     repository: location,

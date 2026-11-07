@@ -148,11 +148,43 @@ export const LOCK_LEASE_MS = 2 * 60_000
 const LOCK_SWEEP_MS = 10_000
 const LOCK_KINDS: readonly VaultLockKind[] = ['preview', 'rollback', 'replace']
 const SEALED_MAX = 4_096
+/**
+ * A sealed title - a note's path, its folders included. Titles and keys land in
+ * a room's metadata, which is rewritten whole on every change, read into memory
+ * for every room at start, and listed to the person a note is shared with: a
+ * megabyte each, from any account with a contact, was taken before.
+ */
+const TITLE_MAX = 16 * 1024
+/** Blobs one request attaches to a note, and one note's list in all. */
+const ATTACH_PER_REQUEST_MAX = 256
+const ATTACHMENTS_MAX = 4_096
 /** A frame could not be stored; the device reconnects and sends it again. */
 const CLOSE_WRITE_FAILED = 1011
 
 function toBase64(data: Uint8Array): string {
   return Buffer.from(data).toString('base64')
+}
+
+function isSealed(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= SEALED_MAX
+}
+
+function titleOf(value: unknown): string {
+  if (typeof value !== 'string' || value.length > TITLE_MAX) throw new HubError(400, 'the title is missing or too long')
+  return value
+}
+
+/** Keys sealed per epoch, for epochs the room has had and no other. */
+function epochKeysOf(keys: unknown, lastEpoch: number, what: string): Record<string, string> {
+  if (keys === undefined || keys === null) return {}
+  if (typeof keys !== 'object') throw new HubError(400, `${what} are not keys`)
+  const checked: Record<string, string> = {}
+  for (const [epoch, sealed] of Object.entries(keys as Record<string, unknown>)) {
+    if (!/^(0|[1-9]\d{0,8})$/.test(epoch) || Number(epoch) > lastEpoch) throw new HubError(400, `${what}: the room never had epoch ${epoch}`)
+    if (!isSealed(sealed)) throw new HubError(400, `${what}: the key of epoch ${epoch} is missing or too long`)
+    checked[epoch] = sealed
+  }
+  return checked
 }
 
 function fromBase64(value: unknown, what: string): Uint8Array {
@@ -848,15 +880,16 @@ export class RoomHub {
     const meta = open.log.meta
     const account = await this.recipient(request.account, owner)
     if (!ROLES.includes(request.role)) throw new HubError(400, 'the role is read or write')
-    if (typeof request.title !== 'string') throw new HubError(400, 'the title is missing')
+    const title = titleOf(request.title)
     const existing = meta.members[account]
     let fromSeq: number
 
     if (request.withHistory) {
+      const keys = epochKeysOf(request.keys, meta.epoch, 'the keys')
       for (let epoch = 0; epoch <= meta.epoch; epoch += 1) {
-        if (typeof request.keys?.[String(epoch)] !== 'string') throw new HubError(400, `the key of epoch ${epoch} is missing`)
+        if (keys[String(epoch)] === undefined) throw new HubError(400, `the key of epoch ${epoch} is missing`)
       }
-      meta.sealedKeys[account] = { ...meta.sealedKeys[account], ...request.keys }
+      meta.sealedKeys[account] = { ...meta.sealedKeys[account], ...keys }
       fromSeq = 0
     } else {
       const rotation = request.rotation
@@ -864,8 +897,9 @@ export class RoomHub {
       if (!rotation.snapshot || rotation.snapshot.uptoSeq !== open.log.headSeq) {
         throw new HubError(409, 'the note changed meanwhile; try again')
       }
-      for (const member of [account, ...Object.keys(meta.members).filter((name) => name !== account)]) {
-        if (typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
+      const holders = [account, ...Object.keys(meta.members).filter((name) => name !== account)]
+      for (const member of holders) {
+        if (!isSealed(rotation.keys?.[member])) throw new HubError(400, `the new key for ${member} is missing`)
       }
       this.checkFolderEpoch(meta, rotation.folderEpoch)
       const snapshot = fromBase64(rotation.snapshot.data, 'the snapshot')
@@ -873,8 +907,9 @@ export class RoomHub {
       // refused, so nothing lands after the snapshot that the recipient
       // could not decrypt.
       this.moveEpoch(meta, rotation.epoch)
-      for (const [member, key] of Object.entries(rotation.keys)) {
-        meta.sealedKeys[member] = { ...meta.sealedKeys[member], [String(rotation.epoch)]: key }
+      // The members' keys only: nobody else is sealed a key of the note.
+      for (const member of holders) {
+        meta.sealedKeys[member] = { ...meta.sealedKeys[member], [String(rotation.epoch)]: rotation.keys[member] as string }
       }
       this.rekeyAll(open)
       await open.log.addJoinSnapshot(rotation.snapshot.uptoSeq, rotation.epoch, snapshot)
@@ -886,7 +921,7 @@ export class RoomHub {
       role: request.role,
       fromSeq,
       addedAt: existing?.addedAt ?? Date.now(),
-      title: request.title,
+      title,
       acceptedInto: existing?.acceptedInto
     }
     delete meta.revoked[account]
@@ -948,7 +983,7 @@ export class RoomHub {
     if (!rotation || rotation.epoch !== meta.epoch + 1) throw new HubError(409, 'the note moved to another epoch; try again')
     const remaining = Object.keys(meta.members).filter((name) => name !== account)
     for (const member of remaining) {
-      if (typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
+      if (!isSealed(rotation.keys?.[member])) throw new HubError(400, `the new key for ${member} is missing`)
     }
     this.checkFolderEpoch(meta, rotation.folderEpoch)
 
@@ -1216,7 +1251,7 @@ export class RoomHub {
       const rotation = rotations?.[docId]
       if (!rotation || rotation.epoch !== meta.epoch + 1) throw new HubError(409, `${docId} moved to another epoch; try again`)
       for (const member of members) {
-        if (typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key of ${docId} for ${member} is missing`)
+        if (!isSealed(rotation.keys?.[member])) throw new HubError(400, `the new key of ${docId} for ${member} is missing`)
       }
     }
   }
@@ -1233,7 +1268,7 @@ export class RoomHub {
   private checkFolderRotation(folder: RoomMeta, notes: RoomMeta[], rotation: FolderRotation | undefined, leaving?: string): FolderRotation {
     if (!rotation || rotation.epoch !== folder.epoch + 1) throw new HubError(409, 'the folder moved to another epoch; try again')
     for (const member of Object.keys(folder.members)) {
-      if (member !== leaving && typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
+      if (member !== leaving && !isSealed(rotation.keys?.[member])) throw new HubError(400, `the new key for ${member} is missing`)
     }
     this.checkNoteRotations(notes, rotation.notes)
     return rotation
@@ -1331,15 +1366,22 @@ export class RoomHub {
     const id = roomSubject(folder.room)
     const account = await this.recipient(request.account, owner)
     if (!ROLES.includes(request.role)) throw new HubError(400, 'the role is read or write')
-    if (typeof request.title !== 'string') throw new HubError(400, 'the title is missing')
+    const title = titleOf(request.title)
     const opens = await this.loadNotes(id)
     try {
       const notes = this.notesIn(id)
-      const keys = request.keys ?? {}
+      const keys = epochKeysOf(request.keys, folder.epoch, 'the folder keys')
+      // Only notes of this folder, and only epochs each of them had.
+      const noteKeys = new Map<string, Record<string, string>>()
+      for (const meta of notes) {
+        const docId = roomSubject(meta.room)
+        const given = request.noteKeys?.[docId]
+        if (given !== undefined) noteKeys.set(docId, epochKeysOf(given, meta.epoch, `the keys of ${docId}`))
+      }
       const starts = new Map<string, number>()
       if (request.withHistory) {
         for (let epoch = 0; epoch <= folder.epoch; epoch += 1) {
-          if (typeof keys[String(epoch)] !== 'string') throw new HubError(400, `the key of epoch ${epoch} is missing`)
+          if (keys[String(epoch)] === undefined) throw new HubError(400, `the key of epoch ${epoch} is missing`)
         }
         for (const meta of notes) {
           if (meta.folder?.since !== 0) continue
@@ -1348,13 +1390,13 @@ export class RoomHub {
           const first = tied.length > 0 ? Math.min(...tied) : 0
           const docId = roomSubject(meta.room)
           for (let epoch = 0; epoch < first; epoch += 1) {
-            if (typeof request.noteKeys?.[docId]?.[String(epoch)] !== 'string') {
+            if (noteKeys.get(docId)?.[String(epoch)] === undefined) {
               throw new HubError(400, `the key of ${docId} in epoch ${epoch} is missing`)
             }
           }
         }
       } else {
-        if (typeof keys[String(folder.epoch)] !== 'string') throw new HubError(400, `the key of epoch ${folder.epoch} is missing`)
+        if (keys[String(folder.epoch)] === undefined) throw new HubError(400, `the key of epoch ${folder.epoch} is missing`)
         for (const meta of [folder, ...notes]) {
           const start = this.startOf(meta)
           if (start === null) throw new HubError(409, `${meta.room} has no starting point in its current epoch yet`)
@@ -1374,7 +1416,7 @@ export class RoomHub {
         // Sharing again never takes back history already given.
         fromSeq: Math.min(existing?.fromSeq ?? Number.MAX_SAFE_INTEGER, fromSeq),
         addedAt: existing?.addedAt ?? Date.now(),
-        title: request.title,
+        title,
         acceptedInto: existing?.acceptedInto
       }
       delete folder.revoked[account]
@@ -1382,7 +1424,7 @@ export class RoomHub {
         const place = meta.folder as RoomFolder
         if (request.withHistory) {
           if (place.from) delete place.from[account]
-          const sealed = request.noteKeys?.[roomSubject(meta.room)]
+          const sealed = noteKeys.get(roomSubject(meta.room))
           if (sealed) meta.sealedKeys[account] = { ...meta.sealedKeys[account], ...sealed }
         } else if (!existing || place.from?.[account] !== undefined) {
           place.from = { ...place.from, [account]: Math.min(place.from?.[account] ?? Number.MAX_SAFE_INTEGER, after(meta.room)) }
@@ -1452,7 +1494,7 @@ export class RoomHub {
     if (request.epoch !== meta.epoch + 1) throw new HubError(409, 'the note moved to another epoch; try again')
     if (request.folderEpoch !== folder.epoch) throw new HubError(409, 'the folder moved to another epoch; try again')
     for (const member of Object.keys(meta.members)) {
-      if (typeof request.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
+      if (!isSealed(request.keys?.[member])) throw new HubError(400, `the new key for ${member} is missing`)
     }
     const shared = Object.keys(folder.members).length > 0
     const snapshot = request.snapshot
@@ -1481,7 +1523,7 @@ export class RoomHub {
     const rotation = request.rotation
     if (!rotation || rotation.epoch !== meta.epoch + 1) throw new HubError(409, 'the note moved to another epoch; try again')
     for (const member of Object.keys(meta.members)) {
-      if (typeof rotation.keys?.[member] !== 'string') throw new HubError(400, `the new key for ${member} is missing`)
+      if (!isSealed(rotation.keys?.[member])) throw new HubError(400, `the new key for ${member} is missing`)
     }
     const now = Date.now()
     const leaving = Object.keys(folder.members).filter((account) => !meta.members[account])
@@ -1635,6 +1677,7 @@ export class RoomHub {
     const toAttach = Array.isArray(request.attach) ? request.attach : []
     const toDetach = Array.isArray(request.detach) ? request.detach : []
     if (toAttach.length > 0 && !access.write) throw new HubError(403, 'read-only members attach nothing')
+    if (toAttach.length > ATTACH_PER_REQUEST_MAX || toDetach.length > ATTACH_PER_REQUEST_MAX) throw new HubError(413, 'too many attachments at once')
     const vaults = (await this.accounts.get(account))?.vaults ?? {}
     const key = (ref: unknown): string => {
       const { account: owner, vault, blob } = (ref ?? {}) as Partial<BlobRef>
@@ -1656,14 +1699,12 @@ export class RoomHub {
     })
     const meta = open.log.meta
     const list = new Set(meta.attachments ?? [])
-    for (const k of adding) {
-      list.add(k)
-      this.markAttached(k, room, true)
-    }
-    for (const k of removing) {
-      list.delete(k)
-      this.markAttached(k, room, false)
-    }
+    for (const k of adding) list.add(k)
+    for (const k of removing) list.delete(k)
+    // A writer could otherwise pile names onto someone else's note without end.
+    if (list.size > ATTACHMENTS_MAX && list.size > (meta.attachments?.length ?? 0)) throw new HubError(413, 'the note names too many files')
+    for (const k of adding) this.markAttached(k, room, true)
+    for (const k of removing) this.markAttached(k, room, false)
     meta.attachments = Array.from(list)
     await open.log.saveMeta()
   }

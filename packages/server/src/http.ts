@@ -112,10 +112,15 @@ interface ChunkParams extends BlobParams {
   chunk: string
 }
 
-// Snapshots and imported histories travel as base64 JSON.
+// Snapshots and imported histories travel as base64 JSON - read only for a
+// request whose token this server signed.
 const BODY_LIMIT = 64 * 1024 * 1024
+/** Signing in, registering, a recovery: a few keys. Anyone may send these, so they stay small. */
+const PUBLIC_BODY_LIMIT = 64 * 1024
 
 export interface HttpOptions {
+  /** The reverse proxies whose X-Forwarded-For counts (`MYCEL_TRUST_PROXY`). */
+  trustProxy?: string[]
   logger?: boolean
   /** How long every sign-in and registration takes; shorter in self-tests. */
   paceMs?: number
@@ -134,8 +139,28 @@ export function createHttpApp(
   blobs: BlobStore,
   options: HttpOptions = {}
 ): FastifyInstance {
-  const app = Fastify({ logger: options.logger ?? true, bodyLimit: BODY_LIMIT })
+  const app = Fastify({ logger: options.logger ?? true, bodyLimit: BODY_LIMIT, trustProxy: options.trustProxy ?? false })
   const guard = new AddressGuard(options.maxFailures)
+  const small = { bodyLimit: PUBLIC_BODY_LIMIT }
+
+  // Every route but these takes a token, and checks it before anything else -
+  // before its body is read: 64 MiB of JSON from anyone, as often as they
+  // liked, was parsed before the route turned it away.
+  const open: ReadonlySet<string> = new Set([
+    API.health,
+    API.config,
+    API.register,
+    API.login,
+    API.loginTotp,
+    API.recover,
+    `${API.recover}/commit`,
+    API.backupLogin
+  ])
+  app.addHook('onRequest', async (request, reply) => {
+    const route = request.routeOptions.url
+    if (route !== undefined && open.has(route)) return
+    if (!(await tokens.signed(bearer(request)))) await reply.code(401).send({ error: 'sign in again' })
+  })
   // Wrong codes, per account: five within 15 minutes block codes for 15.
   const codeGuard = new AddressGuard(5)
   const now = options.now ?? Date.now
@@ -266,14 +291,14 @@ export function createHttpApp(
     maxFileBytes: blobs.limits.maxFileBytes
   }))
 
-  app.post(API.register, async (request, reply) =>
+  app.post(API.register, small, async (request, reply) =>
     guarded(request, reply, async (): Promise<SessionResponse> => {
       const account = await accounts.register(request.body as RegisterRequest, config.registration)
       return session(account.accountId)
     })
   )
 
-  app.post(API.login, async (request, reply) =>
+  app.post(API.login, small, async (request, reply) =>
     guarded(request, reply, async (): Promise<SessionResponse | SecondFactorRequired | null> => {
       const account = await accounts.login(((request.body ?? {}) as Partial<LoginRequest>).loginKey)
       if (!account) return null
@@ -288,7 +313,7 @@ export function createHttpApp(
     })
   )
 
-  app.post(API.loginTotp, async (request, reply) =>
+  app.post(API.loginTotp, small, async (request, reply) =>
     guarded(
       request,
       reply,
@@ -374,7 +399,7 @@ export function createHttpApp(
 
   const unknownCode = 'this recovery code is not known here'
 
-  app.post(API.recover, async (request, reply) =>
+  app.post(API.recover, small, async (request, reply) =>
     guarded(
       request,
       reply,
@@ -393,7 +418,7 @@ export function createHttpApp(
     )
   )
 
-  app.post(`${API.recover}/commit`, async (request, reply) =>
+  app.post(`${API.recover}/commit`, small, async (request, reply) =>
     guarded(
       request,
       reply,
@@ -482,7 +507,7 @@ export function createHttpApp(
   })
 
   // Guarded like a sign-in: an unknown key counts against the address.
-  app.post(API.backupLogin, async (request, reply) =>
+  app.post(API.backupLogin, small, async (request, reply) =>
     guarded(
       request,
       reply,

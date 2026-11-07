@@ -639,11 +639,15 @@ export function newContactSecret(): Bytes {
 }
 
 /**
- * The first 96 bits of the hash of an identity - its sealing and its signing
- * key: enough that nobody can make another pair that matches.
+ * The first 96 bits of the hash of an identity - the account's id, its sealing
+ * and its signing key: enough that nobody can make another that matches. The
+ * id is in it since 0.9.8: with the keys alone, a server could name any other
+ * contact as a code's creator and have that contact's keys replaced by the
+ * code creator's on the device redeeming it.
  */
-export async function identityFingerprint(publicKey: Bytes, signingPublicKey: Bytes): Promise<Bytes> {
-  return (await sha256(concat(publicKey, signingPublicKey))).slice(0, FINGERPRINT_BYTES)
+export async function identityFingerprint(accountId: string, publicKey: Bytes, signingPublicKey: Bytes): Promise<Bytes> {
+  if (!/^[0-9a-f]{32}$/.test(accountId)) throw new Error('not an account id')
+  return (await sha256(concat(utf8(`mycel identity::${accountId}::`), publicKey, signingPublicKey))).slice(0, FINGERPRINT_BYTES)
 }
 
 export interface ContactKeys {

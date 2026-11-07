@@ -13,6 +13,15 @@ import { ensureDir, writeDurable } from './durable.js'
 
 const CODE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000
 const MAX_INBOX = 200
+/**
+ * An introduction is a name, an account id, two public keys and a MAC, sealed:
+ * about a kilobyte. Without a bound a code's creator answered its redemption
+ * with 64 MiB, again and again, until contacts.json could no longer be read -
+ * and contacts and shares stopped for everyone.
+ */
+export const MAX_SEALED_INTRODUCTION = 16 * 1024
+/** Codes one account has open at once; every code made rewrites contacts.json whole. */
+export const MAX_OPEN_CODES = 50
 
 interface StoredCode {
   owner: string
@@ -101,6 +110,8 @@ export class ContactStore {
     return this.update((data) => {
       if (data.codes[codeId]) throw new AccountError(409, 'that code exists already')
       for (const [id, code] of Object.entries(data.codes)) if (code.expiresAt < now) delete data.codes[id]
+      const open = Object.values(data.codes).filter((code) => code.owner === owner && !code.usedBy).length
+      if (open >= MAX_OPEN_CODES) throw new AccountError(429, 'too many friend codes are open; delete some first')
       data.codes[codeId] = { owner, redeemHash, expiresAt: expires }
     })
   }
@@ -130,6 +141,7 @@ export class ContactStore {
     if (typeof codeId !== 'string' || typeof redeemKey !== 'string' || typeof sealed !== 'string' || sealed.length === 0) {
       return Promise.reject(new AccountError(400, 'incomplete redemption'))
     }
+    if (sealed.length > MAX_SEALED_INTRODUCTION) return Promise.reject(new AccountError(413, 'the introduction is too long'))
     return this.update((data) => {
       const code = data.codes[codeId]
       const hash = sha256Hex(Buffer.from(redeemKey, 'base64'))
@@ -149,9 +161,14 @@ export class ContactStore {
     if (!isAccountId(to) || typeof codeId !== 'string' || typeof sealed !== 'string' || sealed.length === 0) {
       return Promise.reject(new AccountError(400, 'incomplete reply'))
     }
+    if (sealed.length > MAX_SEALED_INTRODUCTION) return Promise.reject(new AccountError(413, 'the introduction is too long'))
     return this.update((data) => {
       const code = data.codes[codeId]
       if (!code || code.owner !== from || code.usedBy !== to) throw new AccountError(403, 'no such redemption')
+      // One answer per redemption: a device answering again - another device of
+      // the creator, a retry - replaces the one still waiting.
+      const inbox = data.inbox[to]
+      if (inbox) data.inbox[to] = inbox.filter((item) => !(item.kind === 'reply' && item.codeId === codeId && item.from === from))
       this.deliver(data, to, { kind: 'reply', from, codeId, sealed }, now)
     })
   }

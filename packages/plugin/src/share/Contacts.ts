@@ -191,12 +191,12 @@ export class Contacts {
     await this.api.addContactCode({ codeId: keys.codeId, redeemHash: toHex(await sha256(keys.redeemKey)), expiresAt })
     this.settings.setCode(keys.codeId, { secret: toBase64(secret), createdAt: now, expiresAt })
     log.info(`contact code ${keys.codeId.slice(0, 8)} created`)
-    return encodeContactCode(secret, await identityFingerprint(this.me.publicKey, this.me.signingPublicKey))
+    return encodeContactCode(secret, await identityFingerprint(this.me.accountId, this.me.publicKey, this.me.signingPublicKey))
   }
 
   /** Codes this account handed out that nobody has redeemed yet, oldest first - on every device. */
   async openCodes(now = Date.now()): Promise<OpenCode[]> {
-    const fingerprint = await identityFingerprint(this.me.publicKey, this.me.signingPublicKey)
+    const fingerprint = await identityFingerprint(this.me.accountId, this.me.publicKey, this.me.signingPublicKey)
     return this.settings
       .codes()
       .filter(({ code }) => !code.usedBy && !code.revokedAt && code.expiresAt > now)
@@ -239,9 +239,12 @@ export class Contacts {
     const info = await this.api.contactCode(keys.codeId)
     if (info.owner === this.me.accountId) throw new Error('That is your own code.')
     const ownerKey = fromBase64(info.publicKey)
-    if (!sameBytes(await identityFingerprint(ownerKey, fromBase64(info.signingPublicKey)), decoded.fingerprint)) {
-      throw new Error("The server handed out keys that do not belong to this code. Nothing was sent.")
-    }
+    // The account the code's creator is, too - not only its keys.
+    const matches = await identityFingerprint(info.owner, ownerKey, fromBase64(info.signingPublicKey)).then(
+      (fingerprint) => sameBytes(fingerprint, decoded.fingerprint),
+      () => false
+    )
+    if (!matches) throw new Error('The server handed out an account or keys that do not belong to this code. Nothing was sent.')
     const intro = this.introduction()
     const signed: Introduction = { ...intro, mac: await contactMac(keys.macKey, introductionText('request', keys.codeId, intro)) }
     const sealed = await seal(ownerKey, utf8(JSON.stringify(signed)), contactContext(keys.codeId, 'request'))
@@ -309,12 +312,20 @@ export class Contacts {
     if (code.revokedAt || (code.usedBy && code.usedBy !== item.from)) return 'dropped'
     const keys = await contactKeys(fromBase64(code.secret))
     const intro = await this.open(item)
-    if (intro.account !== item.from || typeof intro.publicKey !== 'string' || typeof intro.signingKey !== 'string') return 'dropped'
+    if (intro.account !== item.from || typeof intro.publicKey !== 'string' || typeof intro.signingKey !== 'string' || typeof intro.name !== 'string') return 'dropped'
     const expected = await contactMac(keys.macKey, introductionText('request', item.codeId, intro))
     if (!sameMac(expected, intro.mac)) return 'dropped'
 
-    this.settings.setCode(item.codeId, { ...code, usedBy: item.from })
     const existing = this.settings.contact(item.from)
+    // Whoever redeems a code names their account themselves - nothing binds it,
+    // as the code binds its creator's. Other keys for a contact pinned already
+    // are taken only once that contact replaced theirs: otherwise anyone handed
+    // a code, with a server going along, could take an existing contact's place.
+    if (existing && existing.replacedAt === undefined && (existing.publicKey !== intro.publicKey || existing.signingKey !== intro.signingKey)) {
+      log.error(`a redemption of code ${item.codeId.slice(0, 8)} names ${item.from.slice(0, 8)}, a contact already, with other keys; dropped`)
+      return 'dropped'
+    }
+    this.settings.setCode(item.codeId, { ...code, usedBy: item.from })
     this.pin({
       accountId: item.from,
       name: intro.name,

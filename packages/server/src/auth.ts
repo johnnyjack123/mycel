@@ -88,6 +88,21 @@ export class TokenService {
     return { accountId: payload.sub, gen: payload.gen, vaultId: payload.vault, keyId: payload.kid }
   }
 
+  /**
+   * Whether this server signed the token for a device or a backup server - a
+   * look at the signature only, cheap enough to make before a request's body
+   * is read. Who may do what is still decided by the route.
+   */
+  async signed(token: string): Promise<boolean> {
+    if (token === '') return false
+    try {
+      const { payload } = await jwtVerify(token, this.key, { issuer: 'mycel' })
+      return payload.scope === 'user' || payload.scope === 'backup'
+    } catch {
+      return false
+    }
+  }
+
   private async check(token: string, scope: 'user' | '2fa'): Promise<TokenSession> {
     const { payload } = await jwtVerify(token, this.key, { issuer: 'mycel' })
     if (payload.scope !== scope || typeof payload.sub !== 'string' || typeof payload.gen !== 'number') throw new Error(`not a ${scope} token`)

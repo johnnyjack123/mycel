@@ -94,6 +94,8 @@ export class KeyRing {
   private ownsFolder: (folderId: string) => boolean = () => false
   /** A contact's signing key, as pinned; null for anyone else. */
   private signerKey: (account: string) => Bytes | null = () => null
+  private roomOwner: (room: string) => string | null = () => null
+  private noteFolder: ((docId: string) => string | null) | null = null
 
   constructor(
     private readonly vault: OpenVault,
@@ -113,6 +115,33 @@ export class KeyRing {
   }
 
   /**
+   * Whose a room is, as this vault's own index records it - the one account
+   * that seals its keys. Null where the index does not know the room.
+   */
+  setRoomOwners(resolve: (room: string) => string | null): void {
+    this.roomOwner = resolve
+  }
+
+  /** Which shared folder a note lies in, as this vault's own index has it; null for none. */
+  setNoteFolders(resolve: (docId: string) => string | null): void {
+    this.noteFolder = resolve
+  }
+
+  /**
+   * Whether this device may encrypt a note's epoch under the folder key the
+   * server tied it to: only when its own index has the note in that folder.
+   * The server's word alone decided before - tying a private note to a folder
+   * had its text written under a key everyone in that folder holds. A server
+   * merely ahead of the index (a note that just joined) only makes it wait.
+   */
+  private tieAgrees(docId: string, tie: FolderTie | null): boolean {
+    if (!tie || !this.noteFolder) return true
+    if (this.noteFolder(docId) === tie.folder) return true
+    log.warn(`${docRoom(docId)}: the server ties it to the folder ${tie.folder}, which this vault does not have it in; nothing written under that key`)
+    return false
+  }
+
+  /**
    * A key sealed to this account, opened only with its sealer's signature:
    * this account's own, or a contact's whose signing key is pinned.
    * A server handing out a key of its own - and frames under it - would
@@ -122,6 +151,14 @@ export class KeyRing {
     const signed = splitSealed(value)
     if (!signed) {
       log.warn(`${room}: the key of epoch ${epoch} carries no signature; not taken`)
+      return null
+    }
+    // Only a room's owner seals its keys. Any contact's signature was taken
+    // before: a server could hand this device a key a contact working with it
+    // sealed, and have everything written here go out under that key.
+    const owner = this.roomOwner(room)
+    if (owner !== null && signed.signer !== owner) {
+      log.error(`${room}: the key of epoch ${epoch} was sealed by ${signed.signer.slice(0, 8)}, not by the owner ${owner.slice(0, 8)}; not taken`)
       return null
     }
     const signerKey = this.signerPublicKey(signed.signer)
@@ -379,7 +416,11 @@ export class KeyRing {
         if (changed) this.forgetKeys(room)
         return changed
       },
-      pack: async (epoch, authorTs, update) => this.packFor(room, epoch, ownerOf(), await this.tieOf(docId, epoch, options), authorTs, update),
+      pack: async (epoch, authorTs, update) => {
+        const tie = await this.tieOf(docId, epoch, options)
+        return this.tieAgrees(docId, tie) ? this.packFor(room, epoch, ownerOf(), tie, authorTs, update) : null
+      },
+      mayEncrypt: async (epoch) => this.tieAgrees(docId, await this.tieOf(docId, epoch, options)),
       check: async (kind, _seq, epoch, frame) => {
         const verdict = await this.checkFrame(room, epoch, ownerOf(), await this.tieOf(docId, epoch, options), kind, frame)
         if (verdict !== 'forged' || !frame.cert) return verdict

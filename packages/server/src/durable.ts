@@ -65,10 +65,10 @@ export async function writeDurable(path: string, data: string | Uint8Array): Pro
  * which every account's salt depends on: written in place, a crash left a file
  * that never parsed again. False when it existed.
  */
-export async function createDurable(path: string, data: string | Uint8Array): Promise<boolean> {
+export async function createDurable(path: string, data: string | Uint8Array, mode?: number): Promise<boolean> {
   temps += 1
   const temp = `${path}.${process.pid}.${temps}.tmp`
-  const handle = await open(temp, 'w')
+  const handle = await open(temp, 'w', mode)
   try {
     await handle.writeFile(data)
     await handle.sync()

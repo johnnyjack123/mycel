@@ -58,7 +58,7 @@ async function serve(dataDir: string) {
       PORT: String(port),
       MYCEL_DATA_DIR: dataDir,
       MYCEL_REGISTRATION: 'open',
-      MYCEL_JWT_SECRET: 'backup-selftest',
+      MYCEL_JWT_SECRET: 'backup-selftest-secret-of-32-characters',
       // A clean-up purges at once: a rollback has to find content only a backup still has.
       MYCEL_PURGE_GRACE_S: '0'
     }),

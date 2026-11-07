@@ -27,7 +27,7 @@ const server = await startServer(
     PORT: '0',
     MYCEL_DATA_DIR: root,
     MYCEL_REGISTRATION: 'open',
-    MYCEL_JWT_SECRET: 'account-selftest'
+    MYCEL_JWT_SECRET: 'account-selftest-secret-of-32-characters'
   }),
   // Wrong passwords and codes on purpose, many more than an address may try.
   { logger: false, paceMs: 0, now: () => clock, maxFailures: 1_000 }

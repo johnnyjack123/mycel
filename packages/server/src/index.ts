@@ -21,6 +21,9 @@ async function writable(folder: string): Promise<string | null> {
   }
 }
 
+// What the server writes - accounts.json holds every TOTP secret and login hash -
+// is its own user's alone, on a bind-mounted folder other users of the host see too.
+process.umask(0o077)
 const envFile = loadEnvFile()
 const config = loadConfig()
 const unwritable = await writable(config.dataDir)

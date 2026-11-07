@@ -100,7 +100,9 @@ export class Compactor {
         uptoSeq = frame.seq
       }
       if (uptoSeq === 0) return false
-      // Under the current epoch: everyone who still has access holds that key.
+      // Under the current epoch: everyone who still has access holds that key -
+      // unless the server tied it to a folder this vault has the note in not.
+      if (crypto.mayEncrypt && !(await crypto.mayEncrypt(log.epoch))) return false
       const key = await crypto.key(log.epoch)
       if (!key) return false
       const packed = await this.keys.packAsOwner(room, log.epoch, newest, Y.encodeStateAsUpdate(doc))

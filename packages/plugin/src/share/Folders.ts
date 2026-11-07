@@ -3,7 +3,9 @@ import * as Y from 'yjs'
 import {
   docRoom,
   folderRoom,
+  isNotePath,
   roomKind,
+  vaultPathProblem,
   roomSubject,
   snapshotAad,
   type FolderNotice,
@@ -154,7 +156,14 @@ function delay(ms: number): Promise<void> {
 }
 
 function safeName(name: string): string {
-  return name.replace(/[\\/:*?"<>|#^[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Shared folder'
+  // No leading or trailing dots: a hidden folder is nothing Obsidian lists.
+  return (
+    name
+      .replace(/[\\/:*?"<>|#^[\]]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/^[. ]+|[. ]+$/g, '')
+      .slice(0, 120) || 'Shared folder'
+  )
 }
 
 export class Folders {
@@ -212,6 +221,20 @@ export class Folders {
     keys.setFolderOwnership((folderId) => {
       const folder = index.folder(folderId)
       return folder !== undefined && !folder.owner
+    })
+    keys.setNoteFolders((docId) => index.entry(docId)?.folder ?? null)
+    // Who seals the keys of a note or folder: its owner, as this vault's index has it.
+    keys.setRoomOwners((room) => {
+      const subject = roomSubject(room)
+      if (roomKind(room) === 'fld') {
+        const folder = index.folder(subject)
+        return folder ? (folder.owner ?? keys.accountId) : null
+      }
+      if (roomKind(room) === 'doc') {
+        const entry = index.entry(subject)
+        return entry ? (entry.owner ?? keys.accountId) : null
+      }
+      return null
     })
     index.setIdScheme((path) => this.idScheme(path))
     this.unwatch.push(store.onLocalChange((change) => this.onLocal(change)))
@@ -526,6 +549,12 @@ export class Folders {
 
     for (const { docId, entry } of fi.all()) {
       if (this.pending.has(docId) || this.asking.has(docId)) continue
+      // Written by anyone who may write in the folder: a path that climbs out
+      // of it, names something hidden or is no note would put their text anywhere here.
+      if (!isNotePath(entry.path)) {
+        this.refusePath(folderId, docId, entry.path)
+        continue
+      }
       const known = this.index.entry(docId)
       const target = joinPath(mount, entry.path)
       if (entry.leftAt) continue
@@ -549,6 +578,16 @@ export class Folders {
         continue
       }
       if (known.forkedTo || known.purgedAt) continue
+      // A note this vault knows is the folder's to move, revive or re-own only
+      // when it is in this folder - or the folder owner's own note, shared on
+      // its own, now joining it. Anyone in a folder could otherwise name any
+      // note they know the id of - one this account shared with them - and
+      // take it over here: hand it to the folder's owner, then delete it for
+      // everyone.
+      if (known.folder !== folderId && !(folder.owner && known.owner === folder.owner && known.folder === undefined)) {
+        this.refuseForeign(folderId, docId)
+        continue
+      }
       if (known.deletedAt) {
         // Restored in the folder - or a delete here that was never decided on.
         if (this.undecided(folderId, known.deletedAt)) continue
@@ -571,6 +610,24 @@ export class Folders {
     }
     const first = this.fresh.delete(folderId)
     if (write) this.checkStrays(folderId, folder, fi, first)
+  }
+
+  private readonly refused = new Set<string>()
+
+  /** A note the folder names under a path no vault may hold: left out, and said once. */
+  private refusePath(folderId: string, docId: string, path: unknown): void {
+    const key = `${folderId}:${docId}:${String(path)}`
+    if (this.refused.has(key)) return
+    this.refused.add(key)
+    log.error(`a shared folder names a note at ${JSON.stringify(String(path))}: ${vaultPathProblem(path) ?? 'not a note'}; left out`)
+  }
+
+  /** The folder names a note of this vault's that is not in it: left alone, and said once. */
+  private refuseForeign(folderId: string, docId: string): void {
+    const key = `${folderId}:${docId}:foreign`
+    if (this.refused.has(key)) return
+    this.refused.add(key)
+    log.error(`a shared folder names ${docId}, a note of this vault that is not in it; left alone`)
   }
 
   /**
@@ -1515,6 +1572,10 @@ export class Folders {
       const published = await this.files.publishAll(folderId, opened.index, path, (file) => attachments.isExcluded(file))
       if (published > 0) log.info(`${path}: ${published} file(s) went into the shared folder`)
     }
+    // Shared from here with the files its notes link outside it: those the links show now go along.
+    if (opened.index.linkedFiles) {
+      for (const { docId, entry } of this.index.live()) if (inside(entry.path, path)) this.sharing.approveFilesOf(docId)
+    }
     const title = await this.keys.sealTitle(folderId, opened.index.name || baseName(path), recipientKey.publicKey)
     const wasWriter = this.sharing.roleOf(folderRoom(folderId), account) === 'write'
     if (withHistory) {
@@ -1522,7 +1583,7 @@ export class Folders {
         const state = await this.api.folderState(folderId)
         const keys = await this.keys.sealFolderKeys(folderId, Array.from({ length: state.epoch + 1 }, (_value, epoch) => epoch), recipientKey)
         const noteKeys: Record<string, Record<string, string>> = {}
-        for (const note of state.notes ?? []) {
+        for (const note of this.ownNotesIn(folderId, state)) {
           if (note.since !== 0) continue
           const own = await this.ownEpochs(note.docId, folderId)
           if (own.length > 0) noteKeys[note.docId] = await this.keys.sealEpochKeys(note.docId, own, recipientKey)
@@ -1544,6 +1605,22 @@ export class Folders {
     // Shared again to read, with history: the certificate they hold for the current epoch has to stop counting.
     if (wasWriter && role === 'read' && withHistory) await this.rotate(folderId)
     log.info(`${path}: shared with ${account} to ${role}, ${withHistory ? 'with' : 'without'} history`)
+  }
+
+  /**
+   * The notes the server lists in a folder of this vault's that this vault's
+   * own index puts there too. The server's list alone decided before: listing
+   * a private note of the owner's as in the folder had its keys sealed to the
+   * next person the folder was shared with, and its text written as a starting
+   * point under the folder's key.
+   */
+  private ownNotesIn(folderId: string, state: FolderStateResponse): NonNullable<FolderStateResponse['notes']> {
+    return (state.notes ?? []).filter((note) => {
+      const entry = this.index.entry(note.docId)
+      if (entry && !entry.owner && entry.folder === folderId) return true
+      log.error(`the server lists ${note.docId} in the shared folder ${folderId}, which this vault does not; left out`)
+      return false
+    })
   }
 
   /** A note's epochs before it joined the folder - the ones the folder's key does not open. */
@@ -1577,7 +1654,7 @@ export class Folders {
       keys[member] = (await this.keys.sealFolderKeys(folderId, [epoch], key))[String(epoch)] as string
     }
     const notes: Record<string, NoteRotation> = {}
-    for (const note of state.notes ?? []) {
+    for (const note of this.ownNotesIn(folderId, state)) {
       if (note.members.length === 0) continue
       const next = note.epoch + 1
       notes[note.docId] = { epoch: next, keys: await this.sealForMembers(note.docId, note.members, next, { folder: folderId, epoch }) }
@@ -1590,7 +1667,9 @@ export class Folders {
     const state = await this.api.folderState(folderId)
     const rooms = [
       ...(state.start === null ? [folderRoom(folderId)] : []),
-      ...(state.notes ?? []).filter((note) => note.start === null).map((note) => docRoom(note.docId))
+      ...this.ownNotesIn(folderId, state)
+        .filter((note) => note.start === null)
+        .map((note) => docRoom(note.docId))
     ]
     let done = 0
     for (const room of rooms) {
@@ -1600,6 +1679,8 @@ export class Folders {
           const docId = roomSubject(room)
           const keys = await this.api.keys(room)
           const tie = keys.ties?.[String(keys.epoch)] ?? null
+          // Written under the folder's key only for this folder's own epoch, never one the server names elsewhere.
+          if (tie && tie.folder !== folderId) throw new Error(`the server ties ${docId} to another folder`)
           const point = await this.startingPoint(docId, keys.epoch, tie)
           await this.api.startSnapshot(room, { epoch: keys.epoch, uptoSeq: point.uptoSeq, data: point.data })
         }

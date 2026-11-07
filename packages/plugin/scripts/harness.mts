@@ -58,6 +58,7 @@ const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryL
   './stubs/fake-vault.js'
 )
 const { TFolder: TFolderT } = await import('obsidian')
+const { gateApp } = await import('../src/guard.js')
 
 type DocStoreT = InstanceType<typeof DocStore>
 type Unlocked = Awaited<ReturnType<InstanceType<typeof Session>['login']>>
@@ -245,7 +246,9 @@ export class Device {
         for (const path of this.openFiles) visit({ view: { file: vault.getAbstractFileByPath(path) } })
       }
     }
-    const app = { vault, fileManager: this.fileManager, metadataCache: this.metadataCache, workspace }
+    // Behind the plugin's gate, as main.ts has it: every test runs with it, and fails where it would refuse.
+    const plain = { vault, fileManager: this.fileManager, metadataCache: this.metadataCache, workspace }
+    const app = gateApp(plain as never, '.obsidian/plugins/mycel') as unknown as typeof plain
     const state = new StateStore(vault.adapter as never, 'plugin')
     const backups = new BackupStore(vault.adapter as never, 'plugin')
     const index = new VaultIndex(openVault.vaultId, (path, generation) => keys.docId(path, generation))
@@ -377,7 +380,8 @@ export class Device {
         roles: {
           get: (room, account) => settings.shareRole(room, account),
           set: (room, account, role) => settings.setShareRole(room, account, role)
-        }
+        },
+        approveFiles: (docId) => this.sharedFiles?.approve(docId)
       },
       contacts
     )

@@ -68,11 +68,13 @@ export function vaultFolder(name: string): string {
  * index, but a backup writing outside its folder would be beyond repair.
  */
 export function safePath(path: string): string {
+  // A backslash separates on Windows: `..\..\x` was one segment to a filter of `/`.
   const segments = path
-    .split('/')
+    .split(/[/\\]/)
     .map((segment) => segment.replace(/[\u0000-\u001f]/g, ''))
     .filter((segment) => segment !== '' && segment !== '.')
-    .map((segment) => (segment === '..' ? '__' : segment))
+    // Windows drops trailing dots and spaces: `.. ` is `..` there.
+    .map((segment) => (segment.replace(/[. ]+$/, '').trim() === '' ? '__' : segment))
   return segments.length === 0 ? '_' : segments.join('/')
 }
 
