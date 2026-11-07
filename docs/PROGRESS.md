@@ -408,7 +408,8 @@ user's call, as with the earlier branches.
   once the index is synced with the server (invariant 1's spirit), and a version recorded by
   another device's adoption should not count as that device having seen this one's content.
 - **Two more races seen only in CI, never locally** (for the audit; both before 0.9.6 too):
-  - `test:folders` "no file at Shared/X/Sub/byPia.png" (2026-11-06, twice in four runs): a
+  - `test:folders` "no file at Shared/X/Sub/byPia.png" (2026-11-06, twice in four runs; again
+    on 2026-11-07 on `fix/audit-residuals`, passed locally and on rerun): a
     writer (P1) renames a file inside a shared folder; the owner's devices follow, but on the
     writer's other device and on the reader the file goes to the new name and back to the old
     one twice ("renamed on another device to … fromPia.png" after "… byPia.png"), and the
