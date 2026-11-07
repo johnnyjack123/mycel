@@ -76,10 +76,8 @@ function isFileRef(ref: string): boolean {
  * client. A link typed in an earlier session counts as someone else's - it
  * only waits a little longer.
  */
-function typedHere(ytext: Y.Text, ref: string, localClients: ReadonlySet<number>): boolean {
-  const doc = ytext.doc
-  if (!doc || ref.length === 0) return false
-  const local = (client: number): boolean => client === doc.clientID || localClients.has(client)
+function typedHere(ytext: Y.Text, ref: string, local: (client: number) => boolean): boolean {
+  if (!ytext.doc || ref.length === 0) return false
   const text = ytext.toString()
   for (let at = text.indexOf(ref); at !== -1; at = text.indexOf(ref, at + 1)) {
     // Every letter of it: someone else's `assport.pdf` after a `p` typed here is not a link typed here.
@@ -327,9 +325,10 @@ export class SharedFiles {
       // A link is text anyone who may write in the note can type: one naming a
       // file of this vault - `![[passport.pdf]]` - had every such device hand
       // its own file of that name to everyone in the note, unasked. A file goes
-      // out only for a link typed here, one in the note when it was shared from
-      // here, or one the user said yes to.
-      if (typedHere(note.handle.ytext, ref, note.handle.localClients)) this.approved.add(key)
+      // out only for a link this account typed - here, or on another of its
+      // devices, as their signed frames say -, one in the note when it was
+      // shared from here, or one the user said yes to.
+      if (typedHere(note.handle.ytext, ref, (client) => note.handle.writtenByThisAccount(client))) this.approved.add(key)
       if (!this.approved.has(key)) {
         const seen = this.unlisted.get(key) ?? Date.now()
         this.unlisted.set(key, seen)
