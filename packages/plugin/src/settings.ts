@@ -725,7 +725,8 @@ export class MycelSettingTab extends PluginSettingTab {
           .onClick(
             () =>
               void this.run(async () => {
-                await this.plugin.createAccount(this.username, this.password, this.repeat, this.invite)
+                // A code typed for another server that wanted one would be checked, and refused, by one that does not.
+                await this.plugin.createAccount(this.username, this.password, this.repeat, this.inviteNeeded() ? this.invite : '')
                 this.forgetPasswords()
                 this.screen = 'overview'
               }, button)

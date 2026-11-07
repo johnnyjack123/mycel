@@ -10,6 +10,8 @@ services:
       MYCEL_SERVER: ${MYCEL_SERVER:?set MYCEL_SERVER in .env}
       # What devices are shown this backup server as.
       MYCEL_BACKUP_NAME: ${MYCEL_BACKUP_NAME:-backup server}
+      # Hosts in this network a backup task may name as its cloud location (a NAS), comma separated; see docs/BACKUP.md.
+      MYCEL_BACKUP_ALLOW_HOSTS: ${MYCEL_BACKUP_ALLOW_HOSTS:-}
       # The user it runs as; the image hands the three folders below to it at every start.
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}

@@ -33,13 +33,13 @@ export async function probeServer(api: ConnectApi, pinned: string | null = null)
     health = await api.health()
   } catch (error) {
     if (error instanceof ApiError && error.status !== 0) {
-      return { state: 'incompatible', reason: `Something answers there, but not an Mycel server (HTTP ${error.status}).` }
+      return { state: 'incompatible', reason: `Something answers there, but not a Mycel server (HTTP ${error.status}).` }
     }
     return { state: 'unreachable', reason: error instanceof Error ? error.message : String(error) }
   }
   const { service, protocol } = (health ?? {}) as { service?: unknown; protocol?: unknown }
   if (service !== SERVICE) {
-    return { state: 'incompatible', reason: 'Something answers there, but not an Mycel server.' }
+    return { state: 'incompatible', reason: 'Something answers there, but not a Mycel server.' }
   }
   if (protocol !== PROTOCOL_VERSION) {
     const older = typeof protocol === 'number' && protocol < PROTOCOL_VERSION

@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-07 · **0.9 built, the audit done: 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel, 0.9.8 is the security audit (`docs/AUDIT.md`: 23 findings fixed, each kept as an attack in `npm run test:security`; what is known and not fixed listed there). Next: the user updates server, backup server and every device to 0.9.8 together (friend codes from before no longer redeem), sets `MYCEL_TRUST_PROXY`, starts afresh once (below, "Starting afresh"); publishing comes last.**_
+_Last updated: 2026-11-07 · **0.9 built, the audit done: 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel, 0.9.8 is the security audit (`docs/AUDIT.md`: 23 findings fixed, each kept as an attack in `npm run test:security`), 0.9.9 closes its residual risks (R1 to R9) and adds a setup wizard. Next: the user updates server, backup server and every device to 0.9.9 together (friend codes from before 0.9.8 no longer redeem), sets `MYCEL_TRUST_PROXY`, starts afresh once (below, "Starting afresh"); the CI-only races below get a round of their own; publishing comes last.**_
 
 ## Where we are
 
@@ -79,7 +79,16 @@ an opinion on their two names, *Seemless* and *Mycel* (given: Mycel). Publishing
    pictures go along from the device that shares; on another device of the owner a notice asks),
    a link someone else types into a shared note to a file of yours (the notice, *Share …*), a
    friend code between two 0.9.8 devices, the server behind NPM with `MYCEL_TRUST_PROXY`.
-10. Then the user starts once afresh (below); P last.
+10. **0.9.9** - the audit's residual risks closed, as the user asked on 2026-11-07 (R1 to R9 in
+    `docs/AUDIT.md`, `fix/audit-residuals`): epochs only forward (invariant 33), the quota over
+    rooms, the token as a WebSocket subprotocol, signed presence and titles, the backup server
+    checking signatures and staying out of its own network, a writer's clock, signed contact
+    removals; and the setup wizard (`feat/setup-wizard`, built by a separate agent). To try on
+    devices: the wizard on a fresh install (desktop and phone), carets between two people who
+    are contacts (the name shown is the one you gave them), the sync through NPM with the token
+    in the header (NPM passes `Sec-WebSocket-Protocol` on), a backup server paired before 0.9.9
+    getting the signing key (its log: "its frames are checked against their signatures").
+11. Then the user starts once afresh (below); P last.
 
 **Starting afresh** (nothing written before 0.9.5 is read, and nothing named before 0.9.7 is
 found):
@@ -369,11 +378,6 @@ user's call, as with the earlier branches.
   device next lists them; forks kept for someone whose share ended before the replacement are
   signed with the signing key before. The plugin's own progress shows in a notice; a vault of
   thousands of notes has not been measured.
-- Frames are
-  signed per author since 0.9.4, and since 0.9.5 the Time Machine's and the history view's
-  replays check them as the live room does; the backup server does not - it holds no contact
-  list and reads what the server holds (it would need the account's signing key and the
-  contacts' pinned ones, and the checks of `KeyRing.checkFrame`).
 - The plugin id contains "obsidian", which the community directory refuses (0.9).
 - `test:recovery`'s check "carries on in the same note, and what it wrote while away
   reaches P1" failed on 2026-10-16 and 2026-10-23: a race in the fork on return, fixed

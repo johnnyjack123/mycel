@@ -26,6 +26,11 @@ How it is built and why: `docs/PHASE6.md`.
 - **The sync server learns nothing new.** It only relays between your device and the
   backup server, and what it relays is encrypted between the two with a key that
   depends on a secret only the two know, which never leaves either.
+- **It backs up what your devices show** (0.9.9): every change is checked against its
+  author's signature - the account's own signing key, which a device hands over when it
+  connects, and the contacts' keys from the account's settings - and one nobody who may
+  write in the note signed is left out, as every device leaves it out. A sync server, or
+  someone who left a share, cannot slip text of their own into a backup.
 - **A vault is connected with an invitation, once.** The operator makes one per
   person (`mycel-backup invite`); it connects one vault, once, within a
   week. From then on the vault has a secret of its own with the backup server - kept
@@ -97,6 +102,7 @@ Updating: `docker compose -f docker-compose.backup.yml pull && docker compose -f
 |---|---|---|
 | `MYCEL_SERVER` | — (required) | The sync server, `wss://…` as devices are given it - or any address this container reaches it by (see "When connecting fails"). |
 | `MYCEL_BACKUP_NAME` | the host name | What devices are shown it as. |
+| `MYCEL_BACKUP_ALLOW_HOSTS` | none | Hosts in the backup server's own network a backup task may name as its cloud location - a NAS with a rest-server, `nas.lan,192.168.1.20`. Every other location that names, or resolves to, a private, loopback or link-local address is refused before restic starts (0.9.9): whoever is paired here writes the task, and restic would knock on any address in this network for them. |
 | `SERVER_DATA` | `./backup-data` | Its own data, mounted at `/data`. |
 | `ENCRYPTED_VAULTS` | `./encrypted-vaults` | The repositories kept on the backup server, mounted at `/encrypted`. |
 | `DECRYPTED_VAULTS` | `./decrypted-vaults` | The decrypted copies, mounted at `/decrypted`. |

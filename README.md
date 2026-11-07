@@ -32,8 +32,23 @@ docker compose exec mycel mycel invite
 
 `invite` prints a code that lets one person create one account. With
 `MYCEL_REGISTRATION=open` in `.env`, people can create accounts
-themselves instead. Everything else — the other account commands, what the
-server can and cannot see — is in `docs/SERVER.md`.
+themselves instead - then set `MYCEL_QUOTA_MB` too, or a stranger can fill the
+disk. Everything else — the other account commands, what the server can and
+cannot see — is in `docs/SERVER.md`.
+
+What `.env` needs (the template, `docs/server.env`, says the rest):
+
+- `MYCEL_JWT_SECRET`: at least 32 characters, or the server does not start.
+  `openssl rand -base64 48` makes one.
+- Behind a reverse proxy (Nginx Proxy Manager, Caddy, Traefik): `MYCEL_TRUST_PROXY`,
+  the proxy's address as the server sees it (`172.18.0.2`, a subnet like
+  `172.18.0.0/16`, or `loopback`). Without it every request seems to come from the
+  proxy, and ten wrong passwords from anyone block everybody's sign-in. Never set it
+  without a proxy in front.
+- The proxy passes WebSocket upgrades on `/vault/` and `/relay`, and request bodies
+  of 64 MB (`client_max_body_size 64m;` in nginx). Devices before 0.9.9 sent their
+  access token in the WebSocket URL; while one of those is in use, keep the proxy's
+  access log off for those two paths.
 
 Without Docker, with npm, from the repository root:
 
@@ -265,6 +280,7 @@ npm run test:rooms        # accounts, access, key epochs, sharing, compaction, r
 npm run test:sync         # does the editor binding actually sync? (jsdom)
 npm run test:recovery     # a server that lost data or was rolled back, a removed account, cleaning up files (in-process server)
 npm run test:account      # signing the other devices out, the recovery code, two-factor sign-in (in-process server)
+npm run test:security     # every attack of the security audit (docs/AUDIT.md), server, plugin and backup server (in-process servers)
 # against a running server with open registration:
 npm run test:socket       # the encrypted transport, two devices of one account
 npm run test:vault        # three devices and a collaborator, end to end, notes and attachments

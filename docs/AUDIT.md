@@ -110,31 +110,39 @@ the internet, an *account* (anyone invited, or anyone with open registration), a
 - **S10** - the server and its CLI run with `umask 077`: what they write is their user's alone.
   Files written before keep their mode until they are next replaced (`chmod -R go= data`).
 
+## The residual risks, fixed in 0.9.9
+
+What 0.9.8 left open, closed in the round after it. Each has a check in `test:security`
+(R5's in `test:merge`), and R1, R4 and R6 were seen failing with the fix taken out.
+
+| # | Who | What it was | What changed |
+|---|---|---|---|
+| R1 | server + someone revoked | The plugin followed the epoch the server named, downwards too: new text written under a key the revoked person still holds | No device writes under an epoch below the highest one it, any device of its vault (the settings document) or a key sealed to the account knew (`KeyRing.epochFloor`); the owner's device moves the room past it (`catchUpEpoch`), and the server accepts such a jump. A server restored from a backup gets the same, so nothing stays stuck |
+| R2 | anyone with open registration | The number of rooms and the bytes of their logs had no limit | `MYCEL_QUOTA_MB` covers an account's rooms too, each with a fixed charge; a frame past it is answered `full` (kept, offered again), a new room `denied full`. With open registration and no quota the server warns at its start |
+| R3 | whoever reads the proxy's log | The access token travelled in the WebSocket URL | It goes as a subprotocol (`mycel.token.<jwt>`), which no access log writes; the server still reads the URL's from plugins before 0.9.9 |
+| R4 | any member, a reader too | Presence was not signed: a caret in any account's name | Signed by its sender (`packSignedPresence`); drawn only for this account, a contact - under the name this account calls them - or a writer the owner certified, and only for client ids naming the signer |
+| R5 | the server | Titles were sealed, not signed: the server chose the name a share landed under | The owner signs the sealed title; anything else lands under a plain name |
+| R6 | server, or someone with a key | The backup server took every frame that opened | It checks signatures as the devices do: the account's signing key comes with the grant (an older pairing gets it over the pairing), the contacts' from the settings |
+| R7 | a paired person | A cloud location in the backup server's own network (`rest:http://192.168.…`, `169.254.169.254`) | Refused before every start of restic, by name and by what the name resolves to, unless the operator allows the host (`MYCEL_BACKUP_ALLOW_HOSTS`). A name that resolves elsewhere a moment later is beyond this: a firewall on the way out is not |
+| R8 | a writer | The author's clock ordered the history: a change dated back into every rollback's past | Someone else's change counts as made no earlier than an hour before the server took it (`changeTime`); this account's own keep their time. A compaction's stamp is never later than the server took its newest frame |
+| R9 | the server | `contact-removed` took a contact - and every share between the two - away on the server's word | The remover signs it; the other device forgets the contact only on that signature, and not on one from before they became contacts |
+
+And P4 more precisely: a link typed on another device of the same account - its signed frames
+say which Yjs clients are the account's - counts as typed here; any other account's frame
+using a client id takes it out of that for good.
+
 ## Not fixed - known, and why
 
-- **A server moving a room back to an earlier epoch.** The plugin follows the epoch the
-  server announces, downwards too. A server working with someone revoked could have new text
-  written under a key that person still holds. Refusing would also refuse a server restored
-  from a backup, whose epochs went back for real; doing it right needs the owner to sign
-  where each epoch begins. For 1.0 at the latest.
 - **What a server can always do:** withhold frames, delay them, deliver them to some and not
   others, refuse service, hand an older snapshot (which only adds), see who talks to whom and
-  when, and how large each change is.
-- **Quotas for rooms.** Attachments have `MYCEL_QUOTA_MB`; the number of rooms an account
-  makes and the bytes of their logs have no limit. With invitations - the default - that is
-  everyone the operator invited; with open registration a stranger can fill the disk.
-- **The token in the WebSocket URL.** Proxies log URLs. Turn the access log off for `/vault/`
-  and `/relay` (`docs/SERVER.md`). Moving it into the first message needs both sides changed.
-- **Presence is not signed.** Anyone with a note's key - a reader too - can draw a caret with
-  any name, and hide their own behind another account's id. Only what a caret looks like.
-- **Titles are not signed.** The server picks the name a share lands under; it is made a
-  plain name either way.
-- **The backup server** reads a vault without checking frame signatures (it holds no contact
-  list), and a paired person can point a cloud location at an address in the backup server's
-  own network (`rest:http://192.168.…`) - restic talks to it, nothing else.
-- **A writer's clock** orders the history: a writer can make a change look older than it is.
-- **`contact-removed`** from the server removes a contact on the device without asking - a
-  server can make the device trust less, never more.
+  when, and how large each change is. Withholding includes the settings document: a device
+  that never received a revocation does not know of it.
+- **A reader nobody knows draws no caret.** Presence is shown only for someone this device
+  can tell (R4); a reader who is no contact of yours has no certificate to show. Their text
+  is not affected - readers write none.
+- **DNS rebinding against the backup server** (R7): restic resolves the name again itself.
+- **A writer's offline edits** show in the history from an hour before they reached the
+  server, not from when they were made (R8) - the price of not taking their clock's word.
 
 ## Updates of the plugin
 
@@ -162,4 +170,6 @@ inside the plugin can bind a later version of it. What keeps an update honest is
 The races seen only in CI (the fork on return in `test:recovery`, delete against restore in
 `test:folders`, a writer's offline file version, a rename going back and forth, the starting
 point in `test:backup`) are availability and consistency problems, not security ones, and
-were not looked into in this audit.
+were not looked into in this audit or in 0.9.9. One of them hides data: a writer's offline
+version of a shared folder's file can end up only in the file's version history - still on
+the server and restorable from there, but not as a file. They need a round of their own.

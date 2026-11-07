@@ -6,7 +6,26 @@ verified. `docs/PROGRESS.md` holds only the current state.
 "Checked by putting the bug back" means: the old behaviour was restored in the source,
 the suite run, the new checks seen failing (and nothing else), the fix restored.
 
-## Unreleased
+## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
+
+- **0.9.9** (2026-11-07) - **the audit's residual risks closed** (R1 to R9 in `docs/AUDIT.md`,
+  asked for by the user) **and a setup wizard.** No device writes under an epoch below the
+  highest one its account knew a room in - a server moving a note back to a key someone
+  revoked still holds had new text written under it - and the owner's device moves the room
+  past it (invariant 33). `MYCEL_QUOTA_MB` covers an account's rooms and their logs, not only
+  its files (`full`). The access token travels as a WebSocket subprotocol instead of in the URL a
+  proxy logs. Presence and a share's title are signed; a caret is drawn only for someone this
+  device can tell, under the name it knows them by. The backup server checks every frame's
+  signature, and refuses a cloud location in its own network (`MYCEL_BACKUP_ALLOW_HOSTS`).
+  Someone else's change counts as made no earlier than an hour before the server took it. A
+  contact goes only on their own signature. A link typed on another of the account's devices
+  counts as typed here (P4). Small: the settings sent an invite code to a server that wanted
+  none, and "an Mycel server". **Server, backup server and devices together**: a 0.9.9 device
+  needs a 0.9.9 server for its token; an older device still signs in to a 0.9.9 server, but
+  its carets and contact removals are not taken. Checked by putting the bugs back for R1 (the
+  victim's device wrote under the revoked epoch), R4 (a caret in another account's id was
+  drawn) and R6 (a forged frame went into the backup); the rest by checks of their own in
+  `test:security` and `test:merge`.
 
 - **The setup wizard** (`account/SetupWizard.ts`; asked for by the user): a window that says
   in a few sentences what Mycel is and connects a device step by step. The server's address,
@@ -25,9 +44,8 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
   (`setupShown` in `data.json`); a device signed out later keeps its address and is not asked.
   Otherwise: the command *Set up this device…*, and a button on the Account tab while signed
   out. Checked headlessly: the bundle loads, the command is registered, and the decision to
-  open it by itself (`test:load`); the window itself only on a device.
-
-## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
+  open it by itself (`test:load`); the window itself only on a device. Built by a separate
+  agent on `feat/setup-wizard` and merged into 0.9.9.
 
 - **0.9.8** (2026-11-07) - **the security audit** (`docs/PHASE8.md`, A; every finding with its
   fix and its check in **`docs/AUDIT.md`**, the attacks kept as `npm run test:security`).
