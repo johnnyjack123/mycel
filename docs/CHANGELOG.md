@@ -6,6 +6,27 @@ verified. `docs/PROGRESS.md` holds only the current state.
 "Checked by putting the bug back" means: the old behaviour was restored in the source,
 the suite run, the new checks seen failing (and nothing else), the fix restored.
 
+## Unreleased
+
+- **The setup wizard** (`account/SetupWizard.ts`; asked for by the user): a window that says
+  in a few sentences what Mycel is and connects a device step by step. The server's address,
+  checked against the server as the settings check it (`describeProbe`, now shared with the
+  settings tab; an `https://` address copied from a browser is taken as `wss://`); the vault's
+  name - before the account, since signing in starts the sync under that name, and every other
+  device gives the same one; creating an account (the password's strength said while typing,
+  the generator, an invite code when the server asks for one) or signing in (the 2FA code
+  asked for over it, as from the settings); a new account's recovery code as a step of its own
+  (`showRecoveryCode`, the block its own window shows too), with why to keep it apart from the
+  password, and *Next* only once "I have written it down" is on; then what next - the cloud,
+  other devices, contacts and sharing, backups, two-factor sign-in. It calls what the settings
+  tab calls (`signIn`, `createAccount`, which now tell their caller once the account is open,
+  before the sync's first start), so the device ends up as the tab would leave it. It opens by
+  itself once, on a device never connected - nobody signed in and the address still the default
+  (`setupShown` in `data.json`); a device signed out later keeps its address and is not asked.
+  Otherwise: the command *Set up this device…*, and a button on the Account tab while signed
+  out. Checked headlessly: the bundle loads, the command is registered, and the decision to
+  open it by itself (`test:load`); the window itself only on a device.
+
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
 - **0.9.8** (2026-11-07) - **the security audit** (`docs/PHASE8.md`, A; every finding with its

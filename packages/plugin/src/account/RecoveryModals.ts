@@ -4,6 +4,28 @@ import { busy, type BusyButton } from '../busy'
 import { PasswordReveal } from './reveal'
 
 /**
+ * A new recovery code, its Copy button and "I have written it down" - in a
+ * window of its own, and as a step of the setup wizard. `noted`: told whenever
+ * the switch moves; whoever shows it lets the person on only once it is on.
+ */
+export function showRecoveryCode(containerEl: HTMLElement, code: string, noted: (value: boolean) => void, initially = false): void {
+  containerEl.createEl('p', {
+    text: 'The code alone opens your account - your name and password are not needed with it. Keep it apart from your password: on paper, or in a password manager under its own entry. It is shown only now.'
+  })
+  const shown = containerEl.createDiv({ cls: 'mycel-recovery-code mycel-code', text: code })
+  shown.setAttr('aria-label', 'Recovery code')
+  new Setting(containerEl).addButton((button) =>
+    button.setButtonText('Copy').onClick(() => {
+      void navigator.clipboard.writeText(code).then(
+        () => new Notice('Recovery code copied.'),
+        () => new Notice('Copying failed; select the code and copy it by hand.')
+      )
+    })
+  )
+  new Setting(containerEl).setName('I have written it down').addToggle((toggle) => toggle.setValue(initially).onChange(noted))
+}
+
+/**
  * Shows a recovery code, once: it is not kept anywhere it could be shown
  * again. "Done" waits for the person to say they wrote it down; closing the
  * dialog otherwise is allowed - a new code can be made at any time.
@@ -22,27 +44,12 @@ export class RecoveryCodeModal extends Modal {
   onOpen(): void {
     this.titleEl.setText('Your recovery code')
     this.contentEl.createEl('p', { text: this.intro })
-    this.contentEl.createEl('p', {
-      text: 'The code alone opens your account - your name and password are not needed with it. Keep it apart from your password: on paper, or in a password manager under its own entry. It is shown only now.'
-    })
-    const shown = this.contentEl.createDiv({ cls: 'mycel-recovery-code mycel-code', text: this.code })
-    shown.setAttr('aria-label', 'Recovery code')
     let noted = false
     let done: { setDisabled(disabled: boolean): unknown } | null = null
-    new Setting(this.contentEl).addButton((button) =>
-      button.setButtonText('Copy').onClick(() => {
-        void navigator.clipboard.writeText(this.code).then(
-          () => new Notice('Recovery code copied.'),
-          () => new Notice('Copying failed; select the code and copy it by hand.')
-        )
-      })
-    )
-    new Setting(this.contentEl).setName('I have written it down').addToggle((toggle) =>
-      toggle.setValue(false).onChange((value) => {
-        noted = value
-        done?.setDisabled(!noted)
-      })
-    )
+    showRecoveryCode(this.contentEl, this.code, (value) => {
+      noted = value
+      done?.setDisabled(!noted)
+    })
     new Setting(this.contentEl).addButton((button) => {
       done = button
       button

@@ -38,6 +38,7 @@ import { PasswordModal } from './account/PasswordModal'
 import { PasswordPromptModal, RecoveryCodeModal } from './account/RecoveryModals'
 import { TotpSetupModal, askKeepTotp, askTotpCode } from './account/TotpModals'
 import { Session, type OpenVault, type SecretStore, type Unlocked } from './account/Session'
+import { SetupWizard } from './account/SetupWizard'
 import { Backups } from './backup/Backups'
 import { BackupConnectModal, BackupTaskModal } from './backup/BackupModals'
 import { CopyWaitsModal } from './backup/CopyWaitsModal'
@@ -435,6 +436,7 @@ export default class MycelPlugin extends Plugin {
     this.addNotificationsRibbon()
 
     this.addRibbonIcon('refresh-cw', 'Mycel status', () => this.showStatus())
+    this.addCommand({ id: 'setup', name: 'Set up this device…', callback: () => this.openSetup() })
     this.addCommand({ id: 'show-status', name: 'Show sync status', callback: () => this.showStatus() })
     this.addCommand({ id: 'notifications', name: 'Open notifications and rollbacks', callback: () => void this.openNotifications() })
     this.addCommand({
@@ -487,6 +489,7 @@ export default class MycelPlugin extends Plugin {
     // the sync would take it for edits and send it everywhere.
     this.app.workspace.onLayoutReady(() => {
       this.installExplorerGuard()
+      if (!this.unloaded && this.offersSetup()) this.openSetup()
       void this.timeMachine.recoverAtStart().then((free) => {
         if (free) void this.startSync()
       })
@@ -667,12 +670,21 @@ export default class MycelPlugin extends Plugin {
 
   // --- account -------------------------------------------------------------
 
-  async signIn(username: string, password: string): Promise<void> {
+  /**
+   * `signedIn`: told as soon as the account is open, before the sync starts -
+   * the first start reads the whole vault, and the setup wizard goes on meanwhile.
+   */
+  async signIn(username: string, password: string, signedIn?: () => void): Promise<void> {
     if (!username || !password) throw new Error('Enter your name and password.')
     await this.stopSync()
     await this.session.login(username, password, (again) => askTotpCode(this.app, again))
     new Notice(`Mycel: signed in as ${this.settings.username}.`)
-    await this.startSync()
+    // Whatever the caller draws, signed in means syncing.
+    try {
+      signedIn?.()
+    } finally {
+      await this.startSync()
+    }
   }
 
   /** Whether the configured server can be signed in to, and how it takes new accounts. */
@@ -686,7 +698,12 @@ export default class MycelPlugin extends Plugin {
     log.info(`the server at ${this.settings.serverUrl} is taken as a new one`)
   }
 
-  async createAccount(username: string, password: string, repeat: string, invite: string): Promise<void> {
+  /**
+   * `showCode`: shows the new account's recovery code, before the sync starts -
+   * the first start reads the whole vault. Without it, a window of its own does;
+   * the setup wizard shows it as one of its steps.
+   */
+  async createAccount(username: string, password: string, repeat: string, invite: string, showCode?: (code: string) => void): Promise<void> {
     if (!username) throw new Error('Choose a name.')
     const verdict = judgePassword(password, [username])
     if (!verdict.ok) throw new Error(verdict.reason)
@@ -695,12 +712,38 @@ export default class MycelPlugin extends Plugin {
     await this.stopSync()
     const { recoveryCode } = await this.session.register(username, password, invite)
     new Notice(`Mycel: account ${this.settings.username} created. Keep the password safe.`, 8_000)
-    new RecoveryCodeModal(
-      this.app,
-      recoveryCode,
-      'Your account is ready. If you ever forget your password - or the name you signed up with - this code gets you back in.'
-    ).open()
-    await this.startSync()
+    // Whatever the caller draws, signed in means syncing.
+    try {
+      if (showCode) showCode(recoveryCode)
+      else {
+        new RecoveryCodeModal(
+          this.app,
+          recoveryCode,
+          'Your account is ready. If you ever forget your password - or the name you signed up with - this code gets you back in.'
+        ).open()
+      }
+    } finally {
+      await this.startSync()
+    }
+  }
+
+  /**
+   * Offered by itself once, on a device never connected: nobody signed in and
+   * the address never changed from the default. A device signed out later -
+   * by hand, or by the server - keeps its address and is not asked.
+   */
+  private offersSetup(): boolean {
+    const settings = this.settings
+    return !settings.setupShown && !settings.username && !settings.token && settings.serverUrl === DEFAULT_SETTINGS.serverUrl
+  }
+
+  /** The setup wizard: how Mycel works, and this device connected step by step. */
+  openSetup(): void {
+    if (!this.settings.setupShown) {
+      this.settings.setupShown = true
+      void this.saveSettings()
+    }
+    new SetupWizard(this.app, this, () => this.settingTab?.afterSetup()).open()
   }
 
   /**
