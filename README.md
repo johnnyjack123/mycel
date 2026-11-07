@@ -98,6 +98,10 @@ npm run dev:plugin
 
 ## Use it
 
+On a device that was never connected, a **setup wizard** opens once by itself and leads
+through the steps below, explaining each; it is always there as the command *Set up this
+device…* and, while signed out, on *Settings → Mycel → Account*.
+
 1. *Settings → Mycel*: enter the server URL (`ws://…` or `wss://…`).
 2. **Create account** with your name, the invite code and a password — or
    **Sign in** if the account exists. The vault name defaults to the Obsidian
@@ -133,7 +137,7 @@ device, and an open settings tab shows a change made on another device at once -
 two-factor sign-in and the recovery code too; the ones under *This device* are not
 shared.
 
-Commands: *Show sync status*, *Open version history* (a note's or a file's),
+Commands: *Set up this device…*, *Show sync status*, *Open version history* (a note's or a file's),
 *Browse backups*, *Deleted notes and files…*, *Notes with two versions…*, *Force
 resync of this note*, *Reconnect and rescan the vault*, *Copy the log*, and the
 sharing commands below. Sharing, access, history and comparing versions are also
