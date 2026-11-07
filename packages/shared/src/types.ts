@@ -742,6 +742,12 @@ export interface BackupGrant {
   publicKey: string
   /** PKCS#8. */
   privateKey: string
+  /**
+   * The account's signing key, public half: the backup server checks every
+   * frame's signature with it and the contacts' keys from the settings, as the
+   * devices do. Absent from a grant made before 0.9.9.
+   */
+  signingPublicKey?: string
   backupKey: string
   keyId: string
 }

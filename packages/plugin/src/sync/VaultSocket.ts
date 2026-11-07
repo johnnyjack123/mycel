@@ -60,6 +60,21 @@ export interface RoomCrypto {
    * the room is caught up again later. `forged`: dropped.
    */
   check(kind: 'frame' | 'snapshot', seq: number, epoch: number, frame: OpenedFrame): Promise<FrameVerdict>
+  /** Presence this device sends, signed by its account; null: not sent. Absent: sent as it is. */
+  packPresence?(epoch: number, update: Uint8Array): Promise<Bytes | null>
+  /**
+   * Presence read: whose it is, when its signature holds and this device can
+   * tell - its own account, a contact, a writer the owner certified -, and the
+   * name to show for them; null drops it. Absent: taken as it is.
+   */
+  checkPresence?(epoch: number, plaintext: Uint8Array): Promise<CheckedPresence | null>
+}
+
+export interface CheckedPresence {
+  author: string
+  /** What this account calls them; null: the name they gave. */
+  name: string | null
+  update: Uint8Array
 }
 
 export type FrameVerdict = 'ok' | 'forged' | 'unknown'
@@ -199,6 +214,8 @@ interface Registration {
   sendTimer: number | null
   /** How many were present when last logged; presence is logged when that changes. */
   present: number
+  /** Presence client id -> the account whose signature first named it; nobody else speaks for it. */
+  presenceAuthors: Map<number, string>
   dead: boolean
   /** Waiting to catch up again after a frame there was no key for (`stall`). */
   stalled: boolean
@@ -828,7 +845,18 @@ export class VaultSocket {
         log.debug(`${registration.room}: presence under epoch ${epoch} dropped`)
         return
       }
-      applyAwarenessUpdate(awareness, plaintext, this)
+      const crypto = registration.options.crypto
+      let update: Uint8Array | null = plaintext
+      if (crypto.checkPresence) {
+        const checked = await crypto.checkPresence(epoch, plaintext)
+        if (!checked) {
+          log.debug(`${registration.room}: presence nobody this device can tell signed; dropped`)
+          return
+        }
+        update = this.presenceOf(registration, awareness, checked)
+      }
+      if (!update || registration.options.awareness !== awareness) return
+      applyAwarenessUpdate(awareness, update, this)
       // Every client renews its presence every 15 seconds; only who comes and goes is news.
       const present = awareness.getStates().size
       if (present !== registration.present) log.debug(`${registration.room}: ${present} present, epoch ${epoch}`)
@@ -836,6 +864,48 @@ export class VaultSocket {
     } catch (error) {
       log.warn(`presence for ${registration.room} could not be read`, error)
     }
+  }
+
+  /**
+   * What of a signed presence update its signer may say: their own clients
+   * only - a client id another account named first stays that account's, and
+   * this device's own is its own -, each naming the signer as its user, under
+   * the name this device knows them by. An update in y-protocols' format:
+   * count, then client id, clock and state as JSON each.
+   */
+  private presenceOf(registration: Registration, awareness: Awareness, checked: CheckedPresence): Uint8Array | null {
+    const kept: Array<{ clientId: number; clock: number; json: string }> = []
+    try {
+      const decoder = decoding.createDecoder(checked.update)
+      const count = decoding.readVarUint(decoder)
+      for (let index = 0; index < count; index += 1) {
+        const clientId = decoding.readVarUint(decoder)
+        const clock = decoding.readVarUint(decoder)
+        const json = decoding.readVarString(decoder)
+        if (clientId === awareness.clientID) continue
+        const speaker = registration.presenceAuthors.get(clientId)
+        if (speaker !== undefined && speaker !== checked.author) continue
+        const state = JSON.parse(json) as { user?: Record<string, unknown> } | null
+        if (state !== null) {
+          if (!state.user || typeof state.user !== 'object' || state.user.id !== checked.author) continue
+          if (checked.name !== null) state.user.name = checked.name
+        }
+        registration.presenceAuthors.set(clientId, checked.author)
+        kept.push({ clientId, clock, json: JSON.stringify(state) })
+      }
+    } catch (error) {
+      log.debug(`${registration.room}: a presence update could not be read`, error)
+      return null
+    }
+    if (kept.length === 0) return null
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint(encoder, kept.length)
+    for (const entry of kept) {
+      encoding.writeVarUint(encoder, entry.clientId)
+      encoding.writeVarUint(encoder, entry.clock)
+      encoding.writeVarString(encoder, entry.json)
+    }
+    return encoding.toUint8Array(encoder)
   }
 
   // --- outgoing ------------------------------------------------------------------
@@ -925,7 +995,10 @@ export class VaultSocket {
       log.warn(`${registration.room}: no key to send presence under epoch ${epoch}`)
       return
     }
-    const data = await encrypt(key, bytes(update), awarenessAad(registration.room, epoch))
+    const crypto = registration.options.crypto
+    const plaintext = crypto.packPresence ? await crypto.packPresence(epoch, update) : bytes(update)
+    if (!plaintext || !this.connected) return
+    const data = await encrypt(key, plaintext, awarenessAad(registration.room, epoch))
     this.send((encoder) => {
       encoding.writeVarUint(encoder, MUX.awareness)
       encoding.writeVarString(encoder, registration.room)
@@ -1028,6 +1101,7 @@ export class VaultSocket {
       verify: { seq: 0, hash: null, content: null, state: 'none' },
       sendTimer: null,
       present: 0,
+      presenceAuthors: new Map(),
       dead: false,
       stalled: false,
       stalls: 0,

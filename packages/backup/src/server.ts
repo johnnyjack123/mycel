@@ -22,6 +22,8 @@ export interface BackupServerOptions {
   /** The RAM disk notes are laid out in during a run. */
   workDir: string
   resticBinary: string
+  /** Hosts in the backup server's own network a backup task may name all the same (`MYCEL_BACKUP_ALLOW_HOSTS`). */
+  allowHosts?: ReadonlySet<string>
   /** What devices are shown this backup server as. */
   name: string
   version: string
@@ -44,7 +46,7 @@ export interface RunningBackupServer {
 const REGISTER_WAIT_MS = 10_000
 
 export async function startBackupServer(options: BackupServerOptions): Promise<RunningBackupServer> {
-  const restic = new Restic(options.resticBinary, join(options.dataDir, 'restic-cache'), 'mycel-backup')
+  const restic = new Restic(options.resticBinary, join(options.dataDir, 'restic-cache'), 'mycel-backup', options.allowHosts)
   const invites = new Invites(options.dataDir)
   const service = await BackupService.open({
     server: options.server,

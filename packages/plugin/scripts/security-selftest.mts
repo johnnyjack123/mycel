@@ -11,10 +11,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { check, delay, Device, eventually, failures, useServer } from './harness.mjs'
 
-const { isFilePath, isNotePath, isVaultPath, vaultPathProblem, NOTE_ATTACHMENTS_FIELD } = await import('@mycel/shared')
+const { isFilePath, isNotePath, isVaultPath, vaultPathProblem, CONTENT_FIELD, NOTE_ATTACHMENTS_FIELD, frameAad } = await import('@mycel/shared')
 const { gateApp, PathRefused } = await import('../src/guard.js')
+const { aesKey, encrypt, seal, titleContext, toBase64 } = await import('@mycel/shared/crypto')
+const Y = await import('yjs')
 const { envOf, locationProblem, repositoryOf } = await import('../../backup/src/config.js')
 const { safePath } = await import('../../backup/src/layout.js')
+const { allowedHosts, isInternalAddress, networkProblem } = await import('../../backup/src/network.js')
+const { VaultKeys } = await import('../../backup/src/keys.js')
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
 
@@ -177,6 +181,35 @@ const { startServer } = await import('../../server/src/server.js')
   ] as const) {
     check(safePath(path) === expected, `a backup writes ${JSON.stringify(path)} below its folder, as ${expected}`, safePath(path))
   }
+
+  // A cloud location in the backup server's own network: restic knocked on a router, a NAS, a metadata service.
+  const names: Record<string, string[]> = {
+    'nas.lan': ['192.168.1.20'],
+    'x.blob.nas.lan': ['192.168.1.21'],
+    'cloud.example': ['93.184.216.34'],
+    'rebind.example': ['93.184.216.34', '127.0.0.1']
+  }
+  const resolve = async (host: string): Promise<string[]> => names[host] ?? Promise.reject(new Error('unknown'))
+  const none = new Set<string>()
+  for (const [location, env] of [
+    ['rest:http://192.168.1.1:8000/', {}],
+    ['rest:https://user:pw@[::1]:8000/repo', {}],
+    ['rest:http://169.254.169.254/latest/', {}],
+    ['s3:http://10.0.0.5:9000/bucket', {}],
+    ['s3:nas.lan/bucket', {}],
+    ['sftp:backup@nas.lan:/srv/restic', {}],
+    ['sftp://backup@127.0.0.1:2222//srv', {}],
+    ['s3:rebind.example/bucket', {}],
+    ['swift:container:/path', { OS_AUTH_URL: 'http://172.16.0.1:5000/v3' }],
+    ['azure:container:/path', { AZURE_ACCOUNT_NAME: 'x', AZURE_ENDPOINT_SUFFIX: 'nas.lan' }]
+  ] as const) {
+    check((await networkProblem(location, env, none, resolve)) !== null, `a task cannot point restic at ${location} in the backup server's network`)
+  }
+  for (const location of ['s3:cloud.example/bucket', 'rest:https://cloud.example/', 'b2:bucket:vault', 'rclone:pcloud:vault', '/encrypted/vault']) {
+    check((await networkProblem(location, {}, none, resolve)) === null, `it takes ${location}`)
+  }
+  check((await networkProblem('sftp:backup@nas.lan:/srv/restic', {}, allowedHosts('nas.lan, 10.0.0.9'), resolve)) === null, 'unless the operator allowed that host')
+  check(isInternalAddress('::ffff:127.0.0.1') && isInternalAddress('fd00::1') && isInternalAddress('100.64.0.1') && !isInternalAddress('8.8.8.8'), 'mapped, unique-local and shared addresses count as internal')
 }
 
 // ===============================================================================
@@ -281,6 +314,79 @@ try {
   const listed = handle ? Array.from(handle.doc.getMap(NOTE_ATTACHMENTS_FIELD).keys()) : []
   check(!listed.includes('passport.pdf'), "a link someone else typed does not share the victim's file of that name", listed)
   check(!mallory.vault.attachmentPaths().some((path) => path.endsWith('passport.pdf')), 'and the attacker never gets it', mallory.vault.attachmentPaths())
+
+  // --- the name a share lands under ----------------------------------------------
+  {
+    // Anyone can seal to a public key: the server chose the title a share landed under.
+    const victorKey = mallory.contacts?.publicKey(victor.accountId)
+    const someId = '00112233445566778899aabbccddeeff'
+    if (victorKey && mallory.keys && victor.keys) {
+      const genuine = await mallory.keys.sealTitle(someId, 'Meeting notes', { account: victor.accountId, publicKey: victorKey })
+      check((await victor.keys.openTitle(someId, genuine, mallory.accountId)) === 'Meeting notes', 'a title its owner sealed and signed opens')
+      const unsigned = await seal(victorKey, new TextEncoder().encode('../Evil'), titleContext(someId))
+      check((await victor.keys.openTitle(someId, unsigned, mallory.accountId)) === '', 'a title nobody signed - the server sealed it - is not taken')
+      check((await victor.keys.openTitle(someId, genuine, victor.accountId)) === '', 'nor one signed by anyone but the owner the share names')
+      check((await victor.keys.openTitle('ffeeddccbbaa99887766554433221100', genuine, mallory.accountId)) === '', "nor one sealed for another note's share")
+    } else {
+      check(false, 'the two hold each other as contacts')
+    }
+  }
+
+  // --- a frame in a backup that nobody who may write signed ---------------------
+  {
+    // The backup server read a vault without checking signatures: the sync server, or
+    // someone revoked who still holds a key, had its own frames backed up and restored.
+    const diaryId = victor.index?.docIdForPath('Private/Diary.md') as string
+    const room = `doc:${diaryId}`
+    const log = await victor.api.log(room)
+    const grant = await victor.makeBackupGrant('security test')
+    const cached = { room, owner: victor.accountId, tag: '', epoch: log.epoch, headSeq: log.headSeq, snapshot: log.snapshot, frames: log.frames, sealed: {} }
+    const keys = await VaultKeys.open(grant)
+    const genuine = await keys.replay(cached, victor.accountId)
+    check(genuine.doc.getText(CONTENT_FIELD).toString() === 'my diary\n' && genuine.unsigned === 0, "the backup server reads the victim's note as the victim wrote it", genuine.unsigned)
+    const forgedDoc = new Y.Doc()
+    forgedDoc.getText(CONTENT_FIELD).insert(0, 'FORGED ')
+    const plaintext = await (mallory.keys as NonNullable<typeof mallory.keys>).packAsOwner(room, log.epoch, Date.now(), Y.encodeStateAsUpdate(forgedDoc))
+    const key = await aesKey(await (victor.keys as NonNullable<typeof victor.keys>).ownDocKey(diaryId, log.epoch))
+    const data = toBase64(await encrypt(key, plaintext, frameAad(room, log.epoch)))
+    const withForged = { ...cached, frames: [...cached.frames, { seq: log.headSeq + 1, ts: Date.now(), epoch: log.epoch, data }] }
+    const read = await keys.replay(withForged, victor.accountId)
+    check(!read.doc.getText(CONTENT_FIELD).toString().includes('FORGED') && read.unsigned === 1, 'a frame someone else signed under the key is left out of the backup', read.doc.getText(CONTENT_FIELD).toString())
+    const unchecked = await VaultKeys.open({ ...grant, signingPublicKey: undefined })
+    check(
+      (await unchecked.replay(withForged, victor.accountId)).doc.getText(CONTENT_FIELD).toString().includes('FORGED'),
+      'as it went into every backup before (a pairing without the signing key)'
+    )
+  }
+
+  // --- a caret in someone else's name -------------------------------------------
+  {
+    const theirs = await mallory.store?.handle(sharedId)
+    const mine = await victor.store?.handle(sharedId)
+    const users = (): Array<Record<string, unknown>> =>
+      Array.from(mine?.awareness.getStates().values() ?? []).map((state) => (state as { user?: Record<string, unknown> }).user ?? {})
+    check(
+      await eventually(() => users().some((user) => user.id === mallory.accountId), 10_000),
+      "the attacker's own caret reaches the victim, signed",
+      users()
+    )
+    const someoneElse = '0123456789abcdef0123456789abcdef'
+    theirs?.awareness.setLocalStateField('user', { id: someoneElse, name: 'The owner', color: '#ff0000', colorLight: '#ff000033' })
+    await delay(2_500)
+    check(!users().some((user) => user.id === someoneElse), "a caret claiming another account's id is not drawn", users())
+    check(
+      users().every((user) => user.id !== mallory.accountId || user.name !== 'The owner'),
+      'and a contact shows under the name this account calls them',
+      users()
+    )
+    theirs?.awareness.setLocalStateField('user', { id: mallory.accountId, name: 'The owner', color: '#ff0000', colorLight: '#ff000033' })
+    await delay(2_500)
+    check(
+      users().some((user) => user.id === mallory.accountId && user.name !== 'The owner'),
+      "a name of the attacker's choosing does not replace the one the victim knows them by",
+      users()
+    )
+  }
   mallory.close(view)
 
   // --- a folder naming one of the victim's own notes ---------------------------

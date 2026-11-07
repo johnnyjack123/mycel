@@ -197,6 +197,9 @@ export function serveSession(session: IncomingSession, deps: SessionDeps): void 
       case 'rekey':
         await service.rekey(vaultId, params.grant as BackupGrant)
         return service.status(vaultId)
+      case 'signingKey':
+        await service.learnSigningKey(vaultId, params.key)
+        return { ok: true }
       case 'disconnect':
         // The route goes only once the answer is out: the relay ends the session with it.
         await service.disconnect(vaultId, false)

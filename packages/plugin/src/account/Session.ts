@@ -324,6 +324,7 @@ export class Session {
       vaultKey: toBase64(vault.key),
       publicKey: toBase64(unlocked.publicKey),
       privateKey: toBase64(privateKey),
+      signingPublicKey: toBase64(unlocked.signing.publicKey),
       backupKey,
       keyId: created.id
     }

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import type { Writable } from 'node:stream'
 import type { KeepPolicy } from '@mycel/shared'
+import { networkProblem } from './network.js'
 
 // restic as the backup server runs it: one repository per call, its password
 // and credentials in the environment of that call only. restic encrypts
@@ -96,7 +97,11 @@ export class Restic {
     private readonly binary: string,
     private readonly cacheDir: string,
     /** Every snapshot carries it, so restic finds the last one of a vault whatever the container is called. */
-    readonly host: string
+    readonly host: string,
+    /** Hosts in the backup server's own network a task may reach all the same (`MYCEL_BACKUP_ALLOW_HOSTS`). */
+    private readonly allowHosts: ReadonlySet<string> = new Set(),
+    /** How a host's name is resolved; for the self-test. */
+    private readonly resolve?: (host: string) => Promise<string[]>
   ) {}
 
   /**
@@ -104,11 +109,14 @@ export class Restic {
    * is killed before the input ends - an ended stream would be stored as a
    * backup cut short.
    */
-  private run(
+  private async run(
     repo: ResticRepo,
     args: string[],
     options: { cwd?: string; input?: (stdin: Writable) => Promise<void>; binary?: boolean } = {}
   ): Promise<{ code: number | null; stdout: Buffer; stderr: string }> {
+    // A location someone paired here wrote: never one in the backup server's own network.
+    const refused = await networkProblem(repo.repository, repo.env, this.allowHosts, this.resolve)
+    if (refused) throw new ResticError(null, '', refused)
     return new Promise((resolve, reject) => {
       const child = spawn(this.binary, args, {
         cwd: options.cwd,

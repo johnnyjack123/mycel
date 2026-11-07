@@ -19,6 +19,7 @@ import { backupRouteKeys } from '@mycel/shared/crypto'
 import { writable } from './config.js'
 import { Invites } from './invites.js'
 import { log } from './log.js'
+import { allowedHosts } from './network.js'
 import { startBackupServer } from './server.js'
 import { checkRelay } from './probe.js'
 import { listVaults } from './service.js'
@@ -204,6 +205,7 @@ async function main(argv: string[]): Promise<number> {
     decryptedRoot,
     workDir: env.MYCEL_BACKUP_WORK ?? (process.platform === 'linux' ? '/run/mycel-backup' : join(tmpdir(), 'mycel-backup')),
     resticBinary: env.MYCEL_RESTIC ?? 'restic',
+    allowHosts: allowedHosts(env.MYCEL_BACKUP_ALLOW_HOSTS),
     name: env.MYCEL_BACKUP_NAME ?? hostname(),
     version: pkg.version
   })

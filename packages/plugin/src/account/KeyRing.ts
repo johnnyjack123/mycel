@@ -10,23 +10,26 @@ import {
   fromBase64,
   fromUtf8,
   packSignedFrame,
+  packSignedPresence,
   seal,
   signSealed,
   signWriterCert,
   splitSealed,
   titleContext,
   toBase64,
+  unpackFrame,
   unseal,
   utf8,
   vaultKeys,
   verifyFrame,
+  verifyPresence,
   verifySealed,
   verifyWriterCert,
   type Bytes,
   type OpenedFrame,
   type WriterCert
 } from '@mycel/shared/crypto'
-import type { FrameVerdict, RoomCrypto } from '../sync/VaultSocket.js'
+import type { CheckedPresence, FrameVerdict, RoomCrypto } from '../sync/VaultSocket.js'
 import type { ConnectApi } from './api.js'
 import type { OpenVault, SecretStore, Unlocked } from './Session.js'
 import { log } from '../log.js'
@@ -34,6 +37,8 @@ import { log } from '../log.js'
 const SEALED_PREFIX = 'mycel:sealed:'
 const TIES_PREFIX = 'mycel:ties:'
 const FLOOR_PREFIX = 'mycel:epoch:'
+/** How far a presence update's time may lie from this device's clock. */
+const PRESENCE_SKEW_MS = 30 * 60 * 1000
 
 /** Where the account keeps the highest epoch any of its devices knew a room in: its settings document. */
 export interface EpochRecord {
@@ -315,6 +320,46 @@ export class KeyRing {
     return packSignedFrame(signing.privateKey, room, epoch, this.account.accountId, cert, authorTs, update)
   }
 
+  // --- signed presence -------------------------------------------------------------
+  // A caret is shown only for someone this device can tell: this account, a
+  // contact by their pinned key, or a writer the owner certified - a reader none
+  // of them knows is not drawn. And never under another account's id.
+
+  /** Presence this device sends in a note, signed by its account; a writer adds their certificate. */
+  private async presenceFor(room: string, epoch: number, owner: string, tie: FolderTie | null, update: Uint8Array): Promise<Bytes> {
+    const me = this.account.accountId
+    const cert = owner === me ? null : ((tie ? await this.ownCert(folderRoom(tie.folder), tie.epoch) : null) ?? (await this.ownCert(room, epoch)))
+    return packSignedPresence(this.account.signing.privateKey, room, epoch, me, cert, Date.now(), update)
+  }
+
+  /** Whose a presence update is, and the name to show; null when no signature this device can check holds. */
+  private async checkPresenceOf(room: string, epoch: number, owner: string, tie: FolderTie | null, plaintext: Uint8Array): Promise<CheckedPresence | null> {
+    const presence = unpackFrame(plaintext)
+    // Old presence sent again shows a caret where nobody is any more.
+    if (!presence || Math.abs(Date.now() - presence.authorTs) > PRESENCE_SKEW_MS) return null
+    const author = presence.author
+    const pinned = this.signerPublicKey(author)
+    let key = pinned
+    if (!key && presence.cert) {
+      const ownerKey = this.signerPublicKey(owner)
+      if (!ownerKey) return null
+      const certified =
+        (tie !== null && (await verifyWriterCert(ownerKey, folderRoom(tie.folder), tie.epoch, author, presence.cert))) ||
+        (await verifyWriterCert(ownerKey, room, epoch, author, presence.cert))
+      if (certified) key = presence.cert.signingKey
+    }
+    if (!key || !(await verifyPresence(key, room, epoch, presence))) return null
+    return { author, name: pinned ? this.contactName(author) : null, update: presence.update }
+  }
+
+  /** What this account calls a contact; null for anyone else. */
+  private contactName: (account: string) => string | null = () => null
+
+  /** Where contacts' names come from: the contact list. A caret shows that name, not the one its sender chose. */
+  setNames(resolve: (account: string) => string | null): void {
+    this.contactName = resolve
+  }
+
   /** A snapshot or starting point this account makes of a room of its own, signed as its owner. */
   packAsOwner(room: string, epoch: number, authorTs: number, update: Uint8Array): Promise<Bytes> {
     return packSignedFrame(this.account.signing.privateKey, room, epoch, this.account.accountId, null, authorTs, update)
@@ -500,6 +545,12 @@ export class KeyRing {
         return this.tieAgrees(docId, tie) ? this.packFor(room, epoch, ownerOf(), tie, authorTs, update) : null
       },
       mayEncrypt: async (epoch) => this.epochHolds(room, epoch) && this.tieAgrees(docId, await this.tieOf(docId, epoch, options)),
+      packPresence: async (epoch, update) => {
+        if (!this.epochHolds(room, epoch)) return null
+        const tie = await this.tieOf(docId, epoch, options)
+        return this.tieAgrees(docId, tie) ? this.presenceFor(room, epoch, ownerOf(), tie, update) : null
+      },
+      checkPresence: async (epoch, plaintext) => this.checkPresenceOf(room, epoch, ownerOf(), await this.tieOf(docId, epoch, options), plaintext),
       check: async (kind, _seq, epoch, frame) => {
         const verdict = await this.checkFrame(room, epoch, ownerOf(), await this.tieOf(docId, epoch, options), kind, frame)
         if (verdict !== 'forged' || !frame.cert) return verdict
@@ -780,13 +831,26 @@ export class KeyRing {
     return sealed
   }
 
-  sealTitle(docId: string, title: string, recipientPublicKey: Bytes): Promise<string> {
-    return seal(recipientPublicKey, utf8(title), titleContext(docId))
+  /**
+   * A note's or folder's title sealed for someone it is shared with, signed by
+   * this account as the sharer. Anyone can seal to a public key: unsigned, the
+   * server chose the name a share landed under (0.9.9).
+   */
+  async sealTitle(id: string, title: string, recipient: Recipient): Promise<string> {
+    const sealed = await seal(recipient.publicKey, utf8(title), titleContext(id))
+    return signSealed(this.account.signing.privateKey, this.account.accountId, titleContext(id), 0, recipient.account, sealed)
   }
 
-  async openTitle(docId: string, sealed: string): Promise<string> {
+  /** The title `owner` sealed for this account; empty when it is not theirs or does not open - the share then lands under a plain name. */
+  async openTitle(id: string, value: string, owner: string): Promise<string> {
+    const signed = splitSealed(value)
+    const ownerKey = this.signerPublicKey(owner)
+    if (!signed || signed.signer !== owner || !ownerKey || !(await verifySealed(ownerKey, titleContext(id), 0, this.account.accountId, signed))) {
+      log.warn(`the title of ${id} is not signed by its owner ${owner.slice(0, 8)}; a plain name is used`)
+      return ''
+    }
     try {
-      return fromUtf8(await unseal(this.account.privateKey, this.account.publicKey, sealed, titleContext(docId)))
+      return fromUtf8(await unseal(this.account.privateKey, this.account.publicKey, signed.sealed, titleContext(id)))
     } catch {
       return ''
     }

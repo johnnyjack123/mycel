@@ -1576,7 +1576,7 @@ export class Folders {
     if (opened.index.linkedFiles) {
       for (const { docId, entry } of this.index.live()) if (inside(entry.path, path)) this.sharing.approveFilesOf(docId)
     }
-    const title = await this.keys.sealTitle(folderId, opened.index.name || baseName(path), recipientKey.publicKey)
+    const title = await this.keys.sealTitle(folderId, opened.index.name || baseName(path), recipientKey)
     const wasWriter = this.sharing.roleOf(folderRoom(folderId), account) === 'write'
     if (withHistory) {
       await this.retrying(async () => {
@@ -1888,7 +1888,7 @@ export class Folders {
     const existing = this.index.folder(incoming.folderId)
     let path = existing && !existing.endedAt && !existing.leftAt ? existing.path : null
     if (!path) {
-      const title = (await this.keys.openTitle(incoming.folderId, incoming.title)) || 'Shared folder'
+      const title = (await this.keys.openTitle(incoming.folderId, incoming.title, incoming.owner)) || 'Shared folder'
       const root = this.options.shareFolder().replace(/^\/+|\/+$/g, '')
       path = this.freeFolderPath(joinPath(root, safeName(title)))
       this.index.setFolder(incoming.folderId, { path, owner: incoming.owner, role: incoming.role, updatedAt: Date.now() })

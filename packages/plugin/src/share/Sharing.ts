@@ -334,7 +334,7 @@ export class Sharing {
     // Without the room's current state there is nothing to hand over, and
     // without it on the server there is no room to share yet.
     if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs))) throw new Error('The server is not reachable.')
-    const title = await this.keys.sealTitle(docId, landing || titleOf(entry.path), recipientKey.publicKey)
+    const title = await this.keys.sealTitle(docId, landing || titleOf(entry.path), recipientKey)
     const room = docRoom(docId)
     const wasWriter = this.roleOf(room, account) === 'write'
 
@@ -549,7 +549,7 @@ export class Sharing {
 
   /** Adds a note someone shared into this vault. */
   async accept(share: IncomingShare, announce = true): Promise<TFile | null> {
-    const title = (await this.keys.openTitle(share.docId, share.title)) || 'Shared note'
+    const title = (await this.keys.openTitle(share.docId, share.title, share.owner)) || 'Shared note'
     const file = await this.store.acceptShare(
       { docId: share.docId, owner: share.owner, role: share.role, title },
       this.options.folder()

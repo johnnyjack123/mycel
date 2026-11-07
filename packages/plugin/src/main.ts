@@ -29,7 +29,7 @@ import {
   type VaultLockInfo,
   type VaultLockNotice
 } from '@mycel/shared'
-import { bytes, randomBytes, toHex } from '@mycel/shared/crypto'
+import { bytes, randomBytes, toBase64, toHex } from '@mycel/shared/crypto'
 import { ConnectApi, type HttpClient } from './account/api'
 import { judgePassword } from './account/password'
 import { probeServer, type ServerProbe } from './account/probe'
@@ -230,6 +230,7 @@ export default class MycelPlugin extends Plugin {
       if (!this.unlocked) throw new Error('Sign in first.')
       this.unlocked = await this.session.deleteBackupKey(this.unlocked, keyId)
     },
+    signingPublicKey: () => (this.unlocked ? toBase64(this.unlocked.signing.publicKey) : null),
     lastGood: () => this.settings.backupLastGood,
     saveLastGood: async (value) => {
       this.settings.backupLastGood = value
@@ -1136,6 +1137,8 @@ export default class MycelPlugin extends Plugin {
     this.keys = keys
     // A key sealed by a contact opens only with their signature, checked against their pinned signing key.
     keys.setSigners((account) => this.contacts?.signingKey(account) ?? null)
+    // A contact's caret carries the name this account calls them, not the one their device sends.
+    keys.setNames((account) => (this.contacts?.isContact(account) ? this.contacts.name(account) : null))
 
     const root = this.pluginDir()
     this.state = new StateStore(this.app.vault.adapter, root)

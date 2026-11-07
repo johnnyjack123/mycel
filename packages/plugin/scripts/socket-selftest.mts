@@ -193,7 +193,8 @@ check(
   const docOne = new Y.Doc()
   const docThree = new Y.Doc()
   const awarenessOne = new Awareness(docOne)
-  awarenessOne.setLocalStateField('user', { name: 'Tester' })
+  // Signed by the account it names (0.9.9): a caret naming anyone else is dropped.
+  awarenessOne.setLocalStateField('user', { id: one.keys.accountId, name: 'Tester' })
   const awarenessThree = new Awareness(docThree)
   const three = new VaultSocket(serverUrl, one.vault.vaultId, () => one.token() ?? '')
   three.connect()
