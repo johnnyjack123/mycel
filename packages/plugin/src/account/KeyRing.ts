@@ -463,6 +463,7 @@ export class KeyRing {
   private ownRoomCrypto(room: string, key: RoomCrypto['key']): RoomCrypto {
     const me = this.account.accountId
     return {
+      self: me,
       key,
       pack: (epoch, authorTs, update) => this.packFor(room, epoch, me, null, authorTs, update),
       check: (kind, _seq, epoch, frame) => this.checkFrame(room, epoch, me, null, kind, frame)
@@ -517,6 +518,7 @@ export class KeyRing {
     const given = options.owner
     const ownerOf = (): string => (typeof given === 'function' ? given() : given) ?? this.account.accountId
     return {
+      self: this.account.accountId,
       key: async (epoch) => {
         const tie = await this.tieOf(docId, epoch, options)
         const id = `${room}#${epoch}#${tie ? `${tie.folder}.${tie.epoch}` : 'own'}`
@@ -586,6 +588,7 @@ export class KeyRing {
   ): RoomCrypto {
     const room = docRoom(docId)
     return {
+      self: this.account.accountId,
       // Nothing is written into a share that ended.
       pack: async () => null,
       check: (kind, _seq, epoch, frame) => {
@@ -666,6 +669,7 @@ export class KeyRing {
     const room = folderRoom(folderId)
     const ownerId = owner ?? this.account.accountId
     return {
+      self: this.account.accountId,
       refresh: () => this.refreshFolder(folderId),
       key: async (epoch) => {
         const id = `${room}#${epoch}`

@@ -655,7 +655,8 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
       username: name,
       publicKey: identity.publicKey,
       privateKey: await e2e.importPrivateKey(identity.privateKey),
-      signingPublicKey: signing.publicKey
+      signingPublicKey: signing.publicKey,
+      signingKey: await e2e.importSigningKey(signing.privateKey)
     }
     return { me, settings, contacts: new Contacts(apiFor(accountId) as never, me, settings) }
   }
@@ -776,6 +777,34 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   deliver(carl.me.accountId, { kind: 'reply', from: anna.me.accountId, codeId: [...codes.keys()].at(-1) as string, sealed: namedAnswer })
   await carl.contacts.processInbox()
   check(carl.contacts.name(anna.me.accountId) !== 'not anna', 'nor does one with the right key but without the code')
+
+  // Removing a contact: the other side forgets it only on the remover's signature.
+  {
+    check(
+      (await ben.contacts.forget({ account: anna.me.accountId })) === false && ben.contacts.isContact(anna.me.accountId),
+      "the server's word alone that a contact removed this account takes nobody away"
+    )
+    const at = Date.now()
+    const forged = await e2e.signContactRemoval(await e2e.importSigningKey((await e2e.generateSigningKeys()).privateKey), anna.me.accountId, ben.me.accountId, at)
+    check(
+      (await ben.contacts.forget({ account: anna.me.accountId, at, signature: forged })) === false && ben.contacts.isContact(anna.me.accountId),
+      'nor does a removal signed with any other key'
+    )
+    const old = await e2e.signContactRemoval(anna.me.signingKey, anna.me.accountId, ben.me.accountId, 1)
+    check(
+      (await ben.contacts.forget({ account: anna.me.accountId, at: 1, signature: old })) === false && ben.contacts.isContact(anna.me.accountId),
+      'nor one from before the two became contacts - sent again from an earlier time'
+    )
+    const sent: Array<{ account: string; at?: number; signature?: string }> = []
+    const removing = new Contacts({ ...apiFor(anna.me.accountId), removeContact: async (request: (typeof sent)[number]) => sent.push(request) } as never, anna.me, anna.settings)
+    await removing.remove(ben.me.accountId)
+    const request = sent[0]
+    check(request?.signature !== undefined && !anna.contacts.isContact(ben.me.accountId), "removing a contact sends this account's signed word for it")
+    check(
+      request !== undefined && (await ben.contacts.forget({ account: anna.me.accountId, at: request.at, signature: request.signature })) === true && !ben.contacts.isContact(anna.me.accountId),
+      'and the other side forgets the contact on it'
+    )
+  }
 
   // The list of codes handed out and not redeemed yet.
   {

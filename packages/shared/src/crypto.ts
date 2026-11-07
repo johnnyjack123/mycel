@@ -417,6 +417,19 @@ export async function verifySignature(publicKey: Bytes, message: string | Bytes,
   }
 }
 
+/** What an account signs when it removes a contact: who removed whom, and when. */
+function contactRemovalMessage(remover: string, removed: string, at: number): string {
+  return `contact-removed|${remover}|${removed}|${at}`
+}
+
+export function signContactRemoval(signingKey: CryptoKey, remover: string, removed: string, at: number): Promise<string> {
+  return sign(signingKey, contactRemovalMessage(remover, removed, at))
+}
+
+export function verifyContactRemoval(publicKey: Bytes, remover: string, removed: string, at: number, signature: string): Promise<boolean> {
+  return verifySignature(publicKey, contactRemovalMessage(remover, removed, at), signature)
+}
+
 /** What the owner signs for a key it seals: which room and epoch, for whom, and the sealed box itself. */
 async function sealedKeyMessage(room: string, epoch: number, recipient: string, sealed: string): Promise<string> {
   return `sealed-key|${room}|${epoch}|${recipient}|${toHex(await sha256(utf8(sealed)))}`

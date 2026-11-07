@@ -19,6 +19,7 @@ const { envOf, locationProblem, repositoryOf } = await import('../../backup/src/
 const { safePath } = await import('../../backup/src/layout.js')
 const { allowedHosts, isInternalAddress, networkProblem } = await import('../../backup/src/network.js')
 const { VaultKeys } = await import('../../backup/src/keys.js')
+const { AUTHOR_LAG_MS, changeTime } = await import('../src/sync/VaultSocket.js')
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
 
@@ -213,7 +214,21 @@ const { startServer } = await import('../../server/src/server.js')
 }
 
 // ===============================================================================
-// 4. End to end: a contact who shares with you, and one you share with.
+// 4. When a change counts as made: a writer's clock is not the history's.
+// ===============================================================================
+{
+  const serverTs = Date.UTC(2026, 10, 7, 12)
+  const year = 365 * 24 * 60 * 60 * 1000
+  check(
+    changeTime({ author: 'writer', authorTs: serverTs - year }, serverTs, 'me') === serverTs - AUTHOR_LAG_MS,
+    "a writer dating a change a year back gets it no earlier than an hour before the server took it - out of every rollback's past"
+  )
+  check(changeTime({ author: 'writer', authorTs: serverTs - 60_000 }, serverTs, 'me') === serverTs - 60_000, "a writer's own time stands within that hour")
+  check(changeTime({ author: 'me', authorTs: serverTs - year }, serverTs, 'me') === serverTs - year, "this account's own changes keep their time - a device away for a week, history uploaded again")
+}
+
+// ===============================================================================
+// 5. End to end: a contact who shares with you, and one you share with.
 // ===============================================================================
 const root = mkdtempSync(join(tmpdir(), 'mycel-plugin-security-'))
 const serve = (port: number): ReturnType<typeof startServer> =>

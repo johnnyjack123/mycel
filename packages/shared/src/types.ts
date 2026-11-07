@@ -904,6 +904,21 @@ export interface FolderNotice {
 /** For `contact` (something waits in the inbox), `contact-removed` and `account-changed`. */
 export interface ContactNotice {
   account: string
+  /**
+   * For `contact-removed`: when the account removed this one, and its
+   * signature over that (`signContactRemoval`). A device forgets a contact only
+   * on that signature: the server's word alone took contacts away. Absent from
+   * a device or server before 0.9.9.
+   */
+  at?: number
+  signature?: string
+}
+
+/** `POST /contacts/remove`: who, and - since 0.9.9 - this account's signed word for it, which the server hands on. */
+export interface RemoveContactRequest {
+  account: string
+  at?: number
+  signature?: string
 }
 
 /** For `vault-lock`: the vault was locked, the lock renewed hands on, or it ended (`lock: null`). */

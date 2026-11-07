@@ -1221,7 +1221,8 @@ export default class MycelPlugin extends Plugin {
         username: unlocked.username,
         publicKey: unlocked.publicKey,
         privateKey: unlocked.privateKey,
-        signingPublicKey: unlocked.signing.publicKey
+        signingPublicKey: unlocked.signing.publicKey,
+        signingKey: unlocked.signing.privateKey
       },
       accountSettings
     )
@@ -2398,8 +2399,16 @@ export default class MycelPlugin extends Plugin {
       return
     }
     if (kind === 'contact-removed') {
-      this.contacts?.forget((payload as ContactNotice).account)
-      this.settingTab?.refresh()
+      const notice = payload as ContactNotice
+      void this.contacts?.forget(notice).then((forgotten) => {
+        if (!forgotten && this.contacts) {
+          new Notice(
+            `Mycel: the server says ${this.contacts.name(notice.account)} removed you as a contact, but without their signature. They stay in your contacts; remove them yourself if that is right.`,
+            0
+          )
+        }
+        this.settingTab?.refresh()
+      })
       return
     }
     if (kind === 'account-changed') {

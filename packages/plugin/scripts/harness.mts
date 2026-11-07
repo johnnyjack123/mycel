@@ -258,7 +258,7 @@ export class Device {
       notify: (kind, payload) => {
         // Caught, as main.ts's `processContacts` does: the next notice reads the inbox again.
         if (kind === 'contact') void this.contacts?.processInbox().catch(() => undefined)
-        else if (kind === 'contact-removed') this.contacts?.forget((payload as { account: string }).account)
+        else if (kind === 'contact-removed') void this.contacts?.forget(payload as { account: string })
         else if (kind === 'contact-replaced') this.contacts?.markReplaced((payload as { account: string }).account)
         // What main.ts's `refreshAccount` does.
         else if (kind === 'account-changed') void this.refreshAccount()
@@ -339,7 +339,8 @@ export class Device {
         username: unlocked.username,
         publicKey: unlocked.publicKey,
         privateKey: unlocked.privateKey,
-        signingPublicKey: unlocked.signing.publicKey
+        signingPublicKey: unlocked.signing.publicKey,
+        signingKey: unlocked.signing.privateKey
       },
       settings
     )

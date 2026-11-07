@@ -29,6 +29,7 @@ import {
   type CompactableResponse,
   type ContactCodeInfo,
   type ContactCodeRequest,
+  type ContactNotice,
   type ContactReplyRequest,
   type ContactsResponse,
   type CreateVaultRequest,
@@ -612,9 +613,16 @@ export function createHttpApp(
   app.post(`${API.contacts}/remove`, async (request, reply) => {
     const accountId = await user(request, reply)
     if (!accountId) return undefined
-    const other = ((request.body ?? {}) as { account?: unknown }).account
+    const body = (request.body ?? {}) as { account?: unknown; at?: unknown; signature?: unknown }
+    const other = body.account
     if (!isAccountId(other)) return reply.code(400).send({ error: 'not an account id' })
-    if (await contacts.unpair(accountId, other)) hub.notify(other, 'contact-removed', { account: accountId })
+    // The remover's signed word goes along: the other side forgets the contact only on it.
+    const notice: ContactNotice = { account: accountId }
+    if (typeof body.at === 'number' && Number.isFinite(body.at) && typeof body.signature === 'string' && body.signature.length <= 200) {
+      notice.at = body.at
+      notice.signature = body.signature
+    }
+    if (await contacts.unpair(accountId, other)) hub.notify(other, 'contact-removed', notice)
     return { ok: true }
   })
 

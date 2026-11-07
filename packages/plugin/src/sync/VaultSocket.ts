@@ -33,6 +33,8 @@ const FULL_RETRY_MS = 60_000
 
 /** Keys of one room, by epoch. Null: this device may not read that epoch. */
 export interface RoomCrypto {
+  /** The account this device writes as: its own frames keep the time they carry (`changeTime`). */
+  self?: string
   key(epoch: number): Promise<CryptoKey | null>
   /**
    * What the server said the epoch it is in belongs to: a shared folder's
@@ -78,6 +80,24 @@ export interface CheckedPresence {
 }
 
 export type FrameVerdict = 'ok' | 'forged' | 'unknown'
+
+/** How long after its author's time a frame of someone else's may reach the server and still keep that time. */
+export const AUTHOR_LAG_MS = 60 * 60 * 1000
+
+/**
+ * When a change counts as made, for the history and the Time Machine. The
+ * author's clock, signed inside the frame - the server's could be faked, and
+ * re-uploaded history would scramble it. But someone else's clock only down to
+ * an hour before the server took the frame: a writer could otherwise date a
+ * change back as far as they liked, into every moment a rollback went back
+ * to. Later is the server's to make anyway - it can hold a frame back. This
+ * account's own devices are taken at their word: one offline for a week sends
+ * a week of changes at once, and history uploaded again carries its old times.
+ */
+export function changeTime(frame: Pick<OpenedFrame, 'author' | 'authorTs'>, serverTs: number, self: string | undefined): number {
+  if (self !== undefined && frame.author === self) return frame.authorTs
+  return Math.max(frame.authorTs, serverTs - AUTHOR_LAG_MS)
+}
 
 /** Where a room's position in the log and its unacknowledged changes are kept. */
 export interface RoomCursor {
@@ -490,10 +510,11 @@ export class VaultSocket {
     switch (type) {
       case MUX.frame: {
         const seq = decoding.readVarUint(decoder)
-        decoding.readVarUint(decoder) // the server's clock; the history view asks for it separately
+        // The server's clock: someone else's change counts as made no earlier than an hour before it (`changeTime`).
+        const serverTs = decoding.readVarUint(decoder)
         const epoch = decoding.readVarUint(decoder)
         const data = decoding.readVarUint8Array(decoder)
-        this.enqueue(registration, () => this.applyFrame(registration, seq, epoch, data))
+        this.enqueue(registration, () => this.applyFrame(registration, seq, epoch, data, serverTs))
         return
       }
       case MUX.snapshot: {
@@ -724,7 +745,7 @@ export class VaultSocket {
     }
   }
 
-  private async applyFrame(registration: Registration, seq: number, epoch: number, data: Uint8Array): Promise<void> {
+  private async applyFrame(registration: Registration, seq: number, epoch: number, data: Uint8Array, serverTs: number): Promise<void> {
     const cursor = registration.options.cursor
     const hash = await fingerprint(data)
     // Other bytes than this device saw: only what the frame says can tell, once it is open.
@@ -757,8 +778,9 @@ export class VaultSocket {
       log.error(`${registration.room}: frame #${seq} is not signed by someone who may write here; dropped`)
     } else {
       log.debug(`${registration.room}: frame #${seq}, ${frame.update.length} B, epoch ${epoch}`)
-      this.applyRemote(registration.doc, frame.update, frame.authorTs)
-      registration.options.history?.({ authorTs: frame.authorTs, update: frame.update })
+      const madeAt = changeTime(frame, serverTs, registration.options.crypto.self)
+      this.applyRemote(registration.doc, frame.update, madeAt)
+      registration.options.history?.({ authorTs: madeAt, update: frame.update })
     }
     cursor.lastSeq = seq
     cursor.lastHash = hash

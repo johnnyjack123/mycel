@@ -1,5 +1,7 @@
-import type { InboxItem } from '@mycel/shared'
+import type { ContactNotice, InboxItem } from '@mycel/shared'
 import {
+  signContactRemoval,
+  verifyContactRemoval,
   contactContext,
   contactKeys,
   contactMac,
@@ -59,6 +61,8 @@ export interface Me {
   publicKey: Bytes
   privateKey: CryptoKey
   signingPublicKey: Bytes
+  /** Signs this account's word that it removed a contact, which the other side checks. */
+  signingKey: CryptoKey
 }
 
 interface Introduction {
@@ -367,12 +371,34 @@ export class Contacts {
 
   /** Ends the contact. Whatever the two share must have ended before; see `Sharing.endWith`. */
   async remove(accountId: string): Promise<void> {
-    await this.api.removeContact(accountId)
+    const at = Date.now()
+    const signature = await signContactRemoval(this.me.signingKey, this.me.accountId, accountId, at)
+    await this.api.removeContact({ account: accountId, at, signature })
     this.settings.setContact(accountId, null)
   }
 
-  /** The other side ended it. */
-  forget(accountId: string): void {
-    this.settings.setContact(accountId, null)
+  /**
+   * The other side ended it - if their signature says so. The server's word
+   * alone took a contact away, and with them every share between the two:
+   * an unsigned notice, or one older than the contact (sent again from an
+   * earlier time they were contacts), leaves the contact as it is. False then.
+   */
+  async forget(notice: ContactNotice): Promise<boolean> {
+    const contact = this.settings.contact(notice.account)
+    if (!contact) return true
+    const key = this.signingKey(notice.account)
+    const signed =
+      key !== null &&
+      typeof notice.at === 'number' &&
+      typeof notice.signature === 'string' &&
+      // Ten minutes for clocks that are not quite alike.
+      notice.at >= contact.addedAt - 10 * 60 * 1000 &&
+      (await verifyContactRemoval(key, notice.account, this.me.accountId, notice.at, notice.signature))
+    if (!signed) {
+      log.warn(`the server says ${notice.account.slice(0, 8)} removed this account as a contact, without their signature; kept`)
+      return false
+    }
+    this.settings.setContact(notice.account, null)
+    return true
   }
 }

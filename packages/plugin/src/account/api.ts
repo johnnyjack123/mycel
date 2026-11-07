@@ -3,6 +3,7 @@ import {
   type AcceptRequest,
   type AccountBundle,
   type AttachBlobsRequest,
+  type RemoveContactRequest,
   type ResealRequest,
   type RotateRequest,
   type SealedEpochsResponse,
@@ -255,8 +256,8 @@ export class ConnectApi {
     return this.call('GET', API.contacts)
   }
 
-  removeContact(account: string): Promise<unknown> {
-    return this.call('POST', `${API.contacts}/remove`, { account })
+  removeContact(request: RemoveContactRequest): Promise<unknown> {
+    return this.call('POST', `${API.contacts}/remove`, request)
   }
 
   share(request: ShareRequest): Promise<unknown> {
