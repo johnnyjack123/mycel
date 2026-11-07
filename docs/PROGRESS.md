@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-06 · **0.9 built up to the audit (`docs/PHASE8.md`, the user's decisions of 2026-11-03 and 2026-11-05 there): 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel. Next: the user starts afresh once (below, "Starting afresh"), then the audit by a separate agent in a new chat; publishing comes last.**_
+_Last updated: 2026-11-07 · **0.9 built, the audit done: 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel, 0.9.8 is the security audit (`docs/AUDIT.md`: 23 findings fixed, each kept as an attack in `npm run test:security`; what is known and not fixed listed there). Next: the user updates server, backup server and every device to 0.9.8 together (friend codes from before no longer redeem), sets `MYCEL_TRUST_PROXY`, starts afresh once (below, "Starting afresh"); publishing comes last.**_
 
 ## Where we are
 
@@ -67,8 +67,19 @@ an opinion on their two names, *Seemless* and *Mycel* (given: Mycel). Publishing
    Merged, CI green.
 8. **0.9.7** - N: the rename to *Mycel*, everywhere, the internal names included (the user,
    2026-11-05; `feat/mycel`).
-9. Then the user starts once afresh (below); the audit goes to a separate agent in a new chat,
-   once everything is built (the user: no audit agent from here); P last.
+9. **0.9.8** - A: the security audit, done in a chat of its own on 2026-11-07 (`docs/AUDIT.md`,
+   `fix/security-audit`). Server: a crash from anyone through one WebSocket message, the
+   built-in token secret, the sign-in throttle behind a proxy (`MYCEL_TRUST_PROXY`), bodies read
+   before tokens, unbounded contact messages, titles, keys, attachments and frames, foreign vault
+   ids. Plugin: paths from a shared folder's document written anywhere (the gate, `guard.ts`,
+   invariant 31), a folder taking over and deleting another note, files pulled out through
+   links, friend codes not binding the account, keys sealed to or taken from whoever the
+   server named (invariant 32), a caret's colour as CSS. Backup server: a task's environment
+   and `-` locations running code. To try on devices: sharing a note with its files (the
+   pictures go along from the device that shares; on another device of the owner a notice asks),
+   a link someone else types into a shared note to a file of yours (the notice, *Share …*), a
+   friend code between two 0.9.8 devices, the server behind NPM with `MYCEL_TRUST_PROXY`.
+10. Then the user starts once afresh (below); P last.
 
 **Starting afresh** (nothing written before 0.9.5 is read, and nothing named before 0.9.7 is
 found):
@@ -299,6 +310,14 @@ user's call, as with the earlier branches.
   Not needed any more: both possible causes are fixed in 0.7.18.
 
 ## Known issues / debt
+
+- **Left by the audit (`docs/AUDIT.md`, "Not fixed")**: a server moving a room back to an
+  earlier epoch is followed (needs owner-signed epoch starts); no quota for rooms and log bytes;
+  the token in the WebSocket URL; presence and titles unsigned; the backup server checks no
+  frame signatures and may be pointed at addresses in its own network. And: a link to a file of
+  the vault typed on another device of the account, or in an earlier session, is shared only
+  after a yes in a notice on the device that has the file - the device it was typed on shares it
+  at once.
 
 - **Found while drafting 0.9 (2026-11-03, `docs/PHASE8.md`, each checked in the code; not
   fixed yet):**

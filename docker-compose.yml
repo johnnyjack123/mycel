@@ -12,6 +12,8 @@ services:
       MYCEL_LOG_UPDATES: ${MYCEL_LOG_UPDATES:-false}
       MYCEL_MAX_FILE_MB: ${MYCEL_MAX_FILE_MB:-100}
       MYCEL_QUOTA_MB: ${MYCEL_QUOTA_MB:-}
+      # The reverse proxy's address as the container sees it; see docs/SERVER.md.
+      MYCEL_TRUST_PROXY: ${MYCEL_TRUST_PROXY:-}
       # The user the server runs as; the image hands ./data to it at every start.
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
