@@ -33,6 +33,13 @@ import { log } from '../log.js'
 
 const SEALED_PREFIX = 'mycel:sealed:'
 const TIES_PREFIX = 'mycel:ties:'
+const FLOOR_PREFIX = 'mycel:epoch:'
+
+/** Where the account keeps the highest epoch any of its devices knew a room in: its settings document. */
+export interface EpochRecord {
+  floor(room: string): number
+  raise(room: string, epoch: number): void
+}
 
 /**
  * Which of a note's epochs it spent in a shared folder, and with which folder
@@ -96,6 +103,12 @@ export class KeyRing {
   private signerKey: (account: string) => Bytes | null = () => null
   private roomOwner: (room: string) => string | null = () => null
   private noteFolder: ((docId: string) => string | null) | null = null
+  /** room -> the highest epoch this device knew it in, kept in `secrets` once above 0. */
+  private readonly floors = new Map<string, number>()
+  private epochRecord: EpochRecord | null = null
+  private behind: ((room: string, epoch: number, floor: number) => void) | null = null
+  /** Rooms already reported as moved back, so the log says it once per epoch. */
+  private readonly toldBehind = new Map<string, number>()
 
   constructor(
     private readonly vault: OpenVault,
@@ -125,6 +138,68 @@ export class KeyRing {
   /** Which shared folder a note lies in, as this vault's own index has it; null for none. */
   setNoteFolders(resolve: (docId: string) => string | null): void {
     this.noteFolder = resolve
+  }
+
+  // --- epochs only go forward ------------------------------------------------------
+  // A device follows the epoch the server says a room is in. A server moving a room
+  // back - working with someone revoked, who holds the earlier epochs' keys - would
+  // have new text written under a key that person still has. No device writes under
+  // an epoch below the highest one it, any device of its vault, or a key sealed to
+  // this account knew; the owner's device moves the room past it (`onEpochBehind`),
+  // and everyone else waits for that.
+
+  /** The account's own record of epochs, which every device of the vault reads. */
+  setEpochRecord(record: EpochRecord): void {
+    this.epochRecord = record
+  }
+
+  /** Told when the server names an epoch below the floor: the owner's device moves the room on. */
+  onEpochBehind(listener: (room: string, epoch: number, floor: number) => void): void {
+    this.behind = listener
+  }
+
+  /** The highest epoch this account is known to have seen a room in. */
+  epochFloor(room: string): number {
+    let local = this.floors.get(room)
+    if (local === undefined) {
+      const saved = Number(this.secrets.load(`${FLOOR_PREFIX}${room}`) ?? '0')
+      local = Number.isInteger(saved) && saved > 0 ? saved : 0
+      this.floors.set(room, local)
+    }
+    let sealed = 0
+    for (const epoch of Object.keys(this.sealed(room))) sealed = Math.max(sealed, Number(epoch) || 0)
+    return Math.max(local, sealed, this.epochRecord?.floor(room) ?? 0)
+  }
+
+  /** The epoch a room moves to next: past the server's, and past every one known here. */
+  nextEpoch(room: string, serverEpoch: number): number {
+    return Math.max(serverEpoch, this.epochFloor(room)) + 1
+  }
+
+  /** Whether the server's epoch for a room is one this device may write under. */
+  private epochHolds(room: string, epoch: number): boolean {
+    const floor = this.epochFloor(room)
+    if (epoch >= floor) return true
+    if (this.toldBehind.get(room) !== epoch) {
+      this.toldBehind.set(room, epoch)
+      log.error(`${room}: the server says epoch ${epoch}, but this account knew epoch ${floor}; nothing is written under the earlier key`)
+    }
+    return false
+  }
+
+  /** What the server said a room's epoch is: the floor rises with it, and an epoch below it is reported. */
+  private learnEpoch(room: string, epoch: number): void {
+    const floor = this.epochFloor(room)
+    if (epoch > floor) {
+      this.floors.set(room, epoch)
+      this.secrets.save(`${FLOOR_PREFIX}${room}`, String(epoch))
+      this.epochRecord?.raise(room, epoch)
+      return
+    }
+    if (epoch < floor) {
+      this.epochHolds(room, epoch)
+      this.behind?.(room, epoch, floor)
+    }
   }
 
   /**
@@ -405,7 +480,10 @@ export class KeyRing {
         const raw = await this.noteKeyUnder(docId, epoch, tie, options.owned)
         return raw ? this.cached(id, () => Promise.resolve(raw)) : null
       },
-      learn: (epoch, tie) => this.learnTie(room, epoch, tie),
+      learn: (epoch, tie) => {
+        this.learnTie(room, epoch, tie)
+        this.learnEpoch(room, epoch)
+      },
       refresh: async () => {
         const before = this.keyState(room)
         await this.fetchKeys(room)
@@ -417,10 +495,11 @@ export class KeyRing {
         return changed
       },
       pack: async (epoch, authorTs, update) => {
+        if (!this.epochHolds(room, epoch)) return null
         const tie = await this.tieOf(docId, epoch, options)
         return this.tieAgrees(docId, tie) ? this.packFor(room, epoch, ownerOf(), tie, authorTs, update) : null
       },
-      mayEncrypt: async (epoch) => this.tieAgrees(docId, await this.tieOf(docId, epoch, options)),
+      mayEncrypt: async (epoch) => this.epochHolds(room, epoch) && this.tieAgrees(docId, await this.tieOf(docId, epoch, options)),
       check: async (kind, _seq, epoch, frame) => {
         const verdict = await this.checkFrame(room, epoch, ownerOf(), await this.tieOf(docId, epoch, options), kind, frame)
         if (verdict !== 'forged' || !frame.cert) return verdict
@@ -544,7 +623,9 @@ export class KeyRing {
         const folderKey = await this.folderKey(folderId, epoch)
         return folderKey ? this.cached(id, () => folderKeys.room(folderKey)) : null
       },
-      pack: (epoch, authorTs, update) => this.packFor(room, epoch, ownerId, null, authorTs, update),
+      learn: (epoch) => this.learnEpoch(room, epoch),
+      pack: async (epoch, authorTs, update) => (this.epochHolds(room, epoch) ? this.packFor(room, epoch, ownerId, null, authorTs, update) : null),
+      mayEncrypt: async (epoch) => this.epochHolds(room, epoch),
       check: (kind, _seq, epoch, frame) => this.checkFrame(room, epoch, ownerId, null, kind, frame)
     }
   }
@@ -670,6 +751,8 @@ export class KeyRing {
     this.secrets.save(`${SEALED_PREFIX}${room}`, null)
     this.tiesByRoom.delete(room)
     this.secrets.save(`${TIES_PREFIX}${room}`, null)
+    this.floors.delete(room)
+    this.secrets.save(`${FLOOR_PREFIX}${room}`, null)
     for (const id of Array.from(this.keys.keys())) if (id.startsWith(`${room}#`)) this.keys.delete(id)
   }
 

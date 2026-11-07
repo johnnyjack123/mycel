@@ -98,6 +98,9 @@ class Client implements RoomClient {
   sendLocked(room: string, ref: number): void {
     this.messages.push({ type: 'locked', room, ref })
   }
+  sendFull(room: string, ref: number): void {
+    this.messages.push({ type: 'full', room, ref })
+  }
   sendNotify(kind: NotifyKind, _payload: Notice): void {
     this.messages.push({ type: 'notify', kind })
   }

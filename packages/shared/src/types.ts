@@ -1314,5 +1314,10 @@ export interface BlobTouchResponse {
 export interface BlobUsageResponse {
   /** Ciphertext bytes the account keeps, over all its vaults. */
   bytes: number
+  /**
+   * What the rooms the account owns take - notes' logs and snapshots, index,
+   * settings, folders. The quota covers both since 0.9.9; absent from an older server.
+   */
+  roomBytes?: number
   quotaBytes: number | null
 }

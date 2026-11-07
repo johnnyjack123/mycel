@@ -15,6 +15,8 @@ import { Notice, noticeWithAction, notices } from './notices.js'
 import { gateApp } from './guard.js'
 import {
   roomKind,
+  roomSubject,
+  type BlobUsageResponse,
   settingsRoom,
   userColor,
   type BackupTaskSetting,
@@ -1149,7 +1151,8 @@ export default class MycelPlugin extends Plugin {
       denied: (room, reason) => log.error(`${room} was refused: ${reason}`),
       diverged: (room) => this.recovery?.diverged(room),
       signedOut: () => void this.checkSignedIn(socket),
-      locked: () => void this.checkVaultLock()
+      locked: () => void this.checkVaultLock(),
+      full: (room) => this.storageFull(room)
     })
     // A restore from the Time Machine starts the sync under the lock it holds: named before anything is sent.
     if (this.heldLockId) socket.holdLock(this.heldLockId)
@@ -1165,6 +1168,9 @@ export default class MycelPlugin extends Plugin {
     this.settingsStore = settingsStore
     await settingsStore.whenSynced
     if (stopped()) return
+    // Epochs only go forward, on every device of the vault: a server moving a room back is caught here.
+    keys.setEpochRecord({ floor: (room) => accountSettings.epochFloor(room), raise: (room, epoch) => accountSettings.raiseEpochFloor(room, epoch) })
+    keys.onEpochBehind((room) => this.epochBehind(room))
     const settingsCursor = await LocalCursor.load(settingsStore)
     if (stopped()) return
     this.settingsCursor = settingsCursor
@@ -1746,6 +1752,38 @@ export default class MycelPlugin extends Plugin {
     }
   }
 
+  /**
+   * The server named an epoch below one this account knew a room in. A room of
+   * this account's moves on past it; in anyone else's, nothing is written until
+   * its owner's device did that.
+   */
+  private epochBehind(room: string): void {
+    const subject = roomSubject(room)
+    const kind = roomKind(room)
+    if (kind === 'doc') {
+      const entry = this.store?.entry(subject)
+      if (entry && !entry.owner) void this.sharing?.catchUpEpoch(subject)
+    } else if (kind === 'fld') {
+      void this.folders?.catchUpEpoch(subject)
+    }
+  }
+
+  /** When the user was last told the server is full: once an hour is enough, it is refused per room. */
+  private fullNoticeAt = 0
+
+  /** The server refused a change or a new note: the room's owner used up what it lets them store. */
+  private storageFull(room: string): void {
+    if (Date.now() - this.fullNoticeAt < 60 * 60 * 1000) return
+    this.fullNoticeAt = Date.now()
+    const own = !this.store?.entry(roomSubject(room))?.owner
+    new Notice(
+      own
+        ? 'Mycel: the server has no room left for your account. What you write stays on this device and goes out once there is room again - delete files or old history, or ask whoever runs the server for more.'
+        : 'Mycel: the server has no room left for the owner of a note shared with you. What you write in it stays on this device until there is room again.',
+      15_000
+    )
+  }
+
   // --- the vault lock on the other devices ---------------------------------------------
 
   private async checkVaultLock(): Promise<void> {
@@ -1867,7 +1905,7 @@ export default class MycelPlugin extends Plugin {
   }
 
   /** What this account stores in attachments, as the server reports it; null while unknown. */
-  async attachmentUsage(): Promise<{ bytes: number; quotaBytes: number | null } | null> {
+  async attachmentUsage(): Promise<BlobUsageResponse | null> {
     if (!this.unlocked || !this.attachments?.isReady) return null
     try {
       return await this.api.blobUsage(this.unlocked.accountId)

@@ -25,7 +25,7 @@ const rangeProto = dom.window.Range.prototype as unknown as { getClientRects?: (
 rangeProto.getClientRects ??= () => []
 
 // Imported after the DOM globals exist; CodeMirror reads them at module scope.
-const { settingsRoom, userColor } = await import('@mycel/shared')
+const { roomKind, roomSubject, settingsRoom, userColor } = await import('@mycel/shared')
 const { AccountSettings } = await import('../src/sync/AccountSettings.js')
 const { LocalCursor } = await import('../src/sync/DocHandle.js')
 const { Recovery } = await import('../src/sync/Recovery.js')
@@ -424,6 +424,13 @@ export class Device {
       attachments
     )
     this.folders = folders
+    // As main.ts: epochs only go forward, and a room of this account's moves past one the server went back from.
+    keys.setEpochRecord({ floor: (room) => settings.epochFloor(room), raise: (room, epoch) => settings.raiseEpochFloor(room, epoch) })
+    keys.onEpochBehind((room) => {
+      const subject = roomSubject(room)
+      if (roomKind(room) === 'fld') void folders.catchUpEpoch(subject)
+      else if (roomKind(room) === 'doc' && store.entry(subject) && !store.entry(subject)?.owner) void sharing.catchUpEpoch(subject)
+    })
     const sharedFiles = new SharedFiles(app as never, store, attachments, this.api, keys, {
       folder: () => 'Shared',
       syncTimeoutMs: 4_000,

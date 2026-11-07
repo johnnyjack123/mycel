@@ -40,6 +40,7 @@ export interface RecoveryDecision {
 
 const RECOVERY_KEY = 'recovery'
 const ROLE_KEY = 'role:'
+const EPOCH_KEY = 'epoch:'
 
 /** Someone this account shares with. Their keys are pinned when the contact is made. */
 export interface Contact {
@@ -189,6 +190,20 @@ export class AccountSettings {
 
   setShareRole(room: string, account: string, role: ShareRole | null): void {
     this.put(`${ROLE_KEY}${room}|${account}`, role)
+  }
+
+  /**
+   * The highest epoch any device of this vault knew a room in. Kept here so a
+   * device that was away when a note moved on does not write under the earlier
+   * key because the server says so: someone who left holds that one.
+   */
+  epochFloor(room: string): number {
+    return wholeNumber(this.map.get(`${EPOCH_KEY}${room}`)) ?? 0
+  }
+
+  raiseEpochFloor(room: string, epoch: number): void {
+    if (epoch <= this.epochFloor(room)) return
+    this.doc.transact(() => this.map.set(`${EPOCH_KEY}${room}`, epoch), 'local')
   }
 
   /** What a backup server reads for its route, as it writes it down too. */

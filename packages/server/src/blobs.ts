@@ -91,6 +91,8 @@ export class BlobStore {
   private readonly usage = new Map<string, Promise<number>>()
   /** Whether a shared note names a blob; such a blob is kept whatever its owner asks. */
   private attached: (account: string, vault: string, blob: string) => boolean = () => false
+  /** What else an account stores - its rooms -, counted against the same quota. */
+  private otherUsage: (account: string) => Promise<number> = async () => 0
 
   constructor(
     private readonly dataDir: string,
@@ -100,6 +102,11 @@ export class BlobStore {
   /** Who knows which blobs shared notes name: the room hub. */
   protect(attached: (account: string, vault: string, blob: string) => boolean): void {
     this.attached = attached
+  }
+
+  /** What an account's rooms take, which the quota covers too: the room hub. */
+  shareQuota(other: (account: string) => Promise<number>): void {
+    this.otherUsage = other
   }
 
   private dir(account: string, vault: string): string {
@@ -198,7 +205,7 @@ export class BlobStore {
         await this.dropUpload(uploads, id)
         throw new BlobError(413, `files are limited to ${this.limits.maxFileBytes} bytes`)
       }
-      if (this.limits.quotaBytes !== null && (await this.usageOf(account)) + size > this.limits.quotaBytes) {
+      if (this.limits.quotaBytes !== null && (await this.usageOf(account)) + (await this.otherUsage(account)) + size > this.limits.quotaBytes) {
         await this.dropUpload(uploads, id)
         throw new BlobError(507, 'the account has used up its storage')
       }

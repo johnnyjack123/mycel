@@ -1233,8 +1233,11 @@ export class MycelSettingTab extends PluginSettingTab {
         return
       }
       const mb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(1)} MB`
+      // Since 0.9.9 the quota covers the notes' history too.
+      const notes = answer.roomBytes === undefined ? '' : `; notes and their history ${mb(answer.roomBytes)}`
+      const used = answer.bytes + (answer.roomBytes ?? 0)
       usage.setDesc(
-        `${mb(answer.bytes)}, encrypted, including earlier versions and deleted files${answer.quotaBytes === null ? '' : `, of ${mb(answer.quotaBytes)} this server allows your account`}.`
+        `${mb(answer.bytes)}, encrypted, including earlier versions and deleted files${notes}${answer.quotaBytes === null ? '' : `. ${mb(used)} of ${mb(answer.quotaBytes)} this server allows your account`}.`
       )
     })
 

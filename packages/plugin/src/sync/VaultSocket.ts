@@ -7,7 +7,7 @@ import {
 } from 'y-protocols/awareness'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, type FolderTie, type Notice, type NotifyKind } from '@mycel/shared'
+import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, socketProtocols, type FolderTie, type Notice, type NotifyKind } from '@mycel/shared'
 import { bytes, concat, decrypt, encrypt, sha256, toHex, unpackFrame, utf8, type Bytes, type OpenedFrame } from '@mycel/shared/crypto'
 import type { HistoryEntry } from './History.js'
 import { log } from '../log.js'
@@ -28,6 +28,8 @@ const STALL_RETRY_MS = 2_000
 const STALL_TRIES = 3
 // A change this device may not sign yet is offered again this much later.
 const UNSIGNED_RETRY_MS = 5_000
+// A change the server had no room for is offered again this much later.
+const FULL_RETRY_MS = 60_000
 
 /** Keys of one room, by epoch. Null: this device may not read that epoch. */
 export interface RoomCrypto {
@@ -149,6 +151,8 @@ export interface SocketHandlers {
   signedOut?(): void
   /** A push was refused because the vault is locked - this device may not have heard of the lock yet. */
   locked?(): void
+  /** A push or a new room was refused: the room's owner has used up what the server lets them store. */
+  full?(room: string): void
 }
 
 /** `unreadable`: the frame to compare came, but no key opened it - the log is neither confirmed nor refuted. */
@@ -248,9 +252,10 @@ export class VaultSocket {
     for (const listener of this.statusListeners) listener(status)
   }
 
+  /** The token goes as a subprotocol (`socketProtocols`), never into the URL a proxy logs. */
   private url(): string {
     const base = this.serverUrl.replace(/\/+$/, '')
-    return `${base}/vault/${encodeURIComponent(this.vaultId)}?token=${encodeURIComponent(this.token())}`
+    return `${base}/vault/${encodeURIComponent(this.vaultId)}`
   }
 
   connect(): void {
@@ -258,7 +263,7 @@ export class VaultSocket {
     this.emit('connecting')
     let socket: WebSocket
     try {
-      socket = new WebSocket(this.url())
+      socket = new WebSocket(this.url(), socketProtocols(this.token()))
     } catch (error) {
       log.error('opening the vault socket failed', error)
       this.scheduleReconnect()
@@ -591,6 +596,24 @@ export class VaultSocket {
         })
         return
       }
+      case MUX.full: {
+        const ref = decoding.readVarUint(decoder)
+        this.enqueue(registration, async () => {
+          if (registration.inflight !== ref) return
+          // Not taken: it stays in `sending`, as offline, and is offered again later.
+          registration.inflight = null
+          registration.inflightFrame = null
+          log.warn(`${room}: the server has no room for it - its owner used up their storage; kept here`)
+          this.handlers.full?.(room)
+          if (registration.sendTimer === null) {
+            registration.sendTimer = window.setTimeout(() => {
+              registration.sendTimer = null
+              this.scheduleSend(registration)
+            }, FULL_RETRY_MS)
+          }
+        })
+        return
+      }
       case MUX.revoked:
         log.info(`${room}: access ended (${decoding.readVarString(decoder)})`)
         registration.dead = true
@@ -599,7 +622,13 @@ export class VaultSocket {
       case MUX.denied: {
         const reason = decoding.readVarString(decoder)
         // Missing is not final: the server lost a note someone else owns, and
-        // it may come back once they reconnect. Asked again on every connect.
+        // it may come back once they reconnect. Full neither: there may be room
+        // later. Both asked again on every connect.
+        if (reason === 'full') {
+          log.warn(`the server has no room for ${room}: its owner used up their storage`)
+          this.handlers.full?.(room)
+          return
+        }
         if (reason !== 'missing') registration.dead = true
         log.error(`the server refused ${room}: ${reason}`)
         this.handlers.denied?.(room, reason)
@@ -889,6 +918,8 @@ export class VaultSocket {
       return
     }
     const epoch = registration.options.cursor.epoch
+    // Where a caret is, is text too: never under an epoch moved back, or a folder's key the index does not agree with.
+    if ((await registration.options.crypto.mayEncrypt?.(epoch)) === false) return
     const key = await registration.options.crypto.key(epoch)
     if (!key) {
       log.warn(`${registration.room}: no key to send presence under epoch ${epoch}`)

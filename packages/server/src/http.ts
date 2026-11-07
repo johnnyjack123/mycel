@@ -919,7 +919,7 @@ export function createHttpApp(
     const accountId = await user(request, reply)
     if (!accountId) return undefined
     if (request.params.account !== accountId) return reply.code(403).send({ error: 'not your account' })
-    return { bytes: await blobs.usageOf(accountId), quotaBytes: blobs.limits.quotaBytes }
+    return { bytes: await blobs.usageOf(accountId), roomBytes: await hub.usageOf(accountId), quotaBytes: blobs.limits.quotaBytes }
   })
 
   app.get<{ Querystring: { vaultId?: string; before?: string } }>(API.compactable, async (request, reply) => {

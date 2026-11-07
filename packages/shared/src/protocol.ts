@@ -4,6 +4,30 @@
 export const PROTOCOL_VERSION = 9
 export const DEFAULT_SERVER_PORT = 1234
 
+/**
+ * The subprotocol every WebSocket of a device names, and the server answers
+ * with. The access token travels as a second one (`WS_TOKEN_PREFIX`): a
+ * reverse proxy writes every URL into its access log, and a token in the URL -
+ * where it was until 0.9.9 - signed in as its account for whoever reads that log.
+ */
+export const WS_PROTOCOL = 'mycel'
+export const WS_TOKEN_PREFIX = 'mycel.token.'
+
+/** What a device's WebSocket names as its subprotocols: the token is a JWT, whose characters a subprotocol may hold. */
+export function socketProtocols(token: string): string[] {
+  return [WS_PROTOCOL, `${WS_TOKEN_PREFIX}${token}`]
+}
+
+/** The token among the subprotocols a WebSocket upgrade named; null without one. */
+export function tokenFromProtocols(header: string | string[] | undefined): string | null {
+  const values = Array.isArray(header) ? header.join(',') : (header ?? '')
+  for (const value of values.split(',')) {
+    const protocol = value.trim()
+    if (protocol.startsWith(WS_TOKEN_PREFIX)) return protocol.slice(WS_TOKEN_PREFIX.length)
+  }
+  return null
+}
+
 export type ShareRole = 'read' | 'write'
 
 export interface CollabUser {
@@ -196,7 +220,13 @@ export const MUX = {
    */
   locked: 19,
   /** room, varUint headSeq - a watched note's log reaches further than the device knows; no content. */
-  changed: 20
+  changed: 20,
+  /**
+   * room, varUint ref - the push was refused because the room's owner has used
+   * up what the server lets an account store (`MYCEL_QUOTA_MB`): the device
+   * keeps it and offers it again later.
+   */
+  full: 21
 } as const
 
 export type MuxMessage = (typeof MUX)[keyof typeof MUX]

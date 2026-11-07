@@ -7,7 +7,7 @@
 //   npm run test:socket -- ws://localhost:1235
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
-import { CLOSE_SIGNED_OUT, CONTENT_FIELD, docRoom, indexRoom } from '@mycel/shared'
+import { CLOSE_SIGNED_OUT, CONTENT_FIELD, docRoom, indexRoom, socketProtocols } from '@mycel/shared'
 
 // VaultSocket targets the browser Obsidian runs in: Node 22+ has a WebSocket,
 // the timers need a `window`.
@@ -215,7 +215,7 @@ check(
   const other = await device(`socket-other-${run}`, 'another long password', true)
   const opens = (token: string): Promise<'open' | 'refused' | 'signed out'> =>
     new Promise((resolve) => {
-      const ws = new WebSocket(`${serverUrl.replace(/\/+$/, '')}/vault/${one.vault.vaultId}?token=${encodeURIComponent(token)}`)
+      const ws = new WebSocket(`${serverUrl.replace(/\/+$/, '')}/vault/${one.vault.vaultId}`, socketProtocols(token))
       const settle = (outcome: 'open' | 'refused' | 'signed out'): void => {
         clearTimeout(timer)
         resolve(outcome)

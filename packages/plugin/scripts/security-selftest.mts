@@ -6,7 +6,7 @@
 // in this process, on a port and in a scratch directory of its own.
 //
 //   npm run test:security -w @mycel/plugin
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { check, delay, Device, eventually, failures, useServer } from './harness.mjs'
@@ -183,17 +183,30 @@ const { startServer } = await import('../../server/src/server.js')
 // 4. End to end: a contact who shares with you, and one you share with.
 // ===============================================================================
 const root = mkdtempSync(join(tmpdir(), 'mycel-plugin-security-'))
-const server = await startServer(
-  loadConfig({
-    HOST: '127.0.0.1',
-    PORT: '0',
-    MYCEL_DATA_DIR: join(root, 'server'),
-    MYCEL_REGISTRATION: 'open',
-    MYCEL_JWT_SECRET: 'plugin-security-selftest-secret-0123456789'
-  }),
-  { logger: false, paceMs: 0, maxFailures: 1000 }
-)
-useServer(`ws://127.0.0.1:${server.port}`)
+const serve = (port: number): ReturnType<typeof startServer> =>
+  startServer(
+    loadConfig({
+      HOST: '127.0.0.1',
+      PORT: String(port),
+      MYCEL_DATA_DIR: join(root, 'server'),
+      MYCEL_REGISTRATION: 'open',
+      MYCEL_JWT_SECRET: 'plugin-security-selftest-secret-0123456789'
+    }),
+    { logger: false, paceMs: 0, maxFailures: 1000 }
+  )
+let server = await serve(0)
+const port = server.port
+useServer(`ws://127.0.0.1:${port}`)
+
+/** Where the server keeps a note's metadata - to play a server that moves it back. */
+function noteMetaFile(owner: string, docId: string): string | null {
+  const vaults = join(root, 'server', 'users', owner)
+  for (const vault of existsSync(vaults) ? readdirSync(vaults) : []) {
+    const file = join(vaults, vault, 'notes', docId, 'meta.json')
+    if (existsSync(file)) return file
+  }
+  return null
+}
 const run = Date.now().toString(36)
 const binary = (seed: number, length = 2_000): Uint8Array => new Uint8Array(length).map((_byte, index) => (index * seed + 7) & 255)
 
@@ -285,6 +298,45 @@ try {
       'nor does deleting it there delete it',
       victor.index?.entry(sharedId)
     )
+  }
+
+  // --- a server that moves a note back to an epoch the revoked person holds -------
+  {
+    const room = `doc:${sharedId}`
+    await victor.sharing?.revoke(sharedId, mallory.accountId)
+    const revokedAt = (await victor.api.log(room)).epoch
+    check(await eventually(() => victor.socket?.epochOf(room) === revokedAt, 10_000), 'the victim revokes the attacker; the note moves to an epoch the attacker never gets', revokedAt)
+    // The attacker's copy goes on as their own, a fork, before the server goes down under it.
+    await eventually(() => {
+      const forked = mallory.index?.docIdForPath('Shared/Shared with M.md')
+      return forked !== undefined && forked !== sharedId
+    }, 15_000)
+    await delay(1_000)
+    // The server, working with the attacker, takes the note back to the epoch before.
+    await server.close()
+    const metaFile = noteMetaFile(victor.accountId, sharedId)
+    check(metaFile !== null, "the note's metadata is on the server's disk")
+    if (metaFile) {
+      const meta = JSON.parse(readFileSync(metaFile, 'utf8')) as { epoch: number }
+      writeFileSync(metaFile, JSON.stringify({ ...meta, epoch: revokedAt - 1 }, null, 2))
+    }
+    server = await serve(port)
+    const headBefore = (await eventually(async () => (await victor.api.log(room).catch(() => null)) !== null, 10_000)) ? (await victor.api.log(room)).headSeq : 0
+    const view = victor.open('Notes/Shared with M.md')
+    view.type('\nwritten after the revocation\n')
+    check(
+      await eventually(async () => (await victor.api.log(room)).headSeq > headBefore, 20_000),
+      'what the victim writes still reaches the server',
+      (await victor.api.log(room)).headSeq
+    )
+    const after = await victor.api.log(room)
+    const newer = after.frames.filter((frame) => frame.seq > headBefore)
+    check(
+      newer.length > 0 && newer.every((frame) => frame.epoch > revokedAt) && after.epoch > revokedAt,
+      'but never under the earlier epoch the server went back to: the victim moves the note past it first',
+      { revokedAt, epoch: after.epoch, frames: newer.map((frame) => frame.epoch) }
+    )
+    victor.close(view)
   }
 } catch (error) {
   console.error(error)
