@@ -88,6 +88,8 @@ const STOP_DRAIN_MS = 2_000
 // Texts remembered per note with an editor. A save lags the editor by
 // seconds, not by hundreds of changes.
 const HELD_TEXTS = 512
+// How long after trashing a note for another device's delete its delete event is still taken for that.
+const TRASH_EVENT_MS = 2_000
 
 /** Length and a 53-bit hash (cyrb53): tells texts apart without keeping them. */
 function fingerprint(text: string): string {
@@ -166,6 +168,8 @@ export class DocStore {
    * its own would make a second note of it.
    */
   private readonly aside = new Set<string>()
+  /** Paths this device is moving to the trash for a delete made elsewhere: their delete event is no delete made here. */
+  private readonly trashing = new Set<string>()
   private readonly readyListeners = new Set<() => void>()
   private readonly leaveListeners = new Set<(docId: string) => void>()
   private readonly localListeners = new Set<(change: LocalChange) => void>()
@@ -1165,6 +1169,10 @@ export class DocStore {
       this.early.push(() => this.onDelete(path))
       return
     }
+    // This device carrying out a delete made elsewhere. Brought back on another
+    // device meanwhile, the note at this path is live again - and taking this
+    // event for a delete made here deleted it once more, everywhere.
+    if (this.trashing.delete(path)) return
     const docId = this.index.docIdForPath(path)
     if (!docId) return
     const foreign = Boolean(this.index.entry(docId)?.owner)
@@ -1293,12 +1301,20 @@ export class DocStore {
     }
     await this.backups.write(known.path, 'local', local)
     await this.dropHandle(docId)
+    // Brought back while the copy was made - from the trash, on another
+    // device: the delete no longer stands.
+    if (!this.index.entry(docId)?.deletedAt) return
     this.forget(docId)
     log.info(`${known.path}: deleted on another device, moved to the trash here`)
+    const path = known.path
+    this.trashing.add(path)
     try {
       await this.app.fileManager.trashFile(file)
     } catch (error) {
       log.error(`deleting ${entry.path} failed`, error)
+    } finally {
+      // Obsidian reports the delete while trashing it, or a moment after.
+      window.setTimeout(() => this.trashing.delete(path), TRASH_EVENT_MS)
     }
   }
 
