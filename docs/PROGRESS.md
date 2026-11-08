@@ -386,38 +386,40 @@ user's call, as with the earlier branches.
   It failed again in CI on `main` on 2026-11-06 (0.9.7's merge; passed on rerun), without
   that line: P2, back, logs "adopt-local, file 48 chars, note 19, base 19" and "carries on
   as 8bff2dba, 128 B held here", then "merged 1 duplicate(s)" twice - and P1 keeps "from
-  anna\nand more\n" while P2 has its own "and less" text. For the audit.
-- `test:folders`' checks "a file brought back from the trash is back for everyone in the
-  folder" and "and the folder does not delete it again" failed in CI on `main` on
-  2026-10-29, 2026-11-02 and 2026-11-03 (passed on rerun, and locally): the owner restores
-  `Projects/X/photo.png` from the trash while the delete of another of the account's
-  devices is still being decided - the log shows "deleted for everyone in its shared
-  folder" after "brought back for everyone". The delete-versus-restore race of
-  invariant 29 (`decideMs`), not looked into yet.
-- **A writer's offline version of a shared folder's file can end up only in its version
-  history** (seen in CI 2026-11-06, `test:folders` "changed on both sides, the file keeps the
-  owner's version and the writer's goes next to it"; never locally - for the audit): P1 changes
-  `Shared/X/pic.png` while away, the owner changes it too; P1 starts its attachments before the
-  vault index came from the server ("attachments: 2 known" where the passing run says 4), takes
-  its file for a change of its own and sets its content, racing the owner's version in the same
-  index entry. The owner's wins; Pia's other device adopts it and records P1's content as a
-  version (`recordVersion`), and then P1's `AttachmentIndex.replaced(fileId, own hash)` is true
-  - "replaced by someone who knew it" - and P1 overwrites its file with the owner's version
-  ("changed on another device") without a conflict copy. P1's content stays on the server and
-  in the file's version history, not as a file. Two ways out to weigh: attachments start only
-  once the index is synced with the server (invariant 1's spirit), and a version recorded by
-  another device's adoption should not count as that device having seen this one's content.
-- **Two more races seen only in CI, never locally** (for the audit; both before 0.9.6 too):
-  - `test:folders` "no file at Shared/X/Sub/byPia.png" (2026-11-06, twice in four runs; again
-    on 2026-11-07 on `fix/audit-residuals`, passed locally and on rerun): a
-    writer (P1) renames a file inside a shared folder; the owner's devices follow, but on the
-    writer's other device and on the reader the file goes to the new name and back to the old
-    one twice ("renamed on another device to … fromPia.png" after "… byPia.png"), and the
-    writer's own file ends at the old name. Something writes the old path into the folder
-    document or the vault index after the rename - `FolderFiles.reconcileOne` follows the
-    folder's path when the base says the file still lies where the folder had it, and the
-    base is the vault's, synced apart from the folder document. No hold, no missing key in
-    the log.
+  anna\nand more\n" while P2 has its own "and less" text. **Still open** (looked into on
+  2026-11-08, `fix/ci-races`): the failing log shows P2 starting from a vault index without
+  P1's fork ("vault index arrived: 1 notes, 0 deleted"), its scan waiting the full 4 s
+  (`syncTimeoutMs`) on the old note's revoked room before "adopt-local", the end of the share
+  carried out twice ("another device forked it already" at +0 and +140 ms - so the first
+  `carryOn` finished without moving anything), and the second duplicate merge waiting 4 s too:
+  the old note's entry was live again at the path of the new one on some device, and a
+  duplicate merge keeps the sorted-first id, which may be the old, revoked one. What revives the
+  tombstone was not found; `VaultIndex.rename` revives one (`live()`) and is a candidate. The
+  test now holds P1's index frames back until P2 has started, the order of the failing log; it
+  passes with that alone (twice locally), so another timing is needed as well.
+- **Fixed on `fix/ci-races` (2026-11-08)**, each reproduced first in a test by holding back one
+  device's frames, uploads, blob touches or backup writes (`slowed` in the harness), and checked
+  by putting the bug back (CHANGELOG, "Unreleased"):
+  - `test:folders` "a file brought back from the trash is back for everyone in the folder"
+    (CI on `main` 2026-10-29, 2026-11-02, 2026-11-03): not `decideMs` - the owner's other device,
+    still carrying out the delete, trashed its file after the restore had arrived and took its
+    own trash event for a delete made there. Fixed in `AttachmentStore.applyDelete`/`onDelete`;
+    the same for notes in `DocStore` (a restore undone on every device; `test:vault`).
+  - A writer's offline version of a shared folder's file ending up only in its version history
+    (CI 2026-11-06): not another device's adoption - the writer's own folder pass decided
+    "unchanged here" while its scan held the file's lock to take in the version written away,
+    then `adopt` set the owner's version over it and recorded the writer's as replaced knowingly.
+    `adopt` now checks under the lock that the index still names the version the source
+    replaced (`FolderFiles` and `SharedFiles` agree only then).
+  - `test:folders` "no file at Shared/X/Sub/byPia.png" (2026-11-06, 2026-11-07): the base was
+    ahead of the folder's document on the writer's other device - the vault index and the
+    folder's room are applied apart (`VaultSocket` keeps one chain per room) - and the older
+    document was taken for a rename back. The same for a note's `folderPath`. Bases and
+    `folderPath` now name the folder's write they come from (`FolderWrite`), and a document
+    that does not hold it decides nothing. Limit: a folder write the server never takes leaves
+    that file or note unfollowed on the account's other devices until the folder's entry is
+    written again and a device of the account agrees with it.
+- **Seen only in CI, never locally** (for the audit; before 0.9.6 too):
   - `test:backup` "the starting point (#1) does not fit the log (epoch from #2, head #1)"
     (0.9.2, 0.9.3, three times for 0.9.6/0.9.7): a note created and its folder shared without
     history a moment later; the server moved the note's epoch while counting a frame still
@@ -428,7 +430,14 @@ user's call, as with the earlier branches.
     finds its epoch beginning after its head says so in its log ("its epoch began after"). Why
     a counted frame does not land is not found: server-side logs (`debug/start-race`) caught no
     failing run; passing runs show the creation frame written under the old epoch while the
-    note joined its folder, and sent again under the new one after the `rekey`.
+    note joined its folder, and sent again under the new one after the `rekey`. Looked into
+    again on 2026-11-08 (`fix/ci-races`), not reproduced: no failure since 0.9.7's change
+    (every CI run from 2026-11-06 20:08 on). `RoomLog.appendAll` counts a frame in `pending`
+    only once the push passed the epoch check, and always takes it off again, written or
+    failed (the write queue chains on a promise that never rejects); a room is let go only
+    when `idle`, and a reload waits for the room's queued writes. So a counted frame that never
+    landed means a write that failed - which logs "a frame could not be written" - or a
+    `headOf` taken from another `RoomLog` than the one the frame went to. Neither was seen.
 - The development machine is short of memory (often 1.6 GB free of 15.6 GB): a
   `test:backup` run takes four to ten minutes, and twice died at its start (restic,
   then Node out of memory); rerun before suspecting the code.
