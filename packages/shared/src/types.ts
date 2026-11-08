@@ -46,6 +46,20 @@ export interface IndexEntry {
    * folder's renames; moved elsewhere here, it stays where it was put.
    */
   folderPath?: string
+  /** The write to the folder's document `folderPath` was taken from. */
+  folderWrite?: FolderWrite
+}
+
+/**
+ * A write to a shared folder's document: the Yjs item that set an entry, named
+ * the same on every device. What a vault records from the folder names it,
+ * because the vault index and the folder's document reach a device apart: one
+ * whose folder document does not hold the write yet is behind what its own
+ * account already agreed on, and decides nothing against it.
+ */
+export interface FolderWrite {
+  client: number
+  clock: number
 }
 
 /**

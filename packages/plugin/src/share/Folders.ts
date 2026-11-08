@@ -573,11 +573,18 @@ export class Folders {
           owner: folder.owner,
           role: folder.role,
           folder: folderId,
-          folderPath: entry.path
+          folderPath: entry.path,
+          folderWrite: fi.noteWrite(docId)
         })
         continue
       }
       if (known.forkedTo || known.purgedAt) continue
+      // Where the vault index has the note in the folder comes apart from the
+      // folder's document: another device of this account renamed it there,
+      // and its frame for the folder is still on its way here. Taken for the
+      // folder's word, the older document moved the note back on every device
+      // of the account.
+      if (known.folder === folderId && known.folderWrite && !fi.holds(known.folderWrite)) continue
       // A note this vault knows is the folder's to move, revive or re-own only
       // when it is in this folder - or the folder owner's own note, shared on
       // its own, now joining it. Anyone in a folder could otherwise name any
@@ -598,7 +605,7 @@ export class Folders {
       const following = known.folderPath === undefined ? known.path === target : known.path === joinPath(mount, known.folderPath)
       if (known.folder !== folderId || known.folderPath !== entry.path || (folder.owner && known.role !== this.roleOf(known, folder))) {
         if (following && known.path !== target && !this.taken(target)) this.index.rename(docId, target)
-        this.index.setFolderOf(docId, { id: folderId, path: entry.path, owner: folder.owner, role: this.roleOf(known, folder) })
+        this.index.setFolderOf(docId, { id: folderId, path: entry.path, owner: folder.owner, role: this.roleOf(known, folder), write: fi.noteWrite(docId) })
       }
     }
     if (this.files) {
@@ -978,7 +985,13 @@ export class Folders {
         if (this.mayWrite(folder)) {
           const opened = await this.opened(folderId)
           opened?.index.rename(change.docId, to.rel, this.keys.accountId)
-          this.index.setFolderOf(change.docId, { id: folderId, path: to.rel, owner: folder.owner, role: this.roleOf(entry, folder) })
+          this.index.setFolderOf(change.docId, {
+            id: folderId,
+            path: to.rel,
+            owner: folder.owner,
+            role: this.roleOf(entry, folder),
+            write: opened?.index.noteWrite(change.docId)
+          })
         }
         return
       }

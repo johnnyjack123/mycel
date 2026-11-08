@@ -1,7 +1,8 @@
 import { Notice } from '../notices.js'
-import { folderRoom, isFilePath, vaultPathProblem, type AttachmentEntry, type FolderFile, type VaultFolder } from '@mycel/shared'
+import { folderRoom, isFilePath, vaultPathProblem, type AttachmentEntry, type FolderFile, type FolderWrite, type VaultFolder } from '@mycel/shared'
 import { deriveFileId, type Bytes } from '@mycel/shared/crypto'
 import type { ConnectApi } from '../account/api.js'
+import type { SharedBase } from '../sync/AttachmentIndex.js'
 import type { AttachmentStore } from '../sync/AttachmentStore.js'
 import type { FolderIndex } from '../sync/FolderIndex.js'
 import { log } from '../log.js'
@@ -41,6 +42,11 @@ function inside(path: string, mount: string): boolean {
 
 function baseName(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1)
+}
+
+/** A base with the write to the folder's document it agrees with, where the document names one. */
+function withWrite(base: SharedBase, write: FolderWrite | undefined): SharedBase {
+  return write ? { ...base, write } : base
 }
 
 /** `photo.png` -> `photo 2.png`. */
@@ -125,8 +131,8 @@ export class FolderFiles {
     // The link first: another device of the account that learnt of the file
     // from the folder before its link would take it for new and fetch it twice.
     this.attachments.setFolderLink(fileId, { id: folderId, file })
-    this.attachments.setFolderBase(folderId, file, prev ? { hash: entry.hash, path: rel, prev } : { hash: entry.hash, path: rel })
     fi.setFile(file, listed)
+    this.attachments.setFolderBase(folderId, file, withWrite(prev ? { hash: entry.hash, path: rel, prev } : { hash: entry.hash, path: rel }, fi.fileWrite(file)))
     log.info(`${entry.path}: shares its ${prev ? 'new version' : 'content'} in its folder, ${entry.size} bytes`)
   }
 
@@ -193,6 +199,11 @@ export class FolderFiles {
     const local = this.attachments.linked(folderId, file)
     if (local && waits.pending(local.fileId)) return
     const base = this.attachments.folderBase(folderId, file)
+    // The base comes with the vault index, apart from the folder's document:
+    // another device of this account renamed the file or put in a version, and
+    // its frame for the folder is still on its way here. Taken for the folder's
+    // word, the older document moved the file back on every device of the account.
+    if (base?.write && !fi.holds(base.write)) return
     if (listed.leftAt) {
       // Taken out of the folder by its owner: what this vault has stays its own.
       if (local) this.attachments.setFolderLink(local.fileId, null)
@@ -221,18 +232,19 @@ export class FolderFiles {
       return
     }
     if (this.declined(folderId, file)) return
+    const agreed = (): SharedBase => withWrite({ hash: listed.hash, path: listed.path }, fi.fileWrite(file))
     if (!local) {
       const there = this.attachments.fileAt(joinPath(mount, listed.path))
       if (there && !there.entry.folder && there.entry.hash === listed.hash) {
         // This vault's own file, put into the folder on another of its devices
         // whose link is still on its way: the same file, not a second one.
         this.attachments.setFolderLink(there.fileId, { id: folderId, file })
-        this.attachments.setFolderBase(folderId, file, { hash: listed.hash, path: listed.path })
+        this.attachments.setFolderBase(folderId, file, agreed())
         return
       }
       const path = this.freePlace(joinPath(mount, listed.path))
       const fileId = await this.attachments.deliverFromFolder(path, listed, room, { id: folderId, file })
-      if (fileId) this.attachments.setFolderBase(folderId, file, { hash: listed.hash, path: listed.path })
+      if (fileId) this.attachments.setFolderBase(folderId, file, agreed())
       return
     }
     if (local.entry.deletedAt) {
@@ -250,7 +262,7 @@ export class FolderFiles {
       this.attachments.renameFromFolder(local.fileId, joinPath(mount, listed.path))
     }
     const now = this.attachments.entryOf(local.fileId) as AttachmentEntry
-    const agree = (): void => this.attachments.setFolderBase(folderId, file, { hash: listed.hash, path: listed.path })
+    const agree = (): void => this.attachments.setFolderBase(folderId, file, agreed())
     if (now.hash === listed.hash) {
       agree()
       return
@@ -260,8 +272,10 @@ export class FolderFiles {
     const known = base?.hash ?? (listed.prev === now.hash ? now.hash : undefined)
     if (known !== undefined && now.hash === known) {
       // Unchanged here; the folder's version replaced it knowingly, or past it.
-      if (listed.prev === known) await this.attachments.adopt(local.fileId, listed, room)
-      else await this.keepAside(local.fileId, listed, room, mount)
+      if (listed.prev === known) {
+        // Changed here after all, while this waited for the file: the next pass weighs that.
+        if (!(await this.attachments.adopt(local.fileId, listed, room))) return
+      } else await this.keepAside(local.fileId, listed, room, mount)
       agree()
       return
     }
@@ -310,7 +324,7 @@ export class FolderFiles {
     if (!link || link.id !== folderId) return
     fi.renameFile(link.file, rel, this.keys.accountId)
     const base = this.attachments.folderBase(folderId, link.file)
-    if (base) this.attachments.setFolderBase(folderId, link.file, { ...base, path: rel })
+    if (base) this.attachments.setFolderBase(folderId, link.file, withWrite({ ...base, path: rel }, fi.fileWrite(link.file)))
   }
 
   /** The owner took a file out of the folder: everyone keeps what they have. */
