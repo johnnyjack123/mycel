@@ -4,7 +4,7 @@
 //
 //   PORT=1235 MYCEL_REGISTRATION=open MYCEL_DATA_DIR=<scratch> npm run start:server
 //   npm run test:folders -- ws://localhost:1235
-import { check, delay, Device, eventually, failures, useServer } from './harness.mjs'
+import { check, delay, Device, eventually, failures, slowed, useServer } from './harness.mjs'
 
 // Imported after the harness set up the DOM.
 const { Notice } = await import('obsidian')
@@ -28,23 +28,6 @@ const same = (a: Uint8Array | undefined, b: Uint8Array | undefined): boolean =>
 /** Where a device holds these bytes, below a folder. */
 const holding = (device: Device, folder: string, data: Uint8Array): string | undefined =>
   device.vault.attachmentPaths().find((path) => path.startsWith(`${folder}/`) && same(device.vault.bytes(path), data))
-
-/**
- * Makes one method of a device's socket or api wait first, for the calls `only`
- * picks: the order a slower machine - CI's - came to now and then, made certain.
- * Returns what makes it quick again.
- */
-function slowed(target: object | null, method: string, ms: number, only: (...args: never[]) => boolean = () => true): () => void {
-  const holder = target as Record<string, unknown>
-  const original = holder[method] as (...args: unknown[]) => Promise<unknown>
-  holder[method] = async function (this: unknown, ...args: unknown[]): Promise<unknown> {
-    if ((only as (...args: unknown[]) => boolean)(...args)) await delay(ms)
-    return original.apply(this, args)
-  }
-  return () => {
-    delete holder[method]
-  }
-}
 
 /** Watches a file moving on some devices: which of them, once moved, had it at the old place again. */
 function watchMove(devices: Record<string, Device>, from: string, to: string): { stop(): string[] } {
