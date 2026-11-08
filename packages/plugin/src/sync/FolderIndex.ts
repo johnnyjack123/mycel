@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { FOLDER_FILES_FIELD, FOLDER_META_FIELD, FOLDER_NOTES_FIELD, type FolderFile, type FolderNote } from '@mycel/shared'
+import { FOLDER_FILES_FIELD, FOLDER_META_FIELD, FOLDER_NOTES_FIELD, type FolderFile, type FolderNote, type FolderWrite } from '@mycel/shared'
 
 // A shared folder's own document: which notes and files are in it and where,
 // relative to the folder - the same for everyone in it, wherever each of them
@@ -15,6 +15,12 @@ export const FOLDER_ORIGIN = 'folder'
 function live(entry: FolderNote): FolderNote {
   const { deletedAt: _deletedAt, leftAt: _leftAt, ...rest } = entry
   return rest
+}
+
+/** The write that set an entry as this document has it. */
+function writeOf<T>(map: Y.Map<T>, key: string): FolderWrite | undefined {
+  const item = map._map.get(key)
+  return item ? { client: item.id.client, clock: item.id.clock } : undefined
 }
 
 export class FolderIndex {
@@ -92,6 +98,21 @@ export class FolderIndex {
     const current = this.files.get(fileId)
     if (!current) return
     this.setFile(fileId, { ...current, path, updatedAt: Date.now(), by })
+  }
+
+  /** The write that set a file's entry as this document has it. */
+  fileWrite(fileId: string): FolderWrite | undefined {
+    return writeOf(this.files, fileId)
+  }
+
+  /** The write that set a note's entry as this document has it. */
+  noteWrite(docId: string): FolderWrite | undefined {
+    return writeOf(this.notes, docId)
+  }
+
+  /** Whether the frame that carried a write has reached this document. */
+  holds(write: FolderWrite): boolean {
+    return Y.getState(this.doc.store, write.client) > write.clock
   }
 
   /** `local`: the change was made on this device. */

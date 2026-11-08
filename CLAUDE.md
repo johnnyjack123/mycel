@@ -231,7 +231,13 @@ someone's notes. Treat them as rules, not preferences.
     its device for `decideMs` (`Folders.undecided`) and only then taken for one
     never decided on. And what lay in a folder when it was shared goes in with
     the share (`sharedAt`): asked about as moved in, every device of the owner
-    opened a window per note and file while the share took them in.
+    opened a window per note and file while the share took them in. The vault index and
+    the folder's document are two rooms, applied apart: whatever a vault records from a
+    folder names the Yjs item it came from (`FolderWrite`), and a folder document that
+    does not hold that item yet decides nothing about it (`FolderIndex.holds`) - the
+    vault's record arriving first was taken for a rename back (0.9.10). A device carrying
+    out a delete made elsewhere checks it still stands right before trashing, and never
+    takes its own trashing for a delete made here (`trashing`).
 30. **The past is written into the files only while the sync is stopped, and
     taken out before it starts again.** The Time Machine shows a moment in the
     vault's own files (`docs/TIMEMACHINE.md`); the sync would read every one of

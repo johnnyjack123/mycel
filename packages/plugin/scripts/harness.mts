@@ -86,6 +86,29 @@ export async function eventually(predicate: () => boolean | Promise<boolean>, ti
   return predicate()
 }
 
+/**
+ * Makes one method of a device's socket or api wait first - so many
+ * milliseconds, or until a promise settles - for the calls `only` picks: an
+ * order a slower machine, CI's, came to now and then, made certain. Returns
+ * what makes it quick again.
+ */
+export function slowed(
+  target: object | null,
+  method: string,
+  wait: number | Promise<unknown>,
+  only: (...args: never[]) => boolean = () => true
+): () => void {
+  const holder = target as Record<string, unknown>
+  const original = holder[method] as (...args: unknown[]) => Promise<unknown>
+  holder[method] = async function (this: unknown, ...args: unknown[]): Promise<unknown> {
+    if ((only as (...args: unknown[]) => boolean)(...args)) await (typeof wait === 'number' ? delay(wait) : wait.catch(() => undefined))
+    return original.apply(this, args)
+  }
+  return () => {
+    delete holder[method]
+  }
+}
+
 export function finish(): never {
   console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)
   process.exit(failures.length === 0 ? 0 : 1)
@@ -470,6 +493,8 @@ export class Device {
         void store.applyRemoteIndexChanges().then(() => this.editors.refresh())
         void attachments.applyRemoteChanges()
         sharedFiles.scheduleAll()
+        // As main.ts: what another device of the account recorded about a shared folder brings the folder's pass.
+        folders.scheduleAll()
       }, 100)
     }
     index.onChange(applyIndex)

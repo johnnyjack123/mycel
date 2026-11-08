@@ -8,6 +8,40 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.10** (2026-11-08, branch `fix/ci-races`, found and fixed by a separate agent) - **the
+  races that showed only in CI.** Each
+  was made certain in a test first - one device's folder frames, uploads, blob touches or backup
+  writes held back with the harness's new `slowed` -, seen failing, fixed, and checked by putting
+  the bug back: with each fix taken out alone, exactly its own checks failed and nothing else.
+  - **A writer's offline version of a shared folder's file ended up only in its version
+    history.** The folder's pass found the file unchanged here and went to take the owner's
+    version (`AttachmentStore.adopt`), but waited for the file's lock while the scan took in the
+    version written while away; then it set the owner's version over it and recorded the
+    writer's as replaced knowingly (`setContent`), so the file was overwritten with no copy kept.
+    `adopt` now goes ahead only while the index still names the version the source replaced,
+    and the folder's pass - and a shared note's, `SharedFiles` - agrees only then; the next pass
+    keeps both. `test:folders`: both of the writer's devices away, its uploads slow as it comes
+    back.
+  - **A rename inside a shared folder went back and forth** on the writer's devices, a note's as
+    well as a file's. The vault index - a file's base, a note's `folderPath` - and the folder's
+    document are two rooms, applied apart, and the writer's other device could have the vault's
+    record of the rename before the folder's frame: it took the older document for a rename back,
+    and the writer's own device followed. What a vault records from a folder now names the Yjs
+    item it was taken from (`FolderWrite`: `SharedBase.write`, `IndexEntry.folderWrite`), and a
+    folder document that does not hold it yet decides nothing (`FolderIndex.holds`).
+    `test:folders`: the writer's other device's folder frames held back during the rename.
+  - **A file brought back from the trash in a shared folder was deleted again for everyone.**
+    The owner's other device, still carrying out the delete, trashed its file after the owner's
+    restore had arrived, and took its own trash event for a delete made there. A device carrying
+    out another's delete now checks it still stands right before trashing, and never takes its
+    own trashing for a delete made here (`AttachmentStore.trashing`). The same for notes, found
+    with it (`DocStore.applyRemoteDelete`): a note restored from the trash the moment another
+    device trashed it went back to the trash on every device. `test:folders` and `test:vault`.
+  - The harness runs the folders' pass on every change of the vault index, as main.ts does.
+  - Not reproduced: `test:recovery`'s fork on return (P2 started from an index without P1's fork,
+    the order the failing log shows, passes) and `test:backup`'s starting point (`docs/PROGRESS.md`).
+  - Tests: `test:folders` 133 (9 new), `test:vault` 267 (4 new), `test:recovery` (1 new).
+
 - **0.9.9** (2026-11-07) - **the audit's residual risks closed** (R1 to R9 in `docs/AUDIT.md`,
   asked for by the user) **and a setup wizard.** No device writes under an epoch below the
   highest one its account knew a room in - a server moving a note back to a key someone

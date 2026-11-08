@@ -366,7 +366,8 @@ export class SharedFiles {
     if (known !== undefined && ours === known) {
       // Unchanged here. The list moved on - knowingly, or past this version.
       if (listed.prev === known) {
-        await this.attachments.adopt(local.fileId, listed, note.room)
+        // Changed here after all, while this waited for the file: the next pass weighs that.
+        if (!(await this.attachments.adopt(local.fileId, listed, note.room))) return
         log.info(`${note.file.path}: ${ref} changed in the shared note`)
       } else {
         await this.keepAside(note, ref, local.fileId, listed)

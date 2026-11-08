@@ -6,7 +6,8 @@ import {
   SHARED_BASES_FIELD,
   VERSIONS_FIELD,
   type AttachmentEntry,
-  type AttachmentVersion
+  type AttachmentVersion,
+  type FolderWrite
 } from '@mycel/shared'
 
 /** The content a file of a shared note had when this vault last agreed with the note's list, and where. */
@@ -19,6 +20,16 @@ export interface SharedBase {
    * not caught up yet, and is no news.
    */
   prev?: string
+  /**
+   * For a shared folder's file: the write to the folder's document this base
+   * agrees with. Base and document travel apart; a document that does not hold
+   * it yet is behind this vault, and nothing is decided against it.
+   */
+  write?: FolderWrite
+}
+
+function sameWrite(a: FolderWrite | undefined, b: FolderWrite | undefined): boolean {
+  return a?.client === b?.client && a?.clock === b?.clock
 }
 
 // The files of a vault that are not notes, in the same index document as the
@@ -195,7 +206,13 @@ export class AttachmentIndex {
   setFolderBase(folderId: string, file: string, base: SharedBase | null): void {
     const key = `${folderId}:${file}`
     const current = this.folderMap.get(key)
-    if (base ? current?.hash === base.hash && current.path === base.path && current.prev === base.prev : !current) return
+    if (
+      base
+        ? current?.hash === base.hash && current.path === base.path && current.prev === base.prev && sameWrite(current.write, base.write)
+        : !current
+    ) {
+      return
+    }
     this.doc.transact(() => {
       if (base) this.folderMap.set(key, base)
       else this.folderMap.delete(key)

@@ -111,6 +111,8 @@ const COPIED_KEEP_MS = 60_000
 const COPIED_KEEP_BYTES = 16 * 1024 * 1024
 // Content no file names is let go of only after this long untouched, whatever the retention.
 const UNNAMED_MIN_DAYS = 7
+// How long after trashing a file for another device's delete its delete event is still taken for that.
+const TRASH_EVENT_MS = 2_000
 
 /** `stem (label)ext`, or `stem (label n)ext` from the second on. */
 function besides(path: string, label: string, n: number): string {
@@ -189,6 +191,8 @@ export class AttachmentStore {
   private readonly copied = new Map<string, Bytes>()
   /** Names a file waits at while two swap names (`followRenames`); nothing may take one for a file of its own. */
   private readonly aside = new Set<string>()
+  /** Paths this device is moving to the trash for a delete made elsewhere: their delete event is no delete made here. */
+  private readonly trashing = new Set<string>()
   private applying: Promise<void> = Promise.resolve()
   private scanning: Promise<void> | null = null
   private retryTimer: number | null = null
@@ -744,6 +748,11 @@ export class AttachmentStore {
     const timer = this.settling.get(path)
     if (timer !== undefined) window.clearTimeout(timer)
     this.settling.delete(path)
+    // This device carrying out a delete made elsewhere. Brought back on another
+    // device meanwhile, the entry at this path is live again - and taking this
+    // event for a delete made here deleted it once more, for everyone in its
+    // shared folder.
+    if (this.trashing.delete(path)) return
     const fileId = this.index.idForPath(path)
     if (!fileId) return
     const entry = this.index.entry(fileId)
@@ -860,9 +869,22 @@ export class AttachmentStore {
       this.settle(file)
       return
     }
+    // Brought back while this made sure of the content - from the trash, on
+    // another device: the delete no longer stands.
+    if (!this.index.entry(fileId)?.deletedAt) {
+      this.settle(file)
+      return
+    }
     this.state.forgetAttachment(fileId)
     log.info(`${known.path}: attachment deleted on another device, moved to the trash here`)
-    await this.app.fileManager.trashFile(file)
+    this.trashing.add(file.path)
+    const path = file.path
+    try {
+      await this.app.fileManager.trashFile(file)
+    } finally {
+      // Obsidian reports the delete while trashing it, or a moment after.
+      window.setTimeout(() => this.trashing.delete(path), TRASH_EVENT_MS)
+    }
   }
 
   /** Renames and new content for files this device has. */
@@ -1183,13 +1205,25 @@ export class AttachmentStore {
   /**
    * A shared note's newer version of a file here, which replaced the one this
    * vault has knowingly: into this vault's store, then the file takes it -
-   * on every device, the way any change from elsewhere arrives.
+   * on every device, the way any change from elsewhere arrives. Only while the
+   * index still names the version it replaced (`source.prev`): the caller
+   * decided before this lock was its, and a change made here meanwhile - the
+   * scan taking in a version written while away - would count as replaced
+   * knowingly (`replaced`), so the file took the other version over it and
+   * kept no copy. False then: nothing changed, and the next pass sees both.
    */
-  async adopt(fileId: string, source: SharedAttachment, room: string): Promise<void> {
-    await this.guarded(fileId, source.size, async () => {
-      if (!this.index.entry(fileId) || this.index.entry(fileId)?.deletedAt) return
+  async adopt(fileId: string, source: SharedAttachment, room: string): Promise<boolean> {
+    const replaces = (): boolean => {
+      const entry = this.index.entry(fileId)
+      return entry !== undefined && !entry.deletedAt && source.prev !== undefined && entry.hash === source.prev
+    }
+    return this.guarded(fileId, source.size, async () => {
+      if (!replaces()) return false
       await this.copyIn(source, room)
+      // Another device of the account may have changed it while this copied.
+      if (!replaces()) return false
       this.index.setContent(fileId, source.hash, source.size)
+      return true
     })
   }
 

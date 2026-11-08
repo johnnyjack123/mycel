@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { DECLINED_FIELD, FOLDERS_FIELD, INDEX_FIELD, type IndexEntry, type ShareRole, type VaultFolder } from '@mycel/shared'
+import { DECLINED_FIELD, FOLDERS_FIELD, INDEX_FIELD, type FolderWrite, type IndexEntry, type ShareRole, type VaultFolder } from '@mycel/shared'
 
 // The index is the only thing that knows which file a document belongs to.
 // Keying rooms by path instead would turn every rename into a new, empty
@@ -53,6 +53,7 @@ export interface AdoptOptions {
   role?: ShareRole
   folder?: string
   folderPath?: string
+  folderWrite?: FolderWrite
 }
 
 export class VaultIndex {
@@ -203,6 +204,7 @@ export class VaultIndex {
     if (options.role) entry.role = options.role
     if (options.folder) entry.folder = options.folder
     if (options.folderPath !== undefined) entry.folderPath = options.folderPath
+    if (options.folderWrite) entry.folderWrite = options.folderWrite
     this.doc.transact(() => {
       this.files.set(docId, entry)
     }, 'local')
@@ -211,9 +213,10 @@ export class VaultIndex {
   /**
    * A note's place in a shared folder - or none, `folder` null - with the
    * sharing that follows from it: shared, and for someone else's folder whose
-   * it is and what this account may do.
+   * it is and what this account may do. `write`: the write to the folder's
+   * document the place was taken from.
    */
-  setFolderOf(docId: string, folder: { id: string; path: string; owner?: string; role?: ShareRole } | null): void {
+  setFolderOf(docId: string, folder: { id: string; path: string; owner?: string; role?: ShareRole; write?: FolderWrite } | null): void {
     const entry = this.files.get(docId)
     if (!entry || entry.deletedAt) return
     const next: IndexEntry = { ...entry }
@@ -223,9 +226,12 @@ export class VaultIndex {
       next.shared = true
       if (folder.owner) next.owner = folder.owner
       if (folder.role) next.role = folder.role
+      if (folder.write) next.folderWrite = folder.write
+      else delete next.folderWrite
     } else {
       delete next.folder
       delete next.folderPath
+      delete next.folderWrite
     }
     if (JSON.stringify(next) === JSON.stringify(entry)) return
     this.doc.transact(() => {

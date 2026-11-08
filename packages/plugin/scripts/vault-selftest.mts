@@ -7,7 +7,7 @@
 //
 //   PORT=1235 MYCEL_REGISTRATION=open MYCEL_DATA_DIR=<scratch> npm run start:server
 //   npm run test:vault -- ws://localhost:1235
-import { check, delay, Device, eventually, failures, useServer } from './harness.mjs'
+import { check, delay, Device, eventually, failures, slowed, useServer } from './harness.mjs'
 
 // Imported after the harness set up the DOM; CodeMirror reads it at module scope.
 const { Notice } = await import('obsidian')
@@ -782,6 +782,31 @@ try {
       { a: A.vault.paths(), b: B.vault.paths() }
     )
     check(!trashed(A).includes('Gone.md'), 'and leaves the trash')
+
+    // Brought back at once, while the other device is still carrying the delete
+    // out - slow to keep its copy: that device trashed its file only after the
+    // note was back, and took its own trashing for a delete made there.
+    {
+      await A.vault.userCreate('Back.md', 'back at once\n')
+      check(await eventually(() => B.vault.text('Back.md') === 'back at once\n'), 'B has Back.md')
+      let keeping = false
+      const quick = slowed((B.store as unknown as { backups: object }).backups, 'write', 1_500, (path: string) => {
+        keeping ||= path === 'Back.md'
+        return path === 'Back.md'
+      })
+      await A.vault.trash(A.vault.file('Back.md'))
+      check(await eventually(() => keeping), 'B starts carrying the delete out')
+      const deleted = A.trash?.list().find((note) => note.kind === 'note' && note.path === 'Back.md')
+      const back = deleted ? await A.trash?.restore(deleted) : null
+      check(back?.path === 'Back.md', 'a note brought back the moment it was deleted', back?.path)
+      await delay(3_000)
+      quick()
+      check(
+        await eventually(() => A.vault.text('Back.md') === 'back at once\n' && B.vault.text('Back.md') === 'back at once\n'),
+        'stays back, on every device',
+        { a: A.vault.text('Back.md'), b: B.vault.text('Back.md') }
+      )
+    }
 
     // Past the retention, the server lets go of what is still in the trash.
     const doomedId = A.trash?.list().find((item) => item.kind === 'note' && item.path === 'Doomed.md')?.id as string

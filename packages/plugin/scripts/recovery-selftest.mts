@@ -7,7 +7,7 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { check, delay, Device, eventually, finish, useServer, VAULT } from './harness.mjs'
+import { check, delay, Device, eventually, finish, slowed, useServer, VAULT } from './harness.mjs'
 
 const { docRoom } = await import('@mycel/shared')
 const { KeyRing } = await import('../src/account/KeyRing.js')
@@ -325,6 +325,14 @@ try {
     // server kept is all the history there is.
     await P1.locals.history.clear(docRoom(sharedId))
 
+    // P1's fork reaches the vault index on the server only once P2 has caught
+    // up its own: P2 starts from an index without it, and hears of it a moment
+    // later - the order the check below failed in, in CI.
+    let letIndexGo = (): void => undefined
+    const indexHeld = new Promise<void>((resolve) => {
+      letIndexGo = resolve
+    })
+    const quick = slowed(P1.socket, 'sendNext', indexHeld, (registration: { room: string }) => registration.room.startsWith('idx:'))
     await new AccountStore(empty).remove(A1.accountId)
     const carriedOn = (): string | undefined => {
       const id = P1.index?.docIdForPath('Shared/Shared.md')
@@ -342,7 +350,13 @@ try {
     // The sweep writes P's fork first and deletes A's folder after it: P may have forked already.
     check(await eventually(() => !existsSync(join(empty, 'users', A1.accountId)), 10_000), "and A's data is gone from the server")
 
-    check(await P2.boot(), 'P2 comes back')
+    const booting = P2.boot()
+    check(await eventually(() => P2.store?.ready === true, 10_000), 'P2 comes back to an index without the fork')
+    // Its scan takes the file for the note whose share ended, and waits for that room meanwhile.
+    await delay(1_000)
+    letIndexGo()
+    quick()
+    check(await booting, 'P2 comes back')
     check(
       await eventually(
         () =>

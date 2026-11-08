@@ -4,7 +4,7 @@
 //
 //   PORT=1235 MYCEL_REGISTRATION=open MYCEL_DATA_DIR=<scratch> npm run start:server
 //   npm run test:folders -- ws://localhost:1235
-import { check, delay, Device, eventually, failures, useServer } from './harness.mjs'
+import { check, delay, Device, eventually, failures, slowed, useServer } from './harness.mjs'
 
 // Imported after the harness set up the DOM.
 const { Notice } = await import('obsidian')
@@ -28,6 +28,25 @@ const same = (a: Uint8Array | undefined, b: Uint8Array | undefined): boolean =>
 /** Where a device holds these bytes, below a folder. */
 const holding = (device: Device, folder: string, data: Uint8Array): string | undefined =>
   device.vault.attachmentPaths().find((path) => path.startsWith(`${folder}/`) && same(device.vault.bytes(path), data))
+
+/** Watches a file moving on some devices: which of them, once moved, had it at the old place again. */
+function watchMove(devices: Record<string, Device>, from: string, to: string): { stop(): string[] } {
+  const moved = new Set<string>()
+  const back = new Set<string>()
+  const has = (device: Device, path: string): boolean => device.vault.getAbstractFileByPath(path) !== null
+  const timer = setInterval(() => {
+    for (const [name, device] of Object.entries(devices)) {
+      if (has(device, to) && !has(device, from)) moved.add(name)
+      else if (moved.has(name) && has(device, from)) back.add(name)
+    }
+  }, 15)
+  return {
+    stop: () => {
+      clearInterval(timer)
+      return Array.from(back)
+    }
+  }
+}
 
 async function befriend(a: Device, b: Device): Promise<void> {
   const code = await (a.contacts as NonNullable<typeof a.contacts>).createCode()
@@ -139,13 +158,37 @@ try {
   await delay(800)
   check(O1.vault.text('Projects/X/Plan.md') === 'plan\nfrom pia\n', "a reader's edit does not")
 
-  await P1.vault.rename(P1.vault.file('Shared/X/Plan.md'), 'Shared/X/Sub/Plan.md')
-  check(
-    await eventually(() => O1.vault.text('Projects/X/Sub/Plan.md') === 'plan\nfrom pia\n' && !O1.vault.text('Projects/X/Plan.md')),
-    "a writer's rename inside the folder is the owner's too",
-    O1.vault.paths()
-  )
-  check(await eventually(() => Q.vault.text('Shared/X/Sub/Plan.md') !== undefined && !Q.vault.text('Shared/X/Plan.md')), "and the reader's", Q.vault.paths())
+  {
+    // The writer's other device gets the folder's frames late, so where the note lies
+    // in the folder now - which the writer's device recorded in the vault index too -
+    // reaches it first. Decided against the older folder document, that moved the note
+    // back on every device of the writer (a race seen in CI).
+    const planId = P2.index?.docIdForPath('Shared/X/Plan.md') as string
+    const quick = slowed(P2.socket, 'applyFrame', 2_000, (registration: { room: string }) => registration.room.startsWith('fld:'))
+    const watch = watchMove({ P1, P2 }, 'Shared/X/Plan.md', 'Shared/X/Sub/Plan.md')
+    await P1.vault.rename(P1.vault.file('Shared/X/Plan.md'), 'Shared/X/Sub/Plan.md')
+    check(
+      await eventually(() => P2.index?.entry(planId)?.folderPath === 'Sub/Plan.md'),
+      "the writer's other device hears where the note lies in the folder before the folder says so"
+    )
+    // A change of the vault index brings the folder's pass, as main.ts has it.
+    P2.folders?.scheduleAll()
+    check(
+      await eventually(() => O1.vault.text('Projects/X/Sub/Plan.md') === 'plan\nfrom pia\n' && !O1.vault.text('Projects/X/Plan.md')),
+      "a writer's rename inside the folder is the owner's too",
+      O1.vault.paths()
+    )
+    check(await eventually(() => Q.vault.text('Shared/X/Sub/Plan.md') !== undefined && !Q.vault.text('Shared/X/Plan.md')), "and the reader's", Q.vault.paths())
+    await delay(2_500)
+    quick()
+    await delay(600)
+    const back = watch.stop()
+    check(
+      back.length === 0 && P1.vault.text('Shared/X/Sub/Plan.md') !== undefined && P2.vault.text('Shared/X/Sub/Plan.md') !== undefined,
+      "and it never goes back on the writer's devices",
+      { back, p1: P1.vault.paths(), p2: P2.vault.paths() }
+    )
+  }
 
   // --- files in the folder --------------------------------------------------------------
   check(
@@ -204,14 +247,60 @@ try {
   )
   check(holding(O1, 'Projects/X', binary(10)) === undefined, 'and never reaches the owner')
 
-  await P1.vault.rename(P1.vault.file('Shared/X/Sub/fromPia.png'), 'Shared/X/Sub/byPia.png')
-  check(
-    await eventually(
-      () => same(O1.vault.bytes('Projects/X/Sub/byPia.png'), binary(7)) && !O1.vault.bytes('Projects/X/Sub/fromPia.png') && same(Q.vault.bytes('Shared/X/Sub/byPia.png'), binary(7))
-    ),
-    "a writer's rename of a file inside the folder is everyone's",
-    O1.vault.attachmentPaths()
-  )
+  // Again with both of the writer's devices away, and the writer's slow to upload its
+  // version as it comes back: the folder's pass found the file unchanged here while
+  // that upload was under way, and taking the owner's version after it counted the
+  // writer's as replaced knowingly - overwritten, and kept nowhere but in the file's
+  // versions (a race seen in CI).
+  await P1.shutdown()
+  await P2.shutdown()
+  await O1.vault.userWriteBinary('Projects/X/pic.png', binary(13))
+  check(await eventually(() => same(Q.vault.bytes('Shared/X/pic.png'), binary(13)), 15_000), "the owner's next version reaches the reader")
+  P1.vault.offlineWriteBinary('Shared/X/pic.png', binary(14))
+  {
+    const quick = slowed(P1.api, 'putBlobChunk', 1_500)
+    check(await P1.boot(), "the writer's device comes back, slow to upload")
+    check(
+      await eventually(
+        () => same(P1.vault.bytes('Shared/X/pic.png'), binary(13)) && holding(P1, 'Shared/X', binary(14)) !== undefined && holding(O1, 'Projects/X', binary(14)) !== undefined,
+        20_000
+      ),
+      "both versions stay, for everyone: the owner's in the file, the writer's next to it",
+      { pia: P1.vault.attachmentPaths(), olga: O1.vault.attachmentPaths() }
+    )
+    quick()
+  }
+  check(await P2.boot(), "the writer's other device comes back")
+
+  {
+    // The same for a file: where it lies in the folder - the writer's vault's base for
+    // it - reaches the writer's other device before the folder's frame does.
+    const link = P2.attachments?.fileAt('Shared/X/Sub/fromPia.png')?.entry.folder
+    const quick = slowed(P2.socket, 'applyFrame', 2_000, (registration: { room: string }) => registration.room.startsWith('fld:'))
+    const watch = watchMove({ P1, P2 }, 'Shared/X/Sub/fromPia.png', 'Shared/X/Sub/byPia.png')
+    await P1.vault.rename(P1.vault.file('Shared/X/Sub/fromPia.png'), 'Shared/X/Sub/byPia.png')
+    check(
+      await eventually(() => link !== undefined && P2.attachments?.folderBase(link.id, link.file)?.path === 'Sub/byPia.png'),
+      "the writer's other device hears where the file lies in the folder before the folder says so"
+    )
+    P2.folders?.scheduleAll()
+    check(
+      await eventually(
+        () => same(O1.vault.bytes('Projects/X/Sub/byPia.png'), binary(7)) && !O1.vault.bytes('Projects/X/Sub/fromPia.png') && same(Q.vault.bytes('Shared/X/Sub/byPia.png'), binary(7))
+      ),
+      "a writer's rename of a file inside the folder is everyone's",
+      O1.vault.attachmentPaths()
+    )
+    await delay(2_500)
+    quick()
+    await delay(600)
+    const back = watch.stop()
+    check(
+      back.length === 0 && same(P1.vault.bytes('Shared/X/Sub/byPia.png'), binary(7)) && same(P2.vault.bytes('Shared/X/Sub/byPia.png'), binary(7)),
+      "and it never goes back on the writer's devices",
+      { back, p1: P1.vault.attachmentPaths(), p2: P2.vault.attachmentPaths() }
+    )
+  }
 
   await P1.vault.trash(P1.vault.file('Shared/X/Sub/byPia.png'))
   check(
@@ -245,20 +334,29 @@ try {
   check(O1.askedMoveIn.includes('Projects/X/photo.png'), 'and they were asked', O1.askedMoveIn)
 
   // Deleted for everyone, then brought back from the owner's own trash: back for everyone, and it stays.
-  await P1.vault.trash(P1.vault.file('Shared/X/photo.png'))
-  check(await eventually(() => !O1.vault.bytes('Projects/X/photo.png')), "the owner's copy goes with a writer's delete")
+  // The owner's other device is slow to carry the delete out, and trashes its file only after
+  // the owner brought it back: it took its own trashing for a delete made there, for everyone
+  // (a race seen in CI).
   {
+    const quick = slowed(O2.api, 'touchBlobs', 1_500)
+    await P1.vault.trash(P1.vault.file('Shared/X/photo.png'))
+    check(await eventually(() => !O1.vault.bytes('Projects/X/photo.png')), "the owner's copy goes with a writer's delete")
     const trashed = O1.attachments?.deletedFiles(0).find((file) => file.path === 'Projects/X/photo.png')
     check(trashed !== undefined, "and lies in the owner's trash")
     if (trashed) await O1.attachments?.restoreDeleted(trashed.fileId)
+    check(
+      await eventually(() => same(P1.vault.bytes('Shared/X/photo.png'), binary(4)) && same(Q.vault.bytes('Shared/X/photo.png'), binary(4)), 15_000),
+      'a file brought back from the trash is back for everyone in the folder',
+      P1.vault.attachmentPaths()
+    )
+    await delay(2_500)
+    quick()
+    check(
+      same(O1.vault.bytes('Projects/X/photo.png'), binary(4)) && same(P1.vault.bytes('Shared/X/photo.png'), binary(4)),
+      'and the folder does not delete it again'
+    )
+    check(await eventually(() => same(O2.vault.bytes('Projects/X/photo.png'), binary(4))), "nor does the owner's other device keep it away")
   }
-  check(
-    await eventually(() => same(P1.vault.bytes('Shared/X/photo.png'), binary(4)) && same(Q.vault.bytes('Shared/X/photo.png'), binary(4)), 15_000),
-    'a file brought back from the trash is back for everyone in the folder',
-    P1.vault.attachmentPaths()
-  )
-  await delay(1_200)
-  check(same(O1.vault.bytes('Projects/X/photo.png'), binary(4)), 'and the folder does not delete it again')
 
   // A file outside the folder that one of its notes embeds lands in the share folder's Attachments.
   await O1.vault.userCreateBinary('Assets/logo.png', binary(5))

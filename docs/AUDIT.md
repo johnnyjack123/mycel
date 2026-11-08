@@ -173,3 +173,8 @@ point in `test:backup`) are availability and consistency problems, not security 
 were not looked into in this audit or in 0.9.9. One of them hides data: a writer's offline
 version of a shared folder's file can end up only in the file's version history - still on
 the server and restorable from there, but not as a file. They need a round of their own.
+
+That round (2026-11-08, `fix/ci-races`, `docs/CHANGELOG.md` "Unreleased"): the writer's offline
+version, the rename going back and forth and delete against restore are reproduced in tests and
+fixed (and the same restore race for notes); the fork on return and the starting point are not
+reproduced and stay open (`docs/PROGRESS.md`, known issues).
