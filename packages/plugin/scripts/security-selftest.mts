@@ -11,7 +11,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { check, delay, Device, eventually, failures, useServer } from './harness.mjs'
 
-const { isFilePath, isNotePath, isVaultPath, vaultPathProblem, CONTENT_FIELD, NOTE_ATTACHMENTS_FIELD, frameAad } = await import('@mycel/shared')
+const { isFilePath, isNotePath, isVaultPath, vaultPathProblem, CONTENT_FIELD, NOTE_ATTACHMENTS_FIELD, NOTE_LINKS_FIELD, frameAad } = await import('@mycel/shared')
+const { linkedNotes } = await import('../src/share/LinkedNotes.js')
+const { theirLinkOpened } = await import('../src/share/LinkGuard.js')
 const { gateApp, PathRefused } = await import('../src/guard.js')
 const { aesKey, encrypt, seal, titleContext, toBase64 } = await import('@mycel/shared/crypto')
 const Y = await import('yjs')
@@ -259,10 +261,17 @@ const run = Date.now().toString(36)
 const binary = (seed: number, length = 2_000): Uint8Array => new Uint8Array(length).map((_byte, index) => (index * seed + 7) & 255)
 
 // Mallory shares a folder with Victor and may write in Victor's note: Mallory is the attacker.
-const mallory = new Device(`mallory${run}`, true, { 'Trap/Bait.md': 'bait\n', 'Trap/pic.png': binary(5) })
+const mallory = new Device(`mallory${run}`, true, {
+  'Trap/Bait.md': 'bait\n',
+  'Trap/pic.png': binary(5),
+  'Own/Plan.md': "mallory's plan\n",
+  'Own/Secret.md': "mallory's secret\n"
+})
 const victor = new Device(`victor${run}`, true, {
   'Private/Diary.md': 'my diary\n',
   'Private/passport.pdf': binary(9),
+  'Private/Recipe.md': "victor's recipe\n",
+  'Private/photo.png': binary(11),
   'Notes/Shared with M.md': 'notes for mallory\n'
 })
 const outside = (device: Device): string[] => device.vault.paths().concat(device.vault.attachmentPaths()).filter((path) => !isVaultPath(path))
@@ -329,6 +338,128 @@ try {
   const listed = handle ? Array.from(handle.doc.getMap(NOTE_ATTACHMENTS_FIELD).keys()) : []
   check(!listed.includes('passport.pdf'), "a link someone else typed does not share the victim's file of that name", listed)
   check(!mallory.vault.attachmentPaths().some((path) => path.endsWith('passport.pdf')), 'and the attacker never gets it', mallory.vault.attachmentPaths())
+  const listedNow = async (): Promise<string[]> => {
+    const note = await victor.store?.handle(sharedId)
+    return note ? Array.from(note.doc.getMap(NOTE_ATTACHMENTS_FIELD).keys()) : []
+  }
+
+  // --- a link made of the victim's own letters --------------------------------------
+  // Every letter typed by the victim, the link made by the attacker deleting what
+  // lay between them: 0.9.10 took a link whose every letter was this account's
+  // for one it typed, and shared the file (docs/AUDIT.md, P11).
+  const own = victor.open('Notes/Shared with M.md')
+  const line = '![[x]] passport. pdf [[y]]'
+  own.type(`\n${line}\n`)
+  check(await eventually(() => view.text().includes(line), 15_000), "the victim's line reaches the attacker's editor")
+  {
+    // Straight into the document, as an attacker's own build of the plugin would:
+    // claiming nothing itself, the link is left for the victim's device to take.
+    const mine = await mallory.store?.handle(sharedId)
+    const text = mine?.ytext
+    const at = text ? text.toString().indexOf(line) : -1
+    check(at >= 0, "the victim's line is in the attacker's document")
+    // ` [[y`, ` ` and `x]] ` go, the last first: what is left reads `![[passport.pdf]]`.
+    mine?.doc.transact(() => {
+      text?.delete(at + 20, 4)
+      text?.delete(at + 16, 1)
+      text?.delete(at + 3, 4)
+    }, 'attack')
+    check(text?.toString().includes('\n![[passport.pdf]]\n') === true, 'the attacker made a link of them', text?.toString())
+    check(
+      await eventually(async () => (await victor.store?.handle(sharedId))?.text().includes('\n![[passport.pdf]]\n') === true, 15_000),
+      'the made link reaches the victim'
+    )
+    await delay(3_000)
+    check(!(await listedNow()).includes('passport.pdf'), "a link made of the victim's letters by someone else's delete shares nothing", await listedNow())
+  }
+
+  // --- a claim in the victim's name -------------------------------------------------
+  {
+    const mine = await mallory.store?.handle(sharedId)
+    const claims = mine?.doc.getMap<{ account: string; ref: string; target: string; signature: string }>(NOTE_LINKS_FIELD)
+    const forged = claims ? Array.from(claims.entries()).find(([, claim]) => claim.account === mallory.accountId && claim.ref === 'passport.pdf') : undefined
+    check(forged !== undefined, "the attacker's own link carries the attacker's claim")
+    if (mine && claims && forged) mine.doc.transact(() => claims.set(forged[0], { ...forged[1], account: victor.accountId }), 'attack')
+    await delay(3_000)
+    check(!(await listedNow()).includes('passport.pdf'), "a claim in the victim's name it did not sign shares nothing", await listedNow())
+    const theirs = victor.linkClaims?.linksOf(sharedId).filter((link) => link.ref === 'passport.pdf') ?? []
+    check(theirs.length > 0 && theirs.every((link) => link.owner.kind !== 'own'), "the victim's device takes none of them for its own", theirs.map((link) => link.owner))
+  }
+
+  // --- whose a link to a note is ----------------------------------------------------
+  const linksOn = (device: Device, ref: string) => device.linkClaims?.linksOf(sharedId).find((link) => link.ref === ref)
+  const hostOf = (device: Device) => ({
+    docIdFor: (path: string) => device.store?.docIdForPath(path) ?? null,
+    linksOf: (docId: string) => device.linkClaims?.linksOf(docId) ?? [],
+    onChange: () => () => undefined,
+    leadsNowhere: () => undefined
+  })
+  {
+    // The attacker links a note only the victim has: it means the attacker's, which does not exist.
+    view.type('\n[[Recipe]]\n')
+    check(await eventually(() => linksOn(victor, 'Recipe')?.owner.kind === 'theirs', 15_000), "a link the attacker typed is the attacker's on the victim's device", linksOn(victor, 'Recipe'))
+    const owner = linksOn(victor, 'Recipe')?.owner
+    check(owner?.kind === 'theirs' && owner.account === mallory.accountId && owner.path === null, "and leads nowhere there - not to the victim's note of that name", owner)
+    const opened = theirLinkOpened(hostOf(victor), 'Recipe', 'Notes/Shared with M.md')
+    check(opened !== null && opened.owner.path === null, "opening it opens nothing rather than the victim's Recipe", opened?.owner)
+    await eventually(() => (victor.vault.text('Notes/Shared with M.md') ?? '').includes('[[Recipe]]'), 10_000)
+    const file = victor.vault.getAbstractFileByPath('Notes/Shared with M.md')
+    const along = victor.store && file ? linkedNotes(victor.metadataCache as never, victor.store, file as never, (account) => account, (path, ref) => {
+      const docId = victor.store?.docIdForPath(path)
+      return docId ? (victor.linkClaims?.othersOnly(docId, ref) ?? false) : false
+    }) : []
+    check(!along.some((note) => note.path === 'Private/Recipe.md'), "sharing the note again with the notes it links to leaves the victim's Recipe out", along.map((note) => note.path))
+    check(victor.linkQuestions.length === 0, 'and nobody asks the victim about it', victor.linkQuestions)
+    check(!mallory.vault.paths().some((path) => path.endsWith('Recipe.md')), 'nor does the attacker get it')
+
+    // The victim links a note only the attacker has: the attacker's device neither asks nor shares.
+    own.type('\n[[Secret]]\n')
+    check(await eventually(() => linksOn(mallory, 'Secret')?.owner.kind === 'theirs', 15_000), "the victim's link is the victim's on the other device", linksOn(mallory, 'Secret'))
+    await delay(1_500)
+    check(!mallory.linkQuestions.some((question) => question.targetPath === 'Own/Secret.md'), "a link someone else typed to a note of this account's asks nothing", mallory.linkQuestions)
+    check(!victor.vault.paths().some((path) => path.endsWith('Secret.md')), 'and shares nothing', victor.vault.paths())
+
+    // A link typed to a note of one's own: asked once, and a yes shares it with each person in the note.
+    mallory.linkAnswer = true
+    view.type('\n[[Plan]]\n')
+    check(
+      await eventually(() => mallory.linkQuestions.some((question) => question.targetPath === 'Own/Plan.md'), 15_000),
+      'the device a link to a note of its own was typed on asks whether it goes to the people in the note',
+      mallory.linkQuestions
+    )
+    const asked = mallory.linkQuestions.find((question) => question.targetPath === 'Own/Plan.md')
+    check(asked?.people.length === 1 && asked.people[0]?.account === victor.accountId && asked.people[0]?.role === 'write', 'naming each of them, with their access', asked?.people)
+    check(await eventually(() => victor.vault.text('Shared/Plan.md') === "mallory's plan\n", 15_000), 'a yes shares it', victor.vault.paths())
+    check(
+      await eventually(() => {
+        const plan = linksOn(victor, 'Plan')
+        return plan?.owner.kind === 'theirs' && plan.owner.path === 'Shared/Plan.md'
+      }, 10_000),
+      "and the link opens the attacker's note there",
+      linksOn(victor, 'Plan')
+    )
+    view.type('\n[[Plan]] again\n')
+    await delay(1_500)
+    check(mallory.linkQuestions.filter((question) => question.targetPath === 'Own/Plan.md').length === 1, 'asked once', mallory.linkQuestions.length)
+
+    // The owner is asked as well, and a no shares nothing.
+    own.type('\n[[Diary]]\n')
+    check(await eventually(() => victor.linkQuestions.some((question) => question.targetPath === 'Private/Diary.md'), 15_000), "the note's owner typing a link to a note of theirs is asked too", victor.linkQuestions)
+    check(await eventually(() => linksOn(mallory, 'Diary')?.owner.kind === 'theirs', 15_000), 'the link reaches the other device as theirs')
+    const diary = linksOn(mallory, 'Diary')?.owner
+    check(diary?.kind === 'theirs' && diary.path === null, 'unanswered, it leads nowhere there', diary)
+    check(!mallory.vault.paths().some((path) => path.endsWith('Diary.md')), 'and shares nothing', mallory.vault.paths())
+  }
+
+  // --- a file the owner links goes along ---------------------------------------------
+  own.type('\n![[photo.png]]\n')
+  check(await eventually(async () => (await listedNow()).includes('photo.png'), 15_000), 'a link the victim typed lists the victim\'s file', await listedNow())
+  check(
+    await eventually(() => mallory.vault.attachmentPaths().some((path) => path.endsWith('photo.png')), 15_000),
+    'and it reaches the other person',
+    mallory.vault.attachmentPaths()
+  )
+  own.close()
 
   // --- the name a share lands under ----------------------------------------------
   {

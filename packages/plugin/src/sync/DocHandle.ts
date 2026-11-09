@@ -139,21 +139,6 @@ export class DocHandle {
   readonly doc = new Y.Doc()
   readonly ytext: Y.Text
   /**
-   * Client ids besides the document's own that wrote on this device in this
-   * session: the seed of a note made from a file here (`seed.ts`). What they
-   * wrote counts as written here - a link in it may share a file of this vault.
-   */
-  readonly localClients = new Set<number>()
-  /**
-   * Client ids this account's other devices wrote under, as their signed
-   * frames say - and those anyone else's frames used, which never count as this
-   * account's, whoever used them first. Known from the frames that arrived in
-   * this session: a link one of them typed shares a file of this vault the way
-   * one typed here does.
-   */
-  private readonly accountClients = new Set<number>()
-  private readonly otherClients = new Set<number>()
-  /**
    * Exists for every note but is registered with the socket only while the
    * note is shared: syncing your own devices must not broadcast a caret.
    */
@@ -201,17 +186,8 @@ export class DocHandle {
       readOnly: this.readOnlyNow,
       history: history ? (entry) => history.add(this.room, entry) : null,
       create: (this.options.owned ?? true) || Boolean(this.options.folder),
-      folder: this.options.folder ?? null,
-      authored: (update, own) => {
-        for (const client of Y.parseUpdateMeta(update).to.keys()) (own ? this.accountClients : this.otherClients).add(client)
-      }
+      folder: this.options.folder ?? null
     })
-  }
-
-  /** Whether text under this Yjs client id was written by this account: on this device, or on another of its own. */
-  writtenByThisAccount(client: number): boolean {
-    if (client === this.doc.clientID || this.localClients.has(client)) return true
-    return this.accountClients.has(client) && !this.otherClients.has(client)
   }
 
   get shared(): boolean {

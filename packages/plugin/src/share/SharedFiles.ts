@@ -24,11 +24,17 @@ export interface SharedFilesOptions {
   folder: () => string
   syncTimeoutMs: number
   /**
-   * How long a link no list names waits before this device names its own file
-   * for it. The device that added the link names its file itself; another one
-   * with a file of the same name must not get there first.
+   * How long a link no list names and no claim of this account's covers waits
+   * before this device says so in its log: the claim of a link just typed
+   * comes a moment after the text.
    */
   claimDelayMs: number
+  /**
+   * Whether this account typed a link to `ref` in the note, as its signed
+   * claim says (`LinkClaims`). Only then does a file of this vault go to
+   * everyone in the note for it.
+   */
+  claimed: (docId: string, ref: string) => boolean
   /**
    * Notes of shared folders: whether their files outside the folder go along
    * is the folder's choice, and a link to a file of the folder travels with the
@@ -38,8 +44,6 @@ export interface SharedFilesOptions {
     linkedFilesOf(docId: string): boolean | null
     linksIntoFolder(docId: string, ref: string, target: string | null): boolean
   }
-  /** A link not typed here names a file of this vault: the user is asked whether it goes to the note's people. */
-  ask?: (question: { docId: string; ref: string; note: string; file: string }) => void
 }
 
 /** What naming this vault's blobs in a list takes; the key ring in the plugin. */
@@ -68,33 +72,6 @@ function isFileRef(ref: string): boolean {
   const name = ref.slice(ref.lastIndexOf('/') + 1)
   const dot = name.lastIndexOf('.')
   return dot > 0 && name.slice(dot + 1).toLowerCase() !== 'md'
-}
-
-/**
- * Whether a link to `ref` in the note was written on this device in this
- * session: the text of one of its places was inserted by this document's own
- * client. A link typed in an earlier session counts as someone else's - it
- * only waits a little longer.
- */
-function typedHere(ytext: Y.Text, ref: string, local: (client: number) => boolean): boolean {
-  if (!ytext.doc || ref.length === 0) return false
-  const text = ytext.toString()
-  for (let at = text.indexOf(ref); at !== -1; at = text.indexOf(ref, at + 1)) {
-    // Every letter of it: someone else's `assport.pdf` after a `p` typed here is not a link typed here.
-    const end = at + ref.length
-    let position = 0
-    let own = true
-    for (let item = ytext._start; item && position < end; item = item.right) {
-      if (item.deleted || !item.countable) continue
-      if (position + item.length > at && !local(item.id.client)) {
-        own = false
-        break
-      }
-      position += item.length
-    }
-    if (own) return true
-  }
-  return false
 }
 
 function besides(path: string, n: number): string {
@@ -128,8 +105,8 @@ export class SharedFiles {
   private readonly warned = new Set<string>()
   /** `${docId}:${ref}`: links whose file this device may share (`approve`). */
   private readonly approved = new Set<string>()
-  /** `${docId}:${ref}`: links the user was asked about this session. */
-  private readonly asked = new Set<string>()
+  /** `${docId}:${ref}`: links left alone here, said once in the log. */
+  private readonly leftAlone = new Set<string>()
   private stopped = false
   private ready = false
 
@@ -326,19 +303,22 @@ export class SharedFiles {
       // file of this vault - `![[passport.pdf]]` - had every such device hand
       // its own file of that name to everyone in the note, unasked. A file goes
       // out only for a link this account typed - here, or on another of its
-      // devices, as their signed frames say -, one in the note when it was
-      // shared from here, or one the user said yes to.
-      if (typedHere(note.handle.ytext, ref, (client) => note.handle.writtenByThisAccount(client))) this.approved.add(key)
+      // devices, as its signed claim says -, one in the note when it was
+      // shared from here, or one the user said yes to. A link someone else
+      // typed means a file of theirs, and nobody here is asked about it.
+      if (this.options.claimed(docId, ref)) this.approved.add(key)
       if (!this.approved.has(key)) {
         const seen = this.unlisted.get(key) ?? Date.now()
         this.unlisted.set(key, seen)
         const waited = Date.now() - seen
-        // The device that typed the link names its file itself; asked only if none did.
         if (waited < this.options.claimDelayMs) {
           this.schedule(docId, this.options.claimDelayMs - waited + 50)
           return
         }
-        this.askToShare(note, ref, local.entry.path)
+        if (!this.leftAlone.has(key)) {
+          this.leftAlone.add(key)
+          log.info(`${note.file.path}: ${ref} names ${local.entry.path} of this vault, but this account did not type the link; not shared`)
+        }
         return
       }
       await this.publish(note, ref, local, undefined)
@@ -385,18 +365,11 @@ export class SharedFiles {
     this.agree(note, ref, listed.hash, local.entry.path)
   }
 
-  /** Once per link and session: whether this vault's file goes to everyone in the note is the user's to say. */
-  private askToShare(note: Note, ref: string, path: string): void {
-    const key = `${note.docId}:${ref}`
-    if (this.asked.has(key)) return
-    this.asked.add(key)
-    log.warn(`${note.file.path}: links ${path} of this vault, a link not typed here; waits for the user before it is shared`)
-    this.options.ask?.({ docId: note.docId, ref, note: note.file.path, file: path })
-  }
-
   /**
    * The user's yes for one link - or, without `ref`, for every link the note
-   * has now: it is being shared from here, with what it shows.
+   * has now: it is being shared from here, with what it shows. A yes for one
+   * link comes from a notice of before 0.9.11, which still works from the
+   * notification center.
    */
   approve(docId: string, ref?: string): void {
     if (ref !== undefined) {

@@ -59,6 +59,9 @@ export const FOLDER_BASES_FIELD = 'folderBases'
 // and the note's sharing settings - for now only `attachments: boolean`.
 export const NOTE_ATTACHMENTS_FIELD = 'attachments'
 export const NOTE_SHARE_FIELD = 'share'
+// Also there: anchor -> LinkClaim, whose each link in the text is. The text of a
+// link means a note or file in the vault of whoever typed it, not in the reader's.
+export const NOTE_LINKS_FIELD = 'links'
 // In the vault index document: folderId -> VaultFolder, the shared folders this
 // vault owns or holds. A map of its own, like the attachments.
 export const FOLDERS_FIELD = 'folders'

@@ -34,14 +34,22 @@ function decoded(linkpath: string): string {
   }
 }
 
+/**
+ * Whether every link to `ref` in the note at `path` is someone else's: it means
+ * a note of theirs, and a note of this vault with that name is no business of
+ * the share (`LinkClaims.othersOnly`).
+ */
+export type ForeignLink = (path: string, ref: string) => boolean
+
 /** Every note `root` reaches through links, root excluded, in the order they were found. */
 export function linkedNotes(
   metadataCache: MetadataCache,
   store: DocStore,
   root: TFile,
-  nameOf: (account: string) => string
+  nameOf: (account: string) => string,
+  foreign: ForeignLink = () => false
 ): LinkedNote[] {
-  return reached(metadataCache, store, [root], nameOf, () => false)
+  return reached(metadataCache, store, [root], nameOf, () => false, foreign)
 }
 
 /**
@@ -54,10 +62,11 @@ export function linkedOutside(
   store: DocStore,
   notes: TFile[],
   folder: string,
-  nameOf: (account: string) => string
+  nameOf: (account: string) => string,
+  foreign: ForeignLink = () => false
 ): LinkedNote[] {
   const prefix = `${folder}/`
-  return reached(metadataCache, store, notes, nameOf, (path) => path.startsWith(prefix))
+  return reached(metadataCache, store, notes, nameOf, (path) => path.startsWith(prefix), foreign)
 }
 
 /** The files - not notes - a note embeds or links, each once, in the order they appear. */
@@ -77,7 +86,8 @@ function reached(
   store: DocStore,
   roots: TFile[],
   nameOf: (account: string) => string,
-  inside: (path: string) => boolean
+  inside: (path: string) => boolean,
+  foreign: ForeignLink
 ): LinkedNote[] {
   const found: LinkedNote[] = []
   const seen = new Set(roots.map((root) => root.path))
@@ -86,7 +96,7 @@ function reached(
     const cache = metadataCache.getFileCache(note)
     for (const link of [...(cache?.links ?? []), ...(cache?.embeds ?? []), ...(cache?.frontmatterLinks ?? [])]) {
       const linkpath = decoded(getLinkpath(link.link))
-      if (!linkpath) continue
+      if (!linkpath || foreign(note.path, linkpath)) continue
       const target = metadataCache.getFirstLinkpathDest(linkpath, note.path)
       if (!target || target.extension !== 'md' || seen.has(target.path) || inside(target.path)) continue
       seen.add(target.path)

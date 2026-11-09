@@ -165,8 +165,6 @@ export interface RoomOptions {
   create?: boolean
   /** A missing note is created in this shared folder, owned by the folder's owner. */
   folder?: string | null
-  /** A frame taken from the log, before it is applied: its change, and whether this account signed it. */
-  authored?: ((update: Uint8Array, own: boolean) => void) | null
 }
 
 export interface SocketHandlers {
@@ -234,6 +232,13 @@ interface Registration {
   /** Whether the frame the cursor ends at came back unchanged in this catch-up. */
   verify: { seq: number; hash: string | null; content: string | null; state: Verification }
   sendTimer: number | null
+  /**
+   * A push being signed and encrypted. One at a time: a second one, started
+   * while the first awaited its keys, sent a payload acknowledged meanwhile
+   * again, took the slot of the change after it - and its acknowledgement
+   * cleared that change, never sent (found by the benchmark, 0.9.11).
+   */
+  preparing: boolean
   /** How many were present when last logged; presence is logged when that changes. */
   present: number
   /** Presence client id -> the account whose signature first named it; nobody else speaks for it. */
@@ -580,7 +585,8 @@ export class VaultSocket {
           registration.inflight = null
           registration.inflightFrame = null
           registration.sendingTs = null
-          cursor.sending = null
+          // Only what was acknowledged leaves: never a change taken up meanwhile.
+          if (!frame || cursor.sending === frame.payload) cursor.sending = null
           // Everything the server sent before this acknowledgement has been
           // applied - the chain keeps that order - so nothing below seq is missing.
           if (seq > cursor.lastSeq) {
@@ -781,11 +787,6 @@ export class VaultSocket {
     } else {
       log.debug(`${registration.room}: frame #${seq}, ${frame.update.length} B, epoch ${epoch}`)
       const madeAt = changeTime(frame, serverTs, registration.options.crypto.self)
-      try {
-        registration.options.authored?.(frame.update, frame.author === registration.options.crypto.self)
-      } catch (error) {
-        log.debug(`${registration.room}: who wrote frame #${seq} could not be told`, error)
-      }
       this.applyRemote(registration.doc, frame.update, madeAt)
       registration.options.history?.({ authorTs: madeAt, update: frame.update })
     }
@@ -942,7 +943,8 @@ export class VaultSocket {
   private scheduleSend(registration: Registration): void {
     const cursor = registration.options.cursor
     if (this.locked || registration.dead || registration.options.readOnly || !registration.synced || cursor.held) return
-    if (registration.inflight !== null || registration.sendTimer !== null) return
+    // The push in flight or being made comes back to this when it is done.
+    if (registration.inflight !== null || registration.preparing || registration.sendTimer !== null) return
     if (!cursor.sending && !cursor.outbox && registration.replay.length === 0) return
     registration.sendTimer = window.setTimeout(() => {
       registration.sendTimer = null
@@ -954,7 +956,17 @@ export class VaultSocket {
 
   private async sendNext(registration: Registration): Promise<void> {
     const cursor = registration.options.cursor
-    if (!this.connected || !registration.synced || registration.inflight !== null || registration.dead || cursor.held) return
+    if (!this.connected || !registration.synced || registration.inflight !== null || registration.preparing || registration.dead || cursor.held) return
+    registration.preparing = true
+    try {
+      await this.preparePush(registration)
+    } finally {
+      registration.preparing = false
+    }
+  }
+
+  private async preparePush(registration: Registration): Promise<void> {
+    const cursor = registration.options.cursor
     if (!cursor.sending) {
       if (cursor.outbox) {
         cursor.sending = cursor.outbox
@@ -1129,6 +1141,7 @@ export class VaultSocket {
       sendingTs: null,
       verify: { seq: 0, hash: null, content: null, state: 'none' },
       sendTimer: null,
+      preparing: false,
       present: 0,
       presenceAuthors: new Map(),
       dead: false,

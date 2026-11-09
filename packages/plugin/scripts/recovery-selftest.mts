@@ -72,6 +72,46 @@ try {
   check(await eventually(() => A2.vault.text('One.md') === 'first\nmore\n'), 'an edit reaches A2')
   check(A1.asked === 0 && A2.asked === 0, 'nobody is asked while the server has what they saw')
 
+  // --- one push made at a time ---------------------------------------------------------------
+  // Signing and encrypting held up - a busy phone - while edits keep coming: a second push made
+  // beside the first sent a change acknowledged meanwhile again, and its acknowledgement cleared
+  // the change after it, never sent (0.9.11, found by the benchmark).
+  {
+    let text = 'second\n'
+    await A1.vault.userWrite('Two.md', text + 'start\n')
+    text += 'start\n'
+    check(await eventually(() => A2.vault.text('Two.md') === text), 'an edit of the second note reaches A2')
+    type Pack = (...args: unknown[]) => Promise<unknown>
+    const registrations = (A1.socket as unknown as { registrations: Map<string, { options: { crypto: { pack: Pack } } }> }).registrations
+    const crypto = registrations.get(docRoom(A1.index?.docIdForPath('Two.md') as string))?.options.crypto
+    const pack = crypto?.pack
+    let making = 0
+    let most = 0
+    if (crypto && pack) {
+      crypto.pack = async (...args: unknown[]) => {
+        making += 1
+        most = Math.max(most, making)
+        try {
+          await delay(120)
+          return await pack.apply(crypto, args)
+        } finally {
+          making -= 1
+        }
+      }
+    }
+    for (let i = 0; i < 30; i += 1) {
+      text += `line ${i}\n`
+      await A1.vault.userWrite('Two.md', text)
+      await delay(25)
+    }
+    check(await eventually(() => A2.vault.text('Two.md') === text, 20_000), 'every edit made while pushes are slow to make reaches the other device', A2.vault.text('Two.md'))
+    check(crypto !== undefined && most === 1, 'one push is made at a time', most)
+    if (crypto && pack) crypto.pack = pack
+    // As it was, for what follows.
+    await A1.vault.userWrite('Two.md', 'second\n')
+    check(await eventually(() => A2.vault.text('Two.md') === 'second\n'), 'and the note is as it was again')
+  }
+
   // What a compromised server has: every file it wrote, searched for what the
   // devices know in plain text.
   {

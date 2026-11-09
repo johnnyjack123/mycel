@@ -67,6 +67,8 @@ export interface SharingOptions {
   }
   /** A note is shared from here with its files: the files its links show now may go along (`SharedFiles.approve`). */
   approveFiles?: (docId: string) => void
+  /** A note is shared from here: the links it holds that nobody claimed are this account's (`LinkClaims.claimAll`). */
+  claimLinks?: (docId: string) => Promise<void>
 }
 
 /** A note or a folder of this account's, whose members a new key is sealed to. */
@@ -126,6 +128,11 @@ export class Sharing {
   /** What this account calls someone. */
   nameOf(account: string): string {
     return this.contacts.name(account)
+  }
+
+  /** Whether this device can check what someone signs: a contact whose keys are pinned, not replaced since. */
+  knowsSigner(account: string): boolean {
+    return this.contacts.signingKey(account) !== null
   }
 
   /** The name of a contact; null for an account this one does not know. */
@@ -390,6 +397,7 @@ export class Sharing {
     this.store.share(docId, true)
     if (withAttachments !== undefined && !handle.pristine) setAttachmentsShared(handle.doc, withAttachments)
     if (withAttachments) this.options.approveFiles?.(docId)
+    await this.options.claimLinks?.(docId).catch((error: unknown) => log.warn(`${entry.path}: naming its links as this account's failed`, error))
     log.info(
       `${entry.path}: shared with ${account} to ${role}, ${withHistory ? 'with' : 'without'} history${withAttachments ? ', with its files' : ''}`
     )
@@ -588,6 +596,13 @@ export class Sharing {
     if (!this.options.autoAccept()) return waiting.length
     const added = new Map<string, TFile[]>()
     for (const share of waiting) {
+      // Not a contact here yet - the device that made the contact has not passed its record on:
+      // taken in under a plain name, with keys that do not open, the share stayed empty. It
+      // waits for the record (`Contacts.onKnown`).
+      if (!this.knowsSigner(share.owner)) {
+        log.info(`${share.docId}: shared by ${share.owner.slice(0, 8)}, whose keys this device does not know yet; taken in once it does`)
+        continue
+      }
       try {
         const file = await this.accept(share, waiting.length === 1)
         if (file) added.set(share.owner, [...(added.get(share.owner) ?? []), file])

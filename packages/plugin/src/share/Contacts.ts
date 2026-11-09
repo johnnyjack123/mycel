@@ -98,6 +98,23 @@ export class Contacts {
   }
 
   /**
+   * Someone's signing key is known here now - a contact made on this device,
+   * or on another of the account's, whose record just arrived in the
+   * settings. What they shared before it did - a share, a key they sealed -
+   * can be taken in now.
+   */
+  onKnown(listener: (accountIds: string[]) => void): () => void {
+    const signers = (): string[] => this.settings.contacts().filter((contact) => contact.replacedAt === undefined).map((contact) => contact.accountId)
+    let known = new Set(signers())
+    return this.settings.onChange(() => {
+      const now = signers()
+      const added = now.filter((accountId) => !known.has(accountId))
+      known = new Set(now)
+      if (added.length > 0) listener(added)
+    })
+  }
+
+  /**
    * Pins a contact's keys as the code's exchange vouched for them. Other keys
    * than pinned before - or a contact who replaced theirs - is told on.
    */

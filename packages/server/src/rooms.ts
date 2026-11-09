@@ -1349,9 +1349,14 @@ export class RoomHub {
     }
   }
 
-  /** A note to its next epoch, with its own members' keys. */
+  /**
+   * A note to its next epoch, with its own members' keys: the one its owner
+   * sealed them for. An owner past a server that went back names a later one
+   * than the next (invariant 33); moving to the next anyway filed the keys
+   * under an epoch they do not open.
+   */
   private moveNote(meta: RoomMeta, rotation: NoteRotation | undefined): void {
-    this.moveEpoch(meta, meta.epoch + 1)
+    this.moveEpoch(meta, rotation && isLaterEpoch(meta.epoch, rotation.epoch) ? rotation.epoch : meta.epoch + 1)
     for (const member of Object.keys(meta.members)) {
       const key = rotation?.keys[member]
       if (key) meta.sealedKeys[member] = { ...meta.sealedKeys[member], [String(meta.epoch)]: key }

@@ -20,7 +20,7 @@ function fnv1a(input: string): number {
   return hash >>> 0
 }
 
-export function seedClientId(docId: string, text: string): number {
+function seedClientId(docId: string, text: string): number {
   return fnv1a(`seed::${docId}::${text}`)
 }
 

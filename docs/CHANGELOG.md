@@ -8,6 +8,77 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.11** (2026-11-09, branch `feat/link-owners`, the user's decisions of the same day) -
+  **whose a link in a shared note is.** `[[Recipe]]` is text, and every vault resolved it by
+  name in itself: a link one person typed opened - or, with "also share the notes it links
+  to", shared - a note of that name of someone else's. And P4's fix had a hole (P11 in
+  `docs/AUDIT.md`): it asked whether every letter of a link was this account's, passing over
+  deleted ones, so a writer could cut the victim's own words down to `![[passport.pdf]]` and
+  the victim's device shared that file.
+  - **A link is someone's by a signed claim** (`LinkClaim`, `share/LinkClaims.ts`,
+    `share/links.ts`): in the note's document, under the Yjs id of the link's first character,
+    written by the device whose own edit - typed into the editor or the file - made or changed
+    the link, a moment after the typing stopped, signed by its account over the note, that
+    character, the link's path and what it means in that vault (a note by its id, a file, or
+    nothing). A change of someone else's touching the link afterwards leaves it unclaimed; a
+    restore or a fork claims nothing. Checked with the account's own key or a contact's pinned
+    one; anyone else's claim is nobody's.
+  - **Someone else's link opens what it means here**: their note, where this vault has it
+    (shared with this account, anywhere in the vault), the file the note brought - or nothing,
+    with a notice, never a note of this vault of that name or a new, empty one. Marked in the
+    editor (dashed; struck through and faded when it leads nowhere) and in the reading view
+    (`share/LinkGuard.ts`; opening goes through Obsidian's `openLinkText`, wrapped while the
+    plugin runs). A link nobody claimed - typed before 0.9.11 - behaves as before.
+  - **A link typed to a note of one's own** that people in the note lack is asked about once
+    per note and linked note, on the device it was typed on, a few seconds after the typing
+    stopped: a notice with *Share*, kept in the notification center - it shares the note with
+    each of them who is a contact, with their access in the note (the owner to edit), without
+    its history, landing at the link's path. Asked is asked on every device of the account
+    (`linkAsked:` in the settings). Sharing a note claims the links it holds that nobody
+    claimed: what a note holds when it is shared is its owner's.
+  - **Files**: one goes into a shared note's list only for a link of this account's claim
+    (or the note shared from here with its files). Nobody is asked about anyone else's link any
+    more - 0.9.9's question after ten seconds is gone; its button in old notices still works.
+  - **"Also share the notes it links to"**, and the notes a note moved into a folder links to,
+    follow only links that are not all someone else's.
+  - **Server (S11, found by the code review below)**: within a shared folder's rotation, its
+    end and a note leaving it, a note moved to the epoch after the server's own, while its owner
+    had sealed the members' keys for a later one (0.9.9's jump). It moves to that one now.
+    Checked by putting the `+1` back: the new check in `test:rooms` failed.
+  - Checked by loosening the rule to claim whatever any change touched: P11's check and 15 more
+    failed. Tests: `test:security` (the assembled link, a forged claim, both of the user's
+    cases - a link to a note only the other side has -, a question answered yes and one left,
+    the owner's file going along), `test:merge` (finding links and their ids), `test:rooms`.
+  - Removed: `DocHandle.writtenByThisAccount` and the `authored` callback of the socket, which
+    only P4's rule used.
+  - **A change could be lost before it was sent** (found by the benchmark below, `perf/benchmark`):
+    while one push awaited its keys and signature, a second one could start beside it
+    (`VaultSocket.sendNext`); acknowledged in the wrong order, the stale one sent a change the
+    server had already taken, took the slot of the change after it, and its acknowledgement cleared
+    that change - never sent, with no error anywhere. Under load an upload lost 110 changes of the
+    vault index, and the second device stopped at 2,954 of 5,000 notes. Now one push is made at a
+    time (`preparing`), and an acknowledgement clears only the payload it acknowledges.
+    `test:recovery`: pushes slowed while edits keep coming, every edit arrives and never two are
+    made at once; with the guard taken out, exactly that check failed.
+  - **A share coming in before its sharer's contact record** (seen once in CI, `test:rollback`):
+    the account's second device heard of the share before the settings brought the contact the
+    first device had just made. It took the share in under a plain name - the title's signature
+    could not be checked - and that name won on both devices, and it gave up on the note's keys
+    after three tries: the note stayed empty until a restart. A share or folder from someone whose
+    keys a device does not know yet now waits, and the contact's record arriving takes in what
+    waits and catches up the rooms that met keys it could not open (`Contacts.onKnown`).
+    `test:rollback` makes that order certain; without the waiting nine checks failed (the six CI
+    saw among them), without the catching up four.
+  - **A code review** by a separate agent (read-only, 2026-11-09) measured 1.0 % duplicated
+    lines and ranked what to split and merge; besides S11 it found a stale-lock race in
+    `server/src/durable.ts` (two processes taking a stale lock at once). Its proposals are the
+    next round (`docs/PROGRESS.md`).
+  - **A benchmark** by another (`npm run bench`, `docs/PERFORMANCE.md`, merged with this): 5,000
+    notes and 2,000 files, first upload, a new device, a restart, typing on- and offline, a week's
+    catch-up, idle. Besides the lost change above: typing offline grows to 15 ms a keystroke
+    after 20,000 unsent ones (the outbox rewritten whole each time), a restart opens every note,
+    and each subscribe downloads a note's last frame again. Ranked in `docs/PERFORMANCE.md`.
+
 - **0.9.10** (2026-11-08, branch `fix/ci-races`, found and fixed by a separate agent) - **the
   races that showed only in CI.** Each
   was made certain in a test first - one device's folder frames, uploads, blob touches or backup

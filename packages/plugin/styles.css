@@ -1034,3 +1034,15 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
     transform: rotate(360deg);
   }
 }
+
+/* Someone else's link in a shared note: their note or file, or - not shared here - a dead link. */
+.mycel-link-theirs {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+}
+
+.mycel-link-dead {
+  opacity: 0.55;
+  text-decoration-line: line-through;
+  cursor: not-allowed;
+}

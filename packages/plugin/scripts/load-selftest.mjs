@@ -86,6 +86,7 @@ const obsidian = {
     registerEvent = fn
     register = fn
     registerEditorExtension = (extension) => registered.editorExtensions.push(extension)
+    registerMarkdownPostProcessor = fn
     registerInterval = (id) => id
     // Signed out, the way a fresh install starts: the start must stop short
     // without touching the network.
@@ -264,8 +265,8 @@ if (exported) {
       check(false, 'onload runs', error?.stack ?? String(error))
     }
     check(
-      registered.editorExtensions.length === 2,
-      'it registers its two editor extensions: the binding, and the one that shows a note its past read-only',
+      registered.editorExtensions.length === 3,
+      "it registers its three editor extensions: the binding, the one that marks someone else's links, and the one that shows a note its past read-only",
       registered.editorExtensions.length
     )
     check(

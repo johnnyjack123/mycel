@@ -17,6 +17,7 @@ import * as e2e from '@mycel/shared/crypto'
 import { hashWasmArgon2id } from '../src/account/argon2.js'
 import { Replay } from '../src/history/RoomHistory.js'
 import { additiveEdits, reconcile } from '../src/sync/Reconciler.js'
+import { idsAt, linksIn, linksNear, touchedBy, touches } from '../src/share/links.js'
 
 const failures: string[] = []
 
@@ -1127,6 +1128,49 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   )
   compacted.destroy()
   source.destroy()
+}
+
+// Links in a note's text, and the Yjs ids that name each one (`share/links.ts`).
+{
+  const text = [
+    'See [[Recipe]] and [[Projects/Plan#Goals|the plan]], ![[photo.png|200]].',
+    '`[[in code]]` [md](Some%20Note.md) [web](https://example.com) [[#Heading]]',
+    '```',
+    '[[fenced]]',
+    '```',
+    '![alt](<pics/a b.png> "title")'
+  ].join('\n')
+  const links = linksIn(text)
+  check(
+    JSON.stringify(links.map((link) => [link.ref, link.embed])) ===
+      JSON.stringify([['Recipe', false], ['Projects/Plan', false], ['photo.png', true], ['Some Note.md', false], ['', false], ['pics/a b.png', true]]),
+    'links are found with their paths: no heading, block or alias, decoded, nothing in code or elsewhere on the web',
+    links.map((link) => [link.ref, link.embed])
+  )
+  check(links.every((link) => text.slice(link.start, link.end).startsWith(link.embed ? '!' : '[')), 'each at its place in the text')
+
+  const doc = new Y.Doc()
+  const ytext = doc.getText(CONTENT_FIELD)
+  ytext.insert(0, 'a [[Recipe]] b')
+  const [before] = idsAt(ytext, [2])
+  ytext.insert(0, 'typed in front ')
+  const at = linksIn(ytext.toString())[0]?.start ?? -1
+  const [after] = idsAt(ytext, [at])
+  check(before !== null && before === after, "a link's first character keeps its id whatever is typed before it", { before, after })
+  check(idsAt(ytext, [ytext.length, ytext.length + 5]).every((id) => id === null), 'and past the end there is none')
+
+  const seen: Array<[number, number]>[] = []
+  ytext.observe((event) => seen.push(touchedBy(event.delta as never)))
+  const typing = ytext.toString().indexOf('Recipe') + 3
+  ytext.insert(typing, 'X')
+  ytext.delete(typing, 1)
+  ytext.insert(ytext.length, ' after')
+  const current = ytext.toString()
+  const recipe = linksIn(current)[0] as NonNullable<ReturnType<typeof linksIn>[0]>
+  check(touches(recipe, seen[0] ?? []) && touches(recipe, seen[1] ?? []), 'typing or deleting inside a link touches it')
+  check(!touches(recipe, seen[2] ?? []), 'typing elsewhere on its line does not')
+  check(linksNear(current, seen[1] ?? []).length === 1 && linksNear(current, seen[2] ?? []).length === 0, 'and the links near a change are those it touched')
+  doc.destroy()
 }
 
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)

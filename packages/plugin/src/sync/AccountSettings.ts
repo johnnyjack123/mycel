@@ -41,6 +41,7 @@ export interface RecoveryDecision {
 const RECOVERY_KEY = 'recovery'
 const ROLE_KEY = 'role:'
 const EPOCH_KEY = 'epoch:'
+const LINK_ASKED_KEY = 'linkAsked:'
 
 /** Someone this account shares with. Their keys are pinned when the contact is made. */
 export interface Contact {
@@ -204,6 +205,19 @@ export class AccountSettings {
   raiseEpochFloor(room: string, epoch: number): void {
     if (epoch <= this.epochFloor(room)) return
     this.doc.transact(() => this.map.set(`${EPOCH_KEY}${room}`, epoch), 'local')
+  }
+
+  /**
+   * Whether this account was asked, on any of its devices, if a note of its own
+   * that a link in a shared note names goes to the people there. Asked once:
+   * a no stays a no, and the question stays in the notification center.
+   */
+  linkAsked(note: string, target: string): boolean {
+    return this.map.has(`${LINK_ASKED_KEY}${note}|${target}`)
+  }
+
+  markLinkAsked(note: string, target: string): void {
+    this.doc.transact(() => this.map.set(`${LINK_ASKED_KEY}${note}|${target}`, Date.now()), 'local')
   }
 
   /** What a backup server reads for its route, as it writes it down too. */
