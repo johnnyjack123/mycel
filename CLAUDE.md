@@ -375,7 +375,9 @@ note does not survive a real vault. The server holds an **ordered log of
 ciphertext frames** per room and fans them out; it has no `Y.Doc`. A client
 subscribes with the last seq it applied and gets a snapshot if needed, the
 frames after it and `caughtUp`; it sends `push(ref, epoch, data)` and keeps the
-payload until `ack`. See `MUX` in `shared/protocol.ts` and `VaultSocket`. The
+payload until `ack`. One push per room is made at a time (`preparing`), and an `ack`
+clears only the payload it acknowledges: two made side by side, while the first awaited
+its keys, lost the change after them with no error (0.9.11). See `MUX` in `shared/protocol.ts` and `VaultSocket`. The
 server acknowledges a frame only once it is synced to the disk, and nobody reads it
 before (`RoomLog.append`, 0.9.1; `headSeq` counts frames still being written,
 `writtenSeq` does not); every other file it writes through `server/src/durable.ts`.
@@ -857,6 +859,7 @@ npm run test:replace   # every key of an account replaced: the vaults and files 
 npm run test:security  # every attack of the audit (docs/AUDIT.md): the server attacked over HTTP and WebSocket, the plugin's paths, links, folders and gate, the backup task — in-process servers
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by MYCEL_RESTIC (where it lies here: docs/PROGRESS.md)
+npm run bench          # what a first sync, a restart, typing and a catch-up cost (docs/PERFORMANCE.md) — servers of its own
 # needs a server that lets tests create accounts:
 npm run test:socket    # the encrypted transport, two devices of one account
 npm run test:vault     # three devices + a collaborator: accounts, DocStore, binding, sharing, attachments

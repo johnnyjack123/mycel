@@ -12,7 +12,9 @@ files (23 MB) to see what grows. The benchmark measures and reports; nothing in
 ## The short version
 
 0. **First, a bug the benchmark ran into: a change can leave the outbox without ever being
-   sent.** Two `sendNext` calls of one room can overlap. The stale one sends a payload the
+   sent.** *(Fixed in 0.9.11: one push per room is made at a time, and an acknowledgement
+   clears only the payload it acknowledges - `docs/CHANGELOG.md`. The rest of this page is
+   0.9.10 as measured.)* Two `sendNext` calls of one room can overlap. The stale one sends a payload the
    server already acknowledged, and its acknowledgement then clears the newer payload, unsent.
    In a 5,000-note upload run with the self-tests' slower IndexedDB stand-in, this happened
    110 times (128 KB of vault-index changes). In two earlier attempts of the same setup, the

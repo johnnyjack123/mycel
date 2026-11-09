@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-09 · **0.9 built, the audit done: 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel, 0.9.8 is the security audit (`docs/AUDIT.md`: 23 findings fixed, each kept as an attack in `npm run test:security`), 0.9.9 closes its residual risks (R1 to R9) and adds a setup wizard, 0.9.10 fixes three of the races seen only in CI (two remain, below), 0.9.11 resolves links in shared notes by who typed them (signed claims; P11 and S11 fixed). Next, the user's choices of 2026-11-09: a backup run that sees much vanish or another log keeps every snapshot until confirmed (restic's `forget` waits as the copy does); the code review's proposals in small steps (`docs/CHANGELOG.md`, 0.9.11; the stale-lock race in `durable.ts` first); the performance measurement (`perf/benchmark`, running). The user updates server, backup server and every device together (friend codes from before 0.9.8 no longer redeem), sets `MYCEL_TRUST_PROXY`, starts afresh once (below, "Starting afresh"); publishing comes last.**_
+_Last updated: 2026-11-09 · **0.9 built, the audit done: 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel, 0.9.8 is the security audit (`docs/AUDIT.md`: 23 findings fixed, each kept as an attack in `npm run test:security`), 0.9.9 closes its residual risks (R1 to R9) and adds a setup wizard, 0.9.10 fixes three of the races seen only in CI (two remain, below), 0.9.11 resolves links in shared notes by who typed them (signed claims; P11 and S11 fixed), and fixes a change lost before it was sent and a share taken in before its sharer's contact record (both found that day, by the benchmark and in CI). Next (Known issues, "Open after 0.9.11"): a backup run that sees much vanish or another log keeps every snapshot until confirmed; the code review's proposals in small steps, the stale-lock race in `durable.ts` first; the benchmark's findings (`docs/PERFORMANCE.md`), the outbox first. The user updates server, backup server and every device together (friend codes from before 0.9.8 no longer redeem), sets `MYCEL_TRUST_PROXY`, starts afresh once (below, "Starting afresh"); publishing comes last.**_
 
 ## Where we are
 
@@ -320,13 +320,29 @@ user's call, as with the earlier branches.
 
 ## Known issues / debt
 
-- **Left by the audit (`docs/AUDIT.md`, "Not fixed")**: a server moving a room back to an
-  earlier epoch is followed (needs owner-signed epoch starts); no quota for rooms and log bytes;
-  the token in the WebSocket URL; presence and titles unsigned; the backup server checks no
-  frame signatures and may be pointed at addresses in its own network. And: a link to a file of
-  the vault typed on another device of the account, or in an earlier session, is shared only
-  after a yes in a notice on the device that has the file - the device it was typed on shares it
-  at once.
+- **Open after 0.9.11 (2026-11-09):**
+  - *The backup's retention after a suspicious run* (the user's question, answered, to build): a
+    run that finds much vanished, or a log other than the one it followed, still lets restic's
+    `forget` drop old snapshots; the guard holds only the decrypted copy. Such a run should keep
+    every snapshot until confirmed, as the copy waits.
+  - *The code review's proposals* (`docs/CHANGELOG.md`, 0.9.11): the composition root out of
+    `main.ts` shared with the harness (it has drifted: the index debounce, `vault-lock` without
+    the vault check), one frame-signature rule for plugin and backup server, one decision for a
+    shared file's version (`SharedFiles`/`FolderFiles`), one rename-rounds helper, splits of
+    `rooms.ts` and `Folders.ts`; the stale-lock race in `server/src/durable.ts`; the backup's
+    settings copy keeps `role:`, `epoch:`, `linkAsked:` and `rollback:` records (`layout.ts`
+    `NOT_SETTINGS`). In small steps, each with every suite.
+  - *The benchmark's findings* (`docs/PERFORMANCE.md`): the outbox rewritten whole on every
+    keystroke offline (15 ms a keystroke after 20,000), a restart opening every note, each
+    subscribe downloading a note's last frame again, O(n) work per change in eviction and the
+    indexes. And, read and not reproduced: `DocStore.evict` can let go of a note an editor just
+    bound (its re-check misses the pinned and editor-owned tests); a vault index slower than
+    `syncTimeoutMs` at a start says the server does not answer.
+
+- **Left by the audit (`docs/AUDIT.md`, "Not fixed")**, as of 0.9.8 - closed in 0.9.9 (R1 to
+  R9) and 0.9.11 (P11): a server moving a room back to an earlier epoch is followed; no quota
+  for rooms and log bytes; the token in the WebSocket URL; presence and titles unsigned; the
+  backup server checks no frame signatures and may be pointed at addresses in its own network.
 
 - **Found while drafting 0.9 (2026-11-03, `docs/PHASE8.md`, each checked in the code; not
   fixed yet):**

@@ -51,10 +51,33 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
     the owner's file going along), `test:merge` (finding links and their ids), `test:rooms`.
   - Removed: `DocHandle.writtenByThisAccount` and the `authored` callback of the socket, which
     only P4's rule used.
+  - **A change could be lost before it was sent** (found by the benchmark below, `perf/benchmark`):
+    while one push awaited its keys and signature, a second one could start beside it
+    (`VaultSocket.sendNext`); acknowledged in the wrong order, the stale one sent a change the
+    server had already taken, took the slot of the change after it, and its acknowledgement cleared
+    that change - never sent, with no error anywhere. Under load an upload lost 110 changes of the
+    vault index, and the second device stopped at 2,954 of 5,000 notes. Now one push is made at a
+    time (`preparing`), and an acknowledgement clears only the payload it acknowledges.
+    `test:recovery`: pushes slowed while edits keep coming, every edit arrives and never two are
+    made at once; with the guard taken out, exactly that check failed.
+  - **A share coming in before its sharer's contact record** (seen once in CI, `test:rollback`):
+    the account's second device heard of the share before the settings brought the contact the
+    first device had just made. It took the share in under a plain name - the title's signature
+    could not be checked - and that name won on both devices, and it gave up on the note's keys
+    after three tries: the note stayed empty until a restart. A share or folder from someone whose
+    keys a device does not know yet now waits, and the contact's record arriving takes in what
+    waits and catches up the rooms that met keys it could not open (`Contacts.onKnown`).
+    `test:rollback` makes that order certain; without the waiting nine checks failed (the six CI
+    saw among them), without the catching up four.
   - **A code review** by a separate agent (read-only, 2026-11-09) measured 1.0 % duplicated
     lines and ranked what to split and merge; besides S11 it found a stale-lock race in
     `server/src/durable.ts` (two processes taking a stale lock at once). Its proposals are the
     next round (`docs/PROGRESS.md`).
+  - **A benchmark** by another (`npm run bench`, `docs/PERFORMANCE.md`, merged with this): 5,000
+    notes and 2,000 files, first upload, a new device, a restart, typing on- and offline, a week's
+    catch-up, idle. Besides the lost change above: typing offline grows to 15 ms a keystroke
+    after 20,000 unsent ones (the outbox rewritten whole each time), a restart opens every note,
+    and each subscribe downloads a note's last frame again. Ranked in `docs/PERFORMANCE.md`.
 
 - **0.9.10** (2026-11-08, branch `fix/ci-races`, found and fixed by a separate agent) - **the
   races that showed only in CI.** Each
