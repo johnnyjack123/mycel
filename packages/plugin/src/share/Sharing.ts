@@ -130,6 +130,11 @@ export class Sharing {
     return this.contacts.name(account)
   }
 
+  /** Whether this device can check what someone signs: a contact whose keys are pinned, not replaced since. */
+  knowsSigner(account: string): boolean {
+    return this.contacts.signingKey(account) !== null
+  }
+
   /** The name of a contact; null for an account this one does not know. */
   knownName(account: string): string | null {
     // `Contacts.name` falls back to the id for anyone else.
@@ -591,6 +596,13 @@ export class Sharing {
     if (!this.options.autoAccept()) return waiting.length
     const added = new Map<string, TFile[]>()
     for (const share of waiting) {
+      // Not a contact here yet - the device that made the contact has not passed its record on:
+      // taken in under a plain name, with keys that do not open, the share stayed empty. It
+      // waits for the record (`Contacts.onKnown`).
+      if (!this.knowsSigner(share.owner)) {
+        log.info(`${share.docId}: shared by ${share.owner.slice(0, 8)}, whose keys this device does not know yet; taken in once it does`)
+        continue
+      }
       try {
         const file = await this.accept(share, waiting.length === 1)
         if (file) added.set(share.owner, [...(added.get(share.owner) ?? []), file])

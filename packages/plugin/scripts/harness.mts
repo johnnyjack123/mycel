@@ -388,6 +388,12 @@ export class Device {
     contacts.onConfirmed((account) => {
       this.renewing = this.renewing.then(() => renew(account))
     })
+    // As main.ts: a contact another device made, arrived - what they shared meanwhile comes in now.
+    contacts.onKnown(() => {
+      socket.retryStalled()
+      void this.sharing?.checkIncoming().catch(() => undefined)
+      void this.folders?.checkIncoming().catch(() => undefined)
+    })
     this.contacts = contacts
     const attachmentIndex = new AttachmentIndex(index.doc, (path, generation) => keys.fileId(path, generation))
     this.maxFileBytes = (await this.api.config()).maxFileBytes ?? 0

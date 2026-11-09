@@ -1302,6 +1302,12 @@ export default class MycelPlugin extends Plugin {
       accountSettings
     )
     this.contacts.onConfirmed((account) => void this.renewShares(account))
+    // A contact another device of the account made, arrived: what they shared meanwhile comes in now.
+    this.contacts.onKnown(() => {
+      socket.retryStalled()
+      void this.sharing?.checkIncoming().catch((error: unknown) => log.warn('checking for shared notes failed', error))
+      void this.folders?.checkIncoming().catch((error: unknown) => log.warn('checking for shared folders failed', error))
+    })
     const sharing = new Sharing(
       this.api,
       keys,

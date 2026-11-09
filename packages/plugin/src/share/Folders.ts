@@ -1886,6 +1886,11 @@ export class Folders {
     const { folders } = await this.api.incomingFolders()
     if (!this.options.autoAccept()) return folders.length
     for (const incoming of folders) {
+      // As a note's: someone whose keys this device does not know yet waits for their record.
+      if (!this.sharing.knowsSigner(incoming.owner)) {
+        log.info(`the folder ${incoming.folderId}: shared by ${incoming.owner.slice(0, 8)}, whose keys this device does not know yet; taken in once it does`)
+        continue
+      }
       try {
         await this.accept(incoming)
       } catch (error) {

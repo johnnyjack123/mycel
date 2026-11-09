@@ -8,7 +8,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { check, delay, Device, eventually, failures, finish, useServer } from './harness.mjs'
+import { check, delay, Device, eventually, failures, finish, slowed, useServer } from './harness.mjs'
 
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
@@ -78,13 +78,34 @@ function sameVault(a: Map<string, string>, b: Map<string, string>, prefix = ''):
 
 try {
   for (const device of devices) check(await device.boot(), `${device.username} starts`)
+  // A's second device hears of B's share before A's settings bring B as a contact - the order CI
+  // came to (0.9.11): it took the share in under a plain name, with keys that did not open, gave up
+  // on them, and its name won on both devices.
+  let release = (): void => undefined
+  const settingsHeld = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const unhold = slowed(A2.socket, 'applyFrame', settingsHeld, (registration: { room: string }) => registration.room.startsWith('set:'))
   const code = await (A1.contacts as NonNullable<typeof A1.contacts>).createCode()
   await B.contacts?.redeem(code)
   check(await eventually(() => B.contacts?.name(A1.accountId) !== undefined && A1.contacts?.name(B.accountId) !== undefined), 'A and B are contacts')
   await B.vault.userCreate('From Ben.md', 'written by ben\n')
   check(await eventually(() => B.docText('From Ben.md') === 'written by ben\n'), 'B writes a note')
-  await B.sharing?.share(B.index?.docIdForPath('From Ben.md') as string, A1.accountId, 'write', true)
-  check(await eventually(() => A1.vault.text('Shared/From Ben.md') === 'written by ben\n', 15_000), "B's note is shared into A's vault")
+  const fromBen = B.index?.docIdForPath('From Ben.md') as string
+  // And it gets there first: A's first device, which knows B, asks for its shares a moment later.
+  const unslow = slowed(A1.api, 'incoming', 2_000)
+  await B.sharing?.share(fromBen, A1.accountId, 'write', true)
+  check(await eventually(() => A1.vault.text('Shared/From Ben.md') === 'written by ben\n', 15_000), "B's note is shared into A's vault", A1.vault.paths())
+  unslow()
+  const tries = (): number => (A2.socket as unknown as { registrations: Map<string, { stalls: number }> }).registrations.get(docRoom(fromBen))?.stalls ?? 0
+  check(await eventually(() => tries() >= 3, 30_000), "A's second device, not knowing B yet, gives up on the note's keys", tries())
+  // Its last try comes six seconds after the third: past it, nothing of its own asks again.
+  await delay(7_000)
+  check(!A2.vault.paths().some((path) => path.startsWith('Shared/') && path !== 'Shared/From Ben.md'), 'and takes the share in under no name of its own', A2.vault.paths())
+  release()
+  unhold()
+  check(await eventually(() => A2.vault.text('Shared/From Ben.md') === 'written by ben\n', 15_000), 'once B is known there, the note opens', A2.vault.paths())
+  check(A1.vault.text('Shared/From Ben.md') === 'written by ben\n' && !A1.vault.paths().includes('Shared/Shared note.md'), 'under its own name on both devices', A1.vault.paths())
   await A1.sharing?.share(A1.index?.docIdForPath('Projects/Plan.md') as string, B.accountId, 'write', true)
   check(await eventually(() => B.vault.text('Shared/Plan.md') === 'the plan\n', 15_000), "and A's plan into B's")
   check(
