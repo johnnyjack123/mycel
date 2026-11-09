@@ -158,6 +158,23 @@ export interface SharedAttachment {
   prev?: string
 }
 
+/**
+ * Whose one link in a shared note's text is, and what it means there - kept in
+ * the note's document under the Yjs id of the link's first character, signed by
+ * the account whose device typed it. Only that device writes it, and only for a
+ * link its own edit made: anyone who may write can make a link out of someone
+ * else's letters by deleting what lies between them.
+ */
+export interface LinkClaim {
+  /** The link's path as written, without heading, block or alias. */
+  ref: string
+  account: string
+  /** `note:<docId>`: a note of the account's; `file`: a file, which the note's attachment list carries; `none`: nothing of that name there. */
+  target: string
+  /** Over note, anchor, ref, account and target (`signLinkClaim`). Checked by the account's pinned key: a claim of someone who is no contact here is nobody's. */
+  signature: string
+}
+
 /** A blob in someone's store, as a shared note names it to the server. */
 export interface BlobRef {
   account: string

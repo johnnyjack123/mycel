@@ -165,8 +165,6 @@ export interface RoomOptions {
   create?: boolean
   /** A missing note is created in this shared folder, owned by the folder's owner. */
   folder?: string | null
-  /** A frame taken from the log, before it is applied: its change, and whether this account signed it. */
-  authored?: ((update: Uint8Array, own: boolean) => void) | null
 }
 
 export interface SocketHandlers {
@@ -781,11 +779,6 @@ export class VaultSocket {
     } else {
       log.debug(`${registration.room}: frame #${seq}, ${frame.update.length} B, epoch ${epoch}`)
       const madeAt = changeTime(frame, serverTs, registration.options.crypto.self)
-      try {
-        registration.options.authored?.(frame.update, frame.author === registration.options.crypto.self)
-      } catch (error) {
-        log.debug(`${registration.room}: who wrote frame #${seq} could not be told`, error)
-      }
       this.applyRemote(registration.doc, frame.update, madeAt)
       registration.options.history?.({ authorTs: madeAt, update: frame.update })
     }

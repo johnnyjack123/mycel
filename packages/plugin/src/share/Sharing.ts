@@ -67,6 +67,8 @@ export interface SharingOptions {
   }
   /** A note is shared from here with its files: the files its links show now may go along (`SharedFiles.approve`). */
   approveFiles?: (docId: string) => void
+  /** A note is shared from here: the links it holds that nobody claimed are this account's (`LinkClaims.claimAll`). */
+  claimLinks?: (docId: string) => Promise<void>
 }
 
 /** A note or a folder of this account's, whose members a new key is sealed to. */
@@ -390,6 +392,7 @@ export class Sharing {
     this.store.share(docId, true)
     if (withAttachments !== undefined && !handle.pristine) setAttachmentsShared(handle.doc, withAttachments)
     if (withAttachments) this.options.approveFiles?.(docId)
+    await this.options.claimLinks?.(docId).catch((error: unknown) => log.warn(`${entry.path}: naming its links as this account's failed`, error))
     log.info(
       `${entry.path}: shared with ${account} to ${role}, ${withHistory ? 'with' : 'without'} history${withAttachments ? ', with its files' : ''}`
     )

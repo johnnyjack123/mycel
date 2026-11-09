@@ -15,7 +15,7 @@ import {
 import { additiveEdits, reconcile, type ReconcileOutcome } from './Reconciler.js'
 import { matchesGlob } from './glob.js'
 import { FORK_ORIGIN, RESTORE_ORIGIN, SYNC_ORIGIN } from './origin.js'
-import { seedClientId, seedUpdate } from './seed.js'
+import { seedUpdate } from './seed.js'
 import { memoryHistory, type HistoryEntry, type HistoryStore } from './History.js'
 import type { BackupStore } from './BackupStore.js'
 import type { Review, ReviewKind } from './Reviews.js'
@@ -171,6 +171,7 @@ export class DocStore {
   /** Paths this device is moving to the trash for a delete made elsewhere: their delete event is no delete made here. */
   private readonly trashing = new Set<string>()
   private readonly readyListeners = new Set<() => void>()
+  private readonly openedListeners = new Set<(docId: string, handle: DocHandle) => void>()
   private readonly leaveListeners = new Set<(docId: string) => void>()
   private readonly localListeners = new Set<(change: LocalChange) => void>()
   private readonly reviewListeners = new Set<(review: Omit<Review, 'id'>) => void>()
@@ -566,6 +567,13 @@ export class DocStore {
       this.handles.set(docId, handle)
       this.touch(docId)
       await handle.open()
+      for (const listener of this.openedListeners) {
+        try {
+          listener(docId, handle)
+        } catch (error) {
+          log.warn(`${docId}: a listener to its opening failed`, error)
+        }
+      }
       handle.ytext.observe((_event, transaction) => {
         if (this.editorOwned.has(docId)) this.hold(docId, handle.text())
         if (transaction.origin === SYNC_ORIGIN) return
@@ -834,7 +842,6 @@ export class DocStore {
       this.applyToDocument(handle, mergeAdditively(current, text))
       return handle.text()
     }
-    handle.localClients.add(seedClientId(handle.docId, text))
     Y.applyUpdate(handle.doc, seedUpdate(handle.docId, text), SYNC_ORIGIN)
     // A seed applied and deleted before is a no-op in Yjs. `reconcile` seeds
     // only documents that never carried anything, so that should not happen -
@@ -1878,6 +1885,12 @@ export class DocStore {
 
   isLoaded(docId: string): boolean {
     return this.handles.has(docId)
+  }
+
+  /** Fires for every note opened, once its local state is in and before anything else of this store reacts to its edits. */
+  onOpened(listener: (docId: string, handle: DocHandle) => void): () => void {
+    this.openedListeners.add(listener)
+    return () => this.openedListeners.delete(listener)
   }
 
   trackedCount(): number {

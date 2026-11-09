@@ -1,4 +1,4 @@
-import { docRoom, folderRoom, indexRoom, settingsRoom, tiesAscend, type FolderTie, type KeysResponse } from '@mycel/shared'
+import { docRoom, folderRoom, indexRoom, settingsRoom, tiesAscend, type FolderTie, type KeysResponse, type LinkClaim } from '@mycel/shared'
 import {
   aesKey,
   blobIdFor,
@@ -12,6 +12,7 @@ import {
   packSignedFrame,
   packSignedPresence,
   seal,
+  signLinkClaim,
   signSealed,
   signWriterCert,
   splitSealed,
@@ -22,6 +23,7 @@ import {
   utf8,
   vaultKeys,
   verifyFrame,
+  verifyLinkClaim,
   verifyPresence,
   verifySealed,
   verifyWriterCert,
@@ -363,6 +365,19 @@ export class KeyRing {
   /** A snapshot or starting point this account makes of a room of its own, signed as its owner. */
   packAsOwner(room: string, epoch: number, authorTs: number, update: Uint8Array): Promise<Bytes> {
     return packSignedFrame(this.account.signing.privateKey, room, epoch, this.account.accountId, null, authorTs, update)
+  }
+
+  /** This account's word that it typed a link into a shared note, and what the link means in its vault. */
+  async claimLink(note: string, anchor: string, ref: string, target: string): Promise<LinkClaim> {
+    const account = this.account.accountId
+    return { ref, account, target, signature: await signLinkClaim(this.account.signing.privateKey, note, anchor, ref, account, target) }
+  }
+
+  /** Whether a link's claim holds: signed by this account or a contact. Anyone else's is nobody's, as a caret of theirs is. */
+  async checkLinkClaim(note: string, anchor: string, claim: LinkClaim): Promise<boolean> {
+    const key = typeof claim.account === 'string' ? this.signerPublicKey(claim.account) : null
+    if (!key || typeof claim.ref !== 'string' || typeof claim.target !== 'string' || typeof claim.signature !== 'string') return false
+    return verifyLinkClaim(key, note, anchor, claim.ref, claim.account, claim.target, claim.signature)
   }
 
   /** This account's certificate, as a room's owner, that `account` may write there with `signingKey` in an epoch. */

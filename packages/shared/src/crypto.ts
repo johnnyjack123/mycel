@@ -422,6 +422,28 @@ function contactRemovalMessage(remover: string, removed: string, at: number): st
   return `contact-removed|${remover}|${removed}|${at}`
 }
 
+/** What an account signs for a link it typed into a shared note (`LinkClaim`): which note, which link there, what it means. */
+function linkClaimMessage(note: string, anchor: string, ref: string, account: string, target: string): string {
+  // JSON, not a separator: a link's path may hold any character.
+  return `link-claim|${JSON.stringify([note, anchor, ref, account, target])}`
+}
+
+export function signLinkClaim(signingKey: CryptoKey, note: string, anchor: string, ref: string, account: string, target: string): Promise<string> {
+  return sign(signingKey, linkClaimMessage(note, anchor, ref, account, target))
+}
+
+export function verifyLinkClaim(
+  publicKey: Bytes,
+  note: string,
+  anchor: string,
+  ref: string,
+  account: string,
+  target: string,
+  signature: string
+): Promise<boolean> {
+  return verifySignature(publicKey, linkClaimMessage(note, anchor, ref, account, target), signature)
+}
+
 export function signContactRemoval(signingKey: CryptoKey, remover: string, removed: string, at: number): Promise<string> {
   return sign(signingKey, contactRemovalMessage(remover, removed, at))
 }

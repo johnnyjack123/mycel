@@ -50,6 +50,7 @@ const { EditorSync } = await import('../src/editor/EditorSync.js')
 const { Sharing } = await import('../src/share/Sharing.js')
 const { Folders } = await import('../src/share/Folders.js')
 const { SharedFiles } = await import('../src/share/SharedFiles.js')
+const { LinkClaims, notePeople } = await import('../src/share/LinkClaims.js')
 const { Contacts } = await import('../src/share/Contacts.js')
 const { openInviteSession, openPairingSession } = await import('../src/backup/BackupLink.js')
 const { Backups } = await import('../src/backup/Backups.js')
@@ -178,6 +179,11 @@ export class Device {
   store: DocStoreT | null = null
   attachments: InstanceType<typeof AttachmentStore> | null = null
   sharedFiles: InstanceType<typeof SharedFiles> | null = null
+  linkClaims: InstanceType<typeof LinkClaims> | null = null
+  /** Every time a link typed here named a note of this vault the people in the note lack: what was asked. */
+  readonly linkQuestions: Array<import('../src/share/LinkClaims.js').LinkQuestion> = []
+  /** Whether the person says yes to that question at once. */
+  linkAnswer = false
   attachmentIndex: InstanceType<typeof AttachmentIndex> | null = null
   /** This device's download limit for attachments, in bytes; null fetches everything. */
   downloadLimit: number | null = null
@@ -408,7 +414,8 @@ export class Device {
           get: (room, account) => settings.shareRole(room, account),
           set: (room, account, role) => settings.setShareRole(room, account, role)
         },
-        approveFiles: (docId) => this.sharedFiles?.approve(docId)
+        approveFiles: (docId) => this.sharedFiles?.approve(docId),
+        claimLinks: async (docId) => this.linkClaims?.claimAll(docId)
       },
       contacts
     )
@@ -421,7 +428,17 @@ export class Device {
       socket,
       this.locals.open,
       sharing,
-      { shareFolder: () => 'Shared', syncTimeoutMs: 4_000, autoAccept: () => true, settleMs: 300, decideMs: 2_000 },
+      {
+        shareFolder: () => 'Shared',
+        syncTimeoutMs: 4_000,
+        autoAccept: () => true,
+        settleMs: 300,
+        decideMs: 2_000,
+        foreignLink: (path, ref) => {
+          const docId = store.docIdForPath(path)
+          return docId ? (this.linkClaims?.othersOnly(docId, ref) ?? false) : false
+        }
+      },
       {
         moveIn: async (question) => {
           this.askedMoveIn.push(question.path)
@@ -458,11 +475,32 @@ export class Device {
       if (roomKind(room) === 'fld') void folders.catchUpEpoch(subject)
       else if (roomKind(room) === 'doc' && store.entry(subject) && !store.entry(subject)?.owner) void sharing.catchUpEpoch(subject)
     })
+    // As main.ts: before the first note opens.
+    const linkClaims = new LinkClaims(app as never, store, keys, {
+      settleMs: 150,
+      askMs: 500,
+      deliveredPath: (docId, ref) => attachments.delivered(docId, ref)?.entry.path ?? null,
+      people: notePeople(this.api, store, unlocked.accountId),
+      name: (account) => sharing.knownName(account),
+      asked: (note, target) => settings.linkAsked(note, target),
+      markAsked: (note, target) => settings.markLinkAsked(note, target),
+      ask: (question) => {
+        this.linkQuestions.push(question)
+        if (this.linkAnswer) void linkClaims.shareLinked(question)
+      },
+      share: (target, person, landing) => sharing.share(target, person.account, person.role, false, undefined, landing)
+    })
+    this.linkClaims = linkClaims
     const sharedFiles = new SharedFiles(app as never, store, attachments, this.api, keys, {
       folder: () => 'Shared',
       syncTimeoutMs: 4_000,
       claimDelayMs: 300,
+      claimed: (docId, ref) => linkClaims.ownsRef(docId, ref),
       folders
+    })
+    linkClaims.onChange((docId) => {
+      const entry = store.entry(docId)
+      if (entry?.shared || entry?.owner) sharedFiles.schedule(docId)
     })
     this.sharedFiles = sharedFiles
     this.store = store
@@ -792,6 +830,8 @@ export class Device {
     this.folders = null
     this.sharedFiles?.stop()
     this.sharedFiles = null
+    this.linkClaims?.stop()
+    this.linkClaims = null
     const attachments = this.attachments
     this.attachments = null
     await attachments?.stop()

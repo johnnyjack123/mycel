@@ -27,7 +27,7 @@ import type { AttachmentStore, LocalFileChange } from '../sync/AttachmentStore.j
 import type { DocStore, LocalChange } from '../sync/DocStore.js'
 import { FolderIndex } from '../sync/FolderIndex.js'
 import { FolderFiles } from './FolderFiles.js'
-import { linkedFiles, linkedOutside, type LinkedNote } from './LinkedNotes.js'
+import { linkedFiles, linkedOutside, type ForeignLink, type LinkedNote } from './LinkedNotes.js'
 import type { IdScheme, VaultIndex } from '../sync/VaultIndex.js'
 import type { VaultSocket } from '../sync/VaultSocket.js'
 import type { Sharing } from './Sharing.js'
@@ -59,6 +59,8 @@ export interface FoldersOptions {
    * only once it is older than that.
    */
   decideMs: number
+  /** A link someone else typed: the notes a note moved in links to go along only through links of this account's. */
+  foreignLink?: ForeignLink
 }
 
 /** An existing note moved into a shared folder: it goes into the share only once someone said so. */
@@ -1190,7 +1192,7 @@ export class Folders {
   private linkedAlong(folder: VaultFolder, path: string): LinkedNote[] {
     const note = this.app.vault.getAbstractFileByPath(path)
     if (!(note instanceof TFile)) return []
-    return linkedOutside(this.app.metadataCache, this.store, [note], folder.path, (account) => this.sharing.nameOf(account))
+    return linkedOutside(this.app.metadataCache, this.store, [note], folder.path, (account) => this.sharing.nameOf(account), this.options.foreignLink)
   }
 
   /**

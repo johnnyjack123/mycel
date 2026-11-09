@@ -10,6 +10,7 @@ import {
   setIcon,
   type TAbstractFile
 } from 'obsidian'
+import type { EditorState } from '@codemirror/state'
 import * as Y from 'yjs'
 import { Notice, noticeWithAction, notices } from './notices.js'
 import { gateApp } from './guard.js'
@@ -61,7 +62,9 @@ import { FolderAccessModal, MoveInModal, OutsideModal, ShareFolderModal } from '
 import { Folders, type DeletedBatch, type FolderNews } from './share/Folders'
 import { IncomingModal } from './share/IncomingModal'
 import { ShareModal } from './share/ShareModal'
-import { linkedNotes, linkedOutside } from './share/LinkedNotes'
+import { linkedNotes, linkedOutside, type ForeignLink } from './share/LinkedNotes'
+import { LinkClaims, notePeople, type LinkPerson, type LinkQuestion } from './share/LinkClaims'
+import { describeTheirs, guardLinkOpening, linkGuardExtension, markRendered, type LinkGuardHost } from './share/LinkGuard'
 import { Contacts, type OpenCode } from './share/Contacts'
 import { Sharing, type MemberPlace } from './share/Sharing'
 import { UnknownMembersModal } from './share/UnknownMembersModal'
@@ -115,8 +118,12 @@ const FOLDER_DECIDE_MS = 30_000
 const TRASHED_BY_ROLLBACK_MS = 10 * 60 * 1000
 // Shared notes' files are compared with their lists this often, besides on every change.
 const SHARED_FILES_EVERY_MS = 60_000
-// A link no list names yet waits this long before this device lists its own file for it.
+// A link no list names yet waits this long for this account's claim before it is left alone.
 const SHARED_FILES_CLAIM_MS = 10_000
+// A link typed into a shared note is named as this account's this long after the last keystroke there,
+const LINK_SETTLE_MS = 1_200
+// and asked about - a note of this vault that the people in it lack - only once the typing stopped.
+const LINK_ASK_MS = 5_000
 // How often the backup servers are asked whether the vault's backups are well; the first time a minute after starting.
 const BACKUP_CHECK_EVERY_MS = 6 * 60 * 60 * 1000
 const BACKUP_CHECK_DELAY_MS = 60 * 1000
@@ -291,6 +298,25 @@ export default class MycelPlugin extends Plugin {
   private readonly unknownMembersShown = new Set<string>()
   private readonly folderMarks = new FolderMarks()
   private sharedFiles: SharedFiles | null = null
+  private linkClaims: LinkClaims | null = null
+  /** Editors and the reading view follow the links of shared notes across restarts of the sync, through this. */
+  private readonly linkListeners = new Set<(docId: string) => void>()
+  private readonly linkHost: LinkGuardHost = {
+    docIdFor: (path) => this.store?.docIdForPath(path) ?? null,
+    linksOf: (docId) => this.linkClaims?.linksOf(docId) ?? [],
+    onChange: (listener) => {
+      this.linkListeners.add(listener)
+      return () => this.linkListeners.delete(listener)
+    },
+    leadsNowhere: (link) => {
+      new Notice(`"${link.ref}" is ${describeTheirs(link)} - it leads nowhere here.`, 8_000)
+    }
+  }
+  /** Whether every link to `ref` in a note is someone else's: notes shared along with it follow only this account's. */
+  private readonly foreignLink: ForeignLink = (path, ref) => {
+    const docId = this.store?.docIdForPath(path)
+    return docId ? (this.linkClaims?.othersOnly(docId, ref) ?? false) : false
+  }
   private contacts: Contacts | null = null
   private compactor: Compactor | null = null
   private trash: Trash | null = null
@@ -380,6 +406,7 @@ export default class MycelPlugin extends Plugin {
         this.sharedFiles.approve(docId, ref)
       })
     )
+    this.register(notices.handle('share-linked-note', async (data) => this.shareLinkedNote(data)))
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => this.noteMenu(menu, file)))
     this.registerEvent(
       this.app.workspace.on('editor-menu', (menu, _editor, info) => {
@@ -392,6 +419,11 @@ export default class MycelPlugin extends Plugin {
     // Obsidian adds this to every Markdown editor and keeps it there across
     // file switches and mode changes.
     this.registerEditorExtension(this.editors.extension)
+    // Someone else's links in a shared note: marked, and opening what they mean here or nothing (`LinkClaims`).
+    const fileOf = (state: EditorState): { path: string } | null => state.field(editorInfoField, false)?.file ?? null
+    this.registerEditorExtension(linkGuardExtension(this.linkHost, fileOf))
+    this.registerMarkdownPostProcessor((el, context) => markRendered(this.linkHost, el, context.sourcePath))
+    this.register(guardLinkOpening(this.app.workspace, this.linkHost))
     // A note showing its past: read-only, its changes against now marked. A locked note: read-only, and says so.
     this.registerEditorExtension(
       pastEditorExtension(
@@ -1290,7 +1322,8 @@ export default class MycelPlugin extends Plugin {
           get: (room, account) => accountSettings.shareRole(room, account),
           set: (room, account, role) => accountSettings.setShareRole(room, account, role)
         },
-        approveFiles: (docId) => this.sharedFiles?.approve(docId)
+        approveFiles: (docId) => this.sharedFiles?.approve(docId),
+        claimLinks: async (docId) => this.linkClaims?.claimAll(docId)
       },
       this.contacts
     )
@@ -1310,7 +1343,8 @@ export default class MycelPlugin extends Plugin {
         syncTimeoutMs: this.settings.syncTimeoutMs,
         autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1,
         settleMs: FOLDER_SETTLE_MS,
-        decideMs: FOLDER_DECIDE_MS
+        decideMs: FOLDER_DECIDE_MS,
+        foreignLink: this.foreignLink
       },
       {
         moveIn: (question) => {
@@ -1330,17 +1364,32 @@ export default class MycelPlugin extends Plugin {
     this.folders = folders
     const index = this.index
     const unwatchFolders = index.onFoldersChange(() => this.renderFolderMarks())
+    // Before the first note opens: whose a link is, it sees from the first keystroke.
+    const attachments = this.attachments
+    const linkClaims = new LinkClaims(this.app, store, keys, {
+      settleMs: LINK_SETTLE_MS,
+      askMs: LINK_ASK_MS,
+      deliveredPath: (docId, ref) => attachments.delivered(docId, ref)?.entry.path ?? null,
+      people: notePeople(this.api, store, unlocked.accountId),
+      name: (account) => sharing.knownName(account),
+      asked: (note, target) => accountSettings.linkAsked(note, target),
+      markAsked: (note, target) => accountSettings.markLinkAsked(note, target),
+      ask: (question) => this.askLinkedNote(question),
+      share: (target, person, landing) => sharing.share(target, person.account, person.role, false, undefined, landing)
+    })
+    this.linkClaims = linkClaims
+    linkClaims.onChange((docId) => {
+      // A link of this account's: its file may go along now.
+      const entry = store.entry(docId)
+      if (entry?.shared || entry?.owner) this.sharedFiles?.schedule(docId)
+      for (const listener of this.linkListeners) listener(docId)
+    })
     this.sharedFiles = new SharedFiles(this.app, store, this.attachments, this.api, keys, {
       folder: () => this.shared().sharedFolder,
       syncTimeoutMs: this.settings.syncTimeoutMs,
       claimDelayMs: SHARED_FILES_CLAIM_MS,
-      folders,
-      ask: ({ docId, ref, note, file }) =>
-        noticeWithAction(
-          `"${note}" links ${file} of this vault, and the link was not typed on this device. Anyone who may write in a shared note can type a link, so it goes to everyone in the note only if you say so.`,
-          0,
-          { label: `Share ${file.slice(file.lastIndexOf('/') + 1)}`, kind: 'share-linked-file', data: { docId, ref } }
-        )
+      claimed: (docId, ref) => linkClaims.ownsRef(docId, ref),
+      folders
     })
     this.compactor = new Compactor(this.api, keys, () => this.shared().historyRetentionDays)
     this.trash = new Trash(this.api, store, () => this.shared().historyRetentionDays, this.attachments, folders)
@@ -1987,6 +2036,8 @@ export default class MycelPlugin extends Plugin {
     this.folderMarks.destroy()
     this.sharedFiles?.stop()
     this.sharedFiles = null
+    this.linkClaims?.stop()
+    this.linkClaims = null
     // Before the notes: stopping those closes the state both write to.
     const attachments = this.attachments
     this.attachments = null
@@ -2221,8 +2272,41 @@ export default class MycelPlugin extends Plugin {
     }
     const files = this.attachments?.isReady && this.sharedFiles ? this.sharedFiles.summary(note.file) : null
     const sharing = this.sharing
-    const linked = linkedNotes(this.app.metadataCache, this.store, note.file, (account) => sharing.nameOf(account))
+    const linked = linkedNotes(this.app.metadataCache, this.store, note.file, (account) => sharing.nameOf(account), this.foreignLink)
     new ShareModal(this.app, sharing, note.file, note.docId, this.contactList(), files, linked).open()
+  }
+
+  /**
+   * A link typed here into a shared note names a note of this vault that
+   * people in it do not have: for them it leads nowhere. Asked once, in a
+   * notice that stays - typing goes on -, and in the notification center.
+   */
+  private askLinkedNote(question: LinkQuestion): void {
+    const title = (path: string): string => path.slice(path.lastIndexOf('/') + 1).replace(/\.md$/i, '')
+    const names = question.people.map((person) => `${person.name} (${person.role === 'write' ? 'to edit' : 'to read'})`)
+    const who = names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
+    const them = question.people.length === 1 ? (question.people[0]?.name ?? 'them') : 'them'
+    noticeWithAction(
+      `"${title(question.notePath)}" links "${title(question.targetPath)}", a note of yours that ${who} ${question.people.length === 1 ? 'does' : 'do'} not have - for ${them} the link leads nowhere. Share it with ${them}, without its history?`,
+      0,
+      {
+        label: `Share "${title(question.targetPath)}"`,
+        kind: 'share-linked-note',
+        data: { target: question.target, ref: question.ref, people: question.people.map(({ account, role }) => ({ account, role })) }
+      }
+    )
+  }
+
+  private async shareLinkedNote(data: unknown): Promise<void> {
+    const { target, ref, people } = (data ?? {}) as { target?: unknown; ref?: unknown; people?: unknown }
+    const valid = (person: unknown): person is LinkPerson =>
+      typeof person === 'object' && person !== null && typeof (person as LinkPerson).account === 'string' && ['read', 'write'].includes((person as LinkPerson).role)
+    if (typeof target !== 'string' || typeof ref !== 'string' || !Array.isArray(people) || !people.every(valid)) return
+    if (!this.linkClaims) throw new Error('Sync is not running.')
+    const outcome = await this.linkClaims.shareLinked({ target, ref, people })
+    const path = this.store?.entry(target)?.path ?? ref
+    if (outcome.failed > 0) new Notice(`Sharing ${path} failed for ${outcome.failed} of ${people.length}. The log says why.`, 10_000)
+    else new Notice(outcome.shared > 0 ? `${path} is shared - the link leads to it now.` : `${path} was shared with them already.`, 6_000)
   }
 
   private openAccess(file?: TFile): void {
@@ -2347,7 +2431,7 @@ export default class MycelPlugin extends Plugin {
     }
     const sharing = this.sharing
     const inside = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(`${path}/`))
-    const linked = linkedOutside(this.app.metadataCache, this.store, inside, path, (account) => sharing.nameOf(account))
+    const linked = linkedOutside(this.app.metadataCache, this.store, inside, path, (account) => sharing.nameOf(account), this.foreignLink)
     new ShareFolderModal(this.app, this.folders, sharing, path, this.contactList(), linked).open()
   }
 
