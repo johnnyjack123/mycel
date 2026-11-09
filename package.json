@@ -29,7 +29,8 @@
     "test:backup": "npm run test:backup -w @mycel/plugin",
     "test:rollback": "npm run test:rollback -w @mycel/plugin",
     "test:timemachine": "npm run test:timemachine -w @mycel/plugin",
-    "test:replace": "npm run test:replace -w @mycel/plugin"
+    "test:replace": "npm run test:replace -w @mycel/plugin",
+    "bench": "npm run bench -w @mycel/plugin --"
   },
   "overrides": {
     "@codemirror/state": "6.5.0",

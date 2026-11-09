@@ -20,7 +20,8 @@
     "test:rollback": "tsx --tsconfig scripts/tsconfig.json scripts/rollback-selftest.mts",
     "test:timemachine": "tsx --tsconfig scripts/tsconfig.json scripts/timemachine-selftest.mts",
     "test:replace": "tsx --tsconfig scripts/tsconfig.json scripts/replace-selftest.mts",
-    "test:security": "tsx --tsconfig scripts/tsconfig.json scripts/security-selftest.mts"
+    "test:security": "tsx --tsconfig scripts/tsconfig.json scripts/security-selftest.mts",
+    "bench": "tsx --expose-gc --tsconfig scripts/tsconfig.json scripts/bench.mts"
   },
   "dependencies": {
     "@mycel/shared": "*",
