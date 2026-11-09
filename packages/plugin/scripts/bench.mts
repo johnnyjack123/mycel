@@ -643,7 +643,9 @@ async function deviceRole(): Promise<void> {
     http: { requests: 0, bytesOut: 0, bytesIn: 0 },
     vault: { reads: 0, writes: 0, creates: 0, readBytes: 0 },
     adapter: { writes: 0, writeBytes: 0, reads: 0, exists: 0 },
-    history: { adds: 0 }
+    history: { adds: 0 },
+    cursor: { indexFlushes: 0, indexBytes: 0, otherFlushes: 0, otherBytes: 0 },
+    race: { overlappingSendNext: 0, ackClearsAnotherPayload: 0, bytesNeverSent: 0 }
   }
   const bump = (group: string, key: string, by = 1): void => {
     const inner = counters[group] as Counters
@@ -695,13 +697,67 @@ async function deviceRole(): Promise<void> {
   type LocalStore = import('../src/sync/DocHandle.js').LocalStore
   type Device = InstanceType<typeof harness.Device>
 
-  const vaultSocketProto = VaultSocket.prototype as unknown as { receive(message: Uint8Array): void }
+  // What every write of a room's cursor serializes: its unacknowledged changes, base64 in JSON.
+  const { LocalCursor } = await import('../src/sync/DocHandle.js')
+  const cursorProto = LocalCursor.prototype as unknown as { flush(): Promise<void> }
+  const realFlush = cursorProto.flush
+  cursorProto.flush = function (this: { sending: Uint8Array | null; outbox: Uint8Array | null }) {
+    const index = (device?.store as unknown as { indexCursor?: unknown } | null)?.indexCursor === this
+    bump('cursor', index ? 'indexFlushes' : 'otherFlushes')
+    bump('cursor', index ? 'indexBytes' : 'otherBytes', (this.sending?.length ?? 0) + (this.outbox?.length ?? 0))
+    return realFlush.call(this)
+  }
+
+  // Every change of the vault index the server acknowledged: whether they rebuild this device's index is checked after the upload.
+  const indexAcked: Uint8Array[] = []
+
+  /** Clients whose changes a document waits for: some clock range of theirs never arrived. */
+  function waitingFor(doc: YDoc): Record<string, number> {
+    const pending = (doc.store as unknown as { pendingStructs: { missing: Map<number, number> } | null }).pendingStructs
+    return pending ? Object.fromEntries(Array.from(pending.missing, ([client, clock]) => [String(client), clock])) : {}
+  }
+
+  const decoding = await import('lib0/decoding')
+  type Sending = { inflight: number | null; inflightFrame: { payload: Uint8Array } | null; options: { cursor: { sending: Uint8Array | null } } }
+  const vaultSocketProto = VaultSocket.prototype as unknown as {
+    receive(message: Uint8Array): void
+    sendNext(registration: unknown): Promise<void>
+  }
   const realReceive = vaultSocketProto.receive
-  vaultSocketProto.receive = function (this: unknown, message: Uint8Array) {
+  vaultSocketProto.receive = function (this: { registrations: Map<string, Sending> }, message: Uint8Array) {
     const type = muxName.get(message[0] as number) ?? `type${message[0]}`
     bump('wsIn', type)
     bump('wsIn', `${type}Bytes`, message.length)
+    if (message[0] === shared.MUX.ack) {
+      // The acknowledgement clears `cursor.sending`: it must be for what `cursor.sending` holds, or that is never sent.
+      const decoder = decoding.createDecoder(message)
+      decoding.readVarUint(decoder)
+      const room = decoding.readVarString(decoder)
+      const registration = this.registrations.get(room)
+      const ref = decoding.readVarUint(decoder)
+      const sending = registration?.options.cursor.sending ?? null
+      if (registration && registration.inflight === ref && registration.inflightFrame) {
+        if (room.startsWith('idx:')) indexAcked.push(registration.inflightFrame.payload.slice())
+        if (sending !== registration.inflightFrame.payload) {
+          bump('race', 'ackClearsAnotherPayload')
+          bump('race', 'bytesNeverSent', sending?.length ?? 0)
+        }
+      }
+    }
     return realReceive.call(this, message)
+  }
+  // Two `sendNext` of one room at once: the second can send what the first already sent.
+  const sendingNow = new WeakMap<object, number>()
+  const realSendNext = vaultSocketProto.sendNext
+  vaultSocketProto.sendNext = async function (this: unknown, registration: object) {
+    const running = (sendingNow.get(registration) ?? 0) + 1
+    sendingNow.set(registration, running)
+    if (running > 1) bump('race', 'overlappingSendNext')
+    try {
+      return await realSendNext.call(this, registration)
+    } finally {
+      sendingNow.set(registration, (sendingNow.get(registration) ?? 1) - 1)
+    }
   }
 
   /** The device's own history, as the harness keeps it, with what it holds counted. */
@@ -1116,7 +1172,17 @@ async function deviceRole(): Promise<void> {
           clearInterval(watcher)
         }
       }, () => ({ loaded: target.store?.loadedCount() ?? 0 }))
-      return { measured, digest: vaultDigest(target), opened: opened() }
+      // What the server acknowledged of the index has to rebuild it: a clock range never sent leaves every later change waiting elsewhere.
+      const rebuilt = new Y.Doc()
+      for (const update of indexAcked) Y.applyUpdate(rebuilt, update)
+      const own = target.index?.doc
+      const indexCheck = {
+        updatesAcknowledged: indexAcked.length,
+        waitingFor: waitingFor(rebuilt),
+        complete: own !== undefined && Buffer.from(Y.encodeStateVector(rebuilt)).equals(Buffer.from(Y.encodeStateVector(own)))
+      }
+      if (!indexCheck.complete) progress(`what the server acknowledged of the index does not rebuild A's index: ${JSON.stringify(indexCheck)}`)
+      return { measured, digest: vaultDigest(target), opened: opened(), indexCheck }
     },
 
     /** A new device of the same account syncs a vault another one filled. */
@@ -1130,7 +1196,23 @@ async function deviceRole(): Promise<void> {
         try {
           await bootOrFail(target)
           mark('boot')
-          await until(() => target.vault.getMarkdownFiles().length >= notes, 'notes arriving')
+          // Nothing new for two minutes is no slow sync: say what the index waits for instead of waiting an hour.
+          let seen = -1
+          let since = Date.now()
+          await until(() => {
+            const count = target.vault.getMarkdownFiles().length
+            if (count !== seen) {
+              seen = count
+              since = Date.now()
+            }
+            if (Date.now() - since > 120_000) {
+              const doc = target.index?.doc
+              throw new Error(
+                `no note arrived for two minutes at ${count} of ${notes}; the index has ${target.store?.trackedCount()} notes and waits for ${JSON.stringify(doc ? waitingFor(doc) : null)}`
+              )
+            }
+            return count >= notes
+          }, 'notes arriving')
           mark('notes')
           await until(() => target.vault.getFiles().length - target.vault.getMarkdownFiles().length >= files, 'files arriving')
           mark('files')
@@ -1342,7 +1424,9 @@ async function deviceRole(): Promise<void> {
         if ((round + 1) % 10 === 0) progress(`a week of edits: ${round + 1} of ${args.framesPerNote} rounds`)
       }
       const ms = round(performance.now() - started, 0)
-      const frames = ((diffCounters(counters, before).wsOut as Counters | undefined)?.push as number | undefined) ?? 0
+      const delta = diffCounters(counters, before)
+      const frames = ((delta.wsOut as Counters | undefined)?.push as number | undefined) ?? 0
+      const race = delta.race ?? {}
       const expected = handles.map((handle, index) => {
         const text = handle.text()
         return { path: args.paths[index] as string, length: text.length, hash: createHash('sha256').update(text).digest('hex') }
@@ -1350,7 +1434,7 @@ async function deviceRole(): Promise<void> {
       for (const path of args.paths) store.unpin(docIdOf(path))
       await settle(() => settled(target), 'writing the week of edits')
       await target.shutdown()
-      return { ms, frames, expected }
+      return { ms, frames, race, expected }
     },
 
     /** Back after the week: the other device's frames caught up. */
@@ -1505,7 +1589,9 @@ function traffic(m: Measured): string {
     `out: ${get('wsOut', 'subscribe')} subscribes, ${get('wsOut', 'push')} pushes ${kb(get('wsOut', 'pushBytes'))}, ${get('wsOut', 'watch')} watch msgs`,
     `http ${get('http', 'requests')} req`,
     `verify ${get('crypto', 'verify:ECDSA')}, sign ${get('crypto', 'sign:ECDSA')}, decrypt ${get('crypto', 'decrypt:AES-GCM')}, sha ${get('crypto', 'digest:SHA-256')}`,
-    `files read ${get('vault', 'reads')}, plugin-folder writes ${get('adapter', 'writes')} ${kb(get('adapter', 'writeBytes'))}`
+    `files read ${get('vault', 'reads')}, plugin-folder writes ${get('adapter', 'writes')} ${kb(get('adapter', 'writeBytes'))}`,
+    `cursor writes: index ${get('cursor', 'indexFlushes')} of ${kb(get('cursor', 'indexBytes'))}, notes ${get('cursor', 'otherFlushes')} of ${kb(get('cursor', 'otherBytes'))} unsent`,
+    `sendNext overlapping ${get('race', 'overlappingSendNext')}, acks clearing a payload never sent ${get('race', 'ackClearsAnotherPayload')} (${kb(get('race', 'bytesNeverSent'))})`
   ]
   return parts.join('; ')
 }
@@ -1617,9 +1703,11 @@ async function orchestrate(): Promise<void> {
       sizeResult.vault = { files: built.files, contentMB: built.contentMB }
       sizeResult.processBaseline = built.baseline
       console.log(`  vault: ${built.files} files, ${built.contentMB} MB; a device process before its device: ${JSON.stringify(built.baseline)}`)
-      const upload = await withServer('upload', () => A.call<{ measured: Measured; digest: string; opened: number }>('upload'))
+      const upload = await withServer('upload', () =>
+        A.call<{ measured: Measured; digest: string; opened: number; indexCheck: { complete: boolean; waitingFor: Record<string, number> } }>('upload')
+      )
       sizeResult.serverDisk = await server.call('disk')
-      console.log(line('upload (A, first device)', upload, `opened ${upload.opened}`))
+      console.log(line('upload (A, first device)', upload, `opened ${upload.opened}, the server holds the whole index: ${upload.indexCheck.complete}`))
       printProfile('upload', upload.measured.profile)
       printProfile('upload (server)', upload.server.profile)
       await A.call('stop')
@@ -1693,9 +1781,12 @@ async function orchestrate(): Promise<void> {
         await B.call('stop')
         const framesPerNote = Math.max(1, Math.round(config.catchupFrames / notes.catchup.length))
         console.log(`  A makes ${framesPerNote} frames in each of ${notes.catchup.length} notes while B is away ...`)
-        const generated = await A.call<{ ms: number; frames: number; expected: Array<{ path: string; length: number; hash: string }> }>('generate', { paths: notes.catchup, framesPerNote })
-        sizeResult.generate = { ms: generated.ms, frames: generated.frames }
-        console.log(`  ... ${generated.frames} frames in ${round(generated.ms / 1000, 1)} s`)
+        const generated = await A.call<{ ms: number; frames: number; race: Counters; expected: Array<{ path: string; length: number; hash: string }> }>('generate', {
+          paths: notes.catchup,
+          framesPerNote
+        })
+        sizeResult.generate = { ms: generated.ms, frames: generated.frames, race: generated.race }
+        console.log(`  ... ${generated.frames} frames in ${round(generated.ms / 1000, 1)} s; sendNext races ${JSON.stringify(generated.race)}`)
         const catchup = await withServer('catchup', () => B.call<{ measured: Measured; same: boolean; wrong: number; opened: number; loadedAfter: number }>('catchup', { expected: generated.expected }))
         console.log(line('catch-up (B, a week away)', catchup, `same as A: ${catchup.same}, opened ${catchup.opened}, loaded after ${catchup.loadedAfter}`))
         printProfile('catchup', catchup.measured.profile)
