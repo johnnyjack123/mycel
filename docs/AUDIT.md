@@ -129,7 +129,22 @@ What 0.9.8 left open, closed in the round after it. Each has a check in `test:se
 
 And P4 more precisely: a link typed on another device of the same account - its signed frames
 say which Yjs clients are the account's - counts as typed here; any other account's frame
-using a client id takes it out of that for good.
+using a client id takes it out of that for good. (Replaced in 0.9.11, below: P11.)
+
+## Found after 0.9.10, fixed in 0.9.11
+
+| # | Severity | Where | Who | What it was | What changed |
+|---|---|---|---|---|---|
+| P11 | high | plugin | a member who may write | P4's fix asked whether every letter of a link was typed by this account, passing over deleted ones. Nobody can forge another's letters, but anyone who may write can delete what lies between them: two links and some words the victim typed were cut down to `![[passport.pdf]]`, and the victim's device shared its file of that name, unasked | A link is someone's only by a claim (`LinkClaim`, `share/LinkClaims.ts`): written into the note's document by the device whose own edit - typed into the editor or the file - made or changed that link, signed by its account, bound to the note, the link's first character, its path and what it means there. Someone else's change touching the link afterwards leaves it unclaimed. A file goes into a shared note's list only for a link of this account's claim, and nobody is asked about anyone else's link any more |
+| S11 | medium | server | server + a member, narrow | 0.9.9 let an owner move a note past a server that went back (R1). Within a shared folder's rotation, its end and a note leaving it, the server still moved the note to the next epoch after its own, while the owner had sealed the members' keys for the later one: filed under an epoch they do not open, a contact reading the note on its own read nothing new until its next rotation. Found by the code review of 2026-11-09 | The server moves the note to the epoch the keys were sealed for (`moveNote`); `test:rooms` ends a folder with a jump |
+
+P11's check in `test:security` makes the link in the victim's document the way an attacker's own
+build of the plugin would, claiming nothing; it fails with the rule loosened to claim whatever
+any change touched, as do the checks that follow it. S11's fails with the server's `+1` back.
+What the claims also give (`docs/CHANGELOG.md`, 0.9.11): someone else's link opens what it means
+- their note, if this vault has it - or nothing, never a note of this vault of the same name; a
+link typed to a note of one's own that the others in the note lack asks once whether it goes to
+them; and "Also share the notes it links to" follows only links of the sharer's.
 
 ## Not fixed - known, and why
 
@@ -143,6 +158,11 @@ using a client id takes it out of that for good.
 - **DNS rebinding against the backup server** (R7): restic resolves the name again itself.
 - **A writer's offline edits** show in the history from an hour before they reached the
   server, not from when they were made (R8) - the price of not taking their clock's word.
+- **Someone else's link, where Obsidian looks itself** (P11): the graph, backlinks and the
+  preview on hover resolve a link by its name in this vault; only opening it and its look in
+  the editor and the reading view follow the claim. A link nobody claimed - typed before
+  0.9.11, or by someone who is no contact here - resolves as it always did. A writer can
+  delete claims; the links are then nobody's, and nothing is shared because of that.
 
 ## Updates of the plugin
 

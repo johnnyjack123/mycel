@@ -266,8 +266,13 @@ someone's notes. Treat them as rules, not preferences.
     a folder's share covers only notes this vault's index has in it (`ownNotesIn`), a
     note is written under a folder's key only when the index has it in that folder
     (`tieAgrees`), a key is taken only when the room's owner sealed it (`openSealed`),
-    and a file of this vault goes into a shared note's list only for a link typed
-    here, a note shared from here with its files, or the user's yes (`SharedFiles.approve`).
+    and a file of this vault goes into a shared note's list only for a link this account
+    claimed, or a note shared from here with its files (`SharedFiles.approve`). A link is
+    someone's only by its claim (`LinkClaims`, 0.9.11): signed, written by the device whose
+    own edit - the editor's or the file's - made it; never by its letters, which a writer
+    can assemble from someone else's by deleting between them (P11), and never for a
+    change of someone else's. Someone else's link opens what it means in their vault, or
+    nothing - never a note of this vault of that name (`LinkGuard`).
     A folder's document moves, revives or deletes only notes that are in that folder.
     A friend code binds its creator's account id with the keys. Nothing anyone else
     shows this device is taken on the server's word either (0.9.9): presence is signed
@@ -673,7 +678,16 @@ the name, which is not unique — is never drawn. There is no global
   and with the same choices, every note the note reaches through links. Each
   lands below the share folder at its link's path - the sealed title carries
   the folders - so the links between them resolve there. A note the person has
-  already is left alone: sharing it again would overwrite their access.
+  already is left alone: sharing it again would overwrite their access. It
+  follows only links that are not all someone else's.
+- **Whose a link is** (`share/LinkClaims.ts`, `links.ts`, `LinkGuard.ts`; 0.9.11): a
+  link means a note or file in the vault of whoever typed it. The device it was typed on
+  writes a signed `LinkClaim` into the note's document (`links` map, keyed by the Yjs id
+  of the link's first character) a moment after the typing stopped; sharing a note claims
+  what it holds unclaimed. Someone else's link opens their note where this vault has it,
+  else nothing (`openLinkText` wrapped, marks in the editor and reading view); a link to
+  a note of one's own the people in the note lack is asked about once (`linkAsked:` in
+  the settings), and a yes shares it with each, their access in the note, no history.
 - **Sharing again with a member changes their access** on the server (role and
   title replaced, history never taken back). The share dialog therefore says
   when the person has the note, starts from their current access and reads
@@ -872,7 +886,9 @@ own writes with a modification time; and since 0.8.15 the editors read-only in
 Obsidian's own editor, the explorer's guard against Obsidian's handlers, the tab going
 back, the editors moved aside for the bar and the timeline; and since 0.8.16 the bar at the
 top of a locked note's editor in Obsidian's own editor), the notification center, its bell,
-its tabs and its buttons.
+its tabs and its buttons; since 0.9.11 the marks of someone else's links in Obsidian's editor
+and reading view, and opening them - Obsidian calling `workspace.openLinkText` for every
+way a link is opened is assumed, not tested.
 
 ## Gotchas
 
