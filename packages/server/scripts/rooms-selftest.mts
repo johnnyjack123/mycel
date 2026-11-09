@@ -2026,10 +2026,12 @@ try {
       (await status(() => hub.endFolder(olga, folderId, { notes: {} }))) === 409,
       'ending moves every note to the owner alone, with the next key for its own members'
     )
-    await hub.endFolder(olga, folderId, { notes: { [n1]: { epoch: 4, keys: { [rex]: 'n1e4-rex' } } } })
+    // Past the next epoch, as an owner whose device knew a later one than a server gone back (invariant 33).
+    await hub.endFolder(olga, folderId, { notes: { [n1]: { epoch: 6, keys: { [rex]: 'n1e6-rex' } } } })
     const ended = p1.take()
     check(ended.some((m) => m.type === 'revoked' && m.room === room1) && ended.some((m) => m.kind === 'folder-removed'), 'every member hears it ended', ended)
-    check((await hub.keys(olga, room1)).ties?.['4'] === undefined && (await hub.keys(rex, room1)).keys['4'] === 'n1e4-rex', "its notes are the owner's own again, single shares go on")
+    check((await hub.keys(olga, room1)).ties?.['6'] === undefined && (await hub.keys(rex, room1)).keys['6'] === 'n1e6-rex', "its notes are the owner's own again, single shares go on")
+    check((await hub.members(olga, n1)).epoch === 6, 'at the epoch their keys were sealed for, not the one after the server\'s')
     check((await hub.folderState(olga, folderId)).members.length === 0, 'nobody is left in the folder')
     check((await hub.forksOf(pia)).filter((fork) => fork.docId === n1).length === 1, 'and the member keeps it')
 
