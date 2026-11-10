@@ -460,11 +460,15 @@ export class Backups {
 
   // --- a decrypted copy the guard holds -------------------------------------------------------
 
-  /** That backup server's newest run, when it left the decrypted copy waiting - not while the copy is being let follow. */
+  /**
+   * That backup server's newest run, when it waits for the person: the decrypted copy left as it
+   * was, or every backup kept (0.9.13) - not while it is being let follow. One confirmation
+   * (`followCopy`) lets both go on.
+   */
   heldCopy(routeId: string): { run: BackupRunStatus; key: string } | null {
     if (this.followingCopy.has(routeId)) return null
     const run = this.views.get(routeId)?.status?.runs[0]
-    const held = run?.trusted?.held
+    const held = run?.trusted?.held ?? run?.retention?.held
     return run && held ? { run, key: `${routeId}\n${held}` } : null
   }
 
@@ -577,6 +581,8 @@ export class Backups {
         found.push(`${server.label}: the last backup failed - ${last.error ?? last.destinations.find((d) => !d.ok)?.error ?? 'see the settings'}`)
       } else if (last?.trusted?.held) {
         found.push(`${server.label}: the decrypted copy waits - ${last.trusted.held}`)
+      } else if (last?.retention?.held) {
+        found.push(`${server.label}: every backup is kept - ${last.retention.held}`)
       } else if (overdue) {
         const since = new Date(lastGood).toLocaleString()
         found.push(view.error ? `${server.label} cannot be reached, and the last good backup is from ${since}` : `${server.label}: no good backup since ${since}`)

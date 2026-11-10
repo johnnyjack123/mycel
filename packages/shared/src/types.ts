@@ -701,6 +701,15 @@ export interface BackupRunStatus {
     kept?: number
     error?: string
   }
+  /**
+   * No repository forgot a backup in this run, and none does until the person confirms (0.9.13):
+   * the run saw as much vanish as the guard holds the copy for, or another history on the sync
+   * server than it followed. Why, in words, and the counts when that is what it was.
+   */
+  retention?: {
+    held: string
+    shrunk?: Array<{ what: 'notes' | 'files'; now: number; before: number }>
+  }
 }
 
 /** One vault on a backup server, as its owner's devices see it. */

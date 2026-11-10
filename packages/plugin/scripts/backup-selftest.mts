@@ -646,6 +646,44 @@ try {
   )
   const confirmed = await runBackup(job(grant), options, { acceptShrink: true })
   check(confirmed.ok && !existsSync(join(trustedDir, 'Bulk', '15.md')) && confirmed.trusted?.held === undefined, 'once confirmed, it follows', confirmed.trusted)
+  check(typeof shrunk.retention?.held === 'string' && confirmed.retention === undefined, 'and the repository kept every backup meanwhile', { held: shrunk.retention, confirmed: confirmed.retention })
+
+  // --- every backup kept while much vanished, until confirmed (0.9.13) -------------------------
+  // The repository is what is left once the sync server lost or rolled data back - and one taken over
+  // could hand out older states run after run, until the retention had pushed every good backup out.
+  {
+    const kept = { id: 'kept', repository: join(root, 'repo-kept'), password: 'password kept', keep: { last: 1 } }
+    // No decrypted copy: the repository alone is held to it.
+    const keptJob = { id: 'job-kept', grant, config: { destinations: [kept], trustedGuard: 5 } }
+    const repo = { repository: kept.repository, password: kept.password }
+    const notesSnapshots = async (): Promise<number> => (await options.restic.snapshots(repo, 'notes')).length
+    for (let n = 0; n < 16; n += 1) await A1.vault.userCreate(`Kept/${n}.md`, `kept ${n}\n`)
+    check(await eventually(() => A2.vault.text('Kept/15.md') === 'kept 15\n', 15_000), 'A adds sixteen more notes')
+    const firstKept = await runBackup(keptJob, options)
+    check(firstKept.ok && firstKept.retention === undefined && (await notesSnapshots()) === 1, 'a repository that keeps one backup keeps one', firstKept.retention)
+    for (let n = 0; n < 16; n += 1) await A1.vault.trash(A1.vault.file(`Kept/${n}.md`))
+    check(await eventually(() => A2.vault.text('Kept/15.md') === undefined, 15_000), 'and deletes them again')
+    const heldKept = await runBackup(keptJob, options)
+    check(
+      heldKept.ok && heldKept.retention?.shrunk?.some((kind) => kind.what === 'notes') === true && (await notesSnapshots()) === 2,
+      'with more gone than its guard lets through, the backup is made and the one before kept, past the retention',
+      { retention: heldKept.retention, snapshots: await notesSnapshots() }
+    )
+    await A1.vault.userCreate('Kept later.md', 'written while held\n')
+    check(await eventually(() => A2.vault.text('Kept later.md') === 'written while held\n', 15_000), 'A writes another note')
+    const stillKept = await runBackup(keptJob, options)
+    check(stillKept.ok && stillKept.retention !== undefined && (await notesSnapshots()) === 3, 'and so does every run after it, until confirmed', await notesSnapshots())
+    const quietKept = await runBackup(keptJob, options)
+    check(
+      quietKept.destinations.every((destination) => destination.unchanged) && (await notesSnapshots()) === 3,
+      'a run with nothing changed starts no restic meanwhile',
+      quietKept.destinations
+    )
+    const confirmedKept = await runBackup(keptJob, options, { acceptShrink: true })
+    check(confirmedKept.ok && confirmedKept.retention === undefined && (await notesSnapshots()) === 1, 'confirmed, the retention lets go of the rest', await notesSnapshots())
+    const afterKept = await runBackup(keptJob, options)
+    check(afterKept.retention === undefined, 'and measures from there on', afterKept.retention)
+  }
 
   // --- more than half the vault vanishing over two runs, each below the limit ------------------
   // As the user had it: notes deleted, a backup started at once while the deletions were still
@@ -729,6 +767,15 @@ try {
     const restored = restore(afterRestore, destinations[0], 'restore-after')
     check(afterRestore.ok && afterRestore.diverged >= 1, "the backup notices the note's history is another one", { ok: afterRestore.ok, diverged: afterRestore.diverged, problems: afterRestore.problems })
     check(restored.get(`${folder}/Welcome.md`)?.toString('utf8') === 'restored, take 6\n', "and backs up the sync server's note, not a mix of both", restored.get(`${folder}/Welcome.md`)?.toString('utf8'))
+    check(
+      afterRestore.retention?.held.includes('another history') === true && afterRestore.retention.shrunk === undefined,
+      'and keeps every backup from before until that is confirmed - the restore may not have been the owner\'s',
+      afterRestore.retention
+    )
+    const stillAfterRestore = await runBackup(job(grant), options)
+    check(stillAfterRestore.retention !== undefined, 'the run after it as well', stillAfterRestore.retention)
+    const confirmedRestore = await runBackup(job(grant), options, { acceptShrink: true })
+    check(confirmedRestore.ok && confirmedRestore.retention === undefined, 'until it is', confirmedRestore.retention)
   }
 
   // --- the backup key taken away -------------------------------------------------------------------
