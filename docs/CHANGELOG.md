@@ -8,6 +8,22 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.14** (2026-11-10, branch `perf/outbox`, the benchmark's first finding) - **typing offline
+  as quick as online.** Every keystroke merged the whole outbox again (`Y.mergeUpdates`) and wrote
+  it whole, base64 in the cursor's JSON: the cost of a keystroke grew with every one not sent - 15 ms
+  after 20,000. Now each change enters the outbox as a piece of its own, stored at once and alone
+  under `outbox:<n>` (invariant 15 as before); the pieces are merged when they are sent, or once
+  there are 256 of them, and the payload in flight has a key of its own (`sending`), written only
+  when it changes. A crash between any two writes leaves a piece twice at worst, which Yjs takes
+  once; a start reads every piece from the first the cursor names, one written just before a crash
+  too. A cursor of before is read and written anew. Measured (`npm run bench -- --scenarios
+  offline`): 20,000 keystrokes offline take 1.5 s instead of 161-176 s, 0.03-0.08 ms a keystroke
+  from the first to the last (14-15 ms at the end before), 17.8 MB written instead of several GB.
+  Building a push from the document instead - the benchmark's idea - would have sent the note's whole
+  delete set with every one. `test:socket`: 600 keystrokes offline are a few pieces on the disk, and
+  after a crash the outbox holds every one of them. The benchmark counts what the cursor writes, not
+  what it holds.
+
 - **0.9.13** (2026-11-10, branch `feat/backup-retention-hold`, the user's question of 2026-11-09:
   can the sync server have backups deleted?) - **every backup kept after a suspicious run, until
   confirmed.** The sync server cannot change a backup task - it is signed - nor send the backup
