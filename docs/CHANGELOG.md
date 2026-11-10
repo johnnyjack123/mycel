@@ -8,6 +8,23 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.12** (2026-11-10, straight on `main`) - **a shared folder moved, taken for every note
+  moving out** (`test:folders`, seen in the CI of 0.9.11's merge). The owner's device ended every
+  share of a folder that had only moved. Two causes, each made certain in a test and checked by
+  putting the bug back (exactly its own checks failed):
+  - **A note that lies elsewhere than the folder has it** - `Clash 2.md`, its name taken when two
+    notes were moved in under one name at once - moves along with its folder all the same. The
+    owner's pass asked whether each note lay at its place in the folder, took that one for a note
+    gone elsewhere, and so the move for every note leaving one by one. It now goes by where the
+    note lay in the folder here (`findMovedFolders`), and says in the log why a move was not taken
+    for the folder's.
+  - **A note moved into a folder on another device of the account was copied in twice**: the
+    writer's other device saw it lie in the folder without being in it, asked as well and, with a
+    yes, copied it in a second time - the owner got two notes of that name, the second one lying
+    elsewhere than the folder had it (the first cause). As a delete is, such a note is now left to
+    the device it was moved on for `decideMs`, and asked about here only after (`checkStrays`), as
+    after a crash.
+
 - **0.9.11** (2026-11-09, branch `feat/link-owners`, the user's decisions of the same day) -
   **whose a link in a shared note is.** `[[Recipe]]` is text, and every vault resolved it by
   name in itself: a link one person typed opened - or, with "also share the notes it links

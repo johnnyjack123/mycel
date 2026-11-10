@@ -237,7 +237,11 @@ someone's notes. Treat them as rules, not preferences.
     does not hold that item yet decides nothing about it (`FolderIndex.holds`) - the
     vault's record arriving first was taken for a rename back (0.9.10). A device carrying
     out a delete made elsewhere checks it still stands right before trashing, and never
-    takes its own trashing for a delete made here (`trashing`).
+    takes its own trashing for a delete made here (`trashing`). A folder moving is told by
+    where each note lay in it here, not where the folder has it: a note displaced by a name
+    taken (`X 2.md`) was taken for one gone elsewhere, and every share ended (0.9.12). And a
+    note moved in on another device of the account is left to that device for `decideMs`
+    before this one asks (`checkStrays`): asked on both, it was copied in twice.
 30. **The past is written into the files only while the sync is stopped, and
     taken out before it starts again.** The Time Machine shows a moment in the
     vault's own files (`docs/TIMEMACHINE.md`); the sync would read every one of

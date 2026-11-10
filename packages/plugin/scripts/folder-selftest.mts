@@ -554,8 +554,19 @@ try {
     await P1.vault.userCreate('Notes/PiaHub.md', 'see [[Notes/PiaRef]]\n')
     check(await eventually(() => P1.docText('Notes/PiaHub.md') !== undefined && P1.docText('Notes/PiaRef.md') !== undefined), 'the writer has a note linking to another')
     P1.moveInWithLinked = true
+    // The device it was moved on copies it in a moment later, as a busy one would (CI, 0.9.11): the
+    // writer's other device, seeing it lie in the folder without being in it, asked too and copied
+    // it in a second time - the owner had two notes of that name.
+    const copiedSlowly = slowed(P1.store, 'forkInto', 1_500)
     await P1.vault.rename(P1.vault.file('Notes/PiaHub.md'), 'Shared/X/PiaHub.md')
     check(await eventually(() => O1.vault.text('Projects/Y/PiaHub.md') === 'see [[Notes/PiaRef]]\n'), 'it is copied into the folder')
+    copiedSlowly()
+    await delay(2_500)
+    check(
+      !O1.vault.paths().some((path) => path.startsWith('Projects/Y/PiaHub ')) && !P2.moveInQuestions.some((question) => question.path === 'Shared/X/PiaHub.md'),
+      "once - the writer's other device leaves it to the device it was moved on",
+      { owner: O1.vault.paths().filter((path) => path.includes('PiaHub')), asked: P2.moveInQuestions.map((question) => question.path) }
+    )
     const question = P1.moveInQuestions.find((question) => question.path === 'Shared/X/PiaHub.md')
     check(question?.linked.join() === 'Notes/PiaRef.md' && question.strangers === 1, 'the window says who of the folder is not a contact of theirs', question)
     check(await eventually(() => O1.vault.text('Shared/Notes/PiaRef.md') === 'pia ref\n'), 'the note it links to reaches the owner', O1.vault.paths())
@@ -632,6 +643,22 @@ try {
   }
 
   // --- the folder moved without an event for itself, then deleted ---------------------------------
+  // With a note that lies here elsewhere than the folder has it: two notes moved in at once under one
+  // name, the other's landing as `Clash 2.md`. Taken for a note gone elsewhere, it made the folder's
+  // move look like every note moving out, and the owner's device ended every share (CI, 0.9.11).
+  await O1.vault.userCreate('Notes/Clash.md', 'olga clash\n')
+  await P1.vault.userCreate('Notes/Clash.md', 'pia clash\n')
+  check(await eventually(() => O1.docText('Notes/Clash.md') === 'olga clash\n' && P1.docText('Notes/Clash.md') === 'pia clash\n'), 'owner and writer each have a note of one name')
+  await Promise.all([
+    O1.vault.rename(O1.vault.file('Notes/Clash.md'), 'Projects/Y/Clash.md'),
+    P1.vault.rename(P1.vault.file('Notes/Clash.md'), 'Shared/X/Clash.md')
+  ])
+  check(
+    await eventually(() => O1.vault.paths().filter((path) => path.startsWith('Projects/Y/Clash')).length === 2, 15_000),
+    'both moved in at once: the owner has one of them under another name',
+    O1.vault.paths().filter((path) => path.includes('Clash'))
+  )
+  await delay(2_500)
   await O1.vault.renameFolder('Projects/Y', 'Archive/Z', { folderEvent: false })
   await P1.vault.userCreate('Shared/X/AfterMove.md', 'after the move\n')
   check(

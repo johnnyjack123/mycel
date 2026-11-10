@@ -712,6 +712,10 @@ export class Folders {
       if (this.pending.has(docId) || this.asking.has(docId) || this.dismissed.has(docId) || forks.has(docId) || before(entry.updatedAt)) continue
       const there = inside(entry.path, mount) && this.placeOf(entry.path)?.folderId === folderId
       if (there && !entry.folder && !entry.owner && !fi.has(docId) && !this.store.isExcluded(entry.path)) {
+        // Moved in a moment ago on another device of the account: that device asks, as a
+        // delete is left to its device. Asked here too, it was copied into the folder twice
+        // (0.9.11); after a crash this device asks once the moment has passed.
+        if (this.undecided(folderId, entry.updatedAt)) continue
         void this.askMoveIn(this.placeOf(entry.path) as FolderPlace, docId, null)
       } else if (first && !folder.owner && entry.folder === folderId && !there) {
         const note = fi.note(docId)
@@ -934,24 +938,40 @@ export class Folders {
     for (const { folderId, folder } of this.index.liveFolders()) {
       if (folder.owner) continue
       const targets = new Set<string>()
+      const odd: string[] = []
       for (const move of moves) {
         if (move.folderId !== folderId) continue
-        if (move.from !== joinPath(folder.path, move.rel) || !move.to.endsWith(`/${move.rel}`)) {
+        // Where it lay in the folder here, not where the folder has it: a note that lies
+        // elsewhere than the folder has it - `Hub 2.md`, its name taken - moves along all the
+        // same, and taken for one gone elsewhere it ended every share of a folder moving (0.9.11).
+        const lay = inside(move.from, folder.path) ? move.from.slice(folder.path.length + 1) : null
+        if (lay === null || !move.to.endsWith(`/${lay}`)) {
           targets.add('')
+          odd.push(`${move.from} -> ${move.to} (in the folder: ${move.rel})`)
           continue
         }
-        targets.add(move.to.slice(0, move.to.length - move.rel.length - 1))
+        targets.add(move.to.slice(0, move.to.length - lay.length - 1))
       }
+      if (targets.size === 0) continue
       const moved = targets.size === 1 ? (Array.from(targets)[0] as string) : ''
-      if (!moved || !this.isFolder(moved)) continue
+      if (!moved || !this.isFolder(moved)) {
+        if (targets.size > 1) log.info(`${folder.path}: some of its notes went elsewhere than the rest (${odd.slice(0, 3).join('; ')}); not the folder moving`)
+        continue
+      }
       const notesStayed = this.index
         .live()
-        .some(({ entry }) => entry.folder === folderId && inside(entry.path, folder.path) && entry.updatedAt < this.batchStart)
-      const filesStayed = (this.attachments?.liveFiles() ?? []).some(
-        ({ entry }) => entry.folder?.id === folderId && inside(entry.path, folder.path) && entry.updatedAt < this.batchStart
-      )
+        .filter(({ entry }) => entry.folder === folderId && inside(entry.path, folder.path) && entry.updatedAt < this.batchStart)
+        .map(({ entry }) => entry.path)
+      const filesStayed = (this.attachments?.liveFiles() ?? [])
+        .filter(({ entry }) => entry.folder?.id === folderId && inside(entry.path, folder.path) && entry.updatedAt < this.batchStart)
+        .map(({ entry }) => entry.path)
       const leftEmpty = this.isFolder(folder.path) && !this.app.vault.getFiles().some((file) => inside(file.path, folder.path))
-      if (notesStayed || filesStayed || leftEmpty) continue
+      if (notesStayed.length > 0 || filesStayed.length > 0 || leftEmpty) {
+        // Said, so that a move taken for notes leaving one by one can be told apart afterwards.
+        const why = leftEmpty ? 'its old place is left empty' : `${[...notesStayed, ...filesStayed].slice(0, 3).join(', ')} stayed`
+        log.info(`${folder.path}: its notes went to ${moved}, but ${why}; not the folder moving`)
+        continue
+      }
       log.info(`${folder.path}: the shared folder moved to ${moved}`)
       this.followFolderRename(folder.path, moved)
     }
