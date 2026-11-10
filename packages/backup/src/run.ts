@@ -89,6 +89,8 @@ export interface RunReport {
   problems: string[]
   destinations: DestinationReport[]
   trusted?: TrustedReport
+  /** The repositories forgot no backup this time, and go on keeping every one until the person confirms: why, in words. */
+  retention?: { held: string; shrunk?: Shrunk[] }
 }
 
 export interface RunnerOptions {
@@ -154,6 +156,11 @@ interface JobState {
    * starts it afresh.
    */
   followed?: Counted[]
+  /**
+   * Since when, and why, no repository forgets a backup: a run saw much vanish, or another
+   * history on the sync server than the one it followed. Only a confirmation ends it.
+   */
+  retentionHeld?: { since: number; why: string; shrunk?: Shrunk[] }
   verifiedCacheAt?: number
   /** What the trusted copy was last brought level with (`layoutDigest`). */
   trustedDigest?: string
@@ -266,6 +273,11 @@ export function shrunk(before: { notes?: number; files?: number }, now: { notes:
   return lost
 }
 
+/** What vanished, in words: `the vault has 3 notes (120 at most in the week before)`. */
+function vanishedWords(lost: readonly Shrunk[]): string {
+  return `the vault has ${lost.map((kind) => `${kind.now} ${kind.what} (${kind.before} at most in the week before)`).join(' and ')}`
+}
+
 /** Why the trusted copy should wait, in words, or null. */
 export function vanished(
   before: { notes?: number; files?: number },
@@ -275,8 +287,29 @@ export function vanished(
 ): string | null {
   const lost = shrunk(before, now, guard, floor)
   if (lost.length === 0) return null
-  const told = lost.map((kind) => `${kind.now} ${kind.what} (${kind.before} at most in the week before)`)
-  return `the vault has ${told.join(' and ')}; the trusted copy waits until that is confirmed`
+  return `${vanishedWords(lost)}; the trusted copy waits until that is confirmed`
+}
+
+/**
+ * Why no repository may forget a backup this time, or null. A backup is what is left once the
+ * sync server lost or rolled back data - which it can do on purpose, if taken over: handing out
+ * older states run after run would let the retention push every good backup out. So a run that
+ * sees as much vanish as the guard holds the copy for, or another history than the one it
+ * followed, keeps every backup, and so do the runs after it until the person confirms (0.9.13).
+ */
+export function retentionHold(
+  before: { notes?: number; files?: number },
+  now: { notes: number; files: number },
+  guard: number,
+  floor: number,
+  diverged: number
+): { why: string; shrunk?: Shrunk[] } | null {
+  const lost = shrunk(before, now, guard, floor)
+  if (lost.length > 0) return { why: `${vanishedWords(lost)}; no earlier backup is let go of until that is confirmed`, shrunk: lost }
+  if (diverged > 0) {
+    return { why: `${diverged} note(s) had another history on the sync server than before; no earlier backup is let go of until that is confirmed` }
+  }
+  return null
 }
 
 /** Lays the notes out below `root`, each file with the time it last changed. */
@@ -380,10 +413,28 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
     return laidOut
   }
 
+  const live = { notes: layout.liveNotes, files: layout.liveFiles }
+  const guard = job.config.trustedGuard ?? BACKUP_GUARD_DEFAULT
+  const floor = options.vanishFloor ?? 10
+  state.followed ??= []
+  // Kept every backup, and goes on keeping them until confirmed - the confirmation the copy takes.
+  // A guard turned off takes what vanished, as it does for the copy; another history still waits for a yes.
+  if (control.acceptShrink || (guard <= 0 && state.retentionHeld?.shrunk)) state.retentionHeld = undefined
+  if (!control.acceptShrink) {
+    const hold = retentionHold(guardReference(state.followed), live, guard, floor, report.diverged)
+    if (hold) state.retentionHeld = { since: state.retentionHeld?.since ?? now(), ...hold }
+  }
+  const retention = state.retentionHeld
+  if (retention) {
+    report.retention = retention.shrunk ? { held: retention.why, shrunk: retention.shrunk } : { held: retention.why }
+    log.warn(`backup of ${grant.vaultId}: every earlier backup kept, since ${new Date(retention.since).toISOString()} - ${retention.why}`)
+  }
+  const forgetting: RunControl = retention ? { ...control, keepAll: true } : control
+
   try {
     for (const destination of job.config.destinations) {
       const target = { destination, workRoot, folder, notes, streamed, digest, whole, layOut }
-      report.destinations.push(await backUpTo(target, state, cache, keys, options, now, control, watch))
+      report.destinations.push(await backUpTo(target, state, cache, keys, options, now, forgetting, watch))
     }
   } catch (error) {
     report.error = message(error)
@@ -392,14 +443,11 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
     await rm(workRoot, { recursive: true, force: true })
   }
 
-  const live = { notes: layout.liveNotes, files: layout.liveFiles }
   const counted: Counted = { at: now(), ...live }
-  state.followed ??= []
   if (job.config.trusted) {
-    const guard = job.config.trustedGuard ?? BACKUP_GUARD_DEFAULT
     const reference = guardReference(state.followed)
-    const lost = control.acceptShrink ? [] : shrunk(reference, live, guard, options.vanishFloor ?? 10)
-    const held = lost.length > 0 ? vanished(reference, live, guard, options.vanishFloor ?? 10) : null
+    const lost = control.acceptShrink ? [] : shrunk(reference, live, guard, floor)
+    const held = lost.length > 0 ? vanished(reference, live, guard, floor) : null
     // Following with the guard off takes whatever vanished, as a confirmation does.
     const confirmed = control.acceptShrink === true || guard <= 0
     if (!report.destinations.some((destination) => destination.ok)) {
@@ -427,8 +475,9 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
         if (!(error instanceof TrustedRefused)) log.error(`backup of ${grant.vaultId}: trusted copy failed`, error)
       }
     }
-  } else {
-    state.followed = followedAt(state.followed, counted, false)
+  } else if (!retention) {
+    // As the copy's: nothing is counted while the backups are kept, or what vanished would soon be the measure.
+    state.followed = followedAt(state.followed, counted, control.acceptShrink === true)
   }
 
   report.ok = !report.error && report.destinations.every((destination) => destination.ok) && report.trusted?.ok !== false
@@ -475,8 +524,9 @@ async function backUpTo(
   const policy = JSON.stringify(destination.keep ?? null)
   // Nothing changed since the last backup here, no check is due and the retention is the one it last
   // forgot by: its snapshots hold the vault as it is, and a run asked for before a restore is done at
-  // once instead of starting restic ten times.
-  if (!structure && known.digest === whole && known.keep === policy && known.notesSnapshot && known.filesSnapshot) {
+  // once instead of starting restic ten times. A run that forgets nothing - one before a restore, or
+  // any while every backup is kept - needs no retention of the last one's either.
+  if (!structure && known.digest === whole && (known.keep === policy || control.keepAll) && known.notesSnapshot && known.filesSnapshot) {
     return { id: destination.id, ok: true, unchanged: true, notesSnapshot: known.notesSnapshot, filesSnapshot: known.filesSnapshot, filesUnchanged: true }
   }
   known.digest = undefined

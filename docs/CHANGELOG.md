@@ -8,6 +8,22 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.13** (2026-11-10, branch `feat/backup-retention-hold`, the user's question of 2026-11-09:
+  can the sync server have backups deleted?) - **every backup kept after a suspicious run, until
+  confirmed.** The sync server cannot change a backup task - it is signed - nor send the backup
+  server a command; but it decides what the backup server reads, and a server taken over could
+  hand out older states, run after run, until restic's retention had let go of every good backup.
+  The guard held only the decrypted copy. Now a run that sees as much vanish as the guard holds the
+  copy for - with a decrypted copy or without one -, or another history of some notes than the one
+  it followed, is backed up but forgets nothing, and neither do the runs after it until the person
+  confirms (`retentionHold`, `retentionHeld` in the job's state; `retention` in the run's status).
+  The device asks in the copy's window - *Every backup is kept* when the copy does not wait - and one
+  confirmation lets both go on. A guard set to never ends a hold for what vanished, not one for
+  another history. A run with nothing changed still starts no restic meanwhile: it forgets nothing
+  either way. `test:backup`: a repository that keeps one backup keeps two, three, then one again
+  once confirmed; the restored sync server's run holds and the next one too. With the hold taken
+  out, exactly the three checks of the repository's backups failed.
+
 - **0.9.12** (2026-11-10, straight on `main`) - **a shared folder moved, taken for every note
   moving out** (`test:folders`, seen in the CI of 0.9.11's merge). The owner's device ended every
   share of a folder that had only moved. Two causes, each made certain in a test and checked by

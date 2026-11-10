@@ -560,7 +560,11 @@ people: whoever runs it can read the vaults on it.
   vanished - counted apart, and against the most of the week's followed runs
   (`guardReference`), not the last one: measured by the last, a loss split over two
   runs went through. Only a confirmation, or following with the guard off, starts it
-  afresh; nothing is counted while the copy waits. A held copy is asked about in a
+  afresh; nothing is counted while the copy waits. A run that sees as much vanish as the
+  guard holds the copy for - copy or not -, or another history than it followed, forgets no
+  backup, nor do the runs after it until confirmed (`retentionHold`, `retentionHeld` in the
+  job's state, 0.9.13): a sync server handing out older states run after run would otherwise
+  have the retention push every good backup out. A held copy is asked about in a
   window over everything (`CopyWaitsModal`) - with the settings, whatever the tab,
   and live -, and letting it follow is waited for to the end (`Backups.followCopy`):
   a row that only said "waits" and stayed after the click left the user guessing.

@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-10 · **0.9 built, the audit done: 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel, 0.9.8 is the security audit (`docs/AUDIT.md`: 23 findings fixed, each kept as an attack in `npm run test:security`), 0.9.9 closes its residual risks (R1 to R9) and adds a setup wizard, 0.9.10 fixes three of the races seen only in CI (two remain, below), 0.9.11 resolves links in shared notes by who typed them (signed claims; P11 and S11 fixed), and fixes a change lost before it was sent and a share taken in before its sharer's contact record (both found that day, by the benchmark and in CI), 0.9.12 fixes a shared folder's move taken for every note moving out (CI). Next, in the order the user agreed on 2026-11-10 (Known issues, "Open after 0.9.11"): a backup run that sees much vanish or another log keeps every snapshot until confirmed; the benchmark's findings (`docs/PERFORMANCE.md`), the outbox first, then a restart opening only what changed; the code review's proposals in small steps, the composition root out of `main.ts` first. The user updates server, backup server and every device together (friend codes from before 0.9.8 no longer redeem), sets `MYCEL_TRUST_PROXY`, starts afresh once (below, "Starting afresh"); publishing comes last.**_
+_Last updated: 2026-11-10 · **0.9 built, the audit done: 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel, 0.9.8 is the security audit (`docs/AUDIT.md`: 23 findings fixed, each kept as an attack in `npm run test:security`), 0.9.9 closes its residual risks (R1 to R9) and adds a setup wizard, 0.9.10 fixes three of the races seen only in CI (two remain, below), 0.9.11 resolves links in shared notes by who typed them (signed claims; P11 and S11 fixed), and fixes a change lost before it was sent and a share taken in before its sharer's contact record (both found that day, by the benchmark and in CI), 0.9.12 fixes a shared folder's move taken for every note moving out (CI), 0.9.13 keeps every backup after a suspicious run until confirmed. Next, in the order the user agreed on 2026-11-10 (Known issues, "Open after 0.9.11"): the benchmark's findings (`docs/PERFORMANCE.md`), the outbox first, then a restart opening only what changed; the code review's proposals in small steps, the composition root out of `main.ts` first. The user updates server, backup server and every device together (friend codes from before 0.9.8 no longer redeem), sets `MYCEL_TRUST_PROXY`, starts afresh once (below, "Starting afresh"); publishing comes last.**_
 
 ## Where we are
 
@@ -321,10 +321,8 @@ user's call, as with the earlier branches.
 ## Known issues / debt
 
 - **Open after 0.9.11 (2026-11-09):**
-  - *The backup's retention after a suspicious run* (the user's question, answered, to build): a
-    run that finds much vanished, or a log other than the one it followed, still lets restic's
-    `forget` drop old snapshots; the guard holds only the decrypted copy. Such a run should keep
-    every snapshot until confirmed, as the copy waits.
+  - ~~*The backup's retention after a suspicious run*~~ - built in 0.9.13: such a run forgets no
+    backup until confirmed. Not tried on a device yet: the window titled *Every backup is kept*.
   - *The code review's proposals* (`docs/CHANGELOG.md`, 0.9.11): the composition root out of
     `main.ts` shared with the harness (it has drifted: the index debounce, `vault-lock` without
     the vault check), one frame-signature rule for plugin and backup server, one decision for a

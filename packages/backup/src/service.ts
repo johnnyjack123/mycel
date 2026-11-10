@@ -96,8 +96,8 @@ async function exists(path: string): Promise<boolean> {
 }
 
 function statusOf(report: RunReport): BackupRunStatus {
-  const { startedAt, finishedAt, ok, error, accessEnded, notes, files, problems, destinations, trusted } = report
-  return { startedAt, finishedAt, ok, error, accessEnded, notes, files, problems, destinations, trusted }
+  const { startedAt, finishedAt, ok, error, accessEnded, notes, files, problems, destinations, trusted, retention } = report
+  return { startedAt, finishedAt, ok, error, accessEnded, notes, files, problems, destinations, trusted, retention }
 }
 
 /** One paired vault, as the operator's `vaults` command lists it. */

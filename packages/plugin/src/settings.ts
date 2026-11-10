@@ -986,13 +986,16 @@ export class MycelSettingTab extends PluginSettingTab {
 
     if (backups.following(routeId)) {
       new Setting(containerEl)
-        .setName('The decrypted copy follows the vault')
-        .setDesc('Backing up, and bringing the copy level with the vault - as long as a backup takes. A notice says when it is done.')
+        .setName(last?.trusted?.held ? 'The decrypted copy follows the vault' : 'Confirmed')
+        .setDesc('Backing up once more - as long as a backup takes. A notice says when it is done.')
         .settingEl.addClass('mycel-copy-waits')
     } else if (backups.heldCopy(routeId)) {
+      const copy = Boolean(last?.trusted?.held)
       const row = new Setting(containerEl)
-        .setName('The decrypted copy waits')
-        .setDesc(`${last?.trusted?.held ?? ''}. If they were deleted on purpose, let it follow; if not, find out first - the server may have lost data.`)
+        .setName(copy ? 'The decrypted copy waits' : 'Every backup is kept')
+        .setDesc(
+          `${last?.trusted?.held ?? last?.retention?.held ?? ''}. If that was on purpose, ${copy ? 'let it follow' : 'confirm'}; if not, find out first - the server may have lost data.`
+        )
         .addButton((button) =>
           button
             .setButtonText('Decide…')
