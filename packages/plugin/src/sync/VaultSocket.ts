@@ -128,18 +128,23 @@ export interface RoomCursor {
   epoch: number
   /** The payload waiting for its acknowledgement. */
   sending: Uint8Array | null
-  /** Changes made since that payload was sent. */
-  outbox: Uint8Array | null
+  /** Whether changes made since that payload was sent wait in the outbox. */
+  readonly hasOutbox: boolean
   /**
-   * Called after every change; debounce inside. `urgent` when a local edit
-   * entered the outbox: the document is stored at once, and an outbox saved
-   * later than it could lose that edit to a crash in between - stored locally,
-   * never sent.
+   * A change made here, into the outbox - and stored at once: the document is,
+   * and an outbox saved later than it could lose that edit to a crash in
+   * between - stored locally, never sent (invariant 15).
    */
+  enqueue(update: Uint8Array): void
+  /** Everything the outbox holds, as one payload, taken out of it; null when it holds nothing. */
+  takeOutbox(): Uint8Array | null
+  dropOutbox(): void
+  /** Called after every change; debounce inside. `urgent` stores at once. */
   persist(urgent?: boolean): void
 }
 
 export function memoryCursor(): RoomCursor {
+  let outbox: Uint8Array[] = []
   return {
     lastSeq: 0,
     lastHash: null,
@@ -148,7 +153,21 @@ export function memoryCursor(): RoomCursor {
     syncedAt: 0,
     epoch: 0,
     sending: null,
-    outbox: null,
+    get hasOutbox() {
+      return outbox.length > 0
+    },
+    enqueue: (update) => {
+      outbox.push(update)
+    },
+    takeOutbox: () => {
+      if (outbox.length === 0) return null
+      const merged = Y.mergeUpdates(outbox)
+      outbox = []
+      return merged
+    },
+    dropOutbox: () => {
+      outbox = []
+    },
     persist: () => undefined
   }
 }
@@ -945,7 +964,7 @@ export class VaultSocket {
     if (this.locked || registration.dead || registration.options.readOnly || !registration.synced || cursor.held) return
     // The push in flight or being made comes back to this when it is done.
     if (registration.inflight !== null || registration.preparing || registration.sendTimer !== null) return
-    if (!cursor.sending && !cursor.outbox && registration.replay.length === 0) return
+    if (!cursor.sending && !cursor.hasOutbox && registration.replay.length === 0) return
     registration.sendTimer = window.setTimeout(() => {
       registration.sendTimer = null
       void this.sendNext(registration).catch((error) => {
@@ -968,15 +987,16 @@ export class VaultSocket {
   private async preparePush(registration: Registration): Promise<void> {
     const cursor = registration.options.cursor
     if (!cursor.sending) {
-      if (cursor.outbox) {
-        cursor.sending = cursor.outbox
-        cursor.outbox = null
+      const taken = cursor.takeOutbox()
+      if (taken) {
+        cursor.sending = taken
       } else {
         const replayed = registration.replay.shift()
         if (!replayed) return
         cursor.sending = replayed.update
         registration.sendingTs = replayed.authorTs
       }
+      // Not at once: the pieces it took stay on the disk until it is written in their place.
       cursor.persist()
     }
     const payload = cursor.sending
@@ -1150,9 +1170,7 @@ export class VaultSocket {
       onDocUpdate: (update, origin) => {
         // What this socket applied came from the server already.
         if (origin === this || registration.options.readOnly) return
-        const cursor = registration.options.cursor
-        cursor.outbox = cursor.outbox ? Y.mergeUpdates([cursor.outbox, update]) : update
-        cursor.persist(true)
+        registration.options.cursor.enqueue(update)
         this.scheduleSend(registration)
       },
       onAwarenessUpdate: (changes, origin) => {
@@ -1211,10 +1229,8 @@ export class VaultSocket {
     const registration = this.registrations.get(room)
     if (!registration || !registration.options.cursor.held) return
     const cursor = registration.options.cursor
-    const state = Y.encodeStateAsUpdate(registration.doc)
-    cursor.outbox = cursor.outbox ? Y.mergeUpdates([cursor.outbox, state]) : state
     cursor.held = false
-    cursor.persist(true)
+    cursor.enqueue(Y.encodeStateAsUpdate(registration.doc))
     registration.replay = history.slice()
     this.scheduleSend(registration)
   }
@@ -1226,7 +1242,7 @@ export class VaultSocket {
     if (readOnly) {
       // Nothing of it would be accepted.
       registration.options.cursor.sending = null
-      registration.options.cursor.outbox = null
+      registration.options.cursor.dropOutbox()
       registration.options.cursor.persist()
     } else {
       this.scheduleSend(registration)
@@ -1258,7 +1274,7 @@ export class VaultSocket {
   /** Whether every local change of a room has been acknowledged. */
   isSettled(room: string): boolean {
     const cursor = this.registrations.get(room)?.options.cursor
-    return !cursor || (!cursor.sending && !cursor.outbox)
+    return !cursor || (!cursor.sending && !cursor.hasOutbox)
   }
 
   /** Whether every room this device writes into has everything it wrote confirmed. */

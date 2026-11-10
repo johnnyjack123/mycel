@@ -697,14 +697,14 @@ async function deviceRole(): Promise<void> {
   type LocalStore = import('../src/sync/DocHandle.js').LocalStore
   type Device = InstanceType<typeof harness.Device>
 
-  // What every write of a room's cursor serializes: its unacknowledged changes, base64 in JSON.
+  // How often a room's cursor is written; what it writes - the cursor, the payload in flight, the
+  // outbox's new pieces (0.9.14) - is counted by the store as it is written (`YLikeLocalStores`).
   const { LocalCursor } = await import('../src/sync/DocHandle.js')
   const cursorProto = LocalCursor.prototype as unknown as { flush(): Promise<void> }
   const realFlush = cursorProto.flush
-  cursorProto.flush = function (this: { sending: Uint8Array | null; outbox: Uint8Array | null }) {
+  cursorProto.flush = function (this: unknown) {
     const index = (device?.store as unknown as { indexCursor?: unknown } | null)?.indexCursor === this
     bump('cursor', index ? 'indexFlushes' : 'otherFlushes')
-    bump('cursor', index ? 'indexBytes' : 'otherBytes', (this.sending?.length ?? 0) + (this.outbox?.length ?? 0))
     return realFlush.call(this)
   }
 
@@ -864,7 +864,11 @@ async function deviceRole(): Promise<void> {
         },
         get: async (key) => kept.get(key) ?? null,
         set: async (key, value) => {
+          if (key === 'cursor' || key === 'sending' || key.startsWith('outbox:')) bump('cursor', name.endsWith('/idx') ? 'indexBytes' : 'otherBytes', value.length)
           kept.set(key, value)
+        },
+        del: async (key) => {
+          kept.delete(key)
         }
       }
     }
@@ -1044,10 +1048,10 @@ async function deviceRole(): Promise<void> {
     return docId
   }
 
-  const cursorOf = (docId: string): { outbox: Uint8Array | null; sending: Uint8Array | null } =>
-    (need().socket as unknown as { registrations: Map<string, { options: { cursor: { outbox: Uint8Array | null; sending: Uint8Array | null } } }> }).registrations.get(
+  const cursorOf = (docId: string): { outboxBytes: number; sending: Uint8Array | null } =>
+    (need().socket as unknown as { registrations: Map<string, { options: { cursor: { outboxBytes: number; sending: Uint8Array | null } } }> }).registrations.get(
       shared.docRoom(docId)
-    )?.options.cursor ?? { outbox: null, sending: null }
+    )?.options.cursor ?? { outboxBytes: 0, sending: null }
 
   async function goOffline(target: Device): Promise<void> {
     const socket = target.socket as unknown as { closed: boolean; ws: { close(): void } | null }
@@ -1375,7 +1379,7 @@ async function deviceRole(): Promise<void> {
               syncMaxMs: summary.max,
               cpuPerKeystrokeMs: round((used.user + used.system) / 1000 / times.length, 3),
               wallPerKeystrokeMs: round((performance.now() - wall) / times.length, 3),
-              outboxBytes: cursorOf(typing.docId).outbox?.length ?? 0
+              outboxBytes: cursorOf(typing.docId).outboxBytes
             })
             times = []
             cpu = process.cpuUsage()
@@ -1385,7 +1389,7 @@ async function deviceRole(): Promise<void> {
         mark('typed')
       })
       const cursor = cursorOf(typing.docId)
-      const outbox = cursor.outbox?.length ?? 0
+      const outbox = cursor.outboxBytes
       const locals = target.locals as unknown as { meta: Map<string, Map<string, string>> }
       const cursorJson = locals.meta.get(`mycel/${target.keys?.vaultId}/${typing.docId}`)?.get('cursor')?.length ?? 0
       const send = await measure(context, `${args.name}-send`, async (mark) => {
@@ -1590,7 +1594,7 @@ function traffic(m: Measured): string {
     `http ${get('http', 'requests')} req`,
     `verify ${get('crypto', 'verify:ECDSA')}, sign ${get('crypto', 'sign:ECDSA')}, decrypt ${get('crypto', 'decrypt:AES-GCM')}, sha ${get('crypto', 'digest:SHA-256')}`,
     `files read ${get('vault', 'reads')}, plugin-folder writes ${get('adapter', 'writes')} ${kb(get('adapter', 'writeBytes'))}`,
-    `cursor writes: index ${get('cursor', 'indexFlushes')} of ${kb(get('cursor', 'indexBytes'))}, notes ${get('cursor', 'otherFlushes')} of ${kb(get('cursor', 'otherBytes'))} unsent`,
+    `cursor writes: index ${get('cursor', 'indexFlushes')} writing ${kb(get('cursor', 'indexBytes'))}, notes ${get('cursor', 'otherFlushes')} writing ${kb(get('cursor', 'otherBytes'))}`,
     `sendNext overlapping ${get('race', 'overlappingSendNext')}, acks clearing a payload never sent ${get('race', 'ackClearsAnotherPayload')} (${kb(get('race', 'bytesNeverSent'))})`
   ]
   return parts.join('; ')

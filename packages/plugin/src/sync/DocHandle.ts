@@ -20,6 +20,7 @@ export interface LocalStore {
   clear(): Promise<void>
   get(key: string): Promise<string | null>
   set(key: string, value: string): Promise<void>
+  del(key: string): Promise<void>
 }
 
 export type OpenLocalStore = (name: string, doc: Y.Doc) => LocalStore
@@ -36,12 +37,23 @@ export const openIndexedDb: OpenLocalStore = (name, doc) => {
     },
     set: async (key, value) => {
       await persistence.set(key, value)
+    },
+    del: async (key) => {
+      await persistence.del(key)
     }
   }
 }
 
 const CURSOR_KEY = 'cursor'
+const SENDING_KEY = 'sending'
+const PIECE_PREFIX = 'outbox:'
 const PERSIST_DELAY_MS = 250
+/**
+ * Pieces of the outbox kept apart, on the disk too, before they are merged into one: merging
+ * them all on every keystroke, and writing the whole of it again, made typing offline slower
+ * with every keystroke - 15 ms a keystroke after 20,000 unsent ones (0.9.14, `docs/PERFORMANCE.md`).
+ */
+const PIECES_MERGED_AT = 256
 
 interface SavedCursor {
   lastSeq: number
@@ -50,11 +62,26 @@ interface SavedCursor {
   held?: boolean
   syncedAt?: number
   epoch: number
-  sending: string | null
-  outbox: string | null
+  /** The first piece of the outbox still waiting (`outbox:<n>`); the others follow it without a gap. */
+  outboxFrom?: number
+  /** A payload waits for its acknowledgement, under `sending`. */
+  sendingKept?: boolean
+  /** Before 0.9.14 both payloads were kept here, whole, written anew with every keystroke. */
+  sending?: string | null
+  outbox?: string | null
 }
 
-/** A room cursor kept next to the document it belongs to. */
+interface Piece {
+  key: number
+  data: Uint8Array
+  stored: boolean
+}
+
+/**
+ * A room cursor kept next to the document it belongs to. Each change made here enters the
+ * outbox as a piece of its own and is stored at once, alone (invariant 15); the pieces are
+ * merged only when they are sent, or once there are many.
+ */
 export class LocalCursor implements RoomCursor {
   lastSeq = 0
   lastHash: string | null = null
@@ -62,8 +89,14 @@ export class LocalCursor implements RoomCursor {
   held = false
   syncedAt = 0
   epoch = 0
-  sending: Uint8Array | null = null
-  outbox: Uint8Array | null = null
+  private sendingNow: Uint8Array | null = null
+  private sendingStored = true
+  private pieces: Piece[] = []
+  private nextKey = 0
+  private from = 0
+  /** Pieces taken out of the outbox, deleted from the disk once what replaced them is written. */
+  private obsolete: number[] = []
+  private savedText: string | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private writes: Promise<void> = Promise.resolve()
 
@@ -73,22 +106,82 @@ export class LocalCursor implements RoomCursor {
     const cursor = new LocalCursor(store)
     try {
       const raw = await store.get(CURSOR_KEY)
-      if (raw) {
-        const saved = JSON.parse(raw) as SavedCursor
+      const saved = raw ? (JSON.parse(raw) as SavedCursor) : null
+      if (saved) {
         cursor.lastSeq = saved.lastSeq ?? 0
         cursor.lastHash = saved.lastHash ?? null
         cursor.lastContent = saved.lastContent ?? null
         cursor.held = saved.held ?? false
         cursor.syncedAt = saved.syncedAt ?? 0
         cursor.epoch = saved.epoch ?? 0
-        cursor.sending = saved.sending ? fromBase64(saved.sending) : null
-        cursor.outbox = saved.outbox ? fromBase64(saved.outbox) : null
+        cursor.from = saved.outboxFrom ?? 0
+        if (typeof saved.sending === 'string' && saved.sending) {
+          cursor.sendingNow = fromBase64(saved.sending)
+          cursor.sendingStored = false
+        } else if (saved.sendingKept) {
+          const kept = await store.get(SENDING_KEY)
+          cursor.sendingNow = kept ? fromBase64(kept) : null
+        }
+      }
+      // Every piece from there on: one written just before a crash is in the outbox too, whatever the cursor said.
+      for (let key = cursor.from; ; key += 1) {
+        const piece = await store.get(`${PIECE_PREFIX}${key}`)
+        if (!piece) break
+        cursor.pieces.push({ key, data: fromBase64(piece), stored: true })
+      }
+      cursor.nextKey = cursor.from + cursor.pieces.length
+      if (typeof saved?.outbox === 'string' && saved.outbox) {
+        cursor.pieces.push({ key: cursor.nextKey++, data: fromBase64(saved.outbox), stored: false })
+      } else if (raw && saved?.sending === undefined) {
+        // Written in this form already: the first flush need not write it again.
+        cursor.savedText = raw
       }
     } catch (error) {
       // Starting from zero only costs a full catch-up.
       log.error('the local log position is unreadable', error)
     }
     return cursor
+  }
+
+  get sending(): Uint8Array | null {
+    return this.sendingNow
+  }
+
+  set sending(value: Uint8Array | null) {
+    if (value === this.sendingNow) return
+    this.sendingNow = value
+    this.sendingStored = false
+  }
+
+  get hasOutbox(): boolean {
+    return this.pieces.length > 0
+  }
+
+  /** How many bytes wait in the outbox, merged or not. */
+  get outboxBytes(): number {
+    return this.pieces.reduce((sum, piece) => sum + piece.data.length, 0)
+  }
+
+  enqueue(update: Uint8Array): void {
+    this.pieces.push({ key: this.nextKey++, data: update, stored: false })
+    void this.flush()
+  }
+
+  takeOutbox(): Uint8Array | null {
+    if (this.pieces.length === 0) return null
+    const merged = this.pieces.length === 1 ? (this.pieces[0] as Piece).data : Y.mergeUpdates(this.pieces.map((piece) => piece.data))
+    this.retire()
+    return merged
+  }
+
+  dropOutbox(): void {
+    this.retire()
+  }
+
+  private retire(): void {
+    this.obsolete.push(...this.pieces.map((piece) => piece.key))
+    this.pieces = []
+    this.from = this.nextKey
   }
 
   persist(urgent = false): void {
@@ -103,9 +196,24 @@ export class LocalCursor implements RoomCursor {
     }, PERSIST_DELAY_MS)
   }
 
+  /**
+   * Writes what changed: new pieces first, then the payload in flight, then the cursor - which
+   * says where the outbox starts - and only then deletes the pieces it no longer names. A crash
+   * anywhere in between leaves a piece twice at worst, which Yjs takes once.
+   */
   flush(): Promise<void> {
     if (this.timer !== null) clearTimeout(this.timer)
     this.timer = null
+    if (this.pieces.length > PIECES_MERGED_AT) {
+      const merged = Y.mergeUpdates(this.pieces.map((piece) => piece.data))
+      this.retire()
+      this.pieces = [{ key: this.nextKey++, data: merged, stored: false }]
+      this.from = this.pieces[0]?.key ?? this.from
+    }
+    const fresh = this.pieces.filter((piece) => !piece.stored)
+    for (const piece of fresh) piece.stored = true
+    const sending = this.sendingStored ? undefined : this.sendingNow
+    this.sendingStored = true
     const saved: SavedCursor = {
       lastSeq: this.lastSeq,
       lastHash: this.lastHash,
@@ -113,11 +221,20 @@ export class LocalCursor implements RoomCursor {
       held: this.held,
       syncedAt: this.syncedAt,
       epoch: this.epoch,
-      sending: this.sending ? toBase64(this.sending) : null,
-      outbox: this.outbox ? toBase64(this.outbox) : null
+      outboxFrom: this.from,
+      sendingKept: this.sendingNow !== null
     }
+    const text = JSON.stringify(saved)
+    const cursorChanged = text !== this.savedText
+    this.savedText = text
+    const obsolete = this.obsolete.splice(0)
     this.writes = this.writes
-      .then(() => this.store.set(CURSOR_KEY, JSON.stringify(saved)))
+      .then(async () => {
+        for (const piece of fresh) await this.store.set(`${PIECE_PREFIX}${piece.key}`, toBase64(piece.data))
+        if (sending !== undefined) await this.store.set(SENDING_KEY, sending ? toBase64(sending) : '')
+        if (cursorChanged) await this.store.set(CURSOR_KEY, text)
+        for (const key of obsolete) await this.store.del(`${PIECE_PREFIX}${key}`)
+      })
       .catch((error) => log.error('saving the local log position failed', error))
     return this.writes
   }
