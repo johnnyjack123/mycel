@@ -269,6 +269,18 @@ removed. *Not now* leaves it waiting - the Backups tab keeps a *Decide…* for l
 Letting it follow, or setting the guard to never, starts the measuring afresh. Deleted notes stay in the copy's hidden
 trash (`.mycel/trash/`) as long as the vault's trash keeps them.
 
+**Every backup is kept** (0.9.13) after a backup that saw as much vanish as the guard holds
+the copy for - with or without a decrypted copy - or found another history of some notes on
+the sync server than the one it followed (a server restored from a copy, or rolled back):
+that backup is made, but restic forgets none of the earlier ones, and neither do the
+backups after it, past the retention, until you confirm. A backup is what is left when the
+sync server lost data - and a sync server taken over could hand out older states backup
+after backup, until the retention had let go of every good one. The same window asks,
+titled *Every backup is kept* when the copy does not wait: *Confirm* if it was on purpose -
+you deleted that much, or restored the sync server yourself -, and the retention applies
+again from that backup on. Setting the guard to never ends a hold for what vanished, not one
+for another history. Meanwhile a backup with nothing changed still starts no restic.
+
 ## What a backup holds
 
 ```

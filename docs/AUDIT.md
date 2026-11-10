@@ -151,7 +151,9 @@ them; and "Also share the notes it links to" follows only links of the sharer's.
 - **What a server can always do:** withhold frames, delay them, deliver them to some and not
   others, refuse service, hand an older snapshot (which only adds), see who talks to whom and
   when, and how large each change is. Withholding includes the settings document: a device
-  that never received a revocation does not know of it.
+  that never received a revocation does not know of it. Handing the backup server older states
+  no longer wears the backups away (0.9.13): a run that sees much vanish, or another history,
+  forgets no backup until the owner confirms.
 - **A reader nobody knows draws no caret.** Presence is shown only for someone this device
   can tell (R4); a reader who is no contact of yours has no certificate to show. Their text
   is not affected - readers write none.
