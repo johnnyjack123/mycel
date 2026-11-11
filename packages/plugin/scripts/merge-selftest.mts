@@ -18,6 +18,8 @@ import { hashWasmArgon2id } from '../src/account/argon2.js'
 import { Replay } from '../src/history/RoomHistory.js'
 import { additiveEdits, reconcile } from '../src/sync/Reconciler.js'
 import { idsAt, linksIn, linksNear, touchedBy, touches } from '../src/share/links.js'
+import { versionStep } from '../src/share/sharedVersion.js'
+import { besides, numbered, renameInRounds } from '../src/sync/renames.js'
 
 const failures: string[] = []
 
@@ -1118,6 +1120,75 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     const answered = await e2e.answerSession(keys.psk, otherHello)
     check(await refuses(() => e2e.finishSession(other.psk, otherPending, answered.answer)), "another route's secret does not open a session on this one")
   }
+}
+
+// --- a shared file's version: the decision of a shared note and a shared folder alike ---------
+{
+  const step = (here: string, base: { hash: string; prev?: string } | undefined, listed: { hash: string; prev?: string }): string => {
+    const next = versionStep(here, base, listed)
+    return next.step === 'publish' ? `publish:${next.prev}` : next.step
+  }
+  const cases: Array<[string, string, { hash: string; prev?: string } | undefined, { hash: string; prev?: string }, string]> = [
+    ['the list names what is here', 'b', { hash: 'a' }, { hash: 'b' }, 'agree'],
+    ["this vault's newer version is on its way into the list", 'b', { hash: 'b', prev: 'a' }, { hash: 'a' }, 'wait'],
+    ["unchanged here, and the list's version replaced it", 'a', { hash: 'a' }, { hash: 'b', prev: 'a' }, 'adopt'],
+    ['no base, but the list replaced exactly what is here', 'a', undefined, { hash: 'b', prev: 'a' }, 'adopt'],
+    ['unchanged here, but the list moved past it unknowing', 'a', { hash: 'a' }, { hash: 'c', prev: 'b' }, 'keep-both'],
+    ['changed here, the list still at the base', 'b', { hash: 'a' }, { hash: 'a' }, 'publish:a'],
+    ['changed here and in the list', 'b', { hash: 'a' }, { hash: 'c', prev: 'a' }, 'keep-both'],
+    ['no base, and the list replaced something else', 'a', undefined, { hash: 'c', prev: 'b' }, 'unrelated'],
+    ['no base, and the list knows no earlier version', 'a', undefined, { hash: 'c' }, 'unrelated']
+  ]
+  const wrong = cases.filter(([, here, base, listed, expected]) => step(here, base, listed) !== expected)
+  check(
+    wrong.length === 0,
+    "a shared file's version is taken only when it knew this vault's; otherwise both are kept (invariant 24)",
+    wrong.map(([label, here, base, listed]) => `${label}: ${step(here, base, listed)}`)
+  )
+}
+
+// --- renames from other devices, in rounds (invariant 27) ------------------------------------
+{
+  // A vault as paths -> id, the index as id -> path; each move as Obsidian's rename would make it.
+  const follow = async (files: Record<string, string>, index: Record<string, string>): Promise<{ files: Record<string, string>; asides: string[] }> => {
+    const vault = new Map(Object.entries(files))
+    const asides: string[] = []
+    const pending = [...vault].filter(([path, id]) => index[id] !== path).map(([at, id]) => ({ id, at, to: index[id] as string }))
+    await renameInRounds(pending, {
+      taken: (path) => vault.has(path),
+      claimed: (path) => Object.values(index).includes(path),
+      move: async (id, to, aside) => {
+        const at = [...vault].find(([, held]) => held === id)?.[0]
+        if (at === undefined || vault.has(to)) return false
+        vault.delete(at)
+        vault.set(to, id)
+        if (aside) asides.push(to)
+        return true
+      },
+      stopped: () => false
+    })
+    return { files: Object.fromEntries([...vault].sort()), asides }
+  }
+  const swapped = await follow({ 'A.md': 'a', 'B.md': 'b' }, { a: 'B.md', b: 'A.md' })
+  check(
+    JSON.stringify(swapped.files) === JSON.stringify({ 'A.md': 'b', 'B.md': 'a' }) && swapped.asides.join() === 'B (moving).md',
+    'two notes that swapped names swap here too, one waiting at a free name meanwhile',
+    swapped
+  )
+  const cycle = await follow({ 'A.md': 'a', 'B.md': 'b', 'C.md': 'c' }, { a: 'B.md', b: 'C.md', c: 'A.md' })
+  check(JSON.stringify(cycle.files) === JSON.stringify({ 'A.md': 'c', 'B.md': 'a', 'C.md': 'b' }), 'so do three that went round', cycle)
+  const chain = await follow({ 'A.md': 'a', 'B.md': 'b' }, { a: 'B.md', b: 'C.md' })
+  check(JSON.stringify(chain.files) === JSON.stringify({ 'B.md': 'a', 'C.md': 'b' }) && chain.asides.length === 0, 'one waits for the place another leaves, without a detour', chain)
+  const crowded = await follow({ 'A.md': 'a', 'B.md': 'b', 'B (moving).md': 'x' }, { a: 'B.md', b: 'A.md', x: 'B (moving).md', y: 'B (moving 2).md' })
+  check(
+    JSON.stringify(crowded.files) === JSON.stringify({ 'A.md': 'b', 'B (moving).md': 'x', 'B.md': 'a' }) && crowded.asides.join() === 'B (moving 3).md',
+    'the free name is one nobody has, in the vault or the index',
+    crowded
+  )
+  check(
+    besides('Pics/a.png', 'moving', 1) === 'Pics/a (moving).png' && besides('a.b/c', 'x', 2) === 'a.b/c (x 2)' && numbered('Pics/a.png', 3) === 'Pics/a 3.png',
+    'names beside a taken one keep the extension, and only the last segment has one'
+  )
 }
 
 // --- the Time Machine's replay -----------------------------------------------

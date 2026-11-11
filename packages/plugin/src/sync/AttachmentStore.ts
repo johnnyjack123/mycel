@@ -6,6 +6,7 @@ import { ApiError } from '../account/api.js'
 import type { AttachmentIndex, SharedBase } from './AttachmentIndex.js'
 import { BlobMissing, type Blobs } from './Blobs.js'
 import { matchesGlob } from './glob.js'
+import { besides, renameInRounds } from './renames.js'
 import type { StateStore } from './StateStore.js'
 import { log } from '../log.js'
 
@@ -115,13 +116,6 @@ const UNNAMED_MIN_DAYS = 7
 const TRASH_EVENT_MS = 2_000
 
 /** `stem (label)ext`, or `stem (label n)ext` from the second on. */
-function besides(path: string, label: string, n: number): string {
-  const slash = path.lastIndexOf('/')
-  const dot = path.lastIndexOf('.')
-  const cut = dot > slash ? dot : path.length
-  return `${path.slice(0, cut)} (${label}${n > 1 ? ` ${n}` : ''})${path.slice(cut)}`
-}
-
 function stamp(when: Date): string {
   return `${when.getFullYear()}-${two(when.getMonth() + 1)}-${two(when.getDate())} ${two(when.getHours())}${two(when.getMinutes())}`
 }
@@ -900,39 +894,25 @@ export class AttachmentStore {
   }
 
   /**
-   * Renames other devices made, in rounds, before anything else: a file whose
-   * new place another file still holds waits for it to move on, and of two
-   * that swapped names one waits at a free name meanwhile - as notes do
-   * (`DocStore.applyRemoteRenames`). One at a time, each followed singly, two
-   * that swapped stayed where they were.
+   * Renames other devices made, before anything else, in rounds as notes do:
+   * followed singly, two files that swapped names stayed where they were
+   * (`renameInRounds`).
    */
   private async followRenames(): Promise<void> {
     const pending = this.index.live().flatMap(({ fileId, entry }) => {
       const known = this.state.attachment(fileId)
-      return known && known.path !== entry.path && !this.isExcluded(entry.path) ? [{ fileId, at: known.path, to: entry.path }] : []
+      return known && known.path !== entry.path && !this.isExcluded(entry.path) ? [{ id: fileId, at: known.path, to: entry.path }] : []
     })
-    for (let round = 0; pending.length > 0 && round < pending.length * 3 + 3; round += 1) {
-      if (this.stopped) return
-      let moved = false
-      for (const item of pending.slice()) {
-        if (this.app.vault.getAbstractFileByPath(item.to)) continue
-        await this.withLock(item.fileId, () => this.renameTo(item.fileId, item.to)).catch((error: unknown) => this.failed(error))
-        pending.splice(pending.indexOf(item), 1)
-        moved = true
-      }
-      if (moved) continue
-      const blocked = pending.find((item) => pending.some((other) => other !== item && other.at === item.to))
-      if (!blocked) return
-      const occupant = pending.find((other) => other.at === blocked.to) as (typeof pending)[number]
-      let aside = besides(occupant.at, 'moving', 1)
-      for (let n = 2; this.app.vault.getAbstractFileByPath(aside) || this.index.idForPath(aside); n += 1) aside = besides(occupant.at, 'moving', n)
-      const went = await this.withLock(occupant.fileId, () => this.renameTo(occupant.fileId, aside, true)).catch((error: unknown) => {
-        this.failed(error)
-        return false
-      })
-      if (!went) return
-      occupant.at = aside
-    }
+    await renameInRounds(pending, {
+      taken: (path) => Boolean(this.app.vault.getAbstractFileByPath(path)),
+      claimed: (path) => Boolean(this.index.idForPath(path)),
+      move: (fileId, to, aside) =>
+        this.withLock(fileId, () => this.renameTo(fileId, to, aside)).catch((error: unknown) => {
+          this.failed(error)
+          return false
+        }),
+      stopped: () => this.stopped
+    })
   }
 
   /** Moves a file where the index has it - or, `aside`, out of another's way for a moment. */

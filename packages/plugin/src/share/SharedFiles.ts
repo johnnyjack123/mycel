@@ -6,6 +6,8 @@ import type { ConnectApi } from '../account/api.js'
 import type { AttachmentStore } from '../sync/AttachmentStore.js'
 import type { DocHandle } from '../sync/DocHandle.js'
 import type { DocStore } from '../sync/DocStore.js'
+import { numbered } from '../sync/renames.js'
+import { versionStep } from './sharedVersion.js'
 import { log } from '../log.js'
 
 // The files a shared note embeds or links travel with it, both ways. The
@@ -72,13 +74,6 @@ function isFileRef(ref: string): boolean {
   const name = ref.slice(ref.lastIndexOf('/') + 1)
   const dot = name.lastIndexOf('.')
   return dot > 0 && name.slice(dot + 1).toLowerCase() !== 'md'
-}
-
-function besides(path: string, n: number): string {
-  const slash = path.lastIndexOf('/')
-  const dot = path.lastIndexOf('.')
-  const cut = dot > slash ? dot : path.length
-  return `${path.slice(0, cut)} ${n}${path.slice(cut)}`
 }
 
 function safeSegment(name: string): string {
@@ -326,40 +321,37 @@ export class SharedFiles {
     }
     this.unlisted.delete(`${docId}:${ref}`)
 
-    if (local && local.entry.hash === listed.hash) {
-      this.agree(note, ref, listed.hash, local.entry.path)
-      return
-    }
-    // This vault's own newer version is on its way into the list - written by
-    // another of its devices, whose index arrived here before the note did.
-    if (base?.prev !== undefined && listed.hash === base.prev && local?.entry.hash === base.hash) return
-    // No base - a crash before it was written -, yet the list's version
-    // replaced exactly what this vault has: that is as good as one.
-    const known = base?.hash ?? (local && listed.prev === local.entry.hash ? local.entry.hash : undefined)
-    // Nothing here for this link yet - or only a file of this vault's own that
-    // happens to share the name: the note's file comes in next to it.
-    if (!local || (known === undefined && !local.entry.via)) {
+    if (!local) {
+      // Nothing here for this link yet.
       await this.deliver(note, ref, listed)
       return
     }
-    const ours = local.entry.hash
-    if (known !== undefined && ours === known) {
-      // Unchanged here. The list moved on - knowingly, or past this version.
-      if (listed.prev === known) {
+    const next = versionStep(local.entry.hash, base, listed)
+    switch (next.step) {
+      case 'agree':
+        this.agree(note, ref, listed.hash, local.entry.path)
+        return
+      case 'wait':
+        return
+      case 'unrelated':
+        // Only a file of this vault's own that happens to share the name: the note's file comes in next to it.
+        if (!local.entry.via) {
+          await this.deliver(note, ref, listed)
+          return
+        }
+        break
+      case 'adopt':
         // Changed here after all, while this waited for the file: the next pass weighs that.
         if (!(await this.attachments.adopt(local.fileId, listed, note.room))) return
         log.info(`${note.file.path}: ${ref} changed in the shared note`)
-      } else {
-        await this.keepAside(note, ref, local.fileId, listed)
-      }
-      this.agree(note, ref, listed.hash, local.entry.path)
-      return
-    }
-    if (base && listed.hash === base.hash) {
-      // Changed here. A reader's change stays here; the next version from the
-      // list meets it as a conflict.
-      if (note.canWrite) await this.publish(note, ref, local, base.hash)
-      return
+        this.agree(note, ref, listed.hash, local.entry.path)
+        return
+      case 'publish':
+        // A reader's change stays here; the next version from the list meets it as a conflict.
+        if (note.canWrite) await this.publish(note, ref, local, next.prev)
+        return
+      case 'keep-both':
+        break
     }
     await this.keepAside(note, ref, local.fileId, listed)
     this.agree(note, ref, listed.hash, local.entry.path)
@@ -455,7 +447,7 @@ export class SharedFiles {
     if (!taken(first)) return first
     const second = `${root}/${safeSegment(note.file.basename)}/${clean}`
     let path = second
-    for (let n = 2; taken(path); n += 1) path = besides(second, n)
+    for (let n = 2; taken(path); n += 1) path = numbered(second, n)
     return path
   }
 
