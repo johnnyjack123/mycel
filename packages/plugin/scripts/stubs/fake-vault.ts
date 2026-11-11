@@ -510,8 +510,16 @@ export class MemoryLocalStores {
       get: async (key) => kept.get(key) ?? null,
       set: async (key, value) => {
         kept.set(key, value)
+      },
+      del: async (key) => {
+        kept.delete(key)
       }
     }
+  }
+
+  /** What a database keeps beside its document - the cursor, the outbox's pieces - by key. */
+  keys(name: string): string[] {
+    return Array.from(this.meta.get(name)?.keys() ?? [])
   }
 }
 

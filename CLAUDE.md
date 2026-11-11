@@ -110,10 +110,12 @@ someone's notes. Treat them as rules, not preferences.
     device; the server gets a key derived from it for login only, and the master
     key derived next to it wraps everything else.
 15. **A local edit is not stored until it is in the outbox.** `y-indexeddb`
-    writes the document at once; the outbox (`RoomCursor.persist(true)`) must
+    writes the document at once; the outbox (`RoomCursor.enqueue`) must
     not lag behind it, or a crash in between leaves an edit that is on the
     device and never sent — and every later edit built on it undecodable
-    elsewhere.
+    elsewhere. Each change is a piece of its own, stored at once and alone
+    (`outbox:<n>`), merged only when sent or once there are many (0.9.14): writing
+    the whole outbox again with every keystroke made typing offline ever slower.
 16. **An epoch moves before anything is awaited.** Sharing without history and
     revoking bump `meta.epoch` synchronously, so no push under the old key lands
     after the snapshot or the revocation. Pushes under any other epoch are

@@ -148,7 +148,7 @@ check(
   void offline.register(docRoom(id), docTwo, { crypto: two.keys.ownDocCrypto(id), cursor: cursorTwo })
   docTwo.getText(CONTENT_FIELD).insert(0, 'written offline')
   await delay(200)
-  check(Boolean(cursorTwo.outbox ?? cursorTwo.sending), 'an edit made offline waits in the outbox')
+  check(cursorTwo.hasOutbox || Boolean(cursorTwo.sending), 'an edit made offline waits in the outbox')
   offline.destroy()
   const again = new VaultSocket(serverUrl, two.vault.vaultId, () => two.token() ?? '')
   again.connect()
@@ -158,7 +158,7 @@ check(
     'and reaches the other device after reconnecting',
     docOne.getText(CONTENT_FIELD).toString()
   )
-  check(await eventually(() => !cursorTwo.outbox && !cursorTwo.sending), 'the outbox empties once acknowledged')
+  check(await eventually(() => !cursorTwo.hasOutbox && !cursorTwo.sending), 'the outbox empties once acknowledged')
   again.destroy()
 }
 
@@ -171,9 +171,13 @@ check(
   const store = {
     whenSynced: Promise.resolve(),
     destroy: () => undefined,
+    clear: async () => saved.clear(),
     get: async (key: string) => saved.get(key) ?? null,
     set: async (key: string, value: string) => {
       saved.set(key, value)
+    },
+    del: async (key: string) => {
+      saved.delete(key)
     }
   }
   const cursor = await LocalCursor.load(store)
@@ -182,9 +186,24 @@ check(
   void offline.register(docRoom(id), doc, { crypto: one.keys.ownDocCrypto(id), cursor })
   doc.getText(CONTENT_FIELD).insert(0, 'typed just before a crash')
   await delay(30)
-  const stored = saved.get('cursor')
-  check(Boolean(stored && (JSON.parse(stored) as { outbox?: string | null }).outbox), 'an unsent edit is stored as soon as it is made')
+  check(Array.from(saved.keys()).some((key) => key.startsWith('outbox:')), 'an unsent edit is stored as soon as it is made', Array.from(saved.keys()))
+  // Each keystroke a piece of its own, stored alone: writing the whole outbox again each time made
+  // typing offline slower with every keystroke (0.9.14). Many are merged into one on the disk too.
+  for (let i = 0; i < 600; i += 1) doc.getText(CONTENT_FIELD).insert(doc.getText(CONTENT_FIELD).length, 'x')
+  await cursor.flush()
+  const pieces = Array.from(saved.keys()).filter((key) => key.startsWith('outbox:'))
+  check(pieces.length > 0 && pieces.length <= 300, 'six hundred keystrokes offline are kept as a few pieces, merged as they grow', pieces.length)
   offline.destroy()
+  // The crash: what the disk holds comes back, every keystroke of it.
+  const reloaded = await LocalCursor.load(store)
+  const replayed = new Y.Doc()
+  const taken = reloaded.takeOutbox()
+  if (taken) Y.applyUpdate(replayed, taken)
+  check(
+    replayed.getText(CONTENT_FIELD).toString() === doc.getText(CONTENT_FIELD).toString(),
+    'and after a crash the outbox holds every one of them',
+    replayed.getText(CONTENT_FIELD).toString().length
+  )
 }
 
 // Presence travels encrypted too, and only where a room registers it.

@@ -22,7 +22,8 @@ files (23 MB) to see what grows. The benchmark measures and reports; nothing in
    It needs a busy
    main thread or crypto pool, which is a phone during a first sync. Details under "Things that
    looked wrong".
-1. **Unsent edits cost more with every edit.** Offline, each keystroke merges the whole
+1. *(Fixed in 0.9.14: each change is a piece of the outbox of its own; 20,000 keystrokes offline
+   take 1.5 s, 0.03-0.08 ms each - `docs/CHANGELOG.md`.)* **Unsent edits cost more with every edit.** Offline, each keystroke merges the whole
    outbox again (`Y.mergeUpdates`) and writes it whole as base64 JSON. The synchronous cost of a
    keystroke grows by about 0.75 ms per 1,000 keystrokes not yet sent: 0.37 ms at the start,
    7.4 ms after 10,000, 15.4 ms after 20,000. 20,000 keystrokes took 176 s of CPU.
