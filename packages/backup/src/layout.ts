@@ -53,8 +53,11 @@ const DEFAULT_RETENTION_DAYS = 30
 const TRASH = ' (trash)'
 const SETTINGS = ' settings.json'
 // Entries of the settings document that are not settings: contacts, their
-// codes, the recovery decision, the backup servers with their passwords.
-const NOT_SETTINGS = /^(contact|code|pending|backup[A-Za-z]*):|^recovery$/
+// codes, the recovery decision, the backup servers with their passwords, and
+// the account's records - who has which role in a share (a contact's account
+// id), the epoch floors, links asked about, rollbacks (the plugin's
+// `AccountSettings` keys).
+const NOT_SETTINGS = /^(contact|code|pending|backup[A-Za-z]*|role|epoch|linkAsked|rollback):|^recovery$/
 
 /** The vault's folder name: its name, made a single path segment. */
 export function vaultFolder(name: string): string {

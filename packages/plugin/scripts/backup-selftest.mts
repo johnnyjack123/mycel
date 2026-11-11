@@ -437,6 +437,11 @@ try {
     check(missing.length === 0 && differ.length === 0, `restored with restic and tar from ${destination.id}, the vault is all there - notes, files, canvas, shared note`, { missing, differ })
     const settings = restored.get(`${folder} settings.json`)?.toString('utf8') ?? ''
     check(settings.includes('historyRetentionDays') && !settings.includes('contact:') && !settings.includes('code:'), 'with the settings, without contacts and codes', settings)
+    check(
+      !['role:', 'epoch:', 'linkAsked:', 'rollback:'].some((record) => settings.includes(`"${record}`)),
+      "nor the account's records - who has which role in a share, epochs, links asked about, rollbacks",
+      settings
+    )
   }
   {
     const { missing, differ } = sameFiles(vaultInCopy(trustedDir), expectedVault(A1, ''), '')
