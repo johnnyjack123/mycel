@@ -7,6 +7,7 @@ import {
   deriveFolderId,
   epochKeyContext,
   folderKeys,
+  frameVerdict,
   fromBase64,
   fromUtf8,
   packSignedFrame,
@@ -22,7 +23,6 @@ import {
   unseal,
   utf8,
   vaultKeys,
-  verifyFrame,
   verifyLinkClaim,
   verifyPresence,
   verifySealed,
@@ -394,18 +394,7 @@ export class KeyRing {
     kind: 'frame' | 'snapshot',
     frame: OpenedFrame
   ): Promise<FrameVerdict> {
-    const author = frame.author
-    const ownerKey = this.signerPublicKey(owner)
-    if (!ownerKey) return 'unknown'
-    if (author === owner) return (await verifyFrame(ownerKey, room, epoch, frame)) ? 'ok' : 'forged'
-    // Only the owner makes snapshots and starting points.
-    const cert = frame.cert
-    if (kind === 'snapshot' || !cert) return 'forged'
-    const certified =
-      (tie !== null && (await verifyWriterCert(ownerKey, folderRoom(tie.folder), tie.epoch, author, cert))) ||
-      (await verifyWriterCert(ownerKey, room, epoch, author, cert))
-    if (!certified) return 'forged'
-    return (await verifyFrame(cert.signingKey, room, epoch, frame)) ? 'ok' : 'forged'
+    return frameVerdict(this.signerPublicKey(owner), owner, room, epoch, tie, kind, frame)
   }
 
   get username(): string {

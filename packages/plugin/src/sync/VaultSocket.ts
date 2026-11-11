@@ -8,7 +8,7 @@ import {
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
 import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, socketProtocols, type FolderTie, type Notice, type NotifyKind } from '@mycel/shared'
-import { bytes, concat, decrypt, encrypt, sha256, toHex, unpackFrame, utf8, type Bytes, type OpenedFrame } from '@mycel/shared/crypto'
+import { bytes, concat, decrypt, encrypt, sha256, toHex, unpackFrame, utf8, type Bytes, type FrameVerdict, type OpenedFrame } from '@mycel/shared/crypto'
 import type { HistoryEntry } from './History.js'
 import { log } from '../log.js'
 
@@ -79,7 +79,8 @@ export interface CheckedPresence {
   update: Uint8Array
 }
 
-export type FrameVerdict = 'ok' | 'forged' | 'unknown'
+/** The rule itself is `frameVerdict` in `shared/crypto`, the backup server's too. */
+export type { FrameVerdict }
 
 /** How long after its author's time a frame of someone else's may reach the server and still keep that time. */
 export const AUTHOR_LAG_MS = 60 * 60 * 1000

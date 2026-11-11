@@ -379,6 +379,28 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
     const flagged = await e2e.packSignedFrame(ownerSigning, 'doc:x', 3, ownerId, null, 1, update)
     flagged[9 + 16] = 1
     check(e2e.unpackFrame(flagged.subarray(0, 9 + 16 + 1 + 64 + 65)) === null, 'nor one cut short behind its certificate')
+
+    // The one rule every device and the backup server apply to what they read (`frameVerdict`).
+    const verdict = (frame: e2e.OpenedFrame, kind: 'frame' | 'snapshot' = 'frame', tie: { folder: string; epoch: number } | null = null, room = 'doc:x', ownerKey: e2e.Bytes | null = owner.publicKey) =>
+      e2e.frameVerdict(ownerKey, ownerId, room, 3, tie, kind, frame)
+    check(
+      (await verdict(byOwner)) === 'ok' && (await verdict(byOwner, 'snapshot')) === 'ok' && (await verdict(byWriter)) === 'ok',
+      "the rule takes the owner's frames and snapshots, and a certified writer's frames"
+    )
+    check((await verdict(byWriter, 'snapshot')) === 'forged', 'but no snapshot of anyone but the owner')
+    check((await verdict({ ...byWriter, cert: null })) === 'forged', 'nor a frame of anyone else without a certificate')
+    check((await verdict({ ...byOwner, author: aliceId })) === 'forged', "nor one signed by the owner's key in someone else's name")
+    check((await verdict(byWriter, 'frame', null, 'doc:y')) === 'forged', 'nor a writer certified for another room')
+    check((await verdict(byOwner, 'frame', null, 'doc:x', null)) === 'unknown', "and says nothing while the owner's key is not known here")
+    // A writer certified for a shared folder's epoch writes in the notes of that folder epoch.
+    const folderCert = { signingKey: writer.publicKey, signature: e2e.fromBase64(await e2e.signWriterCert(ownerSigning, 'fld:f1', 2, aliceId, writer.publicKey)) }
+    const byFolderWriter = e2e.unpackFrame(await e2e.packSignedFrame(writerSigning, 'doc:x', 3, aliceId, folderCert, 1, update)) as e2e.OpenedFrame
+    check(
+      (await verdict(byFolderWriter, 'frame', { folder: 'f1', epoch: 2 })) === 'ok' &&
+        (await verdict(byFolderWriter)) === 'forged' &&
+        (await verdict(byFolderWriter, 'frame', { folder: 'f1', epoch: 3 })) === 'forged',
+      "a folder's writer writes in a note of the folder epoch it is tied to, and only there"
+    )
   }
 
   const vaultKey = randomBytes(32)
