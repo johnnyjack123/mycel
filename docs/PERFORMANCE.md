@@ -28,7 +28,10 @@ files (23 MB) to see what grows. The benchmark measures and reports; nothing in
    keystroke grows by about 0.75 ms per 1,000 keystrokes not yet sent: 0.37 ms at the start,
    7.4 ms after 10,000, 15.4 ms after 20,000. 20,000 keystrokes took 176 s of CPU.
    The hypothesis holds.
-2. **A restart opens every note.** The start's scan reconciles every file, which loads every
+2. *(Fixed in 0.9.15: a start opens only what changed. Measured at 1,000 notes, the second
+   device's restart: 0 notes opened instead of 1,000, 2 subscribes instead of 1,002, 1 KB
+   downloaded instead of 5.3 MB, nothing written to the plugin folder instead of 5.1 MB, 0-0.1 s of
+   CPU instead of 0.3-0.5 s - `docs/CHANGELOG.md`.)* **A restart opens every note.** The start's scan reconciles every file, which loads every
    document, subscribes every room, has the server send each note's last frame again
    (28.8 MB at 5,000 notes) and rewrites every base text (28.8 MB). Then it lets 4,500 of
    them go again. That is about 3 s here; in Obsidian it also means 5,000 IndexedDB databases
