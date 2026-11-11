@@ -8,6 +8,33 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.16** (2026-11-11, branch `refactor/sync-session`, the code review's first proposal) - **the
+  tests run the plugin's own wiring.** `main.ts` built the sync - twenty parts and every line
+  between them - in `openSync` and took it down in `stopSync`; the test harness had a copy of
+  both, kept by hand, and the two had drifted: the index applied by a debounce of its own, a lock
+  notice taken for any of the account's vaults, a folder's pass started at once on a file change,
+  the settings' changes reaching neither store. Now one
+  `SyncSession` (`src/SyncSession.ts`) builds every part in the order they need each other, wires
+  them, dispatches the server's notices about shares and folders and the vault's events, renews
+  the shares of a contact confirmed again, compacts, and takes it all down in reverse; the plugin
+  and the harness give it only a `SyncHost` - storage, timings, the windows and notices, or a
+  test's answers. `main.ts` is 260 lines shorter; nothing it does changed but what follows.
+  - A lock notice of another vault of the account is left out by the session, for the plugin as
+    before and now for the tests too.
+  - A stop and a start in quick succession: the stopping session took down its own socket and
+    store, never the next one's - before, `stopSync` destroyed `this.socket` after a wait, which a
+    start meanwhile could have replaced. A stopped session is never built on again.
+  - **Fixed:** while the sync was stopped (the Time Machine, sync turned off on the device) the
+    Contacts tab kept the contacts of the stopped sync, whose settings document was closed: a
+    friend code redeemed there was written nowhere. The tab now says contacts are shown while the
+    vault syncs.
+  - Checked: every suite, with the harness on the session - `test:load`, `merge`, `sync`,
+    `recovery`, `account`, `rollback`, `timemachine`, `replace`, `security`, `socket`, `vault`,
+    `folders`, `backup`; `npm run bench` through the harness. `test:backup` failed once in four runs
+    (the third run fetched more rooms than the two notes changed, and restic's diff named more -
+    the account's settings changed between the runs, by every sign) and passed the other three;
+    kept under Known issues.
+
 - **0.9.15** (2026-11-11, branch `perf/quiet-start`, the benchmark's second finding) - **a start
   opens only what changed.** Every start opened every note - its database, its document, a
   subscribe that downloaded its last frame again -, 5,000 databases on a phone each time the

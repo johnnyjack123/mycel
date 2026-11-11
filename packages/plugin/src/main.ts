@@ -15,18 +15,13 @@ import * as Y from 'yjs'
 import { Notice, noticeWithAction, notices } from './notices.js'
 import { gateApp } from './guard.js'
 import {
-  roomKind,
   roomSubject,
   type BlobUsageResponse,
-  settingsRoom,
   userColor,
   type BackupTaskSetting,
   type CollabUser,
   type ContactNotice,
-  type FolderNotice,
   type Notice as ServerNotice,
-  type NotifyKind,
-  type ShareNotice,
   type VaultLockInfo,
   type VaultLockNotice
 } from '@mycel/shared'
@@ -35,7 +30,7 @@ import { ConnectApi, type HttpClient } from './account/api'
 import { judgePassword } from './account/password'
 import { probeServer, type ServerProbe } from './account/probe'
 import { hashWasmArgon2id } from './account/argon2'
-import { KeyRing } from './account/KeyRing'
+import type { KeyRing } from './account/KeyRing'
 import { KeyReplacement, KeyReplacementError } from './account/KeyReplacement'
 import { PasswordModal } from './account/PasswordModal'
 import { PasswordPromptModal, RecoveryCodeModal } from './account/RecoveryModals'
@@ -59,38 +54,35 @@ import { NOTIFICATIONS_VIEW, NotificationsView } from './NotificationsView'
 import { AccessModal } from './share/AccessModal'
 import { FolderMarks } from './share/FolderMarks'
 import { FolderAccessModal, MoveInModal, OutsideModal, ShareFolderModal } from './share/FolderModals'
-import { Folders, type DeletedBatch, type FolderNews } from './share/Folders'
+import type { DeletedBatch, FolderNews, Folders } from './share/Folders'
 import { IncomingModal } from './share/IncomingModal'
 import { ShareModal } from './share/ShareModal'
 import { linkedNotes, linkedOutside, type ForeignLink } from './share/LinkedNotes'
-import { LinkClaims, notePeople, type LinkPerson, type LinkQuestion } from './share/LinkClaims'
+import type { LinkClaims, LinkPerson, LinkQuestion } from './share/LinkClaims'
 import { describeTheirs, guardLinkOpening, linkGuardExtension, markRendered, type LinkGuardHost } from './share/LinkGuard'
-import { Contacts, type OpenCode } from './share/Contacts'
-import { Sharing, type MemberPlace } from './share/Sharing'
+import type { Contacts, OpenCode } from './share/Contacts'
+import type { MemberPlace, Sharing } from './share/Sharing'
 import { UnknownMembersModal } from './share/UnknownMembersModal'
-import { SharedFiles } from './share/SharedFiles'
+import type { SharedFiles } from './share/SharedFiles'
 import { AccountSettings, DEFAULT_SHARED_SETTINGS, type Contact, type RollbackRecord, type SharedSettings } from './sync/AccountSettings'
-import { AttachmentIndex } from './sync/AttachmentIndex'
-import { AttachmentStore, type AttachmentOptions, type AttachmentSyncState } from './sync/AttachmentStore'
-import { BackupStore } from './sync/BackupStore'
+import type { AttachmentOptions, AttachmentStore, AttachmentSyncState } from './sync/AttachmentStore'
+import type { BackupStore } from './sync/BackupStore'
 import { Blobs } from './sync/Blobs'
-import { Compactor } from './sync/Compactor'
-import { LocalCursor, openIndexedDb, type LocalStore } from './sync/DocHandle'
-import { DocStore, type DocStoreOptions, type NoteSyncState } from './sync/DocStore'
-import { indexedDbHistory, type HistoryStore } from './sync/History'
-import { Recovery } from './sync/Recovery'
+import { openIndexedDb } from './sync/DocHandle'
+import type { DocStore, DocStoreOptions, NoteSyncState } from './sync/DocStore'
+import { indexedDbHistory } from './sync/History'
 import { RecoveryModal } from './history/RecoveryModal'
-import { StateStore } from './sync/StateStore'
-import { Trash } from './sync/Trash'
+import type { Trash } from './sync/Trash'
 import { TrashModal } from './history/TrashModal'
 import { Rollback, pruneRollbackCopies } from './sync/Rollback'
 import { FileVersionsModal } from './history/FileVersionsModal'
-import { ReviewStore, type Review } from './sync/Reviews'
+import type { Review, ReviewStore } from './sync/Reviews'
 import { ReviewListModal, ReviewModal } from './history/ReviewModal'
-import { VaultIndex } from './sync/VaultIndex'
-import { VaultSocket, type SocketStatus } from './sync/VaultSocket'
+import type { VaultIndex } from './sync/VaultIndex'
+import type { SocketStatus, VaultSocket } from './sync/VaultSocket'
 import { LockSeal, inLockScope, lockNonce, takeVaultLock, type LockPurpose, type LockScope } from './sync/VaultLock'
 import { MycelSettingTab, DEFAULT_SETTINGS, MOBILE_DOWNLOAD_LIMIT_MB, type MycelSettings } from './settings'
+import { CarriedTexts, SyncSession, type AccountNoticeKind, type SyncHost, type SyncTiming } from './SyncSession'
 import { log, withSummary } from './log'
 
 // Settings of earlier versions that moved to the account, and are handed over
@@ -98,7 +90,6 @@ import { log, withSummary } from './log'
 const MOVED_TO_ACCOUNT = ['excludeGlobs', 'conflictMarkers', 'backupRetentionDays'] as const
 const COMPACT_EVERY_MS = 6 * 60 * 60 * 1000
 const COMPACT_DELAY_MS = 60 * 1000
-const DAY_MS = 24 * 60 * 60 * 1000
 const NOTE_STATUS_MS = 400
 const MB = 1024 * 1024
 // Programs write a file in pieces; it is taken in once it stayed unchanged this long.
@@ -120,6 +111,8 @@ const TRASHED_BY_ROLLBACK_MS = 10 * 60 * 1000
 const SHARED_FILES_EVERY_MS = 60_000
 // A link no list names yet waits this long for this account's claim before it is left alone.
 const SHARED_FILES_CLAIM_MS = 10_000
+// Changes of the vault index are applied together, this long after the last one.
+const INDEX_APPLY_MS = 500
 // A link typed into a shared note is named as this account's this long after the last keystroke there,
 const LINK_SETTLE_MS = 1_200
 // and asked about - a note of this vault that the people in it lack - only once the typing stopped.
@@ -276,29 +269,63 @@ export default class MycelPlugin extends Plugin {
   private readonly trashedByRollback = new Map<string, number>()
 
   private unlocked: Unlocked | null = null
-  private vault: OpenVault | null = null
-  private keys: KeyRing | null = null
-  private socket: VaultSocket | null = null
-  private index: VaultIndex | null = null
-  private store: DocStore | null = null
+  /** The sync while it runs, from the moment it starts being built until it is taken down (`SyncSession`). */
+  private sync: SyncSession | null = null
+  private get vault(): OpenVault | null {
+    return this.sync?.vault ?? null
+  }
+  private get keys(): KeyRing | null {
+    return this.sync?.keys ?? null
+  }
+  private get socket(): VaultSocket | null {
+    return this.sync?.socket ?? null
+  }
+  private get index(): VaultIndex | null {
+    return this.sync?.index ?? null
+  }
+  private get store(): DocStore | null {
+    return this.sync?.store ?? null
+  }
+  private get attachments(): AttachmentStore | null {
+    return this.sync?.attachments ?? null
+  }
+  private get backups(): BackupStore | null {
+    return this.sync?.backups ?? null
+  }
+  private get accountSettings(): AccountSettings | null {
+    return this.sync?.accountSettings ?? null
+  }
+  private get sharing(): Sharing | null {
+    return this.sync?.sharing ?? null
+  }
+  private get folders(): Folders | null {
+    return this.sync?.folders ?? null
+  }
+  private get sharedFiles(): SharedFiles | null {
+    return this.sync?.sharedFiles ?? null
+  }
+  private get linkClaims(): LinkClaims | null {
+    return this.sync?.linkClaims ?? null
+  }
+  private get contacts(): Contacts | null {
+    return this.sync?.contacts ?? null
+  }
+  private get trash(): Trash | null {
+    return this.sync?.trash ?? null
+  }
+  private get reviews(): ReviewStore | null {
+    return this.sync?.reviews ?? null
+  }
+  private get started(): boolean {
+    return this.sync?.started ?? false
+  }
   /** What the stopped store knew of the texts its editors held, for the next store of the same vault. */
-  private carriedHeld: { vaultId: string; held: Map<string, Set<string>> } | null = null
-  private attachmentIndex: AttachmentIndex | null = null
-  private attachments: AttachmentStore | null = null
+  private readonly carried = new CarriedTexts()
   /** What the server takes, from its config; 0 until it answered. */
   private maxFileBytes = 0
-  private state: StateStore | null = null
-  private backups: BackupStore | null = null
-  private accountSettings: AccountSettings | null = null
-  private settingsStore: LocalStore | null = null
-  private settingsCursor: LocalCursor | null = null
-  private sharing: Sharing | null = null
-  private folders: Folders | null = null
   /** Notes and folders whose unknown members are being asked about right now. */
   private readonly unknownMembersShown = new Set<string>()
   private readonly folderMarks = new FolderMarks()
-  private sharedFiles: SharedFiles | null = null
-  private linkClaims: LinkClaims | null = null
   /** Editors and the reading view follow the links of shared notes across restarts of the sync, through this. */
   private readonly linkListeners = new Set<(docId: string) => void>()
   private readonly linkHost: LinkGuardHost = {
@@ -313,16 +340,7 @@ export default class MycelPlugin extends Plugin {
     }
   }
   /** Whether every link to `ref` in a note is someone else's: notes shared along with it follow only this account's. */
-  private readonly foreignLink: ForeignLink = (path, ref) => {
-    const docId = this.store?.docIdForPath(path)
-    return docId ? (this.linkClaims?.othersOnly(docId, ref) ?? false) : false
-  }
-  private contacts: Contacts | null = null
-  private compactor: Compactor | null = null
-  private trash: Trash | null = null
-  private reviews: ReviewStore | null = null
-  private history: HistoryStore | null = null
-  private recovery: Recovery | null = null
+  private readonly foreignLink: ForeignLink = (path, ref) => this.sync?.foreignLink(path, ref) ?? false
   private movedSettings: Partial<SharedSettings> | null = null
   private settingTab: MycelSettingTab | null = null
   private statusBar!: HTMLElement
@@ -332,12 +350,6 @@ export default class MycelPlugin extends Plugin {
   /** The lock in the header of each view showing a note shared to read only - where one tries to type. */
   private readonly readOnlyMarks = new Map<MarkdownView, { text: string; el: HTMLElement }>()
   private status: SocketStatus = 'disconnected'
-  private unwatchIndex: (() => void) | null = null
-  private unwatchSocket: (() => void) | null = null
-  private unwatchSettings: (() => void) | null = null
-  private indexTimer: number | null = null
-  private started = false
-  private starting = false
   private opening = false
   /**
    * Bumped by every stop. A start still waiting for the server or the disk
@@ -376,7 +388,7 @@ export default class MycelPlugin extends Plugin {
     this.registerInterval(window.setInterval(() => this.renderNoteStatus(), NOTE_STATUS_MS))
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.renderNoteStatus()))
     // A shared note's links may have changed: its files follow.
-    this.registerEvent(this.app.metadataCache.on('changed', (file) => this.sharedFiles?.noteChanged(file)))
+    this.registerEvent(this.app.metadataCache.on('changed', (file) => this.sync?.linksRead(file)))
     // Files over this device's download limit come when a note needs them.
     this.registerEvent(
       this.app.workspace.on('file-open', (file) => {
@@ -1037,15 +1049,11 @@ export default class MycelPlugin extends Plugin {
 
   /** A contact confirmed anew after they replaced their keys: what is shared with them is sealed to the new ones. */
   private async renewShares(account: string): Promise<void> {
-    const { sharing, folders, contacts } = this
-    if (!sharing || !folders || !contacts) return
-    // Their own notes and folders, sealed to this account under their new keys, open now.
-    this.socket?.retryStalled()
+    const sync = this.sync
     try {
-      await sharing.renewFor(account)
-      await folders.renewFor(account)
-      contacts.renewed(account)
-      new Notice(`Mycel: what you share with ${contacts.name(account)} is sealed to their new keys.`)
+      if (sync && (await sync.renewShares(account))) {
+        new Notice(`Mycel: what you share with ${sync.contacts?.name(account) ?? account.slice(0, 8)} is sealed to their new keys.`)
+      }
     } catch (error) {
       log.warn(`sealing the shares with ${account.slice(0, 8)} anew failed; tried again at the next start`, error)
     }
@@ -1207,152 +1215,66 @@ export default class MycelPlugin extends Plugin {
       return
     }
     if (stopped()) return
-    this.vault = vault
-    const keys = new KeyRing(vault, unlocked, this.api, this.secrets)
-    this.keys = keys
-    // A key sealed by a contact opens only with their signature, checked against their pinned signing key.
-    keys.setSigners((account) => this.contacts?.signingKey(account) ?? null)
-    // A contact's caret carries the name this account calls them, not the one their device sends.
-    keys.setNames((account) => (this.contacts?.isContact(account) ? this.contacts.name(account) : null))
-
-    const root = this.pluginDir()
-    this.state = new StateStore(this.app.vault.adapter, root)
-    this.backups = new BackupStore(this.app.vault.adapter, root)
-    const reviews = new ReviewStore(this.app.vault.adapter, root)
-    this.reviews = reviews
-    void reviews.list()
-    this.index = new VaultIndex(vault.vaultId, (path, generation) => keys.docId(path, generation))
-    const socket = new VaultSocket(this.settings.serverUrl, vault.vaultId, () => this.settings.token, {
-      notify: (kind, payload) => this.onNotify(kind, payload),
-      revoked: (room) =>
-        void (roomKind(room) === 'fld' ? this.folders?.onRevoked(room) : this.sharing?.onRevoked(room))?.then(() => this.editors.refresh()),
-      denied: (room, reason) => log.error(`${room} was refused: ${reason}`),
-      diverged: (room) => this.recovery?.diverged(room),
-      signedOut: () => void this.checkSignedIn(socket),
-      locked: () => void this.checkVaultLock(),
-      full: (room) => this.storageFull(room)
-    })
-    // A restore from the Time Machine starts the sync under the lock it holds: named before anything is sent.
-    if (this.heldLockId) socket.holdLock(this.heldLockId)
-    this.socket = socket
-    this.history = indexedDbHistory(vault.vaultId)
-
-    // The account's settings first: the scan depends on what is excluded.
-    const accountSettings = new AccountSettings()
-    this.accountSettings = accountSettings
+    // The account's settings are the session's from here on; backups and rollbacks read them again.
     this.frozenSettings?.destroy()
     this.frozenSettings = null
-    const settingsStore = openIndexedDb(`mycel/${vault.vaultId}/set`, accountSettings.doc)
-    this.settingsStore = settingsStore
-    await settingsStore.whenSynced
-    if (stopped()) return
-    // Epochs only go forward, on every device of the vault: a server moving a room back is caught here.
-    keys.setEpochRecord({ floor: (room) => accountSettings.epochFloor(room), raise: (room, epoch) => accountSettings.raiseEpochFloor(room, epoch) })
-    keys.onEpochBehind((room) => this.epochBehind(room))
-    const settingsCursor = await LocalCursor.load(settingsStore)
-    if (stopped()) return
-    this.settingsCursor = settingsCursor
-    socket.register(settingsRoom(vault.vaultId), accountSettings.doc, {
-      crypto: keys.settingsCrypto(),
-      cursor: this.settingsCursor
-    })
+    const sync = new SyncSession(this.syncHost(), unlocked, vault)
+    this.sync = sync
+    if (!(await sync.open(stopped))) return
+    const { store, accountSettings, backups } = sync
+    if (!store || !accountSettings || !backups) return
+    if (this.movedSettings && accountSettings.empty) accountSettings.set(this.movedSettings)
+    this.movedSettings = null
+    store.setOptions(this.storeOptions())
+    void backups.prune(this.shared().backupRetentionDays)
+    void pruneRollbackCopies(this.app.vault.adapter, this.pluginDir(), this.shared().backupRetentionDays)
 
-    const store = new DocStore(
-      this.app,
-      socket,
-      this.index,
-      this.state,
-      this.backups,
-      this.storeOptions(),
-      {
-        indexCrypto: keys.indexCrypto(),
-        docCrypto: (docId, entry) =>
-          keys.noteCrypto(docId, { owned: !entry?.owner, folder: Boolean(entry?.folder), owner: () => this.index?.entry(docId)?.owner ?? null }),
-        roomFolder: (docId, entry) => this.folders?.roomFolder(docId, entry) ?? null
+    await this.runStart()
+  }
+
+  /**
+   * What the sync gets from the plugin: Obsidian's storage, the settings, and
+   * the person told and asked through windows and notices. Made for each start:
+   * `app` is the gated one `onload` put in place (invariant 31).
+   */
+  private syncHost(): SyncHost {
+    const settings = (): MycelSettings => this.settings
+    return {
+      app: this.app,
+      api: this.api,
+      secrets: this.secrets,
+      serverUrl: this.settings.serverUrl,
+      token: () => this.settings.token,
+      adapter: this.app.vault.adapter,
+      root: this.pluginDir(),
+      openLocal: openIndexedDb,
+      history: (vaultId) => indexedDbHistory(vaultId),
+      editors: this.editors,
+      carried: this.carried,
+      get timing(): SyncTiming {
+        return {
+          syncTimeoutMs: settings().syncTimeoutMs,
+          folderSettleMs: FOLDER_SETTLE_MS,
+          folderDecideMs: FOLDER_DECIDE_MS,
+          linkSettleMs: LINK_SETTLE_MS,
+          linkAskMs: LINK_ASK_MS,
+          sharedFilesClaimMs: SHARED_FILES_CLAIM_MS,
+          indexApplyMs: INDEX_APPLY_MS
+        }
       },
-      openIndexedDb,
-      this.history
-    )
-    this.store = store
-    store.watchEditors((path) => this.editors.shows(path))
-    if (this.carriedHeld?.vaultId === vault.vaultId) store.inheritHeld(this.carriedHeld.held)
-    this.carriedHeld = null
-    const attachmentIndex = new AttachmentIndex(this.index.doc, (path, generation) => keys.fileId(path, generation))
-    this.attachmentIndex = attachmentIndex
-    this.attachments = new AttachmentStore(this.app, attachmentIndex, this.state, new Blobs(this.api, keys), this.attachmentOptions())
-    this.recovery = new Recovery({
-      socket,
-      store,
-      settings: accountSettings,
-      settingsReady: () =>
-        Promise.race([socket.whenSynced(settingsRoom(vault.vaultId)), delay(this.settings.syncTimeoutMs)]),
-      ask: (notes) => new RecoveryModal(this.app, notes).choose(),
-      onResolved: () => this.editors.refresh()
-    })
-    this.contacts = new Contacts(
-      this.api,
-      {
-        accountId: unlocked.accountId,
-        username: unlocked.username,
-        publicKey: unlocked.publicKey,
-        privateKey: unlocked.privateKey,
-        signingPublicKey: unlocked.signing.publicKey,
-        signingKey: unlocked.signing.privateKey
-      },
-      accountSettings
-    )
-    this.contacts.onConfirmed((account) => void this.renewShares(account))
-    // A contact another device of the account made, arrived: what they shared meanwhile comes in now.
-    this.contacts.onKnown(() => {
-      socket.retryStalled()
-      void this.sharing?.checkIncoming().catch((error: unknown) => log.warn('checking for shared notes failed', error))
-      void this.folders?.checkIncoming().catch((error: unknown) => log.warn('checking for shared folders failed', error))
-    })
-    const sharing = new Sharing(
-      this.api,
-      keys,
-      store,
-      {
-        folder: () => this.shared().sharedFolder,
-        syncTimeoutMs: this.settings.syncTimeoutMs,
-        autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1,
-        folderEpoch: (folderId) => folders.currentEpoch(folderId),
-        folderOver: (folderId) => folders.over(folderId),
-        contactsReady: () =>
-          Promise.race([
-            socket.whenSynced(settingsRoom(vault.vaultId)).then(() => true),
-            delay(this.settings.syncTimeoutMs).then(() => false)
-          ]),
-        unknownMembers: (accounts, place) => this.showUnknownMembers(accounts, place),
-        roles: {
-          get: (room, account) => accountSettings.shareRole(room, account),
-          set: (room, account, role) => accountSettings.setShareRole(room, account, role)
-        },
-        approveFiles: (docId) => this.sharedFiles?.approve(docId),
-        claimLinks: async (docId) => this.linkClaims?.claimAll(docId)
-      },
-      this.contacts
-    )
-    this.sharing = sharing
-    // Before the vault is scanned: a note new in a shared folder takes its id from the folder.
-    const folders: Folders = new Folders(
-      this.app,
-      this.api,
-      keys,
-      store,
-      this.index,
-      socket,
-      openIndexedDb,
-      sharing,
-      {
-        shareFolder: () => this.shared().sharedFolder,
-        syncTimeoutMs: this.settings.syncTimeoutMs,
-        autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1,
-        settleMs: FOLDER_SETTLE_MS,
-        decideMs: FOLDER_DECIDE_MS,
-        foreignLink: this.foreignLink
-      },
-      {
+      heldLock: () => this.heldLockId,
+      storeOptions: () => this.storeOptions(),
+      attachmentOptions: () => this.attachmentOptions(),
+      shareFolder: () => this.shared().sharedFolder,
+      autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1,
+      retentionDays: () => this.shared().historyRetentionDays,
+      notify: (kind, payload) => this.onNotify(kind, payload),
+      signedOut: (socket) => void this.checkSignedIn(socket),
+      locked: () => void this.checkVaultLock(),
+      full: (room) => this.storageFull(room),
+      askRecovery: (notes) => new RecoveryModal(this.app, notes).choose(),
+      unknownMembers: (accounts, place) => this.showUnknownMembers(accounts, place),
+      folderPrompts: {
         moveIn: (question) => {
           const modal = new MoveInModal(this.app, question)
           modal.open()
@@ -1364,117 +1286,62 @@ export default class MycelPlugin extends Plugin {
           return modal.answered
         }
       },
-      (news) => this.showFolderNews(news),
-      this.attachments
-    )
-    this.folders = folders
-    const index = this.index
-    const unwatchFolders = index.onFoldersChange(() => this.renderFolderMarks())
-    // Before the first note opens: whose a link is, it sees from the first keystroke.
-    const attachments = this.attachments
-    const linkClaims = new LinkClaims(this.app, store, keys, {
-      settleMs: LINK_SETTLE_MS,
-      askMs: LINK_ASK_MS,
-      deliveredPath: (docId, ref) => attachments.delivered(docId, ref)?.entry.path ?? null,
-      people: notePeople(this.api, store, unlocked.accountId),
-      name: (account) => sharing.knownName(account),
-      asked: (note, target) => accountSettings.linkAsked(note, target),
-      markAsked: (note, target) => accountSettings.markLinkAsked(note, target),
-      ask: (question) => this.askLinkedNote(question),
-      share: (target, person, landing) => sharing.share(target, person.account, person.role, false, undefined, landing)
-    })
-    this.linkClaims = linkClaims
-    linkClaims.onChange((docId) => {
-      // A link of this account's: its file may go along now.
-      const entry = store.entry(docId)
-      if (entry?.shared || entry?.owner) this.sharedFiles?.schedule(docId)
-      for (const listener of this.linkListeners) listener(docId)
-    })
-    this.sharedFiles = new SharedFiles(this.app, store, this.attachments, this.api, keys, {
-      folder: () => this.shared().sharedFolder,
-      syncTimeoutMs: this.settings.syncTimeoutMs,
-      claimDelayMs: SHARED_FILES_CLAIM_MS,
-      claimed: (docId, ref) => linkClaims.ownsRef(docId, ref),
-      folders
-    })
-    this.compactor = new Compactor(this.api, keys, () => this.shared().historyRetentionDays)
-    this.trash = new Trash(this.api, store, () => this.shared().historyRetentionDays, this.attachments, folders)
-
-    // Editors bind as soon as the index is there, not after the whole vault
-    // has been scanned: an open note is settled on its own, first.
-    store.onReady(() => this.editors.refresh())
-    // A shared note caught up after another device changed it: its list of files may have moved.
-    store.onRefreshed((docId) => {
-      const entry = store.entry(docId)
-      if (entry?.shared || entry?.owner) this.sharedFiles?.schedule(docId)
-    })
-    store.onLeave((docId) => void this.sharing?.leave(docId))
-    store.onReview((review) => {
-      void reviews.add(review).catch((error: unknown) => log.error(`keeping the review of ${review.path} failed`, error))
-    })
-    this.unwatchSettings = accountSettings.onChange((_settings, remote) => {
-      this.store?.setOptions(this.storeOptions())
-      this.attachments?.setOptions(this.attachmentOptions())
-      // Changed on another device: an open settings tab shows it at once.
-      if (remote) this.settingTab?.refresh()
-      for (const listener of this.rollbackListeners) listener()
-    })
-    this.unwatchSocket = socket.onStatus((status) => {
-      this.status = status
-      this.renderStatus()
-      if (status !== 'connected' || this.store !== store) return
-      // The first attempt gives up if the index does not arrive in time;
-      // reconnecting is the moment to try again, otherwise a server that was
-      // down at startup leaves the vault untracked until Obsidian restarts.
-      if (!this.started) void this.runStart()
-      else {
-        void store.resume().then(() => this.editors.refresh())
-        void this.resumeAttachments()
-        // What changed on the account while this device was away was not told to it -
-        // a lock lifted meanwhile too: held, nothing written here went out again (0.8.16).
-        void this.refreshAccount()
-        void this.checkVaultLock()
+      folderNews: (news) => this.showFolderNews(news),
+      askLinkedNote: (question) => this.askLinkedNote(question),
+      contactConfirmed: (account) => void this.renewShares(account),
+      status: (sync, status) => {
+        this.status = status
+        this.renderStatus()
+        if (status !== 'connected' || this.sync !== sync || !sync.store) return
+        // The first attempt gives up if the index does not arrive in time;
+        // reconnecting is the moment to try again, otherwise a server that was
+        // down at startup leaves the vault untracked until Obsidian restarts.
+        if (!sync.started) void this.runStart()
+        else {
+          void sync.store.resume().then(() => this.editors.refresh())
+          void this.resumeAttachments()
+          // What changed on the account while this device was away was not told to it -
+          // a lock lifted meanwhile too: held, nothing written here went out again (0.8.16).
+          void this.refreshAccount()
+          void this.checkVaultLock()
+        }
+      },
+      linksChanged: (docId) => {
+        for (const listener of this.linkListeners) listener(docId)
+      },
+      foldersChanged: () => this.renderFolderMarks(),
+      transfer: () => this.renderStatus(),
+      settingsChanged: (remote) => {
+        // Changed on another device: an open settings tab shows it at once.
+        if (remote) this.settingTab?.refresh()
+        for (const listener of this.rollbackListeners) listener()
+      },
+      indexApplied: () => {
+        // New notes may have arrived, and a share may have started or ended.
+        this.editors.refresh()
+        this.renderStatus()
       }
-    })
-    const unwatchNotes = this.index.onChange(() => this.scheduleIndexApply())
-    const unwatchFiles = attachmentIndex.onChange(() => this.scheduleIndexApply())
-    const unwatchTransfers = this.attachments.onTransfer(() => this.renderStatus())
-    this.unwatchIndex = () => {
-      unwatchNotes()
-      unwatchFiles()
-      unwatchTransfers()
-      unwatchFolders()
     }
-
-    socket.connect()
-    await Promise.race([socket.whenSynced(settingsRoom(vault.vaultId)), delay(this.settings.syncTimeoutMs)])
-    if (stopped()) return
-    if (this.movedSettings && accountSettings.empty) accountSettings.set(this.movedSettings)
-    this.movedSettings = null
-    store.setOptions(this.storeOptions())
-    void this.backups.prune(this.shared().backupRetentionDays)
-    void pruneRollbackCopies(this.app.vault.adapter, root, this.shared().backupRetentionDays)
-
-    await this.runStart()
   }
 
   private async runStart(): Promise<void> {
-    const store = this.store
-    if (!store || this.started || this.starting) return
-    this.starting = true
+    const sync = this.sync
+    const store = sync?.store
+    if (!sync || !store || sync.started || sync.starting) return
+    sync.starting = true
     try {
       const started = await store.start()
       // Stopped meanwhile: that stop reset these, for the next start.
-      if (this.store !== store) return
-      this.started = started
-      if (!this.started) {
+      if (sync.store !== store) return
+      sync.started = started
+      if (!started) {
         new Notice(
           `Mycel: no answer from ${this.settings.serverUrl}. Nothing is synced until it responds.`,
           8_000
         )
         // A slow index is not a dead server; start the moment it arrives.
         void store.whenIndexSynced().then(() => {
-          if (this.store === store) void this.runStart()
+          if (sync.store === store) void this.runStart()
         })
       } else {
         this.folders?.start()
@@ -1514,7 +1381,7 @@ export default class MycelPlugin extends Plugin {
       log.error('starting sync failed', error)
       new Notice('Mycel could not start; see the console.')
     } finally {
-      if (this.store === store) this.starting = false
+      if (sync.store === store) sync.starting = false
     }
     this.editors.refresh()
     this.renderStatus()
@@ -1542,27 +1409,7 @@ export default class MycelPlugin extends Plugin {
   }
 
   private async compact(): Promise<void> {
-    if (!this.started || !this.compactor) return
-    try {
-      const compacted = await this.compactor.run()
-      if (compacted > 0) log.info(`folded old history of ${compacted} note(s)`)
-    } catch (error) {
-      log.warn('compacting history failed', error)
-    }
-    // The device's own copy of the history follows the same retention.
-    const days = this.shared().historyRetentionDays
-    if (days > 0) {
-      await this.history?.prune(Date.now() - days * DAY_MS).catch((error: unknown) => {
-        log.warn('pruning the local history failed', error)
-      })
-    }
-    // And so do deleted notes: restorable within it, gone after.
-    try {
-      const purged = (await this.trash?.purge()) ?? 0
-      if (purged > 0) log.info(`let go of ${purged} note(s) deleted more than ${days} days ago`)
-    } catch (error) {
-      log.warn('emptying the trash failed', error)
-    }
+    await this.sync?.compact()
   }
 
   /** Everything deleted - or only what was deleted in `folder`. */
@@ -1854,22 +1701,6 @@ export default class MycelPlugin extends Plugin {
     }
   }
 
-  /**
-   * The server named an epoch below one this account knew a room in. A room of
-   * this account's moves on past it; in anyone else's, nothing is written until
-   * its owner's device did that.
-   */
-  private epochBehind(room: string): void {
-    const subject = roomSubject(room)
-    const kind = roomKind(room)
-    if (kind === 'doc') {
-      const entry = this.store?.entry(subject)
-      if (entry && !entry.owner) void this.sharing?.catchUpEpoch(subject)
-    } else if (kind === 'fld') {
-      void this.folders?.catchUpEpoch(subject)
-    }
-  }
-
   /** When the user was last told the server is full: once an hour is enough, it is refused per room. */
   private fullNoticeAt = 0
 
@@ -2025,59 +1856,11 @@ export default class MycelPlugin extends Plugin {
     // Editors first: releasing them hands their files back to the store,
     // which must still be there to take them.
     this.editors.unbindAll()
-    if (this.indexTimer !== null) {
-      window.clearTimeout(this.indexTimer)
-      this.indexTimer = null
-    }
-    this.unwatchIndex?.()
-    this.unwatchIndex = null
-    this.unwatchSocket?.()
-    this.unwatchSocket = null
-    this.unwatchSettings?.()
-    this.unwatchSettings = null
-    this.recovery?.stop()
-    this.recovery = null
-    await this.folders?.stop()
-    this.folders = null
+    const sync = this.sync
+    // Each part goes as it is stopped; a start meanwhile builds a session of its own.
+    await sync?.stop()
+    if (this.sync === sync) this.sync = null
     this.folderMarks.destroy()
-    this.sharedFiles?.stop()
-    this.sharedFiles = null
-    this.linkClaims?.stop()
-    this.linkClaims = null
-    // Before the notes: stopping those closes the state both write to.
-    const attachments = this.attachments
-    this.attachments = null
-    await attachments?.stop()
-    this.attachmentIndex?.destroy()
-    this.attachmentIndex = null
-    const store = this.store
-    this.store = null
-    if (store && this.vault) this.carriedHeld = { vaultId: this.vault.vaultId, held: store.heldTexts() }
-    await store?.stop()
-    try {
-      await this.settingsCursor?.flush()
-      await this.settingsStore?.destroy()
-    } catch (error) {
-      log.error('closing the account settings failed', error)
-    }
-    this.socket?.destroy()
-    this.index?.destroy()
-    this.accountSettings?.destroy()
-    this.started = false
-    this.starting = false
-    this.socket = null
-    this.index = null
-    this.state = null
-    this.backups = null
-    this.accountSettings = null
-    this.settingsStore = null
-    this.settingsCursor = null
-    this.sharing = null
-    this.compactor = null
-    this.trash = null
-    this.reviews = null
-    this.keys = null
-    this.vault = null
     this.statusBar?.setText('')
   }
 
@@ -2089,51 +1872,32 @@ export default class MycelPlugin extends Plugin {
   // --- vault events --------------------------------------------------------
 
   private registerVaultEvents(): void {
-    // Both stores hear every event; each takes the files that are its own.
     // While the Time Machine shows the past the sync is stopped, and it hears
     // them instead: what someone else changes in the past it puts back.
     this.registerEvent(
       this.app.vault.on('modify', (file: TAbstractFile) => {
         this.timeMachine.vaultEvent(file.path)
-        if (!(file instanceof TFile)) return
-        void this.store?.onModify(file)
-        this.attachments?.onModify(file)
+        this.sync?.modified(file)
       })
     )
     this.registerEvent(
       this.app.vault.on('create', (file: TAbstractFile) => {
         this.timeMachine.vaultEvent(file.path)
-        if (!(file instanceof TFile)) return
-        void this.store?.onCreate(file)
-        this.attachments?.onCreate(file)
+        this.sync?.created(file)
       })
     )
     this.registerEvent(
       this.app.vault.on('delete', (file: TAbstractFile) => {
         this.timeMachine.vaultEvent(file.path)
-        if (file instanceof TFile) {
-          void this.store?.onDelete(file.path)
-          void this.attachments?.onDelete(file.path)
-        } else if (file instanceof TFolder) {
-          void this.store?.onDeleteFolder(file.path)
-          void this.attachments?.onDeleteFolder(file.path)
-          this.folders?.onFolderDeleted(file.path)
-        }
+        this.sync?.deleted(file)
       })
     )
     this.registerEvent(
       this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
         this.timeMachine.vaultEvent(oldPath)
         this.timeMachine.vaultEvent(file.path)
-        if (file instanceof TFolder) {
-          // A shared folder's place follows; its notes' own events come apart.
-          this.folders?.onFolderRenamed(oldPath, file.path)
-          this.renderFolderMarks()
-          return
-        }
-        if (!(file instanceof TFile)) return
-        void this.store?.onRename(file, oldPath)
-        void this.attachments?.onRename(file, oldPath)
+        this.sync?.renamed(file, oldPath)
+        if (file instanceof TFolder) this.renderFolderMarks()
       })
     )
   }
@@ -2227,25 +1991,6 @@ export default class MycelPlugin extends Plugin {
         )
         return
     }
-  }
-
-  private scheduleIndexApply(): void {
-    if (this.indexTimer !== null) window.clearTimeout(this.indexTimer)
-    this.indexTimer = window.setTimeout(() => {
-      this.indexTimer = null
-      const store = this.store
-      if (!store) return
-      void store.applyRemoteIndexChanges().then(() => {
-        // New notes may have arrived, and a share may have started or ended.
-        this.editors.refresh()
-        this.renderStatus()
-      })
-      void this.attachments?.applyRemoteChanges()
-      // A share may have started, and the files of shared notes may have moved.
-      this.sharedFiles?.scheduleAll()
-      // A file of a shared folder may have a new version here.
-      this.folders?.scheduleAll()
-    }, 500)
   }
 
   // --- sharing -------------------------------------------------------------
@@ -2515,7 +2260,7 @@ export default class MycelPlugin extends Plugin {
 
   // --- commands ------------------------------------------------------------
 
-  private onNotify(kind: NotifyKind, payload: ServerNotice): void {
+  private onNotify(kind: AccountNoticeKind, payload: ServerNotice): void {
     if (kind === 'contact') {
       void this.processContacts()
       return
@@ -2548,19 +2293,8 @@ export default class MycelPlugin extends Plugin {
       void this.refreshAccount()
       return
     }
-    if (kind === 'vault-lock') {
-      const notice = payload as VaultLockNotice
-      if (notice.vaultId === this.vault?.vaultId) void this.showVaultLock(notice.lock)
-      return
-    }
-    if (kind === 'folder-added' || kind === 'folder-changed' || kind === 'folder-removed') {
-      void this.folders?.onNotify(kind, payload as FolderNotice).then(() => {
-        this.editors.refresh()
-        this.renderFolderMarks()
-      })
-      return
-    }
-    void this.sharing?.onNotify(kind, payload as ShareNotice).then(() => this.editors.refresh())
+    // Only this vault's: the session leaves out the account's others.
+    if (kind === 'vault-lock') void this.showVaultLock((payload as VaultLockNotice).lock)
   }
 
   private async processContacts(): Promise<void> {
@@ -2576,6 +2310,11 @@ export default class MycelPlugin extends Plugin {
   }
 
   // --- contacts, for the settings tab --------------------------------------
+
+  /** Whether the contacts can be shown and changed: only while the sync runs. */
+  contactsOpen(): boolean {
+    return this.contacts !== null
+  }
 
   contactList(): Contact[] {
     return this.contacts?.list() ?? []

@@ -25,33 +25,15 @@ const rangeProto = dom.window.Range.prototype as unknown as { getClientRects?: (
 rangeProto.getClientRects ??= () => []
 
 // Imported after the DOM globals exist; CodeMirror reads them at module scope.
-const { roomKind, roomSubject, settingsRoom, userColor } = await import('@mycel/shared')
+const { userColor } = await import('@mycel/shared')
 const { toBase64 } = await import('@mycel/shared/crypto')
-const { AccountSettings } = await import('../src/sync/AccountSettings.js')
-const { LocalCursor } = await import('../src/sync/DocHandle.js')
-const { Recovery } = await import('../src/sync/Recovery.js')
 const { ConnectApi, fetchHttp } = await import('../src/account/api.js')
 const { Session } = await import('../src/account/Session.js')
 const { probeServer } = await import('../src/account/probe.js')
-const { KeyRing } = await import('../src/account/KeyRing.js')
 const { KeyReplacement } = await import('../src/account/KeyReplacement.js')
 const { hashWasmArgon2id } = await import('../src/account/argon2.js')
-const { DocStore } = await import('../src/sync/DocStore.js')
-const { AttachmentIndex } = await import('../src/sync/AttachmentIndex.js')
-const { AttachmentStore } = await import('../src/sync/AttachmentStore.js')
-const { Blobs } = await import('../src/sync/Blobs.js')
-const { StateStore } = await import('../src/sync/StateStore.js')
-const { BackupStore } = await import('../src/sync/BackupStore.js')
-const { VaultIndex } = await import('../src/sync/VaultIndex.js')
-const { VaultSocket } = await import('../src/sync/VaultSocket.js')
-const { Compactor } = await import('../src/sync/Compactor.js')
-const { Trash } = await import('../src/sync/Trash.js')
 const { EditorSync } = await import('../src/editor/EditorSync.js')
-const { Sharing } = await import('../src/share/Sharing.js')
-const { Folders } = await import('../src/share/Folders.js')
-const { SharedFiles } = await import('../src/share/SharedFiles.js')
-const { LinkClaims, notePeople } = await import('../src/share/LinkClaims.js')
-const { Contacts } = await import('../src/share/Contacts.js')
+const { SyncSession, CarriedTexts } = await import('../src/SyncSession.js')
 const { openInviteSession, openPairingSession } = await import('../src/backup/BackupLink.js')
 const { Backups } = await import('../src/backup/Backups.js')
 const { Rollback } = await import('../src/sync/Rollback.js')
@@ -59,10 +41,11 @@ const { LockSeal, lockNonce, takeVaultLock } = await import('../src/sync/VaultLo
 const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
 )
-const { TFolder: TFolderT } = await import('obsidian')
 const { gateApp } = await import('../src/guard.js')
 
-type DocStoreT = InstanceType<typeof DocStore>
+type SyncHost = import('../src/SyncSession.js').SyncHost
+type SessionT = InstanceType<typeof SyncSession>
+type DocStoreT = NonNullable<SessionT['store']>
 type Unlocked = Awaited<ReturnType<InstanceType<typeof Session>['login']>>
 type ViewT = InstanceType<typeof FakeMarkdownView>
 
@@ -176,24 +159,66 @@ export class Device {
   // Outlives restarts, like the plugin's own: Obsidian keeps the extension in
   // its editors while sync is stopped and started again.
   readonly editors = new EditorSync(() => this.store, noteOf)
-  store: DocStoreT | null = null
-  attachments: InstanceType<typeof AttachmentStore> | null = null
-  sharedFiles: InstanceType<typeof SharedFiles> | null = null
-  linkClaims: InstanceType<typeof LinkClaims> | null = null
+  /**
+   * The sync as the plugin runs it (`SyncSession`), the last one after a
+   * shutdown: its keys stay readable, every other part is gone.
+   */
+  sync: SessionT | null = null
+  private readonly carried = new CarriedTexts()
+  get store(): SessionT['store'] {
+    return this.sync?.store ?? null
+  }
+  get attachments(): SessionT['attachments'] {
+    return this.sync?.attachments ?? null
+  }
+  get sharedFiles(): SessionT['sharedFiles'] {
+    return this.sync?.sharedFiles ?? null
+  }
+  get linkClaims(): SessionT['linkClaims'] {
+    return this.sync?.linkClaims ?? null
+  }
+  get attachmentIndex(): SessionT['attachmentIndex'] {
+    return this.sync?.attachmentIndex ?? null
+  }
+  get index(): SessionT['index'] {
+    return this.sync?.index ?? null
+  }
+  get keys(): SessionT['keys'] | null {
+    return this.sync?.keys ?? null
+  }
+  get sharing(): SessionT['sharing'] {
+    return this.sync?.sharing ?? null
+  }
+  get folders(): SessionT['folders'] {
+    return this.sync?.folders ?? null
+  }
+  get compactor(): SessionT['compactor'] {
+    return this.sync?.compactor ?? null
+  }
+  get trash(): SessionT['trash'] {
+    return this.sync?.trash ?? null
+  }
+  get settings(): SessionT['accountSettings'] {
+    return this.sync?.accountSettings ?? null
+  }
+  get contacts(): SessionT['contacts'] {
+    return this.sync?.contacts ?? null
+  }
+  get recovery(): SessionT['recovery'] {
+    return this.sync?.recovery ?? null
+  }
+  get socket(): SessionT['socket'] {
+    return this.sync?.socket ?? null
+  }
   /** Every time a link typed here named a note of this vault the people in the note lack: what was asked. */
   readonly linkQuestions: Array<import('../src/share/LinkClaims.js').LinkQuestion> = []
   /** Whether the person says yes to that question at once. */
   linkAnswer = false
-  attachmentIndex: InstanceType<typeof AttachmentIndex> | null = null
   /** This device's download limit for attachments, in bytes; null fetches everything. */
   downloadLimit: number | null = null
   /** Files shown in a view that is not a Markdown editor, such as a canvas. */
   readonly openFiles = new Set<string>()
   private maxFileBytes = 0
-  index: InstanceType<typeof VaultIndex> | null = null
-  keys: InstanceType<typeof KeyRing> | null = null
-  sharing: InstanceType<typeof Sharing> | null = null
-  folders: InstanceType<typeof Folders> | null = null
   /** What the person answers when a note is moved into a shared folder; null leaves the window open. */
   moveInAnswer: 'share' | 'back' | null = 'share'
   /** Whether that answer shares the notes it links to as well. */
@@ -208,11 +233,6 @@ export class Device {
   readonly folderNews: Array<{ kind: string; batch?: unknown; [key: string]: unknown }> = []
   /** Members the server listed who are not contacts, as the window over everything would name them. */
   readonly unknownMembers: Array<{ accounts: string[]; place: { kind: string } }> = []
-  compactor: InstanceType<typeof Compactor> | null = null
-  trash: InstanceType<typeof Trash> | null = null
-  settings: InstanceType<typeof AccountSettings> | null = null
-  contacts: InstanceType<typeof Contacts> | null = null
-  recovery: InstanceType<typeof Recovery> | null = null
   retentionDays = 30
   /** How many notes the device holds open at most (`maxLoadedDocuments`). */
   maxLoaded = 500
@@ -226,13 +246,8 @@ export class Device {
   readonly askedAbout: string[][] = []
   /** Notes kept in two versions, waiting for someone to choose. */
   readonly reviews: Array<{ docId: string; path: string; kind: string; mine: string; theirs: string; merged: string }> = []
-  private settingsStore: { destroy(): unknown } | null = null
-  private settingsCursor: InstanceType<typeof LocalCursor> | null = null
-  socket: InstanceType<typeof VaultSocket> | null = null
   private refs: Array<{ name: string; listener: (...args: unknown[]) => void }> = []
-  private indexTimer: ReturnType<typeof setTimeout> | null = null
   readonly views: ViewT[] = []
-  private carriedHeld: { vaultId: string; held: Map<string, Set<string>> } | null = null
   /** Shares being sealed anew to a contact confirmed again; the tests wait for it. */
   renewing: Promise<void> = Promise.resolve()
 
@@ -266,9 +281,6 @@ export class Device {
     this.unlocked = unlocked
     this.accountId = unlocked.accountId
     const openVault = await this.session.openVault(unlocked, VAULT)
-    const keys = new KeyRing(openVault, unlocked, this.api, this.secrets)
-    keys.setSigners((account) => this.contacts?.signingKey(account) ?? null)
-    keys.setNames((account) => (this.contacts?.isContact(account) ? this.contacts.name(account) : null))
     const vault = this.vault
     // Leaves showing files that are not notes - a canvas, a PDF - as far as
     // attachments care: which file each one shows.
@@ -280,10 +292,55 @@ export class Device {
     // Behind the plugin's gate, as main.ts has it: every test runs with it, and fails where it would refuse.
     const plain = { vault, fileManager: this.fileManager, metadataCache: this.metadataCache, workspace }
     const app = gateApp(plain as never, '.obsidian/plugins/mycel') as unknown as typeof plain
-    const state = new StateStore(vault.adapter as never, 'plugin')
-    const backups = new BackupStore(vault.adapter as never, 'plugin')
-    const index = new VaultIndex(openVault.vaultId, (path, generation) => keys.docId(path, generation))
-    const socket = new VaultSocket(serverUrl, openVault.vaultId, () => this.token ?? '', {
+    // As main.ts: the account id, which a signed caret must name.
+    const user = { id: unlocked.accountId, name: this.username, ...userColor(this.username) }
+    // What main.ts's `startAttachments` asks the server, before the store that needs it.
+    this.maxFileBytes = (await this.api.config()).maxFileBytes ?? 0
+    // What main.ts's `renewShares` does, without its notice.
+    const renew = async (account: string): Promise<void> => {
+      try {
+        await this.sync?.renewShares(account)
+      } catch (error) {
+        console.warn(`sealing the shares with ${account.slice(0, 8)} anew failed`, error)
+      }
+    }
+    this.renewing = Promise.resolve()
+    // What main.ts's `syncHost` hands over: the same session, the person answering as each test says.
+    const host: SyncHost = {
+      app: app as never,
+      api: this.api,
+      secrets: this.secrets,
+      serverUrl,
+      token: () => this.token ?? '',
+      adapter: vault.adapter as never,
+      root: 'plugin',
+      openLocal: this.locals.open,
+      history: () => this.locals.history,
+      editors: this.editors,
+      carried: this.carried,
+      timing: {
+        syncTimeoutMs: 4_000,
+        folderSettleMs: 300,
+        folderDecideMs: 2_000,
+        linkSettleMs: 150,
+        linkAskMs: 500,
+        sharedFilesClaimMs: 300,
+        indexApplyMs: 100
+      },
+      heldLock: () => this.heldLockId,
+      storeOptions: () => ({
+        vaultId: openVault.vaultId,
+        user,
+        excludeGlobs: [],
+        conflictMarkers: true,
+        maxLoadedDocuments: this.maxLoaded,
+        syncTimeoutMs: 4_000,
+        writeDebounceMs: 150
+      }),
+      attachmentOptions: () => this.attachmentOptions(),
+      shareFolder: () => 'Shared',
+      autoAccept: () => true,
+      retentionDays: () => this.retentionDays,
       notify: (kind, payload) => {
         // Caught, as main.ts's `processContacts` does: the next notice reads the inbox again.
         if (kind === 'contact') void this.contacts?.processInbox().catch(() => undefined)
@@ -291,21 +348,17 @@ export class Device {
         else if (kind === 'contact-replaced') this.contacts?.markReplaced((payload as { account: string }).account)
         // What main.ts's `refreshAccount` does.
         else if (kind === 'account-changed') void this.refreshAccount()
-        else if (kind.startsWith('folder-')) void this.folders?.onNotify(kind, payload as never).then(() => this.editors.refresh())
         // What main.ts's `showVaultLock` does, without its window.
         else if (kind === 'vault-lock') this.followLock((payload as { lock: { sealed: string } | null }).lock)
-        else void this.sharing?.onNotify(kind, payload as never).then(() => this.editors.refresh())
       },
       locked: () =>
         void this.api.vaultLock(openVault.vaultId).then(
           ({ lock }) => this.followLock(lock),
           () => undefined
         ),
-      revoked: (room) =>
-        void (room.startsWith('fld:') ? this.folders?.onRevoked(room) : this.sharing?.onRevoked(room))?.then(() => this.editors.refresh()),
-      diverged: (room) => this.recovery?.diverged(room),
+      full: () => undefined,
       // What main.ts's `checkSignedIn` does.
-      signedOut: () =>
+      signedOut: (socket) =>
         void this.session.stillSignedIn().then(async (still) => {
           if (this.socket !== socket) return
           if (still !== false) {
@@ -314,138 +367,17 @@ export class Device {
           }
           this.signedOut += 1
           await this.shutdown()
-        })
-    })
-    // As main.ts: a restore from the Time Machine starts the sync under the lock it holds.
-    if (this.heldLockId) socket.holdLock(this.heldLockId)
-    const settings = new AccountSettings()
-    const settingsStore = this.locals.open(`mycel/${openVault.vaultId}/set`, settings.doc)
-    this.settingsCursor = await LocalCursor.load(settingsStore)
-    this.settingsStore = settingsStore
-    this.settings = settings
-    socket.register(settingsRoom(openVault.vaultId), settings.doc, { crypto: keys.settingsCrypto(), cursor: this.settingsCursor })
-    // As main.ts: the account id, which a signed caret must name.
-    const user = { id: unlocked.accountId, name: this.username, ...userColor(this.username) }
-    const store = new DocStore(
-      app as never,
-      socket,
-      index,
-      state,
-      backups,
-      {
-        vaultId: openVault.vaultId,
-        user,
-        excludeGlobs: [],
-        conflictMarkers: true,
-        maxLoadedDocuments: this.maxLoaded,
-        syncTimeoutMs: 4_000,
-        writeDebounceMs: 150
-      },
-      {
-        indexCrypto: keys.indexCrypto(),
-        docCrypto: (docId, entry) => keys.noteCrypto(docId, { owned: !entry?.owner, folder: Boolean(entry?.folder), owner: () => index.entry(docId)?.owner ?? null }),
-        roomFolder: (docId, entry) => this.folders?.roomFolder(docId, entry) ?? null
-      },
-      this.locals.open,
-      this.locals.history
-    )
-    this.recovery = new Recovery({
-      socket,
-      store,
-      settings,
-      settingsReady: () => Promise.race([socket.whenSynced(settingsRoom(openVault.vaultId)), delay(4_000)]),
-      ask: async (notes) => {
+        }),
+      askRecovery: async (notes) => {
         this.asked += 1
         this.askedAbout.push(notes)
         return this.recoveryAnswer
       },
-      onResolved: () => this.editors.refresh()
-    })
-    const contacts = new Contacts(
-      this.api,
-      {
-        accountId: unlocked.accountId,
-        username: unlocked.username,
-        publicKey: unlocked.publicKey,
-        privateKey: unlocked.privateKey,
-        signingPublicKey: unlocked.signing.publicKey,
-        signingKey: unlocked.signing.privateKey
+      // What main.ts's window says.
+      unknownMembers: (accounts, place) => {
+        this.unknownMembers.push({ accounts, place })
       },
-      settings
-    )
-    // What main.ts's `renewShares` does.
-    const renew = async (account: string): Promise<void> => {
-      socket.retryStalled()
-      try {
-        await sharing.renewFor(account)
-        await folders.renewFor(account)
-        contacts.renewed(account)
-      } catch (error) {
-        console.warn(`sealing the shares with ${account.slice(0, 8)} anew failed`, error)
-      }
-    }
-    this.renewing = Promise.resolve()
-    contacts.onConfirmed((account) => {
-      this.renewing = this.renewing.then(() => renew(account))
-    })
-    // As main.ts: a contact another device made, arrived - what they shared meanwhile comes in now.
-    contacts.onKnown(() => {
-      socket.retryStalled()
-      void this.sharing?.checkIncoming().catch(() => undefined)
-      void this.folders?.checkIncoming().catch(() => undefined)
-    })
-    this.contacts = contacts
-    const attachmentIndex = new AttachmentIndex(index.doc, (path, generation) => keys.fileId(path, generation))
-    this.maxFileBytes = (await this.api.config()).maxFileBytes ?? 0
-    const attachments = new AttachmentStore(app as never, attachmentIndex, state, new Blobs(this.api, keys), this.attachmentOptions())
-    this.attachments = attachments
-    this.attachmentIndex = attachmentIndex
-    const sharing: InstanceType<typeof Sharing> = new Sharing(
-      this.api,
-      keys,
-      store,
-      {
-        folder: () => 'Shared',
-        syncTimeoutMs: 4_000,
-        autoAccept: () => true,
-        folderEpoch: (id): Promise<number> => folders.currentEpoch(id),
-        folderOver: (id): boolean => folders.over(id),
-        contactsReady: () =>
-          Promise.race([socket.whenSynced(settingsRoom(openVault.vaultId)).then(() => true), delay(4_000).then(() => false)]),
-        // What main.ts's window says.
-        unknownMembers: (accounts, place) => {
-          this.unknownMembers.push({ accounts, place })
-        },
-        roles: {
-          get: (room, account) => settings.shareRole(room, account),
-          set: (room, account, role) => settings.setShareRole(room, account, role)
-        },
-        approveFiles: (docId) => this.sharedFiles?.approve(docId),
-        claimLinks: async (docId) => this.linkClaims?.claimAll(docId)
-      },
-      contacts
-    )
-    const folders: InstanceType<typeof Folders> = new Folders(
-      app as never,
-      this.api,
-      keys,
-      store,
-      index,
-      socket,
-      this.locals.open,
-      sharing,
-      {
-        shareFolder: () => 'Shared',
-        syncTimeoutMs: 4_000,
-        autoAccept: () => true,
-        settleMs: 300,
-        decideMs: 2_000,
-        foreignLink: (path, ref) => {
-          const docId = store.docIdForPath(path)
-          return docId ? (this.linkClaims?.othersOnly(docId, ref) ?? false) : false
-        }
-      },
-      {
+      folderPrompts: {
         moveIn: async (question) => {
           this.askedMoveIn.push(question.path)
           this.moveInQuestions.push({
@@ -470,135 +402,58 @@ export class Device {
           return this.outsideAnswer
         }
       },
-      (news) => this.folderNews.push(news as never),
-      attachments
-    )
-    this.folders = folders
-    // As main.ts: epochs only go forward, and a room of this account's moves past one the server went back from.
-    keys.setEpochRecord({ floor: (room) => settings.epochFloor(room), raise: (room, epoch) => settings.raiseEpochFloor(room, epoch) })
-    keys.onEpochBehind((room) => {
-      const subject = roomSubject(room)
-      if (roomKind(room) === 'fld') void folders.catchUpEpoch(subject)
-      else if (roomKind(room) === 'doc' && store.entry(subject) && !store.entry(subject)?.owner) void sharing.catchUpEpoch(subject)
-    })
-    // As main.ts: before the first note opens.
-    const linkClaims = new LinkClaims(app as never, store, keys, {
-      settleMs: 150,
-      askMs: 500,
-      deliveredPath: (docId, ref) => attachments.delivered(docId, ref)?.entry.path ?? null,
-      people: notePeople(this.api, store, unlocked.accountId),
-      name: (account) => sharing.knownName(account),
-      asked: (note, target) => settings.linkAsked(note, target),
-      markAsked: (note, target) => settings.markLinkAsked(note, target),
-      ask: (question) => {
+      folderNews: (news) => this.folderNews.push(news as never),
+      askLinkedNote: (question) => {
         this.linkQuestions.push(question)
-        if (this.linkAnswer) void linkClaims.shareLinked(question)
+        if (this.linkAnswer) void this.linkClaims?.shareLinked(question)
       },
-      share: (target, person, landing) => sharing.share(target, person.account, person.role, false, undefined, landing)
-    })
-    this.linkClaims = linkClaims
-    const sharedFiles = new SharedFiles(app as never, store, attachments, this.api, keys, {
-      folder: () => 'Shared',
-      syncTimeoutMs: 4_000,
-      claimDelayMs: 300,
-      claimed: (docId, ref) => linkClaims.ownsRef(docId, ref),
-      folders
-    })
-    linkClaims.onChange((docId) => {
-      const entry = store.entry(docId)
-      if (entry?.shared || entry?.owner) sharedFiles.schedule(docId)
-    })
-    this.sharedFiles = sharedFiles
-    this.store = store
-    // As main.ts: the editors that outlived a restart, and what the store before knew of them.
-    store.watchEditors((path) => this.editors.shows(path))
-    if (this.carriedHeld?.vaultId === openVault.vaultId) store.inheritHeld(this.carriedHeld.held)
-    this.carriedHeld = null
-    this.index = index
-    this.socket = socket
-    this.keys = keys
-    this.sharing = sharing
-    this.compactor = new Compactor(this.api, keys, () => this.retentionDays)
-    this.trash = new Trash(this.api, store, () => this.retentionDays, attachments, folders)
-
-    // What main.ts wires up.
-    store.onReady(() => this.editors.refresh())
-    // What main.ts does when a note let go was caught up.
-    store.onRefreshed((docId) => {
-      const entry = store.entry(docId)
-      if (entry?.shared || entry?.owner) sharedFiles.schedule(docId)
-    })
-    store.onLeave((docId) => void sharing.leave(docId))
-    store.onReview((review) => this.reviews.push(review))
-    const applyIndex = (): void => {
-      if (this.indexTimer) clearTimeout(this.indexTimer)
-      this.indexTimer = setTimeout(() => {
-        this.indexTimer = null
-        void store.applyRemoteIndexChanges().then(() => this.editors.refresh())
-        void attachments.applyRemoteChanges()
-        sharedFiles.scheduleAll()
-        // As main.ts: what another device of the account recorded about a shared folder brings the folder's pass.
-        folders.scheduleAll()
-      }, 100)
-    }
-    index.onChange(applyIndex)
-    attachmentIndex.onChange(applyIndex)
-    // A file of a shared folder with a new version here: it goes out from the folder's pass.
-    attachmentIndex.onChange(() => folders.scheduleAll())
-    let started = false
-    socket.onStatus((status) => {
-      if (status === 'connected' && started) {
-        void store.resume().then(() => this.editors.refresh())
-        void attachments.resume()
+      contactConfirmed: (account) => {
+        this.renewing = this.renewing.then(() => renew(account))
+      },
+      status: (sync, status) => {
+        if (status !== 'connected' || this.sync !== sync || !sync.started) return
+        void sync.store?.resume().then(() => this.editors.refresh())
+        void sync.attachments?.resume()
         void this.refreshAccount()
         // What main.ts's `checkVaultLock` does on a reconnect: a lock lifted while away was told to nobody here.
         void this.api.vaultLock(openVault.vaultId).then(
           ({ lock }) => this.followLock(lock),
           () => undefined
         )
-      }
-    })
+      },
+      linksChanged: () => undefined,
+      foldersChanged: () => undefined,
+      transfer: () => undefined,
+      settingsChanged: () => undefined,
+      indexApplied: () => this.editors.refresh(),
+      reviewed: (review) => this.reviews.push(review)
+    }
+    // What main.ts registers once; here per start, and taken off again by `shutdown`.
     this.refs = [
       vault.on('modify', (file) => {
-        void store.onModify(file as never)
-        attachments.onModify(file as never)
+        this.sync?.modified(file as never)
         // Obsidian's metadata cache reports a note's changed links.
-        sharedFiles.noteChanged(file as never)
+        this.sync?.linksRead(file as never)
       }),
       vault.on('create', (file) => {
-        if ((file as { extension?: string }).extension === undefined) return
-        void store.onCreate(file as never)
-        attachments.onCreate(file as never)
-        sharedFiles.noteChanged(file as never)
+        this.sync?.created(file as never)
+        if ((file as { extension?: string }).extension !== undefined) this.sync?.linksRead(file as never)
       }),
-      vault.on('delete', (file) => {
-        const path = (file as { path: string }).path
-        if (file instanceof TFolderT) {
-          void store.onDeleteFolder(path)
-          void attachments.onDeleteFolder(path)
-          folders.onFolderDeleted(path)
-          return
-        }
-        void store.onDelete(path)
-        void attachments.onDelete(path)
-      }),
-      vault.on('rename', (file, oldPath) => {
-        if (file instanceof TFolderT) {
-          folders.onFolderRenamed(oldPath as string, (file as { path: string }).path)
-          return
-        }
-        void store.onRename(file as never, oldPath as string)
-        void attachments.onRename(file as never, oldPath as string)
-      })
+      vault.on('delete', (file) => this.sync?.deleted(file as never)),
+      vault.on('rename', (file, oldPath) => this.sync?.renamed(file as never, oldPath as string))
     ]
-    socket.connect()
-    started = await store.start()
+    const sync = new SyncSession(host, unlocked, openVault)
+    this.sync = sync
+    await sync.open(() => false)
+    const { store, attachments, sharedFiles, folders, contacts, sharing } = sync
+    if (!store || !attachments || !sharedFiles || !folders || !contacts || !sharing) throw new Error('the sync stopped while it opened')
+    // What main.ts's `runStart` does, every step awaited.
+    const started = await store.start()
+    sync.started = started
     if (started) {
       folders.start()
       await attachments.start()
       sharedFiles.start()
-    }
-    if (started) {
       await contacts.processInbox()
       for (const account of contacts.awaitingRenewal()) await renew(account)
       await sharing.checkEnded()
@@ -827,35 +682,12 @@ export class Device {
     this.backupsController?.closeSessions()
     if (!options.keepViews) for (const view of this.views.splice(0)) view.close()
     this.editors.unbindAll()
-    if (this.indexTimer) clearTimeout(this.indexTimer)
     for (const ref of this.refs) this.vault.offref(ref)
     this.refs = []
-    this.recovery?.stop()
-    this.recovery = null
-    await this.folders?.stop()
-    this.folders = null
-    this.sharedFiles?.stop()
-    this.sharedFiles = null
-    this.linkClaims?.stop()
-    this.linkClaims = null
-    const attachments = this.attachments
-    this.attachments = null
-    await attachments?.stop()
-    this.attachmentIndex?.destroy()
-    const store = this.store
-    this.store = null
-    if (store && this.keys) this.carriedHeld = { vaultId: this.keys.vaultId, held: store.heldTexts() }
-    await store?.stop()
-    await this.settingsCursor?.flush()
-    this.settingsStore?.destroy()
-    this.settingsStore = null
-    this.socket?.destroy()
-    this.index?.destroy()
-    this.settings?.destroy()
-    this.settings = null
+    await this.sync?.stop()
   }
 
-  private attachmentOptions(): ConstructorParameters<typeof AttachmentStore>[4] {
+  private attachmentOptions(): ReturnType<SyncHost['attachmentOptions']> {
     return {
       excludeGlobs: [],
       downloadLimitBytes: this.downloadLimit,
