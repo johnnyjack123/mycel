@@ -56,8 +56,10 @@ import {
   RoomLog,
   flushAllWrites,
   frameTimesOf,
-  headSeqOf,
+  headOf,
+  headOfLog,
   loadAllMeta,
+  type LogHead,
   roomDir,
   saveMetaOf,
   type Frame,
@@ -242,10 +244,10 @@ export class RoomHub {
   private readonly watching = new Map<RoomClient, Set<string>>()
   /**
    * The heads of rooms that are not loaded, read once from their logs and kept
-   * up as frames land and rooms close. They only ever grow: a read that raced a
-   * push can never lower one.
+   * up as frames land and rooms close, with the fingerprint of the frame there.
+   * They only ever grow: a read that raced a push can never lower one.
    */
-  private readonly heads = new Map<string, number>()
+  private readonly heads = new Map<string, LogHead>()
   private readonly ready: Promise<void>
   /** What an account may store, rooms and attachments together (`limitStorage`); null: no limit. */
   private storage: { quotaBytes: number; used: (account: string) => Promise<number> } | null = null
@@ -487,7 +489,7 @@ export class RoomHub {
           this.scheduleIdle(room, open)
           return
         }
-        this.noteHead(room, open.log.writtenSeq)
+        this.noteHead(room, headOfLog(open.log))
         this.rooms.delete(room)
       })
     }, this.options.idleCloseMs ?? IDLE_CLOSE_MS)
@@ -511,7 +513,7 @@ export class RoomHub {
 
   // --- watching notes without holding them open (0.9.2, docs/PHASE8.md L) ---------
   // A device holds only so many notes open; it watches the rest. It names each
-  // with the seq it knows and hears `changed` for every one the log passed - at
+  // with the seq it knows and hears `changed` for every one whose log is elsewhere - at
   // once, and whenever a frame lands there. Nothing about the content, and only
   // for notes the account may read.
 
@@ -520,40 +522,56 @@ export class RoomHub {
     return access !== null && access !== 'revoked'
   }
 
-  private noteHead(room: string, seq: number): void {
-    this.heads.set(room, Math.max(this.heads.get(room) ?? 0, seq))
+  private noteHead(room: string, head: LogHead): void {
+    const known = this.heads.get(room)
+    if (!known || head.seq >= known.seq) this.heads.set(room, head)
   }
 
   /** A note's head without loading it: the open log's, or else read once from the disk. */
-  private async watchedHead(meta: RoomMeta): Promise<number> {
+  private async watchedHead(meta: RoomMeta): Promise<LogHead> {
     const open = this.rooms.get(meta.room)
-    if (open) return open.log.writtenSeq
+    if (open) return headOfLog(open.log)
     const known = this.heads.get(meta.room)
     if (known !== undefined) return known
-    const read = await headSeqOf(this.options.dataDir, meta)
+    const read = await headOf(this.options.dataDir, meta)
     this.noteHead(meta.room, read)
     return this.heads.get(meta.room) ?? read
   }
 
-  async watch(client: RoomClient, entries: Array<{ room: string; seq: number }>): Promise<void> {
+  /**
+   * Who watches a note hears `changed` when its log is anywhere else than where the device left it:
+   * further on, behind - a log restored from a copy -, or at that seq with another frame there, the
+   * fingerprint saying so (0.9.15). A seq alone does not name a place in a log (invariant 19): a
+   * restored log written to since could stand at the very seq again.
+   */
+  async watch(client: RoomClient, entries: Array<{ room: string; seq: number; hash?: string }>): Promise<void> {
     await this.ready
-    const due: Array<{ meta: RoomMeta; seq: number }> = []
-    for (const { room, seq } of entries) {
-      const meta = roomKind(room) === 'doc' ? this.metas.get(room) : undefined
-      if (!meta || !this.mayRead(meta, client.account)) continue
+    const due: Array<{ meta: RoomMeta; seq: number; hash?: string }> = []
+    for (const { room, seq, hash } of entries) {
+      if (roomKind(room) !== 'doc') continue
+      const meta = this.metas.get(room)
+      // A note this server does not have - it lost it, or was restored from a copy older than
+      // the note: the device that knows it opens it, and finds out (0.9.15). It may be holding
+      // it unopened since its start.
+      if (!meta) {
+        if (seq > 0) client.sendChanged(room, 0)
+        continue
+      }
+      if (!this.mayRead(meta, client.account)) continue
       const rooms = this.watching.get(client) ?? new Set<string>()
       rooms.add(room)
       this.watching.set(client, rooms)
       const clients = this.watchers.get(room) ?? new Set<RoomClient>()
       clients.add(client)
       this.watchers.set(room, clients)
-      due.push({ meta, seq })
+      due.push({ meta, seq, hash })
     }
-    for (const { meta, seq } of due) {
+    for (const { meta, seq, hash } of due) {
       // Unwatched meanwhile - opened after all, or the connection went.
       if (!this.watching.get(client)?.has(meta.room)) continue
       const head = await this.watchedHead(meta)
-      if (head > seq && this.watching.get(client)?.has(meta.room)) client.sendChanged(meta.room, head)
+      const elsewhere = head.seq !== seq || (hash !== undefined && head.hash !== null && head.hash !== hash)
+      if (elsewhere && this.watching.get(client)?.has(meta.room)) client.sendChanged(meta.room, head.seq)
     }
   }
 
@@ -571,7 +589,8 @@ export class RoomHub {
   /** A frame landed: whoever watches the note without holding it hears so. */
   private tellWatchers(open: OpenRoom, seq: number): void {
     const room = open.log.meta.room
-    this.noteHead(room, seq)
+    const head = headOfLog(open.log)
+    this.noteHead(room, head.seq === seq ? head : { seq, hash: null })
     for (const client of Array.from(this.watchers.get(room) ?? [])) {
       if (open.subscribers.has(client)) continue
       if (!this.mayRead(open.log.meta, client.account)) {

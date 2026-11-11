@@ -20,7 +20,7 @@ import { ForkStore } from '../src/forks.js'
 import { AddressGuard, paced } from '../src/throttle.js'
 import { totpCode } from '../src/totp.js'
 import { takeServerLock } from '../src/durable.js'
-import { decodeFrames, type Frame } from '../src/log.js'
+import { decodeFrames, frameFingerprint, type Frame } from '../src/log.js'
 import { Relay } from '../src/relay.js'
 import { HubError, RoomHub, type RoomClient } from '../src/rooms.js'
 
@@ -1295,6 +1295,21 @@ try {
       "after a restart the head comes from the log on disk, without loading the note; a room that does not exist says nothing",
       afterRestart
     )
+    // A server restored from a copy older than what the device knows: the device finds out by opening the note (0.9.15).
+    const lost = `doc:${hexId()}`
+    await hub.watch(later, [{ room: watchedRoom, seq: 9 }, { room: lost, seq: 3 }])
+    const behindDevice = changed(later)
+    check(
+      behindDevice.some((message) => message.room === watchedRoom && message.headSeq === 6) && behindDevice.some((message) => message.room === lost && message.headSeq === 0),
+      'a log behind what the device knows is told too, and a note the server lost as at #0',
+      behindDevice
+    )
+    // At the very seq, but another frame there: a restored log written to since (invariant 19).
+    await hub.watch(later, [{ room: watchedRoom, seq: 6, hash: frameFingerprint(bytes('w6')) }])
+    check(changed(later).length === 0, 'the same seq with the same last frame is quiet')
+    await hub.watch(later, [{ room: watchedRoom, seq: 6, hash: frameFingerprint(bytes('another w6')) }])
+    const otherFrame = changed(later)
+    check(otherFrame.length === 1 && otherFrame[0]?.headSeq === 6, 'the same seq with another frame there is told', otherFrame)
     hub.detach(later)
   }
 
