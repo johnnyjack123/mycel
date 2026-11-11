@@ -77,6 +77,12 @@ interface Piece {
   stored: boolean
 }
 
+/** Where a note is named while changes of this device's wait in its outbox: a start opens each (0.9.15). */
+export interface UnsentList {
+  mark(): Promise<void>
+  clear(): void
+}
+
 /**
  * A room cursor kept next to the document it belongs to. Each change made here enters the
  * outbox as a piece of its own and is stored at once, alone (invariant 15); the pieces are
@@ -97,6 +103,9 @@ export class LocalCursor implements RoomCursor {
   /** Pieces taken out of the outbox, deleted from the disk once what replaced them is written. */
   private obsolete: number[] = []
   private savedText: string | null = null
+  /** The account's list of notes with changes unsent (`StateStore.markUnsent`), for a note's cursor. */
+  private unsent: UnsentList | null = null
+  private marked = false
   private timer: ReturnType<typeof setTimeout> | null = null
   private writes: Promise<void> = Promise.resolve()
 
@@ -141,6 +150,19 @@ export class LocalCursor implements RoomCursor {
       log.error('the local log position is unreadable', error)
     }
     return cursor
+  }
+
+  /**
+   * Names the note in the list of unsent ones before the outbox's first piece is stored, and
+   * takes it out once everything is acknowledged. A start leaves unopened only a note the list
+   * does not name - so a change on the disk and in no list would go unsent.
+   */
+  trackUnsent(list: UnsentList): void {
+    this.unsent = list
+    if (this.pieces.length > 0 || this.sendingNow !== null) {
+      this.marked = true
+      void list.mark()
+    }
   }
 
   get sending(): Uint8Array | null {
@@ -214,6 +236,11 @@ export class LocalCursor implements RoomCursor {
     for (const piece of fresh) piece.stored = true
     const sending = this.sendingStored ? undefined : this.sendingNow
     this.sendingStored = true
+    const unsent = this.unsent
+    const mark = unsent !== null && fresh.length > 0 && !this.marked
+    if (mark) this.marked = true
+    const acknowledged = unsent !== null && this.marked && this.pieces.length === 0 && this.sendingNow === null
+    if (acknowledged) this.marked = false
     const saved: SavedCursor = {
       lastSeq: this.lastSeq,
       lastHash: this.lastHash,
@@ -230,10 +257,12 @@ export class LocalCursor implements RoomCursor {
     const obsolete = this.obsolete.splice(0)
     this.writes = this.writes
       .then(async () => {
+        if (mark) await unsent?.mark()
         for (const piece of fresh) await this.store.set(`${PIECE_PREFIX}${piece.key}`, toBase64(piece.data))
         if (sending !== undefined) await this.store.set(SENDING_KEY, sending ? toBase64(sending) : '')
         if (cursorChanged) await this.store.set(CURSOR_KEY, text)
         for (const key of obsolete) await this.store.del(`${PIECE_PREFIX}${key}`)
+        if (acknowledged) unsent?.clear()
       })
       .catch((error) => log.error('saving the local log position failed', error))
     return this.writes
@@ -250,6 +279,8 @@ export interface DocHandleOptions {
   owned?: boolean
   /** A shared folder this account writes in: a missing note is created there, owned by the folder's owner. */
   folder?: string | null
+  /** Where the note is named while changes of this device's wait in its outbox. */
+  unsent?: UnsentList | null
 }
 
 export class DocHandle {
@@ -294,6 +325,7 @@ export class DocHandle {
   async open(): Promise<void> {
     await this.persistence.whenSynced
     this.cursor = await LocalCursor.load(this.persistence)
+    if (this.options.unsent) this.cursor.trackUnsent(this.options.unsent)
     if (this.destroyed) return
     const history = this.options.history
     this.socket.register(this.room, this.doc, {

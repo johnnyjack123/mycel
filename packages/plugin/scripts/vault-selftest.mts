@@ -18,6 +18,7 @@ const encoding = await import('lib0/encoding')
 const { KeyRing } = await import('../src/account/KeyRing.js')
 const { NoteHistory } = await import('../src/history/NoteHistory.js')
 const { landingTitle, linkedNotes } = await import('../src/share/LinkedNotes.js')
+const { EDITOR_ORIGIN } = await import('../src/sync/origin.js')
 
 const serverUrl = process.argv[2] ?? process.env.MYCEL_URL ?? 'ws://localhost:1234'
 useServer(serverUrl)
@@ -1668,6 +1669,45 @@ try {
         'changes made while the connection was down reach the notes let go before it, once it is back',
         away.map((path) => L2.vault.text(path))
       )
+
+      // A start opens only what changed since (0.9.15): the rest is watched from where this device left it.
+      {
+        check(await eventually(() => L2.socket?.allSettled() === true, 15_000), 'everything L2 holds is acknowledged')
+        await L2.shutdown()
+        L2.maxLoaded = 50
+        const changedAway = paths[1] as string
+        await L1.vault.userWrite(changedAway, 'changed while L2 was off\n')
+        check(await L2.boot(), 'L2 starts again, with no limit to speak of')
+        check(await eventually(() => L2.vault.text(changedAway) === 'changed while L2 was off\n', 15_000), 'a note changed meanwhile is caught up', L2.vault.text(changedAway))
+        await delay(500)
+        // That one, and at most the note whose change was acknowledged only after its file and note last
+        // agreed - it has no place of its log recorded, and is opened as ever.
+        check((L2.store?.loadedCount() ?? 99) <= 2, 'and of the rest nothing is opened: the notes as it left them are watched', L2.store?.loadedCount())
+        const later = paths[3] as string
+        await L1.vault.userWrite(later, 'changed after L2 started\n')
+        check(await eventually(() => L2.vault.text(later) === 'changed after L2 started\n', 15_000), 'one left unopened hears of a change all the same', L2.vault.text(later))
+        const statesOf = (): Array<string | undefined> => paths.map((path) => L2.store?.noteState(L2.vault.file(path) as never))
+        check(await eventually(() => statesOf().every((state) => state === 'synced')), 'and every cloud says synced', statesOf())
+
+        // A change in a note's outbox whose file is not written yet - typed, Obsidian not saved yet -
+        // when the device stops: its file is as it was, and only the list of unsent notes tells.
+        const typed = paths[4] as string
+        const typedId = L2.index?.docIdForPath(typed) as string
+        check(await eventually(() => L2.socket?.allSettled() === true, 15_000), 'L2 is settled')
+        await delay(1_200)
+        const handle = await L2.store?.handle(typedId)
+        L2.store?.setEditorOwned(typedId, true)
+        holdPushes(L2, 'doc:')
+        handle?.doc.transact(() => handle.ytext.insert(handle.ytext.length, 'typed, never saved\n'), EDITOR_ORIGIN)
+        await delay(300)
+        await L2.shutdown()
+        check(await L2.boot(), 'L2 starts after stopping with it unsent')
+        check(
+          await eventually(() => (L1.docText(typed) ?? '').includes('typed, never saved'), 15_000),
+          'the note is opened and its change sent, though its file was unchanged',
+          L1.docText(typed)
+        )
+      }
     } finally {
       clearInterval(sampler)
       await L1.shutdown()

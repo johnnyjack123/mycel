@@ -560,7 +560,8 @@ export class DocStore {
           crypto: this.access.docCrypto(docId, this.index.entry(docId)),
           history: this.history,
           owned: !this.index.entry(docId)?.owner,
-          folder: this.access.roomFolder?.(docId, this.index.entry(docId)) ?? null
+          folder: this.access.roomFolder?.(docId, this.index.entry(docId)) ?? null,
+          unsent: { mark: () => this.state.markUnsent(docId), clear: () => this.state.clearUnsent(docId) }
         },
         this.openLocal
       )
@@ -644,6 +645,7 @@ export class DocStore {
     const handle = this.handles.get(docId)
     const room = docRoom(docId)
     const seq = this.socket.lastSeqOf(room)
+    const hash = this.socket.lastHashOf(room)
     this.handles.delete(docId)
     this.lastUsed.delete(docId)
     this.held.delete(docId)
@@ -656,7 +658,7 @@ export class DocStore {
     })
     this.closing.set(docId, closed)
     await closed
-    if (watch && !this.stopped && !this.handles.has(docId) && !this.inFlight.has(docId)) this.socket.watch(room, seq)
+    if (watch && !this.stopped && !this.handles.has(docId) && !this.inFlight.has(docId)) this.socket.watch(room, seq, hash)
     else if (!watch) this.socket.unwatch(room)
   }
 
@@ -796,8 +798,20 @@ export class DocStore {
    */
   private async recordAgreement(docId: string, file: TFile, text: string): Promise<void> {
     await this.state.setBaseText(docId, text)
-    this.state.set(docId, { path: file.path, mtime: file.stat.mtime, size: file.stat.size })
+    this.state.set(docId, { path: file.path, mtime: file.stat.mtime, size: file.stat.size, ...this.checkpoint(docId) })
     this.agreed.add(docId)
+  }
+
+  /**
+   * Where the note's log stands, when that is all there is to it: caught up, nothing of this
+   * device's unsent or held. A start that finds its file unchanged watches the note from there
+   * (`restsAtStart`); without it, the note is opened as ever.
+   */
+  private checkpoint(docId: string): { seq?: number; hash?: string } {
+    const room = docRoom(docId)
+    if (!this.socket.isSynced(room) || !this.socket.isSettled(room) || this.socket.isHeld(room)) return {}
+    const hash = this.socket.lastHashOf(room)
+    return hash ? { seq: this.socket.lastSeqOf(room), hash } : { seq: this.socket.lastSeqOf(room) }
   }
 
   baseText(docId: string): Promise<string | null> {
@@ -1851,9 +1865,36 @@ export class DocStore {
 
   // --- startup scan ----------------------------------------------------------
 
+  /**
+   * Every note, at the start: opened and reconciled - unless it is as this device left it, which
+   * is then only watched (`restsAtStart`). Opening each was most of a start's work, a database per
+   * note on a phone (`docs/PERFORMANCE.md`, 0.9.15).
+   */
   private async scanVault(): Promise<void> {
     const files = this.app.vault.getMarkdownFiles().filter((file) => !this.isExcluded(file.path))
-    await this.pool(files, (file) => this.syncFile(file))
+    const opened = files.filter((file) => !this.restsAtStart(file))
+    if (opened.length < files.length) log.info(`${files.length - opened.length} note(s) as this device left them - watched, not opened; ${opened.length} opened`)
+    await this.pool(opened, (file) => this.syncFile(file))
+  }
+
+  /**
+   * A note left as it was: its file as when file and note last agreed, with the log's place
+   * then known, and nothing of this device's unsent since - in no list of unsent notes, which
+   * names it before the outbox's first piece is stored. Watched from that place, it is opened
+   * the moment its log is elsewhere - another device wrote, or the server lost or went back -,
+   * when an editor shows it, or when its file changes (invariant 23: the stat only lets work be
+   * skipped, and a file that differs is read). Anything else is opened as ever.
+   */
+  private restsAtStart(file: TFile): boolean {
+    const docId = this.index.docIdForPath(file.path)
+    const entry = docId ? this.index.entry(docId) : undefined
+    if (!docId || !entry || entry.deletedAt || this.handles.has(docId) || this.inFlight.has(docId)) return false
+    const known = this.state.get(docId)
+    if (known?.seq === undefined || known.path !== file.path || known.mtime !== file.stat.mtime || known.size !== file.stat.size) return false
+    if (this.state.isUnsent(docId) || this.shownInEditor(file.path)) return false
+    this.agreed.add(docId)
+    this.socket.watch(docRoom(docId), known.seq, known.hash ?? null)
+    return true
   }
 
   /**
