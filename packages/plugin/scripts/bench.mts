@@ -958,7 +958,7 @@ async function deviceRole(): Promise<void> {
       (store.writeTimers as { size: number }).size === 0 &&
       (store.locks as { size: number }).size === 0 &&
       (store.inFlight as { size: number }).size === 0 &&
-      (target as unknown as { indexTimer: unknown }).indexTimer === null &&
+      (target.sync as unknown as { indexTimer: unknown }).indexTimer === null &&
       attachments.transfers.uploads === 0 &&
       attachments.transfers.downloads === 0 &&
       attachments.locks.size === 0 &&

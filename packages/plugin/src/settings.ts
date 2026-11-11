@@ -738,6 +738,11 @@ export class MycelSettingTab extends PluginSettingTab {
 
   private contactsSection(containerEl: HTMLElement): void {
     if (!this.plugin.settings.username) return
+    // They live in the account's settings, which only a running sync holds: written meanwhile, a contact was lost.
+    if (!this.plugin.contactsOpen()) {
+      containerEl.createEl('p', { cls: 'setting-item-description', text: 'Contacts are shown while this vault syncs.' })
+      return
+    }
     containerEl.createEl('p', {
       cls: 'setting-item-description',
       text: 'You share notes with contacts only. The server never learns their names: those travel encrypted between your devices and theirs.'

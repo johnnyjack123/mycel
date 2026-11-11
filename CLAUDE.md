@@ -201,7 +201,8 @@ someone's notes. Treat them as rules, not preferences.
     old start going, and it built a second, unseen copy of the plugin - its own
     connection, no editor, a closed log - that took the live copy's editor saves
     for edits and merged them with conflict markers. Every stop bumps `syncRun`,
-    `openSync` checks it after every wait, and an unloaded plugin never starts.
+    `openSync` and `SyncSession.open` check it after every wait, a stopped session is never
+    built on again, and an unloaded plugin never starts.
 27. **Renames from other devices are applied in rounds, and a swap via a name
     nobody claims.** Two notes or files that swapped names elsewhere each waited
     for the place the other held, forever; a restart's scan then took each file
@@ -882,7 +883,11 @@ npm run test:vault     # three devices + a collaborator: accounts, DocStore, bin
 npm run test:folders   # a shared folder: its owner, a writer and a reader, devices of each
 ```
 
-The end-to-end tests share their devices through `scripts/harness.mts`.
+The end-to-end tests share their devices through `scripts/harness.mts`, which runs the
+plugin's own `SyncSession` (0.9.16): every part of the sync and everything between them is
+built, wired and taken down there, for the plugin and the tests alike. What differs is only
+the host (`SyncHost`) - storage, timings, and the person answering. Wire a new part in
+`SyncSession`, never in `main.ts` or the harness: the two copies there had drifted apart.
 `test:recovery` starts the server in-process (`startServer` in
 `server/src/server.ts`) so it can stop it, take its data away or restore an old
 copy, and start it again on the same port.
