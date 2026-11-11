@@ -186,7 +186,9 @@ someone's notes. Treat them as rules, not preferences.
     version for news and overwrite its own file. Every entry names what it
     replaced (`prev`), every replacement leaves a version record, and
     `AttachmentIndex.replaced` decides: a version that never saw this device's
-    content is a conflict, and both files are kept. The same for a delete.
+    content is a conflict, and both files are kept. The same for a delete. A
+    shared note's and a shared folder's files decide alike, by one function
+    (`versionStep`, `share/sharedVersion.ts`).
 25. **A text the document already held is an older copy, never an edit.**
     Obsidian saves a bound editor whenever it likes, so its file lags the
     document, and an editor that let go lags it too. When an editor bound again
@@ -207,7 +209,8 @@ someone's notes. Treat them as rules, not preferences.
     nobody claims.** Two notes or files that swapped names elsewhere each waited
     for the place the other held, forever; a restart's scan then took each file
     for an edit of the other note. `DocStore.applyRemoteRenames` and
-    `AttachmentStore.followRenames` move one of the two to a free name first
+    `AttachmentStore.followRenames`, both through `renameInRounds`
+    (`sync/renames.ts`), move one of the two to a free name first
     (`aside`), which neither the index, a rename event nor a scan may take for a
     note or file of its own. Rolling back renames closes such cycles often.
 28. **A note's key comes from one place, and an epoch spent in a shared folder
@@ -388,7 +391,8 @@ its keys, lost the change after them with no error (0.9.11). See `MUX` in `share
 server acknowledges a frame only once it is synced to the disk, and nobody reads it
 before (`RoomLog.append`, 0.9.1; `headSeq` counts frames still being written,
 `writtenSeq` does not); every other file it writes through `server/src/durable.ts`.
-One server per data folder (`server.lock`), and `accounts.lock` between it and the CLI.
+One server per data folder (`server.lock`), and `accounts.lock` between it and the CLI; a
+stale lock is taken over by one process alone, under a takeover lock (`tryLock`, 0.9.17).
 
 **Every note live** (0.9.2): a device holds at most `maxLoadedDocuments` notes open; one it
 lets go (`DocStore.evict`, never with an unacknowledged change, never held) is **watched**
@@ -560,7 +564,7 @@ people: whoever runs it can read the vaults on it.
   its remotes in `/data/rclone/rclone.conf`.
 - **A run** (`run.ts`): what changed into an encrypted cache (rooms by their tag, a log
   from its last frame, compared - invariant 19), the layout from the index (vault,
-  trash, settings without contacts), notes and canvases into a RAM disk for restic,
+  trash, settings without contacts or the account's records), notes and canvases into a RAM disk for restic,
   every other file as a tar stream (killed before it ends when producing it fails),
   every snapshot checked back, and only then - once the repository took the run - the
   copy brought level: the vault at its top so it opens as a vault, trash and settings
@@ -670,7 +674,8 @@ adds the note to its own index under the share folder.
   a note, folder, the index or the settings carries its author and signature inside
   the encryption (`packSignedFrame`, `KeyRing.packFor`/`checkFrame`,
   `RoomCrypto.pack`/`check`) - checked wherever a log is read: live, in a history,
-  a fork, a compaction; anything else is dropped, never let to stop a room. Anyone
+  a fork, a compaction, the backup server, all by one rule (`frameVerdict` in
+  `shared/crypto`); anything else is dropped, never let to stop a room. Anyone
   but the owner adds the owner's writer's certificate, which comes with their
   sealed key (`sealed.signer.signature.cert`) and follows the owner's own record of
   roles (`AccountSettings.shareRole`) alone - nobody unrecorded writes; every change

@@ -8,6 +8,32 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.17** (2026-11-11, branch `refactor/frame-rule`, the code review's next proposals) - **one
+  rule where there were two copies, and two bugs the review found.**
+  - **One rule for a frame's signature** (`frameVerdict`, `shared/crypto`): the devices'
+    `KeyRing.checkFrame` and the backup server's `signedByWriter` were the same rule in two
+    copies. Checked by loosening it (a frame without a certificate taken): `test:vault` failed for
+    the devices, `test:security` for the backup server.
+  - **One decision for a shared file's version** (`versionStep`, `share/sharedVersion.ts`):
+    `SharedFiles` and `FolderFiles` each decided in their own words whether the listed version is
+    taken, sent out or kept beside this vault's (invariant 24). `test:merge` checks every case; a
+    careless variant (unchanged here, so take whatever the list says) fails there.
+  - **One way of following renames in rounds** (`renameInRounds`, `sync/renames.ts`): notes and
+    files did it line for line alike (invariant 27); the four copies of the helpers naming a place
+    beside a taken one are two. `test:merge` swaps two, turns three round and crowds the free name;
+    without the detour it fails.
+  - **Fixed (server):** two processes finding the same stale lock file - the server and the admin
+    CLI on `accounts.lock`, two servers on `server.lock` - each removed it, the later one the fresh
+    lock the first had just made, and both held it. A stale lock is now removed under a short
+    takeover lock and checked again there; on Windows, making a lock file another process is
+    deleting that moment (`EPERM`) is waited out. `test:rooms` sets six takers on a stale lock, five
+    times: the old code failed there (with `EPERM` on Windows), now one takes it over each time.
+  - **Fixed (backup server):** a backup's `settings.json` - the settings without the contacts -
+    carried the account's records too: every role in a share with a contact's account id, the epoch
+    floors, the links asked about, the rollbacks. Left out now; `test:backup` found two epochs and a
+    role with the old pattern.
+  - Checked: every suite.
+
 - **0.9.16** (2026-11-11, branch `refactor/sync-session`, the code review's first proposal) - **the
   tests run the plugin's own wiring.** `main.ts` built the sync - twenty parts and every line
   between them - in `openSync` and took it down in `stopSync`; the test harness had a copy of
