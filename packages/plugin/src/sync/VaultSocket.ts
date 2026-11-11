@@ -143,6 +143,12 @@ export interface RoomCursor {
   persist(urgent?: boolean): void
 }
 
+/** Where this device left a note's log: its last frame's seq and fingerprint. */
+interface WatchedPlace {
+  seq: number
+  hash: string | null
+}
+
 export function memoryCursor(): RoomCursor {
   let outbox: Uint8Array[] = []
   return {
@@ -287,10 +293,10 @@ export class VaultSocket {
   private locked = false
   /** The id of the rollback's lock this device holds, named to the server on every connection. */
   private lockId: string | null = null
-  /** Notes this device knows up to a seq and does not hold open (`MUX.watch`), named again on every connection. */
-  private readonly watched = new Map<string, number>()
+  /** Notes this device knows up to a place and does not hold open (`MUX.watch`), named again on every connection. */
+  private readonly watched = new Map<string, WatchedPlace>()
   /** Watched since the last message: sent together, a start lets go of hundreds of notes at once. */
-  private readonly toWatch = new Map<string, number>()
+  private readonly toWatch = new Map<string, WatchedPlace>()
   private readonly toUnwatch = new Set<string>()
   private watchTimer: number | null = null
   private readonly changedListeners = new Set<(room: string, headSeq: number) => void>()
@@ -525,8 +531,9 @@ export class VaultSocket {
     const room = decoding.readVarString(decoder)
     if (type === MUX.changed) {
       const headSeq = decoding.readVarUint(decoder)
-      const known = this.watched.get(room)
-      if (known === undefined || headSeq <= known) return
+      // Any change of place counts: further on, behind - a log restored from a copy -, or another frame at
+      // the same seq (0.9.15). Taking only "further on" left a restored log unnoticed until a frame landed.
+      if (!this.watched.has(room)) return
       for (const listener of this.changedListeners) listener(room, headSeq)
       return
     }
@@ -1071,13 +1078,16 @@ export class VaultSocket {
   // --- watching notes without holding them open (0.9.2) ---------------------------
 
   /**
-   * Hears when the log of a note this device let go moves past `seq`. Only a
-   * hint: the note is caught up the normal way once it is opened again.
+   * Hears when the log of a note this device let go is anywhere else than at
+   * `seq`, with the frame `hash` names there (its fingerprint, as the cursor
+   * keeps it). Only a hint: the note is caught up - and checked, invariant 19 -
+   * the normal way once it is opened again.
    */
-  watch(room: string, seq: number): void {
-    this.watched.set(room, seq)
+  watch(room: string, seq: number, hash: string | null = null): void {
+    const place = { seq, hash }
+    this.watched.set(room, place)
     this.toUnwatch.delete(room)
-    this.toWatch.set(room, seq)
+    this.toWatch.set(room, place)
     this.scheduleWatch()
   }
 
@@ -1109,17 +1119,19 @@ export class VaultSocket {
     }, SEND_DELAY_MS)
   }
 
-  private sendWatch(entries: Array<[string, number]>): void {
+  private sendWatch(entries: Array<[string, WatchedPlace]>): void {
     for (let start = 0; start < entries.length; start += WATCH_BATCH) {
       const batch = entries.slice(start, start + WATCH_BATCH)
       this.send((encoder) => {
         encoding.writeVarUint(encoder, MUX.watch)
         encoding.writeVarString(encoder, '')
         encoding.writeVarUint(encoder, batch.length)
-        for (const [room, seq] of batch) {
+        for (const [room, { seq }] of batch) {
           encoding.writeVarString(encoder, room)
           encoding.writeVarUint(encoder, seq)
         }
+        // The fingerprints after the entries, in their order: a server before 0.9.15 reads past them.
+        for (const [, { hash }] of batch) encoding.writeVarString(encoder, hash ?? '')
       })
     }
   }
@@ -1289,6 +1301,11 @@ export class VaultSocket {
 
   lastSeqOf(room: string): number {
     return this.registrations.get(room)?.options.cursor.lastSeq ?? 0
+  }
+
+  /** The fingerprint of the last frame of a registered room's log this device applied; null for none. */
+  lastHashOf(room: string): string | null {
+    return this.registrations.get(room)?.options.cursor.lastHash ?? null
   }
 
   /**

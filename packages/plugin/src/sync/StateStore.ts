@@ -9,6 +9,14 @@ export interface FileState {
   /** `stat` of the file as we last saw it agree with the document. */
   mtime: number
   size: number
+  /**
+   * Where the note's log stood then, with nothing of this device's unsent: a start that finds the
+   * file as it was then and nothing unsent since (`isUnsent`) only watches the note from there
+   * instead of opening it (0.9.15). Absent: the note is opened, as before.
+   */
+  seq?: number
+  /** The fingerprint of the frame at `seq`: a seq alone names no place in a log (invariant 19). */
+  hash?: string
 }
 
 /**
@@ -24,6 +32,7 @@ export interface AttachmentState extends FileState {
 const STATE_FILE = 'state.json'
 const ATTACHMENTS_FILE = 'attachments.json'
 const CLEARED_FILE = 'cleared.json'
+const UNSENT_FILE = 'unsent.json'
 const BASE_DIR = 'base'
 const SAVE_DEBOUNCE_MS = 1_000
 
@@ -34,6 +43,13 @@ export class StateStore {
   private readonly attachmentPaths = new Map<string, string>()
   /** Purged notes whose local copy this device has cleared - never opened, and so made, again. */
   private readonly cleared = new Set<string>()
+  /**
+   * Notes with changes of this device's the server has not acknowledged: written before the
+   * outbox's first piece is (`markUnsent`), so a start after a crash opens each and sends them.
+   */
+  private readonly unsent = new Set<string>()
+  /** That list could not be read: any note may have changes waiting. */
+  private unsentUnknown = false
   private saveTimer: number | null = null
   private writes: Promise<void> = Promise.resolve()
   private closed = false
@@ -74,15 +90,47 @@ export class StateStore {
       }
     }
     for (const [fileId, state] of this.attachments) this.attachmentPaths.set(state.path, fileId)
-    const cleared = this.path(CLEARED_FILE)
-    if (await this.adapter.exists(cleared)) {
+    for (const [name, into] of [
+      [CLEARED_FILE, this.cleared],
+      [UNSENT_FILE, this.unsent]
+    ] as const) {
+      const file = this.path(name)
+      if (!(await this.adapter.exists(file))) continue
       try {
-        const ids = JSON.parse(await this.adapter.read(cleared)) as unknown
-        if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string') this.cleared.add(id)
+        const ids = JSON.parse(await this.adapter.read(file)) as unknown
+        if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string') into.add(id)
       } catch (error) {
-        log.error(`the local state file ${CLEARED_FILE} is unreadable, starting fresh`, error)
+        // Unread, every note counts as possibly unsent: none is left unopened at the start.
+        if (name === UNSENT_FILE) this.unsentUnknown = true
+        log.error(`the local state file ${name} is unreadable, starting fresh`, error)
       }
     }
+  }
+
+  isUnsent(docId: string): boolean {
+    return this.unsentUnknown || this.unsent.has(docId)
+  }
+
+  /**
+   * Written at once, and waited for: the outbox's first piece goes to the disk only after this.
+   * In line with every other write of these files, or an older save landing later took it away.
+   */
+  markUnsent(docId: string): Promise<void> {
+    if (this.unsent.has(docId) || this.closed) return this.writes
+    this.unsent.add(docId)
+    this.writes = this.writes
+      .then(async () => {
+        await this.ensureDir(this.root)
+        await this.adapter.write(this.path(UNSENT_FILE), JSON.stringify(Array.from(this.unsent)))
+      })
+      .catch((error) => log.error('writing the list of unsent notes failed', error))
+    return this.writes
+  }
+
+  /** Everything acknowledged: said with the next save, a moment late at worst - which only opens the note once more. */
+  clearUnsent(docId: string): void {
+    if (!this.unsent.delete(docId)) return
+    this.scheduleSave()
   }
 
   isCleared(docId: string): boolean {
@@ -170,6 +218,7 @@ export class StateStore {
         await this.adapter.write(this.path(STATE_FILE), JSON.stringify(Object.fromEntries(this.entries)))
         await this.adapter.write(this.path(ATTACHMENTS_FILE), JSON.stringify(Object.fromEntries(this.attachments)))
         await this.adapter.write(this.path(CLEARED_FILE), JSON.stringify(Array.from(this.cleared)))
+        await this.adapter.write(this.path(UNSENT_FILE), JSON.stringify(Array.from(this.unsent)))
       })
       .catch((error) => {
         log.error('writing the local state failed', error)

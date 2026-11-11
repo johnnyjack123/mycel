@@ -395,7 +395,13 @@ lets go (`DocStore.evict`, never with an unacknowledged change, never held) is *
 log is further on and whenever a frame lands (`RoomHub.watch`, heads of notes it does not hold
 read from the log's headers once), and the device opens it for a moment the normal way
 (`DocStore.remoteChanged`, eight at once) and lets it go again when the limit needs the room.
-The watch is named again on every connection.
+The watch is named again on every connection. **A start opens only what changed** (0.9.15,
+`DocStore.restsAtStart`): a note whose file is as when file and note last agreed, with the log's
+place then recorded (`FileState.seq`/`hash`, only when caught up and nothing unsent) and named in
+no list of unsent notes (`StateStore.markUnsent`, written before the outbox's first piece and
+waited for), is watched from that place instead of opened. The watch names the place with its last
+frame's fingerprint, and the server says `changed` for a log anywhere else - further on, behind, or
+another frame at that seq (invariant 19); the device takes every `changed` for a note it watches.
 
 While a vault is **locked** (`sync/VaultLock.ts`, `RoomHub.takeLock`; 0.8.13) the
 server answers the account's pushes into it with `locked` instead of `ack`; the device

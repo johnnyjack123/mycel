@@ -8,6 +8,30 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.15** (2026-11-11, branch `perf/quiet-start`, the benchmark's second finding) - **a start
+  opens only what changed.** Every start opened every note - its database, its document, a
+  subscribe that downloaded its last frame again -, 5,000 databases on a phone each time the
+  system had closed Obsidian. Now a note is only watched from where this device left it when it
+  is certain nothing waits there: its file as when file and note last agreed (`restsAtStart`), the
+  log's place then recorded with the agreement (`FileState.seq` and `hash`; only when caught up
+  with nothing unsent), and the note in no list of unsent notes (`StateStore.markUnsent`, written
+  before the outbox's first piece reaches the disk, and waited for - so a crash between typing and
+  Obsidian saving the file still sends the change). Anything else is opened as before; so is a note
+  an editor shows, and one whose file changed.
+  - **Server: a watch tells a log anywhere else** - further on as before, now also behind (a log
+    restored from a copy) and at the same seq with another frame there, by the fingerprint of its
+    last frame the device sends with the watch (after the entries, so neither side before 0.9.15
+    minds it); a note the server does not have at all is told as at #0. Invariant 19 holds for
+    notes left unopened: a restored server is found at the start as before. The device takes every
+    `changed` for a note it watches - it took only "further on".
+  - Measured (`npm run bench`, 1,000 notes, the second device's restart): 0 notes opened instead of
+    1,000, 2 subscribes instead of 1,002, 1 KB downloaded instead of 5.3 MB, nothing written to the
+    plugin folder instead of 5.1 MB, 0-0.1 s of the device's CPU instead of 0.3-0.5 s.
+  - Checked: `test:vault` - a restart opens only the note changed meanwhile, the rest hears of a
+    later change all the same, and a note stopped with a change unsent and its file unchanged is
+    opened and sent (with the list taken out, exactly that check failed); `test:rooms` - a log
+    behind, a lost note, another frame at the same seq.
+
 - **0.9.14** (2026-11-10, branch `perf/outbox`, the benchmark's first finding) - **typing offline
   as quick as online.** Every keystroke merged the whole outbox again (`Y.mergeUpdates`) and wrote
   it whole, base64 in the cursor's JSON: the cost of a keystroke grew with every one not sent - 15 ms

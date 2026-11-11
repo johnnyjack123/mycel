@@ -219,9 +219,16 @@ export function setupVaultConnection(ws: WebSocket, account: string, vaultId: st
           return
         case MUX.watch: {
           const count = Math.min(decoding.readVarUint(decoder), MAX_WATCHED)
-          const entries: Array<{ room: string; seq: number }> = []
+          const entries: Array<{ room: string; seq: number; hash?: string }> = []
           for (let index = 0; index < count; index += 1) {
             entries.push({ room: decoding.readVarString(decoder), seq: decoding.readVarUint(decoder) })
+          }
+          // Since 0.9.15 the fingerprint of each one's last frame follows, in the same order; a device
+          // before it sends none, and a server before it reads past them.
+          for (const entry of entries) {
+            if (!decoding.hasContent(decoder)) break
+            const hash = decoding.readVarString(decoder)
+            if (hash) entry.hash = hash.slice(0, 64)
           }
           // Not waited for: reading heads from the disk after a restart must not hold up the connection.
           void hub.watch(connection, entries).catch((error: unknown) => console.error('[mycel] watching failed', error))

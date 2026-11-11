@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { readFile, readdir, rm, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isHexId, roomKind, roomSubject, type FolderTie, type ShareRole } from '@mycel/shared'
@@ -214,18 +215,42 @@ export function saveMetaOf(dataDir: string, meta: RoomMeta): Promise<void> {
  * The last seq of a room that is not loaded: its last whole frame on disk, or
  * the snapshots and compaction beyond it. Read from the frames' headers.
  */
-export async function headSeqOf(dataDir: string, meta: RoomMeta): Promise<number> {
+/**
+ * A log's head and the fingerprint of the frame there - what a device keeps of its last frame
+ * (`VaultSocket`'s `fingerprint`): the first 32 hex digits of its SHA-256. Null when that frame
+ * was folded into a snapshot - compaction, which is no other log (invariant 19).
+ */
+export interface LogHead {
+  seq: number
+  hash: string | null
+}
+
+export function frameFingerprint(data: Uint8Array): string {
+  return createHash('sha256').update(data).digest('hex').slice(0, 32)
+}
+
+/** The head of an open log, as `headOf` reads it from the disk. */
+export function headOfLog(log: { writtenSeq: number; frames: Frame[] }): LogHead {
+  const last = log.frames[log.frames.length - 1]
+  const seq = log.writtenSeq
+  return { seq, hash: last && last.seq === seq ? frameFingerprint(last.data) : null }
+}
+
+export async function headOf(dataDir: string, meta: RoomMeta): Promise<LogHead> {
   const raw = await readOptional(join(roomDir(dataDir, meta), 'log.bin'))
   let last = 0
+  let data: Uint8Array | null = null
   let offset = 0
   while (raw && offset + HEADER_BYTES <= raw.length) {
     const end = offset + HEADER_BYTES + raw.readUInt32BE(offset + 20)
     if (end > raw.length) break
     last = Number(raw.readBigUInt64BE(offset))
+    data = raw.subarray(offset + HEADER_BYTES, end)
     offset = end
   }
   const snapshotHead = meta.snapshots.reduce((max, snapshot) => Math.max(max, snapshot.uptoSeq), 0)
-  return Math.max(last, meta.compactedUpTo, snapshotHead)
+  const seq = Math.max(last, meta.compactedUpTo, snapshotHead)
+  return { seq, hash: data && last === seq ? frameFingerprint(data) : null }
 }
 
 /**
