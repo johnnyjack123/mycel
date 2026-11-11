@@ -19,7 +19,7 @@ import { createHttpApp } from '../src/http.js'
 import { ForkStore } from '../src/forks.js'
 import { AddressGuard, paced } from '../src/throttle.js'
 import { totpCode } from '../src/totp.js'
-import { takeServerLock } from '../src/durable.js'
+import { takeServerLock, withFileLock } from '../src/durable.js'
 import { decodeFrames, frameFingerprint, type Frame } from '../src/log.js'
 import { Relay } from '../src/relay.js'
 import { HubError, RoomHub, type RoomClient } from '../src/rooms.js'
@@ -1249,6 +1249,35 @@ try {
         const third = await takeServerLock(folder, 20, 200)
         await third.release()
         check(true, 'a lock left by a server that stopped without letting go is taken over')
+        // Several finding the same stale lock at once: each removed it, the later ones the
+        // fresh lock the first had just made, and all of them held it (the code review, 0.9.11).
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          const path = join(folder, 'accounts.lock')
+          writeFileSync(path, 'left behind\n')
+          utimesSync(path, old, old)
+          let inside = 0
+          let most = 0
+          await Promise.all(
+            Array.from({ length: 6 }, () =>
+              withFileLock(
+                path,
+                async () => {
+                  inside += 1
+                  most = Math.max(most, inside)
+                  await new Promise((resolve) => setTimeout(resolve, 30))
+                  inside -= 1
+                },
+                { staleMs: 1_000, waitMs: 5_000 }
+              )
+            )
+          )
+          if (most > 1) {
+            check(false, 'a stale lock found by several at once is taken over by one of them alone', { attempt, most })
+            break
+          }
+          if (attempt === 4) check(true, 'a stale lock found by several at once is taken over by one of them alone')
+        }
+        check(!existsSync(join(folder, 'accounts.lock')) && !existsSync(join(folder, 'accounts.lock.takeover')), 'and nothing of it is left behind')
       } finally {
         rmSync(folder, { recursive: true, force: true })
       }

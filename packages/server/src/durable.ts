@@ -122,6 +122,57 @@ const LOCK_STALE_MS = 30_000
 const LOCK_WAIT_MS = 10_000
 const LOCK_POLL_MS = 25
 
+/** Makes the file only if there is none; false while one is there - or, on Windows, still being deleted. */
+async function createExclusive(path: string): Promise<boolean> {
+  try {
+    await writeFile(path, `${process.pid} ${new Date().toISOString()}\n`, { flag: 'wx' })
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    // Windows refuses to make a file another process is deleting that moment.
+    if (code === 'EEXIST' || (code === 'EPERM' && process.platform === 'win32')) return false
+    throw error
+  }
+}
+
+function ageOf(path: string): Promise<number | null> {
+  return stat(path).then(
+    (found) => Date.now() - found.mtimeMs,
+    () => null
+  )
+}
+
+/**
+ * Takes the lock file, or says how long the one there was untouched (null:
+ * none to be seen - try again at once). One older than `staleMs` is a crashed
+ * holder's, and is removed by one process alone: under a takeover lock of its
+ * own, checked again there. Removed by whoever found it stale, two processes
+ * finding it at once each removed it - the later one the fresh lock the first
+ * had just made - and both held it.
+ */
+async function tryLock(path: string, staleMs: number, stopped: string): Promise<{ taken: true } | { taken: false; age: number | null }> {
+  if (await createExclusive(path)) return { taken: true }
+  const age = await ageOf(path)
+  if (age === null || age <= staleMs) return { taken: false, age }
+  const takeover = `${path}.takeover`
+  if (!(await createExclusive(takeover))) {
+    // A process that crashed while taking over; nothing takes as long.
+    const left = await ageOf(takeover)
+    if (left !== null && left > staleMs) await unlink(takeover).catch(() => undefined)
+    return { taken: false, age }
+  }
+  try {
+    const again = await ageOf(path)
+    if (again !== null && again > staleMs) {
+      console.warn(`[mycel] ${path} was left by ${stopped}; taken over`)
+      await unlink(path).catch(() => undefined)
+    }
+  } finally {
+    await unlink(takeover).catch(() => undefined)
+  }
+  return (await createExclusive(path)) ? { taken: true } : { taken: false, age: null }
+}
+
 /**
  * Runs `task` holding a lock file shared by every process on this data folder -
  * the server and the admin CLI both change `accounts.json`; each read it,
@@ -134,21 +185,7 @@ export async function withFileLock<T>(path: string, task: () => Promise<T>, opti
   const staleMs = options.staleMs ?? LOCK_STALE_MS
   const deadline = Date.now() + (options.waitMs ?? LOCK_WAIT_MS)
   for (;;) {
-    try {
-      await writeFile(path, `${process.pid} ${new Date().toISOString()}\n`, { flag: 'wx' })
-      break
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-    }
-    const age = await stat(path).then(
-      (found) => Date.now() - found.mtimeMs,
-      () => null
-    )
-    if (age !== null && age > staleMs) {
-      console.warn(`[mycel] ${path} was left by a process that stopped; taken over`)
-      await unlink(path).catch(() => undefined)
-      continue
-    }
+    if ((await tryLock(path, staleMs, 'a process that stopped')).taken) break
     if (Date.now() > deadline) throw new Error(`${path} is held by another process`)
     await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS))
   }
@@ -178,25 +215,12 @@ export async function takeServerLock(dataDir: string, beatMs = SERVER_LOCK_BEAT_
   const path = join(dataDir, 'server.lock')
   const deadline = Date.now() + staleMs + beatMs
   for (;;) {
-    try {
-      await writeFile(path, `${process.pid} ${new Date().toISOString()}\n`, { flag: 'wx' })
-      break
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-    }
-    const age = await stat(path).then(
-      (found) => Date.now() - found.mtimeMs,
-      () => null
-    )
-    if (age !== null && age > staleMs) {
-      console.warn(`[mycel] ${path} was left by a server that stopped; taken over`)
-      await unlink(path).catch(() => undefined)
-      continue
-    }
+    const tried = await tryLock(path, staleMs, 'a server that stopped')
+    if (tried.taken) break
     if (Date.now() > deadline) {
       throw new Error(`another server runs on ${dataDir} (${path} is kept fresh); stop it first`)
     }
-    if (age !== null) console.info(`[mycel] ${path} exists; waiting to see whether its server still runs`)
+    if (tried.age !== null) console.info(`[mycel] ${path} exists; waiting to see whether its server still runs`)
     await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, staleMs)))
   }
   const beat = setInterval(() => {
