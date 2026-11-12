@@ -21,6 +21,7 @@ import type { AccountSettings, RollbackRecord } from './AccountSettings.js'
 import type { AttachmentStore } from './AttachmentStore.js'
 import type { DocStore } from './DocStore.js'
 import type { RoomCrypto } from './VaultSocket.js'
+import { besides } from './renames.js'
 import { log } from '../log.js'
 
 // Rolling the vault, or one folder of it, back to a moment (`docs/PHASE6.md`,
@@ -956,9 +957,3 @@ interface Move {
 }
 
 /** `stem (label)ext`, or `stem (label n)ext` from the second on. */
-function besides(path: string, label: string, n: number): string {
-  const slash = path.lastIndexOf('/')
-  const dot = path.lastIndexOf('.')
-  const cut = dot > slash ? dot : path.length
-  return `${path.slice(0, cut)} (${label}${n > 1 ? ` ${n}` : ''})${path.slice(cut)}`
-}

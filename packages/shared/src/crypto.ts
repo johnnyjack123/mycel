@@ -5,8 +5,8 @@
 // Kept out of the package index on purpose: the server never encrypts or
 // decrypts anything, and does not compile against the DOM's crypto types.
 
-import { BLOB_CHUNK_BYTES, blobChunkAad, blobChunkCount } from './protocol.js'
-import type { KdfParams } from './types.js'
+import { BLOB_CHUNK_BYTES, blobChunkAad, blobChunkCount, folderRoom } from './protocol.js'
+import type { FolderTie, KdfParams } from './types.js'
 
 /** What WebCrypto's types accept: bytes backed by a plain ArrayBuffer. */
 export type Bytes = Uint8Array<ArrayBuffer>
@@ -610,6 +610,37 @@ export function unpackFrame(data: Uint8Array): OpenedFrame | null {
 /** Whether a frame's signature holds under `publicKey` - the owner's, or the one its certificate names. */
 export function verifyFrame(publicKey: Bytes, room: string, epoch: number, frame: OpenedFrame): Promise<boolean> {
   return verifySignature(publicKey, frameMessage(room, epoch, frame.authorTs, frame.author, frame.update), toBase64(frame.signature))
+}
+
+/** `unknown`: the owner's signing key is not known here, and nothing can be said yet. */
+export type FrameVerdict = 'ok' | 'forged' | 'unknown'
+
+/**
+ * Whether a frame or snapshot read from a room's log was written by someone
+ * who may write there - the one rule every device and the backup server
+ * apply. The owner signs with their own key; anyone else carries the owner's
+ * certificate - for the room's epoch, or for the folder epoch the note spent
+ * that epoch in (`tie`) - and signs with the key it names. Only the owner
+ * makes snapshots and starting points.
+ */
+export async function frameVerdict(
+  ownerKey: Bytes | null,
+  owner: string,
+  room: string,
+  epoch: number,
+  tie: FolderTie | null,
+  kind: 'frame' | 'snapshot',
+  frame: OpenedFrame
+): Promise<FrameVerdict> {
+  if (!ownerKey) return 'unknown'
+  if (frame.author === owner) return (await verifyFrame(ownerKey, room, epoch, frame)) ? 'ok' : 'forged'
+  const cert = frame.cert
+  if (kind === 'snapshot' || !cert) return 'forged'
+  const certified =
+    (tie !== null && (await verifyWriterCert(ownerKey, folderRoom(tie.folder), tie.epoch, frame.author, cert))) ||
+    (await verifyWriterCert(ownerKey, room, epoch, frame.author, cert))
+  if (!certified) return 'forged'
+  return (await verifyFrame(cert.signingKey, room, epoch, frame)) ? 'ok' : 'forged'
 }
 
 // Presence - carets, selections, the name beside them - travels in the frame's

@@ -5,6 +5,8 @@ import type { ConnectApi } from '../account/api.js'
 import type { SharedBase } from '../sync/AttachmentIndex.js'
 import type { AttachmentStore } from '../sync/AttachmentStore.js'
 import type { FolderIndex } from '../sync/FolderIndex.js'
+import { numbered } from '../sync/renames.js'
+import { versionStep } from './sharedVersion.js'
 import { log } from '../log.js'
 
 // The files of a shared folder (docs/PHASE7.md, E8): every file inside it
@@ -50,13 +52,6 @@ function withWrite(base: SharedBase, write: FolderWrite | undefined): SharedBase
 }
 
 /** `photo.png` -> `photo 2.png`. */
-function besides(path: string, n: number): string {
-  const slash = path.lastIndexOf('/')
-  const dot = path.lastIndexOf('.')
-  const cut = dot > slash ? dot : path.length
-  return `${path.slice(0, cut)} ${n}${path.slice(cut)}`
-}
-
 export class FolderFiles {
   private readonly publishing = new Map<string, Promise<void>>()
 
@@ -79,8 +74,8 @@ export class FolderFiles {
   private freePlace(path: string): string {
     if (!this.taken(path)) return path
     let n = 2
-    while (this.taken(besides(path, n))) n += 1
-    return besides(path, n)
+    while (this.taken(numbered(path, n))) n += 1
+    return numbered(path, n)
   }
 
   /** The id a new file of the folder gets: the same for everyone in it, from its path in the folder. */
@@ -263,29 +258,27 @@ export class FolderFiles {
     }
     const now = this.attachments.entryOf(local.fileId) as AttachmentEntry
     const agree = (): void => this.attachments.setFolderBase(folderId, file, agreed())
-    if (now.hash === listed.hash) {
-      agree()
-      return
-    }
-    // This vault's own newer version is on its way into the folder.
-    if (base?.prev !== undefined && listed.hash === base.prev && now.hash === base.hash) return
-    const known = base?.hash ?? (listed.prev === now.hash ? now.hash : undefined)
-    if (known !== undefined && now.hash === known) {
-      // Unchanged here; the folder's version replaced it knowingly, or past it.
-      if (listed.prev === known) {
+    const next = versionStep(now.hash, base, listed)
+    switch (next.step) {
+      case 'agree':
+        agree()
+        return
+      case 'wait':
+        return
+      case 'adopt':
         // Changed here after all, while this waited for the file: the next pass weighs that.
         if (!(await this.attachments.adopt(local.fileId, listed, room))) return
-      } else await this.keepAside(local.fileId, listed, room, mount)
-      agree()
-      return
+        agree()
+        return
+      case 'publish':
+        // A reader's change stays here; the next version meets it as a conflict.
+        if (write) await this.publish(folderId, fi, local.fileId, listed.path, next.prev)
+        return
+      case 'keep-both':
+      case 'unrelated':
+        await this.keepAside(local.fileId, listed, room, mount)
+        agree()
     }
-    if (known !== undefined && listed.hash === known) {
-      // Changed here. A reader's change stays here; the next version meets it as a conflict.
-      if (write) await this.publish(folderId, fi, local.fileId, listed.path, known)
-      return
-    }
-    await this.keepAside(local.fileId, listed, room, mount)
-    agree()
   }
 
   /**

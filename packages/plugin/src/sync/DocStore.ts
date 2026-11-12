@@ -16,6 +16,7 @@ import { additiveEdits, reconcile, type ReconcileOutcome } from './Reconciler.js
 import { matchesGlob } from './glob.js'
 import { FORK_ORIGIN, RESTORE_ORIGIN, SYNC_ORIGIN } from './origin.js'
 import { seedUpdate } from './seed.js'
+import { renameInRounds } from './renames.js'
 import { memoryHistory, type HistoryEntry, type HistoryStore } from './History.js'
 import type { BackupStore } from './BackupStore.js'
 import type { Review, ReviewKind } from './Reviews.js'
@@ -1339,37 +1340,18 @@ export class DocStore {
     }
   }
 
-  /**
-   * Renames other devices made, in rounds: a note whose new place another
-   * note still holds waits for that one to move on. Two that swapped names -
-   * by hand, or rolled back - would wait for each other forever, and this
-   * device kept each file under the other's name; so one of them waits at a
-   * free name meanwhile (`aside`).
-   */
+  /** Renames other devices made, in rounds, two that swapped names via a free one (`renameInRounds`, `aside`). */
   private async applyRemoteRenames(): Promise<void> {
     const pending = this.index.live().flatMap(({ docId, entry }) => {
       const known = this.state.get(docId)
-      return known && known.path !== entry.path ? [{ docId, at: known.path, to: entry.path }] : []
+      return known && known.path !== entry.path ? [{ id: docId, at: known.path, to: entry.path }] : []
     })
-    for (let round = 0; pending.length > 0 && round < pending.length * 3 + 3; round += 1) {
-      if (this.stopped) return
-      let moved = false
-      for (const item of pending.slice()) {
-        if (this.app.vault.getAbstractFileByPath(item.to)) continue
-        await this.followRename(item.docId, item.to)
-        pending.splice(pending.indexOf(item), 1)
-        moved = true
-      }
-      if (moved) continue
-      const blocked = pending.find((item) => pending.some((other) => other !== item && other.at === item.to))
-      if (!blocked) return
-      const occupant = pending.find((other) => other.at === blocked.to) as (typeof pending)[number]
-      const stem = occupant.at.replace(/\.md$/, '')
-      let aside = `${stem} (moving).md`
-      for (let n = 2; this.app.vault.getAbstractFileByPath(aside) || this.index.docIdForPath(aside); n += 1) aside = `${stem} (moving ${n}).md`
-      if (!(await this.followRename(occupant.docId, aside, true))) return
-      occupant.at = aside
-    }
+    await renameInRounds(pending, {
+      taken: (path) => Boolean(this.app.vault.getAbstractFileByPath(path)),
+      claimed: (path) => Boolean(this.index.docIdForPath(path)),
+      move: (docId, to, aside) => this.followRename(docId, to, aside),
+      stopped: () => this.stopped
+    })
   }
 
   /** Moves a note's file where the index has it - or, `aside`, out of another's way for a moment. */

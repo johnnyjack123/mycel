@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-11 · **0.9 built, the audit done: 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel, 0.9.8 is the security audit (`docs/AUDIT.md`: 23 findings fixed, each kept as an attack in `npm run test:security`), 0.9.9 closes its residual risks (R1 to R9) and adds a setup wizard, 0.9.10 fixes three of the races seen only in CI (two remain, below), 0.9.11 resolves links in shared notes by who typed them (signed claims; P11 and S11 fixed), and fixes a change lost before it was sent and a share taken in before its sharer's contact record (both found that day, by the benchmark and in CI), 0.9.12 fixes a shared folder's move taken for every note moving out (CI), 0.9.13 keeps every backup after a suspicious run until confirmed, 0.9.14 makes typing offline as quick as online, 0.9.15 a start open only what changed, 0.9.16 has the tests run the plugin's own wiring (`SyncSession`). Next, in the order the user agreed on 2026-11-10 (Known issues, "Open after 0.9.11"): the rest of the code review's proposals in small steps. The user updates server, backup server and every device together (friend codes from before 0.9.8 no longer redeem), sets `MYCEL_TRUST_PROXY`, starts afresh once (below, "Starting afresh"); publishing comes last.**_
+_Last updated: 2026-11-11 · **0.9 built, the audit done: 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel, 0.9.8 is the security audit (`docs/AUDIT.md`: 23 findings fixed, each kept as an attack in `npm run test:security`), 0.9.9 closes its residual risks (R1 to R9) and adds a setup wizard, 0.9.10 fixes three of the races seen only in CI (two remain, below), 0.9.11 resolves links in shared notes by who typed them (signed claims; P11 and S11 fixed), and fixes a change lost before it was sent and a share taken in before its sharer's contact record (both found that day, by the benchmark and in CI), 0.9.12 fixes a shared folder's move taken for every note moving out (CI), 0.9.13 keeps every backup after a suspicious run until confirmed, 0.9.14 makes typing offline as quick as online, 0.9.15 a start open only what changed, 0.9.16 has the tests run the plugin's own wiring (`SyncSession`), 0.9.17 makes one rule of three pairs of copies and fixes the stale-lock race and the backup's settings copy. Next, in the order the user agreed on 2026-11-10 (Known issues, "Open after 0.9.11"): the last of the code review's proposals, splitting `rooms.ts` and `Folders.ts`. The user updates server, backup server and every device together (friend codes from before 0.9.8 no longer redeem), sets `MYCEL_TRUST_PROXY`, starts afresh once (below, "Starting afresh"); publishing comes last.**_
 
 ## Where we are
 
@@ -324,11 +324,11 @@ user's call, as with the earlier branches.
   - ~~*The backup's retention after a suspicious run*~~ - built in 0.9.13: such a run forgets no
     backup until confirmed. Not tried on a device yet: the window titled *Every backup is kept*.
   - *The code review's proposals* (`docs/CHANGELOG.md`, 0.9.11): ~~the composition root out of
-    `main.ts` shared with the harness~~ (0.9.16, `SyncSession`), one frame-signature rule for plugin and backup server, one decision for a
-    shared file's version (`SharedFiles`/`FolderFiles`), one rename-rounds helper, splits of
-    `rooms.ts` and `Folders.ts`; the stale-lock race in `server/src/durable.ts`; the backup's
-    settings copy keeps `role:`, `epoch:`, `linkAsked:` and `rollback:` records (`layout.ts`
-    `NOT_SETTINGS`). In small steps, each with every suite.
+    `main.ts` shared with the harness~~ (0.9.16, `SyncSession`), ~~one frame-signature rule for
+    plugin and backup server, one decision for a shared file's version, one rename-rounds
+    helper; the stale-lock race in `server/src/durable.ts`; the backup's settings copy keeping
+    the account's records~~ (0.9.17). Left: splits of `rooms.ts` and `Folders.ts`. In small steps,
+    each with every suite.
   - *A flake seen once (2026-11-11, `test:backup`, 1 of 4 runs):* "only the rooms that changed are
     fetched" and "restic diff ... names exactly the notes that changed" failed together - by every
     sign the account's settings changed between the first and the third run (the trusted copy

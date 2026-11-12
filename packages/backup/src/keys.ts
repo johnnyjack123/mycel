@@ -7,14 +7,13 @@ import {
   decryptBlobChunk,
   epochKeyContext,
   folderKeys,
+  frameVerdict,
   fromBase64,
   importPrivateKey,
   splitSealed,
   unpackFrame,
   unseal,
   vaultKeys,
-  verifyFrame,
-  verifyWriterCert,
   type Bytes,
   type OpenedFrame
 } from '@mycel/shared/crypto'
@@ -86,17 +85,9 @@ export class VaultKeys {
     }
   }
 
-  /** As the plugin's `KeyRing.checkFrame`: the owner signs; anyone else carries the owner's certificate, and signs with the key it names. */
+  /** The rule every device applies (`frameVerdict`); an owner whose key the settings do not pin signs nothing here. */
   private async signedByWriter(room: string, epoch: number, owner: string, tie: FolderTie | null, kind: 'frame' | 'snapshot', frame: OpenedFrame): Promise<boolean> {
-    const ownerKey = this.signers.get(owner)
-    if (!ownerKey) return false
-    if (frame.author === owner) return verifyFrame(ownerKey, room, epoch, frame)
-    const cert = frame.cert
-    if (kind === 'snapshot' || !cert) return false
-    const certified =
-      (tie !== null && (await verifyWriterCert(ownerKey, folderRoom(tie.folder), tie.epoch, frame.author, cert))) ||
-      (await verifyWriterCert(ownerKey, room, epoch, frame.author, cert))
-    return certified && verifyFrame(cert.signingKey, room, epoch, frame)
+    return (await frameVerdict(this.signers.get(owner) ?? null, owner, room, epoch, tie, kind, frame)) === 'ok'
   }
 
   private cached(id: string, make: () => Promise<Bytes>): Promise<CryptoKey> {
