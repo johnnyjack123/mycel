@@ -8,6 +8,17 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.18** (2026-11-12, branch `refactor/vault-locks`, the code review's last proposal) - **the
+  server's vault lock in a module of its own.** `RoomHub` kept every vault's lock - the map,
+  `locks.json`, the lease, the sweep, which connections write under it - among its rooms, shares
+  and folders; `VaultLocks` (`server/src/vaultLocks.ts`) holds it now, and the hub asks it.
+  `rooms.ts` is 143 lines shorter; nothing it does changed. Checked: `test:rooms`,
+  `test:timemachine`, `test:rollback`, `test:replace`, `test:recovery`, and every other suite.
+  - **`Folders.ts` stays whole**, though the review proposed splitting it: its parts - sharing a
+    folder, someone else's folders, moving in and out - each call a dozen of its private helpers
+    (`ready`, `join`, `rotate`, `startingPoints`, `retrying`, `ownNotesIn`, ...). Split, those would
+    all become public: the code would move and the interface inside widen, not narrow.
+
 - **0.9.17** (2026-11-11, branch `refactor/frame-rule`, the code review's next proposals) - **one
   rule where there were two copies, and two bugs the review found.**
   - **One rule for a frame's signature** (`frameVerdict`, `shared/crypto`): the devices'

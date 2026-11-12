@@ -408,7 +408,7 @@ waited for), is watched from that place instead of opened. The watch names the p
 frame's fingerprint, and the server says `changed` for a log anywhere else - further on, behind, or
 another frame at that seq (invariant 19); the device takes every `changed` for a note it watches.
 
-While a vault is **locked** (`sync/VaultLock.ts`, `RoomHub.takeLock`; 0.8.13) the
+While a vault is **locked** (`sync/VaultLock.ts`, on the server `vaultLocks.ts`; 0.8.13) the
 server answers the account's pushes into it with `locked` instead of `ack`; the device
 keeps them, as offline, and sends them once a `vault-lock` notice says the lock ended.
 Only the connection that named the lock's id writes - a rollback's, or a restore from the

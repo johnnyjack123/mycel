@@ -1457,7 +1457,7 @@ try {
     check((await status(async () => hub.renewLock(alice, vault, rollback.id))) === 404, 'and its holder learns so when it renews')
 
     const lapsing = hub.takeLock(alice, vault, { kind: 'preview', sealed: 'c2VhbGVk' })
-    const held = (hub as unknown as { locks: Map<string, { info: { expiresAt: number } }> }).locks.get(`${alice}/${vault}`)
+    const held = (hub as unknown as { locks: { locks: Map<string, { info: { expiresAt: number } }> } }).locks.locks.get(`${alice}/${vault}`)
     if (held) held.info.expiresAt = Date.now() - 1
     second.take()
     await hub.push(second, roomLocked, 77, 0, bytes('after it lapsed'))
