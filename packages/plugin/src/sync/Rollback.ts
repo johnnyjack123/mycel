@@ -23,6 +23,7 @@ import type { DocStore } from './DocStore.js'
 import type { RoomCrypto } from './VaultSocket.js'
 import { besides } from './renames.js'
 import { log } from '../log.js'
+import { makePluginFolder } from '../pluginFolder.js'
 
 // Rolling the vault, or one folder of it, back to a moment (`docs/PHASE6.md`,
 // "Rolling back"). Three steps:
@@ -668,12 +669,7 @@ export class Rollback {
     const dir = `${this.deps.root}/${COPY_DIR}/${stamp(new Date(when))}`
     const copied: Array<{ path: string; hash: string }> = []
     const made = new Set<string>()
-    const ensure = async (path: string): Promise<void> => {
-      if (!path || made.has(path)) return
-      await ensure(parentOf(path))
-      made.add(path)
-      if (!(await adapter.exists(path))) await adapter.mkdir(path)
-    }
+    const ensure = (path: string): Promise<void> => makePluginFolder(adapter, this.deps.root, path, made)
     const into = (path: string): string => `${dir}/${path}`
     for (const note of plan.notes) {
       if (!(note.trash || note.text) || note.pathNow === null || !note.docId) continue

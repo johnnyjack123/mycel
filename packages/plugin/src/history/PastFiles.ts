@@ -1,6 +1,7 @@
 import { TFile, TFolder, type DataAdapter, type TAbstractFile } from 'obsidian'
 import { bytes, contentHash, utf8 } from '@mycel/shared/crypto'
 import { log } from '../log.js'
+import { makePluginFolder } from '../pluginFolder.js'
 
 // The past written into the vault's own files (`docs/TIMEMACHINE.md`, U3), and
 // taken out of them again. Only ever while the sync is stopped on this device:
@@ -353,11 +354,7 @@ export class PastFiles {
 
   private async keepAside(dir: string, path: string, data: Uint8Array): Promise<void> {
     const target = `${dir}/${path}`
-    const parts = parentOf(target).split('/')
-    for (let i = 1; i <= parts.length; i += 1) {
-      const folder = parts.slice(0, i).join('/')
-      if (folder && !(await this.adapter.exists(folder))) await this.adapter.mkdir(folder)
-    }
+    await makePluginFolder(this.adapter, this.root, parentOf(target))
     await this.adapter.writeBinary(target, buffer(data))
   }
 

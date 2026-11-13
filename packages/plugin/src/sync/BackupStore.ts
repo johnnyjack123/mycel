@@ -1,5 +1,6 @@
 import type { DataAdapter } from 'obsidian'
 import { log } from '../log.js'
+import { makePluginFolder } from '../pluginFolder.js'
 
 // Copies taken before anything that could delete text. They live in the plugin
 // folder rather than the vault so they stay out of search, graph and tags - and
@@ -43,23 +44,13 @@ export class BackupStore {
     return [this.root, BACKUP_DIR, ...parts].join('/')
   }
 
-  private async ensureDir(path: string): Promise<void> {
-    if (await this.adapter.exists(path)) return
-    try {
-      await this.adapter.mkdir(path)
-    } catch {
-      // Losing the race against a parallel create is harmless.
-    }
-  }
-
   /**
    * Writes one snapshot and returns where it landed. Never over another one: two of the same
    * note within a second - an adopt and a merge, one after the other - each keep a file.
    */
   async write(notePath: string, kind: BackupKind, text: string, when = new Date()): Promise<string> {
     const day = dayOf(when)
-    await this.ensureDir([this.root, BACKUP_DIR].join('/'))
-    await this.ensureDir(this.path(day))
+    await makePluginFolder(this.adapter, this.root, this.path(day))
     const name = `${timeOf(when)}-${safeName(notePath)}`
     let target = this.path(day, `${name}.${kind}.md`)
     for (let n = 2; await this.adapter.exists(target); n += 1) target = this.path(day, `${name} (${n}).${kind}.md`)
@@ -84,15 +75,7 @@ export class BackupStore {
     let folder = this.path(day, `${timeOf(when)} before connecting`)
     for (let n = 2; await this.adapter.exists(folder); n += 1) folder = this.path(day, `${timeOf(when)} before connecting (${n})`)
     const made = new Set<string>()
-    const ensureAll = async (dir: string): Promise<void> => {
-      const parts = dir.split('/')
-      for (let i = 1; i <= parts.length; i += 1) {
-        const prefix = parts.slice(0, i).join('/')
-        if (made.has(prefix)) continue
-        await this.ensureDir(prefix)
-        made.add(prefix)
-      }
-    }
+    const ensureAll = (dir: string): Promise<void> => makePluginFolder(this.adapter, this.root, dir, made)
     progress(0, paths.length)
     for (const [done, path] of paths.entries()) {
       const data = await read(path)

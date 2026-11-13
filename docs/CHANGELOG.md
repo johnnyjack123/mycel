@@ -8,6 +8,25 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.20** (2026-11-13, branch `fix/plugin-folders`, found by the user on the first device of the
+  fresh start) - **the copy before connecting failed on every device, and so did the copy before a
+  rollback and the Time Machine's keeping aside of what was written over its past.** Each made its
+  folders in the plugin's folder by walking the path from the top of the vault and asking about
+  every folder on the way - `.obsidian` first, which the gate (invariant 31, 0.9.8) refuses: *"Mycel
+  does not touch ".obsidian": looking for: outside the vault and the plugin folder"*. The joining
+  window said nothing was changed, and nothing synced. The gate was right; the three walks now start
+  at the plugin's folder and never ask about anything above it (`makePluginFolder`,
+  `pluginFolder.ts`). The tests had missed it because their plugin folder was `plugin` - an ordinary
+  folder of the vault, which the gate lets through - and the adapter handed to the sync was not the
+  gated one: the harness now uses `.obsidian/plugins/mycel` behind the gate everywhere, as `main.ts`
+  has it (`PLUGIN_DIR`, `Device.pluginAdapter`). Checked by putting the old walks back: `test:join`
+  failed with exactly the user's message, `test:rollback` at the copy, `test:timemachine` putting a
+  file back that was written over the past (since 0.9.8 such a file could not be put back on a
+  device, and the sync stayed off). The setup wizard's first page also says now what merges and what
+  does not: notes always, offline on two devices too, colliding passages kept both; every other file
+  - a canvas, an image, a PDF - not at all, kept twice when changed on two devices at once (the
+  user's wording, 2026-11-13).
+
 - **0.9.19** (2026-11-13, branch `feat/join-check`, the user's design of 2026-11-13) - **a device
   meeting a vault on the server for the first time compares before it touches anything, and asks**
   (invariant 34). Until now such a device - a new one, another server, another vault name -

@@ -10,7 +10,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { check, delay, Device, eventually, failures, finish, useServer } from './harness.mjs'
+import { check, delay, Device, eventually, failures, finish, PLUGIN_DIR, useServer } from './harness.mjs'
 
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
@@ -112,7 +112,7 @@ async function open(device: Device, scope: Scope, marks: Array<{ at: number; lab
   device.ownLocks.add(sealed)
   const lock = await takeVaultLock(device.api, prepared.vaultId, 'preview', sealed, () => undefined)
   await device.shutdown({ keepViews: true })
-  const files = await PastFiles.begin(device.vault as never, device.vault.adapter as never, 'plugin', { scope, lockId: lock.id, vaultId: prepared.vaultId })
+  const files = await PastFiles.begin(device.vault as never, device.pluginAdapter as never, PLUGIN_DIR, { scope, lockId: lock.id, vaultId: prepared.vaultId })
   session.attach(files)
   // What main.ts does with the vault's events while the Time Machine runs.
   const listen = (file: unknown): void => files.noteEvent((file as { path: string }).path)
@@ -383,13 +383,13 @@ try {
     opened.stop()
     check(report.failed.length === 0 && report.aside.includes('Welcome.md'), 'back to now: every file goes back, and what was written over the past is kept aside', report)
     check(
-      report.asideDir !== null && vault.adapter.binaries.get(`${report.asideDir}/Welcome.md`) !== undefined,
-      'in the plugin folder',
+      report.asideDir !== null && report.asideDir.startsWith(`${PLUGIN_DIR}/`) && vault.adapter.binaries.get(`${report.asideDir}/Welcome.md`) !== undefined,
+      'in the plugin folder, behind the gate',
       Array.from(vault.adapter.binaries.keys()).filter((key) => key.includes('aside'))
     )
     check(differences(now1, snapshot(A1)).length === 0, 'every file is as it was, byte for byte, with its times', differences(now1, snapshot(A1)))
     await files.finish()
-    check(!(await PastFiles.pending(vault.adapter as never, 'plugin')), 'and the journal is gone')
+    check(!(await PastFiles.pending(vault.adapter as never, PLUGIN_DIR)), 'and the journal is gone')
     await opened.lock.release()
     A1.ownLocks.delete(opened.sealed)
     check(await eventually(() => A2.socket?.isLocked === false), 'the lock ends on the other device too')
@@ -449,14 +449,14 @@ try {
     view.destroy()
     opened.stop()
     // Obsidian closes here: nothing is put back, the journal stays.
-    check(await PastFiles.pending(A1.vault.adapter as never, 'plugin'), 'a journal waits after a crash')
-    const refused = await PastFiles.begin(A1.vault as never, A1.vault.adapter as never, 'plugin', { scope: null, lockId: null, vaultId: null }).then(
+    check(await PastFiles.pending(A1.pluginAdapter as never, PLUGIN_DIR), 'a journal waits after a crash')
+    const refused = await PastFiles.begin(A1.vault as never, A1.pluginAdapter as never, PLUGIN_DIR, { scope: null, lockId: null, vaultId: null }).then(
       () => null,
       (error: unknown) => error
     )
     check(refused instanceof Error, 'and no other Time Machine opens over it')
     // The next start: before the sync, the past goes back.
-    const resumed = await PastFiles.resume(A1.vault as never, A1.vault.adapter as never, 'plugin')
+    const resumed = await PastFiles.resume(A1.vault as never, A1.pluginAdapter as never, PLUGIN_DIR)
     const report = await resumed?.restore()
     await resumed?.finish()
     if (resumed?.start.lockId && resumed.start.vaultId) await A1.api.releaseVaultLock(resumed.start.vaultId, resumed.start.lockId)

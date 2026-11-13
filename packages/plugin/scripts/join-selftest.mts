@@ -9,11 +9,12 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { check, delay, Device, eventually, finish, useServer } from './harness.mjs'
+import { check, delay, Device, eventually, finish, PLUGIN_DIR, useServer } from './harness.mjs'
 
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
 const { BackupStore } = await import('../src/sync/BackupStore.js')
+const { gateApp } = await import('../src/guard.js')
 const { FakeAdapter } = await import('./stubs/fake-vault.js')
 
 const root = mkdtempSync(join(tmpdir(), 'oc-join-selftest-'))
@@ -35,8 +36,9 @@ const same = (a: Uint8Array | undefined, b: Uint8Array): boolean => a !== undefi
 /** What the copy made before connecting holds, by vault path. */
 function copied(device: Device): Map<string, Uint8Array> {
   const found = new Map<string, Uint8Array>()
+  const copy = new RegExp(`^${PLUGIN_DIR.replace(/[./]/g, '\\$&')}/backups/\\d{4}-\\d{2}-\\d{2}/\\d{6} before connecting(?: \\(\\d+\\))?/(.+)$`)
   for (const [path, data] of device.vault.adapter.binaries) {
-    const match = /^plugin\/backups\/\d{4}-\d{2}-\d{2}\/\d{6} before connecting(?: \(\d+\))?\/(.+)$/.exec(path)
+    const match = copy.exec(path)
     if (match?.[1]) found.set(match[1], data)
   }
   return found
@@ -53,12 +55,19 @@ try {
   // --- backups never over one another --------------------------------------------
   {
     const adapter = new FakeAdapter()
-    const backups = new BackupStore(adapter as never, 'plugin')
+    const gated = (gateApp({ vault: { adapter } } as never, PLUGIN_DIR) as unknown as { vault: { adapter: typeof adapter } }).vault.adapter
+    const backups = new BackupStore(gated as never, PLUGIN_DIR)
     const when = new Date()
     const first = await backups.write('Note.md', 'local', 'one', when)
     const second = await backups.write('Note.md', 'local', 'two', when)
     check(first !== second && adapter.files.get(first) === 'one' && adapter.files.get(second) === 'two', 'two backups of one note in the same second each keep a file', [first, second])
     check((await backups.list()).length === 2, 'and both are listed')
+    // Behind the gate, in the plugin's folder inside `.obsidian`: walking the folders from the top
+    // of the vault asked about `.obsidian` itself, was refused, and no device could connect (0.9.20).
+    const folder = await backups
+      .copyVault(['Deep/er/Note.md'], async () => new TextEncoder().encode('kept').buffer as ArrayBuffer, undefined, when)
+      .catch((error: unknown) => `refused: ${error instanceof Error ? error.message : String(error)}`)
+    check(folder.startsWith(`${PLUGIN_DIR}/backups/`) && adapter.binaries.has(`${folder}/Deep/er/Note.md`), 'a copy of the vault is made in the plugin folder, behind the gate', folder)
   }
 
   // --- the first device: the server is empty --------------------------------------
@@ -89,7 +98,7 @@ try {
   check(A1.joinPlans.length === 1, 'and is not asked again')
   // A device that synced before 0.9.19 has no record, only what it agreed on.
   await A1.shutdown()
-  A1.vault.adapter.files.delete('plugin/joined.json')
+  A1.vault.adapter.files.delete(`${PLUGIN_DIR}/joined.json`)
   check(await A1.boot(), 'a device that synced before without a record starts')
   check(A1.joinPlans.length === 1, 'and is not asked either: what it agreed on before says it knows the vault')
 
@@ -195,7 +204,7 @@ try {
   const A5 = new Device(name, false, { 'Two.md': 'an old text\n', 'Leftover.md': 'only here\n' })
   devices.push(A5)
   // As a device leaves it that stopped after the copy, while carrying out "the server's version".
-  A5.vault.adapter.files.set('plugin/joined.json', JSON.stringify({ [vaultId]: { at: Date.now(), choice: 'server', done: false, backup: 'plugin/backups/x' } }))
+  A5.vault.adapter.files.set(`${PLUGIN_DIR}/joined.json`, JSON.stringify({ [vaultId]: { at: Date.now(), choice: 'server', done: false, backup: `${PLUGIN_DIR}/backups/x` } }))
   check(await A5.boot(), 'a device that stopped while carrying out its choice starts')
   check(A5.joinPlans.length === 0, 'without being asked again')
   const resumed = A5.joinResults[0]
