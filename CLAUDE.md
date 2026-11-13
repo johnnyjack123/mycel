@@ -269,7 +269,10 @@ someone's notes. Treat them as rules, not preferences.
     `onload` replaces `app` with one whose vault, adapter and file manager check each
     path - vault paths that are not hidden, and the plugin's folder). Never go around
     the gate (`window.require('fs')`, an `app` kept from before `onload`), and never
-    let it refuse what a vault really holds: Obsidian lists no hidden file.
+    let it refuse what a vault really holds: Obsidian lists no hidden file. The plugin's own folders
+    are made from its folder down (`makePluginFolder`): a walk from the top of the vault asked about
+    `.obsidian`, was refused, and no copy before connecting, a rollback or the Time Machine could be
+    made on a device (0.9.20).
 32. **Only what this account decided goes out, and only a room's owner seals its
     keys.** The server's lists decide nothing alone: a key is sealed only to a member
     this account recorded giving the note or folder to (`recordRole`, `memberKeys`),
@@ -909,6 +912,9 @@ plugin's own `SyncSession` (0.9.16): every part of the sync and everything betwe
 built, wired and taken down there, for the plugin and the tests alike. What differs is only
 the host (`SyncHost`) - storage, timings, and the person answering. Wire a new part in
 `SyncSession`, never in `main.ts` or the harness: the two copies there had drifted apart.
+The harness's plugin folder is the real one, `.obsidian/plugins/mycel`, and everything gets the
+adapter behind the gate (`PLUGIN_DIR`, `Device.pluginAdapter`): a folder `plugin` outside
+`.obsidian` let a walk the gate refuses pass every suite and fail on every device (0.9.20).
 `test:recovery` starts the server in-process (`startServer` in
 `server/src/server.ts`) so it can stop it, take its data away or restore an old
 copy, and start it again on the same port.
