@@ -107,6 +107,12 @@ export function useServer(url: string): void {
 
 export const PASSWORD = 'correct horse battery staple'
 export const VAULT = 'Test vault'
+/**
+ * Where the plugin keeps its own files, as Obsidian has it: inside the hidden configuration
+ * folder, which the gate refuses. A folder outside it let every copy that walked its folders
+ * from the top of the vault pass here and fail on a device (0.9.20).
+ */
+export const PLUGIN_DIR = '.obsidian/plugins/mycel'
 
 export class Device {
   readonly vault: InstanceType<typeof FakeVault>
@@ -270,6 +276,11 @@ export class Device {
     this.metadataCache = new FakeMetadataCache(this.vault)
   }
 
+  /** The vault's adapter behind the plugin's gate, as main.ts hands it to everything it starts. */
+  get pluginAdapter(): InstanceType<typeof FakeVault>['adapter'] {
+    return (gateApp({ vault: this.vault } as never, PLUGIN_DIR) as unknown as { vault: InstanceType<typeof FakeVault> }).vault.adapter
+  }
+
   async boot(): Promise<boolean> {
     // A restart unlocks with what the device kept; the first start signs in.
     const register = async (): Promise<Unlocked> => {
@@ -299,7 +310,7 @@ export class Device {
     }
     // Behind the plugin's gate, as main.ts has it: every test runs with it, and fails where it would refuse.
     const plain = { vault, fileManager: this.fileManager, metadataCache: this.metadataCache, workspace }
-    const app = gateApp(plain as never, '.obsidian/plugins/mycel') as unknown as typeof plain
+    const app = gateApp(plain as never, PLUGIN_DIR) as unknown as typeof plain
     // As main.ts: the account id, which a signed caret must name.
     const user = { id: unlocked.accountId, name: this.username, ...userColor(this.username) }
     // What main.ts's `startAttachments` asks the server, before the store that needs it.
@@ -320,8 +331,8 @@ export class Device {
       secrets: this.secrets,
       serverUrl,
       token: () => this.token ?? '',
-      adapter: vault.adapter as never,
-      root: 'plugin',
+      adapter: app.vault.adapter as never,
+      root: PLUGIN_DIR,
       openLocal: this.locals.open,
       history: () => this.locals.history,
       editors: this.editors,
@@ -636,8 +647,8 @@ export class Device {
       settings: this.settings,
       // The backup servers once the test has reached for them, as main.ts hands them over.
       backups: this.backupsController,
-      adapter: this.vault.adapter as never,
-      root: 'plugin',
+      adapter: this.pluginAdapter as never,
+      root: PLUGIN_DIR,
       isExcluded: () => false,
       clockMarginMs: this.rollbackClockMarginMs,
       lock: (folder) => this.lockForRollback(folder)
