@@ -1,6 +1,6 @@
 {
   "name": "mycel",
-  "version": "0.9.18",
+  "version": "0.9.19",
   "private": true,
   "type": "module",
   "description": "End-to-end encrypted CRDT (Yjs) synchronization and live collaboration for Obsidian vaults.",
@@ -30,6 +30,7 @@
     "test:rollback": "npm run test:rollback -w @mycel/plugin",
     "test:timemachine": "npm run test:timemachine -w @mycel/plugin",
     "test:replace": "npm run test:replace -w @mycel/plugin",
+    "test:join": "npm run test:join -w @mycel/plugin",
     "bench": "npm run bench -w @mycel/plugin --"
   },
   "overrides": {

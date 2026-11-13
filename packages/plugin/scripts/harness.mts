@@ -250,6 +250,14 @@ export class Device {
   readonly views: ViewT[] = []
   /** Shares being sealed anew to a contact confirmed again; the tests wait for it. */
   renewing: Promise<void> = Promise.resolve()
+  /** What the person chooses when this device meets the vault on the server for the first time; merging is what every device did before 0.9.19. */
+  joinAnswer: import('../src/sync/Joining.js').JoinChoice = 'merge'
+  /** Every comparison this device was shown, oldest first. */
+  readonly joinPlans: Array<import('../src/sync/Joining.js').JoinPlan> = []
+  /** And what came of each choice. */
+  readonly joinResults: Array<import('../src/sync/Joining.js').JoinResult> = []
+  /** How the last start of the notes went (`SyncSession.start`). */
+  lastStart: import('../src/SyncSession.js').StartOutcome | null = null
 
   constructor(
     /** A recovery may choose another. */
@@ -403,6 +411,16 @@ export class Device {
         }
       },
       folderNews: (news) => this.folderNews.push(news as never),
+      joining: {
+        progress: () => undefined,
+        ask: async (plan) => {
+          this.joinPlans.push(plan)
+          return this.joinAnswer
+        },
+        finished: (result) => {
+          this.joinResults.push(result)
+        }
+      },
       askLinkedNote: (question) => {
         this.linkQuestions.push(question)
         if (this.linkAnswer) void this.linkClaims?.shareLinked(question)
@@ -445,10 +463,29 @@ export class Device {
     const sync = new SyncSession(host, unlocked, openVault)
     this.sync = sync
     await sync.open(() => false)
-    const { store, attachments, sharedFiles, folders, contacts, sharing } = sync
-    if (!store || !attachments || !sharedFiles || !folders || !contacts || !sharing) throw new Error('the sync stopped while it opened')
-    // What main.ts's `runStart` does, every step awaited.
-    const started = await store.start()
+    return this.startNotes()
+  }
+
+  /** "Compare this vault with the server…" after "Not now": compared and asked once more. */
+  async joinAgain(): Promise<boolean> {
+    this.sync?.joinAgain()
+    return this.startNotes()
+  }
+
+  /** What main.ts's `runStart` does, every step awaited. */
+  private async startNotes(): Promise<boolean> {
+    const sync = this.sync
+    const { store, attachments, sharedFiles, folders, contacts, sharing } = sync ?? {}
+    if (!sync || !store || !attachments || !sharedFiles || !folders || !contacts || !sharing) throw new Error('the sync stopped while it opened')
+    const renew = async (account: string): Promise<void> => {
+      try {
+        await sync.renewShares(account)
+      } catch (error) {
+        console.warn(`sealing the shares with ${account.slice(0, 8)} anew failed`, error)
+      }
+    }
+    this.lastStart = await sync.start()
+    const started = this.lastStart === 'started'
     sync.started = started
     if (started) {
       folders.start()

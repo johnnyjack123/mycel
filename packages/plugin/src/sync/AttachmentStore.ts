@@ -694,6 +694,30 @@ export class AttachmentStore {
     )
   }
 
+  /**
+   * The index's version into the file, taken as agreed: the person chose the server's state over
+   * this vault's (`Joining`). Its backup is the copy of the whole vault made first - not the
+   * server, as for every other overwrite (invariant 23). False when it could not be had; the
+   * file is then kept twice, as ever.
+   */
+  async takeServerVersion(path: string): Promise<boolean> {
+    const fileId = this.index.idForPath(path)
+    const entry = fileId ? this.index.entry(fileId) : undefined
+    const file = this.app.vault.getAbstractFileByPath(path)
+    if (!fileId || !entry || entry.deletedAt || !(file instanceof TFile)) return false
+    try {
+      return await this.guarded(fileId, entry.size, async () => {
+        if (this.stopped || !this.exists(file)) return false
+        await this.overwrite(fileId, file, await this.download(entry.hash), entry.hash)
+        log.info(`${path}: took the server's version, ${entry.size} bytes`)
+        return true
+      })
+    } catch (error) {
+      log.warn(`${path}: the server's version could not be fetched`, error)
+      return false
+    }
+  }
+
   /** The index's version into a file that still has the base's content. */
   private async replace(fileId: string, file: TFile, entry: AttachmentEntry, read: Read): Promise<void> {
     if (!(await this.blobs.keep(read.hash))) await this.upload(read.data, read.hash)

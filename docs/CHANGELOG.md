@@ -8,6 +8,49 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.19** (2026-11-13, branch `feat/join-check`, the user's design of 2026-11-13) - **a device
+  meeting a vault on the server for the first time compares before it touches anything, and asks**
+  (invariant 34). Until now such a device - a new one, another server, another vault name -
+  merged at once: what only it had went up, what only the server had came down, a note that
+  differed kept the lines of both (lines deleted on one side came back) and a file that differed
+  was kept twice. Safe, and for an older copy of the vault a mess. Now `Joining`
+  (`sync/Joining.ts`) runs once the index arrived and before the store starts (`SyncSession.start`
+  in place of `store.start`): every note and file both sides have is read on both and compared -
+  notes by text, files by size and hash -, and a window over everything (`history/JoinModal.ts`)
+  says what it found: the server empty (*Upload*), this vault empty (*Download*), everything here
+  alike on the server (*Connect*), another state of the same vault or hardly anything in common
+  (fewer than a tenth of the smaller side's names) - then *Merge both* or *Take the server's
+  version*. The table counts the same, different, only here, only on the server, for notes and
+  files; the lists name each. *Not now* touches nothing; the status bar, a notice and the command
+  *Compare this vault with the server…* bring the window back.
+  - **A copy of the whole vault first,** whatever is chosen: every file, excluded ones too, into
+    `backups/<day>/<time> before connecting/` in the plugin's folder, each checked by its size;
+    it goes with that day's merge backups, after *Keep backups for* (14 days unless set). A copy
+    that fails changes nothing, and the window says so.
+  - **Taking the server's version** writes the server's text or content over what both have,
+    taken as agreed (`DocStore.takeServerText`, `AttachmentStore.takeServerVersion`), and moves what
+    only this vault has to the trash. Nothing that the server has is trashed: its delete event,
+    replayed once the store started, deleted the note for everyone - checked by putting that back
+    (trashing what differs, and letting its events through): the first device lost two files.
+    The trash events of what only this vault had are dropped as well (`SyncSession.leaving`).
+  - **Nothing written before the start** (`DocStore.writeToFile`): opening a note to compare made
+    its frames schedule a write, which merged the file without a base and sent the merge up - the
+    comparison changing what it compared. Checked by putting it back: after *Not now*, the older
+    lines reached the other device.
+  - **Asked once.** The choice is kept per vault in the plugin's `joined.json` before it is
+    carried out and marked done after; a device that stopped in between carries it on unasked. A
+    device that synced before 0.9.19 has no record but agreed on notes, and is not asked either -
+    checked by putting that back.
+  - **Fixed:** two merge backups of one note in the same second - an adopt, then a merge - wrote
+    the same file, the second over the first. A second one gets ` (2)` and so on. Checked in
+    `test:join` by putting it back.
+  - The setup guide's last page says the comparison comes once it is closed; the window waits for
+    it. New suite `test:join` (in CI): every kind of comparison, the copy byte for byte, *Not now*,
+    the server's version with nothing reaching the other device, merging, a choice carried on.
+  - A first sync now copies the vault before it starts, and a device with notes the server has
+    reads each on both sides once more: `npm run bench`'s first sync includes that and was not
+    measured again.
+
 - **0.9.18** (2026-11-12, branch `refactor/vault-locks`, the code review's last proposal) - **the
   server's vault lock in a module of its own.** `RoomHub` kept every vault's lock - the map,
   `locks.json`, the lease, the sweep, which connections write under it - among its rooms, shares

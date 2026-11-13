@@ -29,10 +29,24 @@ export interface AttachmentState extends FileState {
   hash: string
 }
 
+/**
+ * How this device first met a vault on the server (`Joining`). `before`: it had synced the
+ * vault before there was such a record. Not `done`: the choice was being carried out when the
+ * device stopped, and the next start carries it on without asking again.
+ */
+export interface JoinRecord {
+  at: number
+  choice: 'merge' | 'server' | 'before'
+  done: boolean
+  /** The copy of the whole vault made before anything was changed. */
+  backup?: string
+}
+
 const STATE_FILE = 'state.json'
 const ATTACHMENTS_FILE = 'attachments.json'
 const CLEARED_FILE = 'cleared.json'
 const UNSENT_FILE = 'unsent.json'
+const JOINED_FILE = 'joined.json'
 const BASE_DIR = 'base'
 const SAVE_DEBOUNCE_MS = 1_000
 
@@ -50,6 +64,8 @@ export class StateStore {
   private readonly unsent = new Set<string>()
   /** That list could not be read: any note may have changes waiting. */
   private unsentUnknown = false
+  /** By vault id. */
+  private readonly joins = new Map<string, JoinRecord>()
   private saveTimer: number | null = null
   private writes: Promise<void> = Promise.resolve()
   private closed = false
@@ -105,6 +121,35 @@ export class StateStore {
         log.error(`the local state file ${name} is unreadable, starting fresh`, error)
       }
     }
+    const joined = this.path(JOINED_FILE)
+    if (await this.adapter.exists(joined)) {
+      try {
+        const parsed = JSON.parse(await this.adapter.read(joined)) as Record<string, JoinRecord>
+        for (const [vaultId, record] of Object.entries(parsed)) {
+          if (record && typeof record.at === 'number' && typeof record.done === 'boolean') this.joins.set(vaultId, record)
+        }
+      } catch (error) {
+        // Unread, the vault is compared once more before it syncs: asking again loses nothing.
+        log.error(`the local state file ${JOINED_FILE} is unreadable, starting fresh`, error)
+      }
+    }
+  }
+
+  joinOf(vaultId: string): JoinRecord | undefined {
+    return this.joins.get(vaultId)
+  }
+
+  /** Written at once and waited for: what a start after a crash carries on from. */
+  setJoin(vaultId: string, record: JoinRecord): Promise<void> {
+    this.joins.set(vaultId, record)
+    if (this.closed) return this.writes
+    this.writes = this.writes
+      .then(async () => {
+        await this.ensureDir(this.root)
+        await this.adapter.write(this.path(JOINED_FILE), JSON.stringify(Object.fromEntries(this.joins)))
+      })
+      .catch((error) => log.error('writing how this device joined the vault failed', error))
+    return this.writes
   }
 
   isUnsent(docId: string): boolean {
