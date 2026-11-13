@@ -89,6 +89,10 @@ an opinion on their two names, *Seemless* and *Mycel* (given: Mycel). Publishing
     in the header (NPM passes `Sec-WebSocket-Protocol` on), a backup server paired before 0.9.9
     getting the signing key (its log: "its frames are checked against their signatures").
 11. Then the user starts once afresh (below); P last.
+12. **Wanted, to be built only once the user says so** (2026-11-13): the other direction of
+    0.9.19's joining choice - *overwrite the server with this vault*, for when something went
+    wrong: what differs takes this vault's version, what only the server has is deleted there
+    (restorable from the trash and the history), the other devices following. Not started.
 
 **Starting afresh** (nothing written before 0.9.5 is read, and nothing named before 0.9.7 is
 found):
