@@ -268,9 +268,17 @@ export class SetupWizard extends Modal {
     containerEl.createEl('p', {
       text: 'Everything is encrypted on your device before it leaves it. The server stores and passes on only ciphertext: it cannot read a note, and it learns neither your name nor your password.'
     })
-    containerEl.createEl('p', {
-      text: 'Edits made on two devices at the same time are merged. Where they collide, both versions are kept - nothing is overwritten.'
-    })
+    // What merges and what does not, said plainly: only notes are documents that can be merged.
+    const notes = containerEl.createEl('p')
+    notes.createEl('strong', { text: 'Notes (.md files) are always merged' })
+    notes.appendText(
+      ' - also when two devices changed the same note while offline. Nothing written on either is lost: where both changed the same passage, both versions stay in the note, and "Compare versions" in its menu lets you sort them out.'
+    )
+    const files = containerEl.createEl('p')
+    files.createEl('strong', { text: 'Every other file is not merged' })
+    files.appendText(
+      ' - a canvas, an image, a PDF. Changed on two devices before either saw the other\'s change, it is kept twice: one version under its name, the other beside it as "name (conflict date time)". Nothing is overwritten; bringing the two together is up to you.'
+    )
     containerEl.createEl('p', { text: 'You can also share a note or a folder with people you know, and write in it together, live.' })
     if (this.connected) {
       containerEl.createEl('p', { text: 'This device is connected already. The next page says where to find what.' })
