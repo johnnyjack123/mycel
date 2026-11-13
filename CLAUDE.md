@@ -299,6 +299,21 @@ someone's notes. Treat them as rules, not preferences.
     owner's device moves the room past it (`catchUpEpoch`, a jump the server accepts,
     `isLaterEpoch`); everyone else waits. Every new epoch is `KeyRing.nextEpoch` -
     past the server's and past the floor -, never the server's plus one.
+34. **A device new to a vault on the server touches nothing before the person chose, and
+    takes nothing of the server's over its own without a copy of the whole vault.** A device
+    that never agreed with the vault - a new one, another server, another vault name - has no
+    base: merging can only keep both sides, and an older copy of the vault brought back every
+    line and every note deleted since. `Joining` (`sync/Joining.ts`, 0.9.19) compares path by
+    path once the index arrived and before the store starts (`SyncSession.start`), says what it
+    found and asks: merge both, take the server's version, or not now. Nothing is written into a
+    file before the start (`DocStore.writeToFile` waits for it): the notes read to compare wrote
+    their merge into the files and on to the server. A copy of every file goes into the plugin's
+    `backups/` first, whatever is chosen. Taking the server's version writes over what both have
+    (`takeServerText`, `takeServerVersion` - their backup is that copy, not the server as in
+    invariant 23) and trashes only what this vault alone has, its delete events dropped
+    (`SyncSession.leaving`): trashing a note or file the server has is a delete for everyone. A
+    device that synced before - by its record (`joined.json`) or by anything it agreed on - is
+    never asked, and one that stopped while carrying out a choice carries it on unasked.
 
 ## Architecture
 
@@ -449,7 +464,7 @@ over a delete there and revives the note. Renames and deletes that happen before
 the index arrives are queued and replayed.
 
 A merge without a base (typically two existing vaults meeting for the first
-time), a base-less adopt that pulled the other side's lines in, and a merge that
+time - since 0.9.19 only once the person chose to merge them, invariant 34), a base-less adopt that pulled the other side's lines in, and a merge that
 kept conflicts are recorded as a **review** (`sync/Reviews.ts`, device-local in
 the plugin folder): "Compare versions" in the note's menu shows the two
 versions passage by passage and lets the user keep this device's, the other's
@@ -878,6 +893,7 @@ npm run test:account   # the account with real devices: signing the other device
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
 npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too), the vault lock, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
 npm run test:replace   # every key of an account replaced: the vaults and files written anew, the other device, a contact confirming again, a replacement carried on by another device — in-process server
+npm run test:join      # a device meeting a vault on the server for the first time: what the comparison finds, the copy of the vault, "Not now", the server's version, merging, carrying on after a restart — in-process server
 npm run test:security  # every attack of the audit (docs/AUDIT.md): the server attacked over HTTP and WebSocket, the plugin's paths, links, folders and gate, the backup task — in-process servers
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by MYCEL_RESTIC (where it lies here: docs/PROGRESS.md)
@@ -917,7 +933,8 @@ back, the editors moved aside for the bar and the timeline; and since 0.8.16 the
 top of a locked note's editor in Obsidian's own editor), the notification center, its bell,
 its tabs and its buttons; since 0.9.11 the marks of someone else's links in Obsidian's editor
 and reading view, and opening them - Obsidian calling `workspace.openLinkText` for every
-way a link is opened is assumed, not tested.
+way a link is opened is assumed, not tested; since 0.9.19 the joining window, and Obsidian's
+trash reporting each file it takes as a delete (`SyncSession.leaving` relies on it).
 
 ## Gotchas
 
