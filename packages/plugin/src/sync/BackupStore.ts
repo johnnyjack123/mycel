@@ -52,15 +52,64 @@ export class BackupStore {
     }
   }
 
-  /** Writes one snapshot and returns where it landed. */
+  /**
+   * Writes one snapshot and returns where it landed. Never over another one: two of the same
+   * note within a second - an adopt and a merge, one after the other - each keep a file.
+   */
   async write(notePath: string, kind: BackupKind, text: string, when = new Date()): Promise<string> {
     const day = dayOf(when)
     await this.ensureDir([this.root, BACKUP_DIR].join('/'))
     await this.ensureDir(this.path(day))
-    const file = `${timeOf(when)}-${safeName(notePath)}.${kind}.md`
-    const target = this.path(day, file)
+    const name = `${timeOf(when)}-${safeName(notePath)}`
+    let target = this.path(day, `${name}.${kind}.md`)
+    for (let n = 2; await this.adapter.exists(target); n += 1) target = this.path(day, `${name} (${n}).${kind}.md`)
     await this.adapter.write(target, text)
     return target
+  }
+
+  /**
+   * A copy of every file of the vault, made before a device new to a vault on the server
+   * changes anything in it (`Joining`). In a folder of its own inside the day's, so it goes
+   * when that day's merge backups go. Returns the folder; throws when a file could not be
+   * copied whole - nothing may be changed then.
+   */
+  async copyVault(
+    paths: string[],
+    /** Null: the file is gone since it was listed - nothing of it to keep. */
+    read: (path: string) => Promise<ArrayBuffer | null>,
+    progress: (done: number, total: number) => void = () => undefined,
+    when = new Date()
+  ): Promise<string> {
+    const day = dayOf(when)
+    let folder = this.path(day, `${timeOf(when)} before connecting`)
+    for (let n = 2; await this.adapter.exists(folder); n += 1) folder = this.path(day, `${timeOf(when)} before connecting (${n})`)
+    const made = new Set<string>()
+    const ensureAll = async (dir: string): Promise<void> => {
+      const parts = dir.split('/')
+      for (let i = 1; i <= parts.length; i += 1) {
+        const prefix = parts.slice(0, i).join('/')
+        if (made.has(prefix)) continue
+        await this.ensureDir(prefix)
+        made.add(prefix)
+      }
+    }
+    progress(0, paths.length)
+    for (const [done, path] of paths.entries()) {
+      const data = await read(path)
+      if (data === null) {
+        progress(done + 1, paths.length)
+        continue
+      }
+      const target = `${folder}/${path}`
+      await ensureAll(target.slice(0, target.lastIndexOf('/')))
+      await this.adapter.writeBinary(target, data)
+      const stat = await this.adapter.stat(target)
+      if (!stat || stat.size !== data.byteLength) throw new Error(`${path} was not copied whole`)
+      progress(done + 1, paths.length)
+    }
+    // Even an empty vault leaves its folder: the window names it.
+    await ensureAll(folder)
+    return folder
   }
 
   /** Both sides of a reconcile, so either can be recovered by hand. */

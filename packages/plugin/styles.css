@@ -1046,3 +1046,43 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
   text-decoration-line: line-through;
   cursor: not-allowed;
 }
+
+/* A device meeting a vault on the server for the first time: what the comparison found. */
+.mycel-join-table {
+  width: 100%;
+  margin: 0.5em 0 1em;
+  border-collapse: collapse;
+  font-size: var(--font-ui-small);
+}
+
+.mycel-join-table th,
+.mycel-join-table td {
+  padding: 0.25em 0.5em;
+  border-bottom: 1px solid var(--background-modifier-border);
+  text-align: right;
+}
+
+.mycel-join-table th:first-child {
+  text-align: left;
+}
+
+.mycel-join-list {
+  margin: 0 0 0.5em;
+  font-size: var(--font-ui-small);
+}
+
+.mycel-join-list ul {
+  max-height: 12em;
+  overflow-y: auto;
+  margin: 0.25em 0 0;
+}
+
+.mycel-join-progress {
+  font-size: var(--font-ui-large);
+  font-variant-numeric: tabular-nums;
+}
+
+.mycel-join-backup {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}

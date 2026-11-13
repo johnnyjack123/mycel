@@ -39,6 +39,14 @@ export class FakeAdapter {
     this.dirs.add(path)
   }
 
+  async stat(path: string): Promise<{ type: 'file' | 'folder'; size: number } | null> {
+    const text = this.files.get(path)
+    if (text !== undefined) return { type: 'file', size: new TextEncoder().encode(text).length }
+    const data = this.binaries.get(path)
+    if (data) return { type: 'file', size: data.length }
+    return this.dirs.has(path) ? { type: 'folder', size: 0 } : null
+  }
+
   async read(path: string): Promise<string> {
     const text = this.files.get(path)
     if (text === undefined) throw new Error(`ENOENT: ${path}`)

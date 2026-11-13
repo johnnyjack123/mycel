@@ -28,6 +28,7 @@ import { Compactor } from './sync/Compactor.js'
 import { LocalCursor, type LocalStore, type OpenLocalStore } from './sync/DocHandle.js'
 import { DocStore, type DocStoreOptions } from './sync/DocStore.js'
 import type { HistoryStore } from './sync/History.js'
+import { Joining, type JoinHost } from './sync/Joining.js'
 import { Recovery, type RecoveryChoice } from './sync/Recovery.js'
 import { ReviewStore, type Review } from './sync/Reviews.js'
 import { StateStore } from './sync/StateStore.js'
@@ -37,10 +38,15 @@ import { VaultSocket, type SocketStatus } from './sync/VaultSocket.js'
 import { log } from './log.js'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+/** How long a file the join moved to the trash has its delete event taken for that. */
+const LEAVING_MS = 60_000
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
+
+/** How starting the notes went: `waiting` - a device new to the vault was asked, and nothing was touched. */
+export type StartOutcome = 'started' | 'unreachable' | 'waiting' | 'stopped'
 
 /** What the server tells about the account rather than a share or a folder: the host's to carry out. */
 export type AccountNoticeKind = Exclude<NotifyKind, 'share-added' | 'share-changed' | 'share-removed' | 'folder-added' | 'folder-changed' | 'folder-removed'>
@@ -100,6 +106,8 @@ export interface SyncHost {
   full(room: string): void
 
   // What the person is asked.
+  /** A device meeting this vault on the server for the first time: the comparison, the choice, the outcome. */
+  readonly joining: JoinHost
   askRecovery(notes: string[]): Promise<RecoveryChoice | null>
   unknownMembers(accounts: string[], place: MemberPlace): void
   readonly folderPrompts: FolderPrompts
@@ -164,6 +172,7 @@ export class SyncSession {
   sharedFiles: SharedFiles | null = null
   compactor: Compactor | null = null
   trash: Trash | null = null
+  joining: Joining | null = null
   /** Whether the store started - the index arrived and the vault was scanned. */
   started = false
   starting = false
@@ -172,6 +181,8 @@ export class SyncSession {
   private settingsCursor: LocalCursor | null = null
   private readonly unwatchers: Array<() => void> = []
   private indexTimer: ReturnType<typeof setTimeout> | null = null
+  /** Files the join moved to the trash: their delete events are no deletes made here. */
+  private readonly leaving = new Map<string, ReturnType<typeof setTimeout>>()
   /** Once stopped, never built on again: a session is one run. */
   private closed = false
 
@@ -206,7 +217,8 @@ export class SyncSession {
     const { app, api } = host
     const state = new StateStore(host.adapter, host.root)
     this.state = state
-    this.backups = new BackupStore(host.adapter, host.root)
+    const backups = new BackupStore(host.adapter, host.root)
+    this.backups = backups
     const reviews = new ReviewStore(host.adapter, host.root)
     this.reviews = reviews
     void reviews.list()
@@ -251,7 +263,7 @@ export class SyncSession {
       socket,
       index,
       state,
-      this.backups,
+      backups,
       host.storeOptions(),
       {
         indexCrypto: keys.indexCrypto(),
@@ -374,6 +386,18 @@ export class SyncSession {
     })
     this.compactor = new Compactor(api, keys, () => host.retentionDays())
     this.trash = new Trash(api, store, () => host.retentionDays(), attachments, folders)
+    this.joining = new Joining({
+      app,
+      vaultId: vault.vaultId,
+      index,
+      attachmentIndex,
+      store,
+      attachments,
+      state,
+      backups,
+      host: host.joining,
+      leaving: (path) => this.leave(path)
+    })
 
     // Editors bind as soon as the index is there, not after the whole vault
     // has been scanned: an open note is settled on its own, first.
@@ -403,6 +427,49 @@ export class SyncSession {
     socket.connect()
     await settingsReady()
     return !stopped()
+  }
+
+  /**
+   * Starts the notes: the index from the server, then - on a device new to this vault - the
+   * comparison and the person's choice (`Joining`, invariant 34), then the vault. `waiting`:
+   * nothing of the vault was touched, until asked again (`joinAgain`).
+   */
+  async start(): Promise<StartOutcome> {
+    const { store, joining } = this
+    if (this.closed || !store || !joining) return 'stopped'
+    if (!(await store.openIndex())) return this.closed ? 'stopped' : 'unreachable'
+    if (this.closed) return 'stopped'
+    if (!(await joining.decide())) return this.closed ? 'stopped' : 'waiting'
+    if (this.closed) return 'stopped'
+    return (await store.start()) ? 'started' : this.closed ? 'stopped' : 'unreachable'
+  }
+
+  /** Whether the person was asked how this device joins the vault, and chose to wait. */
+  get joinWaiting(): boolean {
+    return this.joining?.waiting ?? false
+  }
+
+  /** Asked again: the next `start` compares and asks once more. */
+  joinAgain(): void {
+    this.joining?.again()
+  }
+
+  private leave(path: string): void {
+    const previous = this.leaving.get(path)
+    if (previous !== undefined) clearTimeout(previous)
+    this.leaving.set(
+      path,
+      setTimeout(() => this.leaving.delete(path), LEAVING_MS)
+    )
+  }
+
+  /** Whether this is the delete event of a file the join moved to the trash - once. */
+  private left(path: string): boolean {
+    const timer = this.leaving.get(path)
+    if (timer === undefined) return false
+    clearTimeout(timer)
+    this.leaving.delete(path)
+    return true
   }
 
   private notified(kind: NotifyKind, payload: ServerNotice): void {
@@ -445,6 +512,8 @@ export class SyncSession {
 
   deleted(file: TAbstractFile): void {
     if (file instanceof TFile) {
+      // Only this vault had it, and the person chose the server's state: no delete for anyone.
+      if (this.left(file.path)) return
       void this.store?.onDelete(file.path)
       void this.attachments?.onDelete(file.path)
     } else if (file instanceof TFolder) {
@@ -546,6 +615,10 @@ export class SyncSession {
   /** Takes down what `open` built, the editors already let go: releasing them hands their files back to the store. */
   async stop(): Promise<void> {
     this.closed = true
+    this.joining?.stop()
+    this.joining = null
+    for (const timer of this.leaving.values()) clearTimeout(timer)
+    this.leaving.clear()
     if (this.indexTimer !== null) {
       clearTimeout(this.indexTimer)
       this.indexTimer = null

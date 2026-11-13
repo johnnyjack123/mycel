@@ -84,6 +84,11 @@ export class SetupWizard extends Modal {
   private problemEl: HTMLElement | null = null
   private backButton: ButtonComponent | null = null
   private strengthTimer: number | null = null
+  private closedNow: () => void = () => undefined
+  /** Resolves once the guide is closed: what the first sync asks waits for it. */
+  readonly closed = new Promise<void>((resolve) => {
+    this.closedNow = resolve
+  })
 
   constructor(
     app: App,
@@ -119,6 +124,7 @@ export class SetupWizard extends Modal {
     }
     this.recoveryCode = null
     this.changed()
+    this.closedNow()
   }
 
   private go(step: Step): void {
@@ -605,7 +611,7 @@ export class SetupWizard extends Modal {
       containerEl.createEl('p', { text: 'Syncing is turned off on this device: Settings → Mycel → This device, "Sync this vault".' })
     } else if (this.signedIn) {
       containerEl.createEl('p', {
-        text: 'The first sync starts now. It brings this vault and the one on the server together - for a large vault, give it a while and keep Obsidian open.'
+        text: 'Once you close this guide, Mycel compares this vault with the one on the server - unless this device synced it before - and shows what it found: nothing is changed before you choose what happens. For a large vault, give it a while and keep Obsidian open.'
       })
     }
     if (this.connected) {

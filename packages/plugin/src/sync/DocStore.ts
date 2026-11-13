@@ -182,6 +182,7 @@ export class DocStore {
   private indexStore: LocalStore | null = null
   private indexCursor: LocalCursor | null = null
   private indexReady = false
+  private stateLoaded = false
   private stopped = false
   private shownInEditor: (path: string) => boolean = () => false
 
@@ -428,8 +429,16 @@ export class DocStore {
     })
   }
 
-  async start(): Promise<boolean> {
-    await this.state.load()
+  /**
+   * The vault index from the server, with nothing of the vault touched yet: a device new to
+   * the vault compares the two first (`Joining`). False when it did not come in time.
+   */
+  async openIndex(): Promise<boolean> {
+    if (!this.stateLoaded) {
+      // Once: loaded again, the file's older picture would replace what was recorded since.
+      this.stateLoaded = true
+      await this.state.load()
+    }
     await this.registerIndex()
     this.unwatchChanged ??= this.socket.onChanged((room) => this.remoteChanged(room))
     // Without the server's index we do not know which document a file belongs
@@ -441,10 +450,12 @@ export class DocStore {
         window.setTimeout(() => resolve(false), this.options.syncTimeoutMs)
       )
     ])
-    if (!indexSynced) {
-      log.warn('the vault index did not sync; waiting for the server')
-      return false
-    }
+    if (!indexSynced) log.warn('the vault index did not sync; waiting for the server')
+    return indexSynced
+  }
+
+  async start(): Promise<boolean> {
+    if (!(await this.openIndex())) return false
     log.info(`vault index arrived: ${this.index.live().length} notes, ${this.index.deleted().length} deleted`)
     this.indexReady = true
     for (const replay of this.early.splice(0)) await replay()
@@ -732,6 +743,35 @@ export class DocStore {
     if (file && this.exists(file)) await this.syncFile(file)
   }
 
+  // --- a device new to the vault (`Joining`) ---------------------------------------
+
+  /** What the server's copy of a note says, its file left alone; null while that is not known. */
+  async serverText(docId: string): Promise<string | null> {
+    const handle = await this.handleFor(docId)
+    return (await handle.whenRemoteReady(this.options.syncTimeoutMs)) ? handle.text() : null
+  }
+
+  /**
+   * The server's version into the file, taken as agreed: the person chose the server's state
+   * over this vault's, a copy of the whole vault made first. False while the server's copy is
+   * not known - the note is merged then, as ever.
+   */
+  async takeServerText(path: string): Promise<boolean> {
+    const docId = this.index.docIdForPath(path)
+    const file = this.app.vault.getAbstractFileByPath(path)
+    if (!docId || !(file instanceof TFile)) return false
+    return this.withLock(docId, async () => {
+      if (this.stopped || !this.exists(file)) return false
+      const handle = await this.handleFor(docId)
+      if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs))) return false
+      const text = handle.text()
+      if ((await this.app.vault.read(file)) !== text) await this.writeFile(docId, file, text, true)
+      await this.recordAgreement(docId, file, text)
+      log.info(`${path}: took the server's version, ${text.length} chars`)
+      return true
+    })
+  }
+
   private forget(docId: string): void {
     this.state.forget(docId)
     this.agreed.delete(docId)
@@ -760,8 +800,10 @@ export class DocStore {
   /** Projects the document onto disk. The document is the source of truth. */
   private async writeToFile(docId: string): Promise<void> {
     // Checked again here: an editor may have claimed the note since this was
-    // scheduled, and from then on Obsidian is the only writer.
-    if (this.stopped || this.editorOwned.has(docId)) return
+    // scheduled, and from then on Obsidian is the only writer. And not before the
+    // start: a device new to the vault reads notes to compare while nothing may be
+    // written yet (`Joining`), and the start's scan reconciles every file anyway.
+    if (this.stopped || !this.indexReady || this.editorOwned.has(docId)) return
     const handle = this.handles.get(docId)
     const file = this.fileFor(docId)
     // An editor shows it, not bound yet: its binding brings the document in

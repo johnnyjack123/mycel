@@ -72,6 +72,8 @@ import { openIndexedDb } from './sync/DocHandle'
 import type { DocStore, DocStoreOptions, NoteSyncState } from './sync/DocStore'
 import { indexedDbHistory } from './sync/History'
 import { RecoveryModal } from './history/RecoveryModal'
+import { JoinModal } from './history/JoinModal'
+import type { JoinHost } from './sync/Joining'
 import type { Trash } from './sync/Trash'
 import { TrashModal } from './history/TrashModal'
 import { Rollback, pruneRollbackCopies } from './sync/Rollback'
@@ -241,6 +243,10 @@ export default class MycelPlugin extends Plugin {
   private backupCheck: number | null = null
   /** The window about a held decrypted copy, while it is open. */
   private copyWaits: CopyWaitsModal | null = null
+  /** The window a device new to the vault on the server is asked in, from comparing to done. */
+  private joinModal: JoinModal | null = null
+  /** The setup guide while it is open: the question above waits for it. */
+  private wizard: SetupWizard | null = null
   /** The Time Machine: the past in the files, the sync stopped meanwhile (`docs/TIMEMACHINE.md`). */
   private timeMachine!: TimeMachineControl
   /** The account settings as they were when the sync stopped for the Time Machine: backups and rollbacks read them meanwhile. */
@@ -375,6 +381,9 @@ export default class MycelPlugin extends Plugin {
     this.timeMachine = this.makeTimeMachine()
 
     this.statusBar = this.addStatusBarItem()
+    this.statusBar.addEventListener('click', () => {
+      if (this.sync?.joinWaiting) this.joinAgain()
+    })
     this.noteStatus = this.addStatusBarItem()
     this.noteStatus.addClass('mycel-note-status')
     this.noteStatus.addEventListener('click', (event) => this.openConnectMenu(event))
@@ -419,6 +428,7 @@ export default class MycelPlugin extends Plugin {
       })
     )
     this.register(notices.handle('share-linked-note', async (data) => this.shareLinkedNote(data)))
+    this.register(notices.handle('join-vault', async () => this.joinAgain()))
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => this.noteMenu(menu, file)))
     this.registerEvent(
       this.app.workspace.on('editor-menu', (menu, _editor, info) => {
@@ -484,6 +494,15 @@ export default class MycelPlugin extends Plugin {
 
     this.addRibbonIcon('refresh-cw', 'Mycel status', () => this.showStatus())
     this.addCommand({ id: 'setup', name: 'Set up this device…', callback: () => this.openSetup() })
+    this.addCommand({
+      id: 'join-vault',
+      name: 'Compare this vault with the server…',
+      checkCallback: (checking) => {
+        if (!this.sync?.joinWaiting) return false
+        if (!checking) this.joinAgain()
+        return true
+      }
+    })
     this.addCommand({ id: 'show-status', name: 'Show sync status', callback: () => this.showStatus() })
     this.addCommand({ id: 'notifications', name: 'Open notifications and rollbacks', callback: () => void this.openNotifications() })
     this.addCommand({
@@ -790,7 +809,12 @@ export default class MycelPlugin extends Plugin {
       this.settings.setupShown = true
       void this.saveSettings()
     }
-    new SetupWizard(this.app, this, () => this.settingTab?.afterSetup()).open()
+    const wizard = new SetupWizard(this.app, this, () => this.settingTab?.afterSetup())
+    this.wizard = wizard
+    void wizard.closed.then(() => {
+      if (this.wizard === wizard) this.wizard = null
+    })
+    wizard.open()
   }
 
   /**
@@ -1287,6 +1311,7 @@ export default class MycelPlugin extends Plugin {
         }
       },
       folderNews: (news) => this.showFolderNews(news),
+      joining: this.joinHost(),
       askLinkedNote: (question) => this.askLinkedNote(question),
       contactConfirmed: (account) => void this.renewShares(account),
       status: (sync, status) => {
@@ -1324,17 +1349,84 @@ export default class MycelPlugin extends Plugin {
     }
   }
 
+  /**
+   * The window a device new to the vault on the server is asked in (`Joining`): one for each
+   * join, opened by the first thing it has to show - after the setup guide, whose last steps
+   * come first.
+   */
+  private joinHost(): JoinHost {
+    const modal = (): JoinModal => {
+      if (this.joinModal) return this.joinModal
+      const made: JoinModal = new JoinModal(
+        this.app,
+        {
+          vaultName: this.vaultName(),
+          backupFolder: `${this.pluginDir()}/backups`,
+          retentionDays: () => this.shared().backupRetentionDays,
+          again: () => this.joinAgain()
+        },
+        () => {
+          if (this.joinModal === made) this.joinModal = null
+          this.renderStatus()
+        }
+      )
+      this.joinModal = made
+      this.renderStatus()
+      return made
+    }
+    return {
+      progress: (stage, done, total) => {
+        if (!this.wizard) modal().progress(stage, done, total)
+      },
+      ask: async (plan) => {
+        await this.wizard?.closed
+        return modal().ask(plan)
+      },
+      finished: (result) => {
+        modal().finished(result)
+        this.renderStatus()
+        // Kept in the notification center, where the copy's folder can be looked up later.
+        if (!result.ok) new Notice(`Mycel: ${result.problem}. Nothing was changed.`, 10_000)
+        else if (result.backup) new Notice(`Mycel: this vault is connected. The copy of it from before is in ${result.backup}.`, 10_000)
+      }
+    }
+  }
+
+  /** "Compare this vault with the server…": the question a device new to the vault put off. */
+  joinAgain(): void {
+    const sync = this.sync
+    if (!sync) {
+      new Notice('Mycel: sign in first, and turn on "Sync this vault" under This device.')
+      return
+    }
+    sync.joinAgain()
+    void this.runStart()
+  }
+
   private async runStart(): Promise<void> {
     const sync = this.sync
     const store = sync?.store
     if (!sync || !store || sync.started || sync.starting) return
     sync.starting = true
+    const wasWaiting = sync.joinWaiting
+    const run = this.syncRun
     try {
-      const started = await store.start()
-      // Stopped meanwhile: that stop reset these, for the next start.
-      if (sync.store !== store) return
-      sync.started = started
-      if (!started) {
+      const outcome = await sync.start()
+      // Stopped meanwhile - signed out while the joining window asked, say -: that stop
+      // reset these, for the next start, and says nothing of waiting.
+      if (sync.store !== store || run !== this.syncRun) return
+      sync.started = outcome === 'started'
+      if (outcome === 'stopped') {
+        // Its stop took down what it built.
+      } else if (outcome === 'waiting') {
+        if (!wasWaiting) {
+          noticeWithAction(
+            `Mycel: nothing syncs on this device until you choose how this vault joins "${this.vaultName()}" on the server.`,
+            0,
+            { label: 'Compare…', kind: 'join-vault', data: null, again: true }
+          )
+        }
+      } else if (outcome === 'unreachable') {
         new Notice(
           `Mycel: no answer from ${this.settings.serverUrl}. Nothing is synced until it responds.`,
           8_000
@@ -1852,6 +1944,9 @@ export default class MycelPlugin extends Plugin {
     this.syncRun += 1
     this.opening = false
     this.copyWaits?.close()
+    // Closed while asking, it decides nothing: the next start asks again.
+    this.joinModal?.close()
+    this.joinModal = null
     this.backupServers.closeSessions()
     // Editors first: releasing them hands their files back to the store,
     // which must still be there to take them.
@@ -2376,6 +2471,14 @@ export default class MycelPlugin extends Plugin {
   private renderStatus(): void {
     if (this.timeMachine.current) {
       this.statusBar.setText('Mycel: Time Machine - sync stopped')
+      return
+    }
+    if (this.sync?.joinWaiting) {
+      this.statusBar.setText('Mycel: waiting for you - click to compare and connect')
+      return
+    }
+    if (this.joinModal && !this.sync?.started) {
+      this.statusBar.setText('Mycel: connecting this vault - see the window')
       return
     }
     if (!this.store) {

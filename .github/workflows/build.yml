@@ -88,6 +88,12 @@ jobs:
       - name: Key replacement self-test
         run: npm run test:replace
 
+      # Its own server in-process: a device meeting a vault on the server for the
+      # first time compares before it touches anything, copies the whole vault,
+      # and taking the server's version deletes nothing for anyone.
+      - name: Joining a vault self-test
+        run: npm run test:join
+
       # The backup server hands vaults to restic, so its self-test runs a real
       # one: the release the image will carry, checked against its checksum.
       - name: Install restic
