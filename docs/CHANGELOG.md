@@ -8,6 +8,28 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.22** (2026-11-17, branch `feat/join-overview`, the user's wishes of the day) - **the
+  joining window says before the choice what "Merge both" does, and every note merged is marked
+  in the file explorer until looked at.** The comparison now merges each differing note the way
+  the sync will - without a base (`baselessMerge`, the same rule as `reconcile`) - and tells
+  them apart (`JoinPlan.merges`): the server's version holds every line of this one, this one
+  holds every line of the server's (the note becomes the longer version - most likely right,
+  though a passage deleted on one side comes back), or each has text of its own (both kept,
+  passage by passage - worth a look). The window sums it up above the choices - nothing to decide
+  for what is alike or on one side only, the longer versions, the notes worth a look, the files
+  kept twice (a canvas is not merged), the notes not compared - and lists each group; the result
+  says how many notes are being merged. Each note with a review (every merge without a base, and
+  every conflict) carries a mark in the explorer, and its folders a dot, as the shared folders'
+  marks do (a stylesheet by path, `ReviewMarks`), following renames; "Compare versions" has
+  *Done* (was *Keep it as it is*), which takes the note off the list - mark and menu item go
+  with it. The list holds 2,000 reviews instead of 100: joining an older copy merges every
+  differing note at once. `test:join` checks what the window is told against what the merge
+  then does, the marks' stylesheet (quotes in a path, every folder above) and *Done*; `test:merge`
+  that the prediction is `reconcile`'s outcome. Also fixed in the test: the first device's
+  uploads were not awaited, and the empty device after it now and then found the server's index
+  still empty (`compared with the server: empty`) - the server truly had nothing yet, no fault of
+  the plugin. The canvas merge goes after 1.0.0 (the user; PROGRESS, Roadmap).
+
 - **0.9.21** (2026-11-17, on `main`, found by the user on a device) - **the Time Machine's *Abort*
   could hang for good: the bar greyed out, the sync off, and the vault locked on every device**, the
   lock renewed for as long as Obsidian ran. *Abort* first waited for the moment on screen to be

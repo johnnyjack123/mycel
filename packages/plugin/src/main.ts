@@ -53,6 +53,7 @@ import { ExplorerGuard, type ExplorerPolicy } from './history/ExplorerGuard'
 import { NOTIFICATIONS_VIEW, NotificationsView } from './NotificationsView'
 import { AccessModal } from './share/AccessModal'
 import { FolderMarks } from './share/FolderMarks'
+import { ReviewMarks } from './history/ReviewMarks'
 import { FolderAccessModal, MoveInModal, OutsideModal, ShareFolderModal } from './share/FolderModals'
 import type { DeletedBatch, FolderNews, Folders } from './share/Folders'
 import { IncomingModal } from './share/IncomingModal'
@@ -332,6 +333,10 @@ export default class MycelPlugin extends Plugin {
   /** Notes and folders whose unknown members are being asked about right now. */
   private readonly unknownMembersShown = new Set<string>()
   private readonly folderMarks = new FolderMarks()
+  /** Notes merged without anyone choosing, marked in the explorer until looked at. */
+  private readonly reviewMarks = new ReviewMarks()
+  private unwatchReviews: (() => void) | null = null
+  private reviewMarksTimer: number | null = null
   /** Editors and the reading view follow the links of shared notes across restarts of the sync, through this. */
   private readonly linkListeners = new Set<(docId: string) => void>()
   private readonly linkHost: LinkGuardHost = {
@@ -1247,6 +1252,9 @@ export default class MycelPlugin extends Plugin {
     if (!(await sync.open(stopped))) return
     const { store, accountSettings, backups } = sync
     if (!store || !accountSettings || !backups) return
+    this.unwatchReviews?.()
+    this.unwatchReviews = sync.reviews?.onChange(() => this.renderReviewMarks()) ?? null
+    this.renderReviewMarks()
     if (this.movedSettings && accountSettings.empty) accountSettings.set(this.movedSettings)
     this.movedSettings = null
     store.setOptions(this.storeOptions())
@@ -1438,6 +1446,7 @@ export default class MycelPlugin extends Plugin {
       } else {
         this.folders?.start()
         this.renderFolderMarks()
+        this.renderReviewMarks()
         // In the background: a first scan may have gigabytes to upload.
         void this.startAttachments()
         // Contacts first: a share may come from someone who became a contact while this device was away.
@@ -1956,6 +1965,11 @@ export default class MycelPlugin extends Plugin {
     await sync?.stop()
     if (this.sync === sync) this.sync = null
     this.folderMarks.destroy()
+    this.unwatchReviews?.()
+    this.unwatchReviews = null
+    if (this.reviewMarksTimer !== null) window.clearTimeout(this.reviewMarksTimer)
+    this.reviewMarksTimer = null
+    this.reviewMarks.destroy()
     this.statusBar?.setText('')
   }
 
@@ -1993,8 +2007,37 @@ export default class MycelPlugin extends Plugin {
         this.timeMachine.vaultEvent(file.path)
         this.sync?.renamed(file, oldPath)
         if (file instanceof TFolder) this.renderFolderMarks()
+        // The index learns the new name a moment after the event.
+        this.scheduleReviewMarks()
       })
     )
+    this.registerEvent(
+      this.app.vault.on('delete', () => this.scheduleReviewMarks())
+    )
+  }
+
+  private scheduleReviewMarks(): void {
+    if (!this.reviews || this.reviewMarksTimer !== null) return
+    this.reviewMarksTimer = window.setTimeout(() => {
+      this.reviewMarksTimer = null
+      this.renderReviewMarks()
+    }, 1_000)
+  }
+
+  /** The explorer's mark on every note waiting for a look - at its path now, gone with the note. */
+  private renderReviewMarks(): void {
+    const reviews = this.reviews
+    if (!reviews) {
+      this.reviewMarks.destroy()
+      return
+    }
+    const index = this.index
+    const paths: string[] = []
+    for (const review of reviews.pending()) {
+      const path = index ? index.pathFor(review.docId) : review.path
+      if (path) paths.push(path)
+    }
+    this.reviewMarks.render(paths)
   }
 
   /** The explorer's mark on every shared folder: this vault's own, and the ones shared into it. */

@@ -1086,3 +1086,49 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
   color: var(--text-muted);
   font-size: var(--font-ui-small);
 }
+
+/* What merging both does, before it is chosen: what needs nothing, what is worth a look. */
+.mycel-join-summary {
+  margin: 0 0 1em;
+  padding: 0.6em 0.8em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+}
+
+.mycel-join-summary-title {
+  margin-bottom: 0.4em;
+  font-weight: var(--font-semibold);
+}
+
+.mycel-join-summary-row {
+  display: flex;
+  gap: 0.5em;
+  align-items: flex-start;
+  margin: 0.3em 0;
+}
+
+.mycel-join-summary-icon {
+  flex: none;
+  display: inline-flex;
+  margin-top: 0.15em;
+}
+
+.mycel-join-summary-icon svg {
+  width: 1em;
+  height: 1em;
+}
+
+.mycel-join-summary-row.is-fine .mycel-join-summary-icon {
+  color: var(--color-green);
+}
+
+.mycel-join-summary-row.is-look .mycel-join-summary-icon {
+  color: var(--color-orange);
+}
+
+.mycel-join-summary-note {
+  margin-top: 0.5em;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
