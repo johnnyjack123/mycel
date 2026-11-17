@@ -8,6 +8,22 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.21** (2026-11-17, on `main`, found by the user on a device) - **the Time Machine's *Abort*
+  could hang for good: the bar greyed out, the sync off, and the vault locked on every device**, the
+  lock renewed for as long as Obsidian ran. *Abort* first waited for the moment on screen to be
+  filled in - its notes' histories and files read from the server -, with no limit, and a read that
+  never answered held it there; anything thrown on the way out left the bar's busy state set, its
+  buttons disabled, and no word. Now putting the files back waits for nothing that reads: the files
+  refuse to be written once they go back (`PastFilesClosed`) and wait only for a write under way,
+  and a read answering later writes nothing (`TimeMachineSession.restore`, `PastFiles.restore`).
+  Leaving that fails says so and leaves *Abort* to press again (`failedToLeave`); a failed start
+  of the sync afterwards lets go of the lock. Putting many files back shows how far it got, in the
+  bar and at a start that finds a journal - a long put-back looked like a hang. Checked by putting
+  the old `restore` back: `test:timemachine`'s new case (every read from the server held, *Abort*
+  pressed while the moment is being filled) waited past its five seconds, and the files took the
+  past after *Abort* began; with the fix both pass. Which read hung on the user's device is not
+  known yet - their log of that day says.
+
 - **0.9.20** (2026-11-13, branch `fix/plugin-folders`, found by the user on the first device of the
   fresh start) - **the copy before connecting failed on every device, and so did the copy before a
   rollback and the Time Machine's keeping aside of what was written over its past.** Each made its

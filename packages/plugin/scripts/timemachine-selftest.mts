@@ -15,7 +15,7 @@ import { check, delay, Device, eventually, failures, finish, PLUGIN_DIR, useServ
 const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
 const { TimeMachineSession } = await import('../src/history/TimeMachine.js')
-const { PastFiles } = await import('../src/history/PastFiles.js')
+const { PastFiles, PastFilesClosed } = await import('../src/history/PastFiles.js')
 const { barScale } = await import('../src/history/Strip.js')
 const { pastEditorExtension } = await import('../src/history/pastEditor.js')
 const { LockSeal, VaultLockedError, lockNonce, takeVaultLock } = await import('../src/sync/VaultLock.js')
@@ -502,6 +502,49 @@ try {
     await opened.lock.release()
     A1.ownLocks.delete(opened.sealed)
     check(report.failed.length === 0 && differences(before, snapshot(A1)).length === 0, 'and goes back as it was', differences(before, snapshot(A1)))
+    check(await A1.boot(), 'the sync starts again')
+  }
+
+  // --- Abort while the past is still being read from the server (0.9.21) --------------------------------
+  {
+    const before = snapshot(A1)
+    const opened = await open(A1, { kind: 'vault' })
+    const { session, prepared } = opened
+    // Every read from the server waits until let go - as one that never answers.
+    const held: Array<() => void> = []
+    const hold = <T,>(read: () => Promise<T>): Promise<T> => new Promise<T>((resolve, reject) => held.push(() => void read().then(resolve, reject)))
+    const api = prepared.source.api
+    const download = prepared.source.download
+    Object.assign(prepared.source, {
+      api: { log: (room: string) => hold(() => api.log(room)), frameTimes: (vaultId: string, since?: number) => api.frameTimes(vaultId, since) },
+      download: (hash: string) => hold(() => download(hash))
+    })
+    void session.moveTo(placeBefore(session, T))
+    check(
+      await eventually(() => held.length > 0 && A1.vault.text('New.md') === undefined),
+      'a moment is shown while its contents are still being read from the server',
+      { held: held.length }
+    )
+    const report = await Promise.race([session.restore(), delay(5_000).then(() => null)])
+    check(
+      report !== null && report.failed.length === 0 && differences(before, snapshot(A1)).length === 0,
+      'Abort puts every file back at once, never waiting for a read the server does not answer - that held the bar greyed out and the vault locked everywhere',
+      report === null ? 'still waiting after 5 s' : differences(before, snapshot(A1))
+    )
+    check(
+      await opened.files.show('Welcome.md', 'the past, late\n').then(
+        () => false,
+        (error: unknown) => error instanceof PastFilesClosed
+      ),
+      'once the files go back, no past is written into them'
+    )
+    for (const go of held.splice(0)) go()
+    await delay(1_500)
+    check(differences(before, snapshot(A1)).length === 0, 'and a read that answers after that writes nothing', differences(before, snapshot(A1)))
+    opened.stop()
+    await opened.files.finish()
+    await opened.lock.release()
+    A1.ownLocks.delete(opened.sealed)
     check(await A1.boot(), 'the sync starts again')
   }
 

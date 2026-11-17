@@ -6,7 +6,7 @@ import { LockSeal, lockNonce, takeVaultLock, VaultLockedError, type HeldLock } f
 import { TimeMachineBar } from './Bar.js'
 import type { EditLocks } from './EditLocks.js'
 import type { ExplorerPolicy } from './ExplorerGuard.js'
-import { PastFiles, type PastVault, type RestoreReport } from './PastFiles.js'
+import { PastFiles, PastFilesClosed, type PastVault, type RestoreReport } from './PastFiles.js'
 import { TimeMachineStrip } from './Strip.js'
 import {
   TimeMachineSession,
@@ -358,6 +358,7 @@ export class TimeMachineControl implements PastEditorHost {
     try {
       await session.moveTo(place)
     } catch (error) {
+      if (error instanceof PastFilesClosed) return
       log.error('showing a moment failed', error)
       new Notice(`That moment could not be shown: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -455,9 +456,32 @@ export class TimeMachineControl implements PastEditorHost {
         report.aside.length > 0 ? 15_000 : 6_000
       )
       return true
+    } catch (error) {
+      if (this.session) this.failedToLeave(error)
+      else {
+        log.error('starting the sync after the Time Machine failed', error)
+        await this.letGo()
+        new Notice(`Every file is back, but the sync did not start again: ${error instanceof Error ? error.message : String(error)}. Restart Obsidian.`, 15_000)
+      }
+      return false
     } finally {
       this.ending = false
     }
+  }
+
+  /**
+   * Leaving the past failed half way. The way out stays open: a bar greyed out
+   * for good left the vault locked on every device (0.9.21). The journal is still
+   * there, so closing Obsidian and starting it again puts the files back too.
+   */
+  private failedToLeave(error: unknown): void {
+    log.error('leaving the Time Machine failed', error)
+    this.busy = null
+    this.refresh()
+    new Notice(
+      `Leaving the Time Machine failed: ${error instanceof Error ? error.message : String(error)}. Try Abort again. Closing Obsidian and starting it again also puts every file back before the sync starts.`,
+      20_000
+    )
   }
 
   /**
@@ -466,7 +490,11 @@ export class TimeMachineControl implements PastEditorHost {
    * says so retries with `retry`.
    */
   private async putBack(session: TimeMachineSession, retry: () => Promise<boolean>): Promise<RestoreReport | null> {
-    const report = await session.restore()
+    const report = await session.restore((done, of) => {
+      if (of < 20 || done % 10 !== 0) return
+      this.busy = `Putting every file back… ${done} of ${of}`
+      this.refresh()
+    })
     if (report.failed.length > 0) {
       this.busy = null
       this.refresh()
@@ -517,6 +545,15 @@ export class TimeMachineControl implements PastEditorHost {
       if (await this.host.whenSyncing(SYNC_BACK_MS)) return true
       await this.letGo()
       new Notice('The sync did not start again in time. Nothing was restored; open the Time Machine again once it runs.')
+      return false
+    } catch (error) {
+      if (this.session) this.failedToLeave(error)
+      else {
+        // The files are back; only starting again failed. Holding the lock would keep every device waiting.
+        log.error('starting the sync after the Time Machine failed', error)
+        await this.letGo()
+        new Notice(`The sync did not start again: ${error instanceof Error ? error.message : String(error)}. Nothing was restored.`, 15_000)
+      }
       return false
     } finally {
       this.ending = false
@@ -621,7 +658,17 @@ export class TimeMachineControl implements PastEditorHost {
     }
     this.holding = true
     log.warn('the past of a Time Machine was still in the files: putting every file back before the sync starts')
-    const report = await files.restore()
+    const count = files.paths().length
+    // Many files take a while; without a word it looked as if the start hung.
+    const notice = count >= 20 ? new Notice(`The Time Machine's past is still in the files: putting ${count} files back before the sync starts…`, 0) : null
+    let report: RestoreReport
+    try {
+      report = await files.restore((done, of) => {
+        if (done % 10 === 0) notice?.setMessage(`The Time Machine's past is still in the files: putting them back before the sync starts… ${done} of ${of}`)
+      })
+    } finally {
+      notice?.hide()
+    }
     if (report.failed.length > 0) {
       new RestoreFailedModal(this.host.app, report.failed, async () => {
         if (!(await this.recoverAtStart())) return false

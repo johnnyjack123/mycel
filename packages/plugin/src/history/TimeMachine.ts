@@ -13,7 +13,7 @@ import type { RollbackRecord } from '../sync/AccountSettings.js'
 import type { BackupSource } from '../sync/Rollback.js'
 import type { RoomCrypto } from '../sync/VaultSocket.js'
 import { NoteHistory } from './NoteHistory.js'
-import type { PastFiles, PastVault, RestoreReport } from './PastFiles.js'
+import { PastFilesClosed, type PastFiles, type PastVault, type RestoreProgress, type RestoreReport } from './PastFiles.js'
 import { TICK_GAP_MS, VaultTimeline, inFolder, livePath, type Tick } from './Timeline.js'
 import { log } from '../log.js'
 
@@ -569,7 +569,9 @@ export class TimeMachineSession {
     this.progress = null
     this.emit()
     const step = this.work.then(() => this.show(run))
-    this.work = step.catch((error: unknown) => log.error('the Time Machine could not show that moment', error))
+    this.work = step.catch((error: unknown) => {
+      if (!(error instanceof PastFilesClosed)) log.error('the Time Machine could not show that moment', error)
+    })
     return step
   }
 
@@ -757,20 +759,27 @@ export class TimeMachineSession {
       if (run !== this.run || !content || 'skip' in content || content.data === undefined) return
       await (this.files as PastFiles).show(path, content.data, content.mtime)
     })
-    this.work = step.catch((error: unknown) => log.warn(`fetching ${path} as it was failed`, error))
+    this.work = step.catch((error: unknown) => {
+      if (!(error instanceof PastFilesClosed)) log.warn(`fetching ${path} as it was failed`, error)
+    })
     await this.work
   }
 
-  /** Lets go: every file back as it was. The journal stays until the plugin says the sync may start. */
-  async restore(): Promise<RestoreReport> {
+  /**
+   * Lets go: every file back as it was. The journal stays until the plugin says
+   * the sync may start. What is still being read is not waited for: a read from
+   * the server that never answered held *Abort* greyed out and the vault locked
+   * everywhere (0.9.21). The files refuse to be written from here on and wait
+   * only for a write under way.
+   */
+  async restore(progress?: RestoreProgress): Promise<RestoreReport> {
     this.run += 1
     this.queue = []
-    await this.work
     for (const history of this.histories.values()) void history.then((loaded) => loaded.destroy(), () => undefined)
     this.histories.clear()
     const files = this.files
     if (!files) return { failed: [], aside: [], asideDir: null }
-    return files.restore()
+    return files.restore(progress)
   }
 
   describe(position: Position | null = this.position): string {

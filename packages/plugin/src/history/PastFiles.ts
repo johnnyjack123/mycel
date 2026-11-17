@@ -69,6 +69,16 @@ export interface RestoreReport {
   asideDir: string | null
 }
 
+/** How far putting the files back got. */
+export type RestoreProgress = (done: number, of: number) => void
+
+/** The files are being put back: the past is written no more. */
+export class PastFilesClosed extends Error {
+  constructor() {
+    super('the Time Machine is putting the files back')
+  }
+}
+
 function parentOf(path: string): string {
   const slash = path.lastIndexOf('/')
   return slash < 0 ? '' : path.slice(0, slash)
@@ -90,6 +100,13 @@ export class PastFiles {
   private readonly foreign = new Set<string>()
   private readonly asideKept: string[] = []
   private copies = 0
+  /**
+   * Set once the files go back: no past is written after that. What is being
+   * written at that moment is waited for, nothing else - reading the past from
+   * the server, which may hang, never holds *Abort* up (0.9.21).
+   */
+  private closed = false
+  private readonly writing = new Set<Promise<unknown>>()
 
   private constructor(
     private readonly vault: PastVault,
@@ -226,7 +243,23 @@ export class PastFiles {
    * `mtime`: the time the file had then, so the explorer sorts the past as it
    * was and plugins that stamp notes see no edit.
    */
-  async show(path: string, content: string | Uint8Array | null, mtime?: number): Promise<void> {
+  show(path: string, content: string | Uint8Array | null, mtime?: number): Promise<void> {
+    return this.writes(() => this.write(path, content, mtime))
+  }
+
+  /** A step that writes the past, refused once the files go back, and waited for by that. */
+  private writes<T>(step: () => Promise<T>): Promise<T> {
+    if (this.closed) return Promise.reject(new PastFilesClosed())
+    const running = step()
+    this.writing.add(running)
+    const forget = (): void => {
+      this.writing.delete(running)
+    }
+    running.then(forget, forget)
+    return running
+  }
+
+  private async write(path: string, content: string | Uint8Array | null, mtime?: number): Promise<void> {
     await this.keep(path)
     const data = content === null ? null : typeof content === 'string' ? utf8(content) : bytes(content)
     const hash = data ? await contentHash(data) : null
@@ -266,13 +299,15 @@ export class PastFiles {
   }
 
   /** A folder of now that the past does not have, emptied by taking its files away. */
-  async removeFolderIfEmpty(path: string): Promise<void> {
-    const folder = this.vault.getAbstractFileByPath(path)
-    if (!(folder instanceof TFolder) || folder.children.length > 0) return
-    await this.append({ t: 'unfolder', path })
-    this.removedFolders.push(path)
-    this.own.set(path, Date.now())
-    await this.vault.delete(folder, true)
+  removeFolderIfEmpty(path: string): Promise<void> {
+    return this.writes(async () => {
+      const folder = this.vault.getAbstractFileByPath(path)
+      if (!(folder instanceof TFolder) || folder.children.length > 0) return
+      await this.append({ t: 'unfolder', path })
+      this.removedFolders.push(path)
+      this.own.set(path, Date.now())
+      await this.vault.delete(folder, true)
+    })
   }
 
   private async readCopy(original: Original): Promise<Uint8Array> {
@@ -286,10 +321,15 @@ export class PastFiles {
    * else wrote over a past file meanwhile - a plugin, the user in another app -
    * goes into the plugin folder first: nothing is overwritten unseen.
    */
-  async restore(): Promise<RestoreReport> {
+  async restore(progress?: RestoreProgress): Promise<RestoreReport> {
+    this.closed = true
+    await Promise.allSettled(Array.from(this.writing))
     const failed: string[] = []
     const aside: string[] = [...this.asideKept]
     const asideDir = this.asideDir()
+    const of = this.originals.size
+    let done = 0
+    progress?.(done, of)
     // The folders of now first, so files go back into them.
     for (const path of this.removedFolders) {
       try {
@@ -325,6 +365,8 @@ export class PastFiles {
         log.error(`putting ${path} back failed`, error)
         failed.push(path)
       }
+      done += 1
+      progress?.(done, of)
     }
     // Folders made for the past, the deepest first, once empty.
     for (const path of [...this.madeFolders].reverse()) {

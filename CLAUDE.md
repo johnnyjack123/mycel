@@ -258,7 +258,12 @@ someone's notes. Treat them as rules, not preferences.
     (`TimeMachineControl.blocksSync`). A start that finds a journal puts the
     files back first (`recoverAtStart`, before `startSync` in `onLayoutReady`);
     anything that could not be put back keeps the sync off. Never write the past
-    into a file any other way, and never let the sync start around this.
+    into a file any other way, and never let the sync start around this. And the
+    way back never waits for reading the past: *Abort* waited for the moment on
+    screen to be read from the server, a read never answered, and the bar stayed
+    greyed out with the vault locked everywhere (0.9.21). Once the files go back
+    they refuse the past (`PastFilesClosed`), and a failure on the way out leaves
+    *Abort* to press again.
 31. **A path someone else wrote is checked before it names a file, and the plugin
     touches nothing but the vault's own files and its own folder.** A shared
     folder's document, a shared note's links, a sealed title come from other people
@@ -894,7 +899,7 @@ npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-proces
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
-npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too), the vault lock, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
+npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too, and at once while a read from the server hangs), the vault lock, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
 npm run test:replace   # every key of an account replaced: the vaults and files written anew, the other device, a contact confirming again, a replacement carried on by another device — in-process server
 npm run test:join      # a device meeting a vault on the server for the first time: what the comparison finds, the copy of the vault, "Not now", the server's version, merging, carrying on after a restart — in-process server
 npm run test:security  # every attack of the audit (docs/AUDIT.md): the server attacked over HTTP and WebSocket, the plugin's paths, links, folders and gate, the backup task — in-process servers
