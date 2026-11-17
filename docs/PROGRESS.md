@@ -1,6 +1,6 @@
 # Progress
 
-_Last updated: 2026-11-17 · **0.9.21 fixes the Time Machine's *Abort* hanging for good - greyed out, the vault locked everywhere - while the moment on screen was still being read from the server (found by the user). 0.9.20 fixes the copy before connecting, which the gate refused on every device (also the copy before a rollback and the Time Machine's keeping aside; the tests now run with the real plugin folder behind the gate), and says on the wizard's first page that only notes merge. 0.9.19 (the user's design of 2026-11-13): a device meeting a vault on the server for the first time compares before it touches anything and asks - merge both, take the server's version, or not now -, after a copy of the whole vault (invariant 34, `test:join`); for the user to try on devices while starting afresh. Before that: 0.9 built, the audit done: 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel, 0.9.8 is the security audit (`docs/AUDIT.md`: 23 findings fixed, each kept as an attack in `npm run test:security`), 0.9.9 closes its residual risks (R1 to R9) and adds a setup wizard, 0.9.10 fixes three of the races seen only in CI (two remain, below), 0.9.11 resolves links in shared notes by who typed them (signed claims; P11 and S11 fixed), and fixes a change lost before it was sent and a share taken in before its sharer's contact record (both found that day, by the benchmark and in CI), 0.9.12 fixes a shared folder's move taken for every note moving out (CI), 0.9.13 keeps every backup after a suspicious run until confirmed, 0.9.14 makes typing offline as quick as online, 0.9.15 a start open only what changed, 0.9.16 has the tests run the plugin's own wiring (`SyncSession`), 0.9.17 makes one rule of three pairs of copies and fixes the stale-lock race and the backup's settings copy, 0.9.18 moves the server's vault lock out of `rooms.ts`. The list the user agreed on 2026-11-10 is done; open are the benchmark's remaining findings (Known issues) and the device run before 1.0.0. The user updates server, backup server and every device together (friend codes from before 0.9.8 no longer redeem), sets `MYCEL_TRUST_PROXY`, starts afresh once (below, "Starting afresh"); publishing comes last.**_
+_Last updated: 2026-11-17 · **0.9.22 (the user's wishes of 2026-11-17): the joining window says before the choice what merging does - how much needs nothing, which notes become the longer version, which keep text of both, which files are kept twice -, every merged note is marked in the file explorer until "Compare versions" and *Done*. 0.9.21 fixes the Time Machine's *Abort* hanging for good - greyed out, the vault locked everywhere - while the moment on screen was still being read from the server (found by the user). 0.9.20 fixes the copy before connecting, which the gate refused on every device (also the copy before a rollback and the Time Machine's keeping aside; the tests now run with the real plugin folder behind the gate), and says on the wizard's first page that only notes merge. 0.9.19 (the user's design of 2026-11-13): a device meeting a vault on the server for the first time compares before it touches anything and asks - merge both, take the server's version, or not now -, after a copy of the whole vault (invariant 34, `test:join`); for the user to try on devices while starting afresh. Before that: 0.9 built, the audit done: 0.9.0 seals keys only to pinned keys, 0.9.1 makes the server's writes durable, 0.9.2 keeps every note live, 0.9.3 signs the keys sealed to members, 0.9.4 signs every frame, 0.9.5 removes everything kept for data from before, 0.9.6 replaces every key on request, 0.9.7 renames the project to Mycel, 0.9.8 is the security audit (`docs/AUDIT.md`: 23 findings fixed, each kept as an attack in `npm run test:security`), 0.9.9 closes its residual risks (R1 to R9) and adds a setup wizard, 0.9.10 fixes three of the races seen only in CI (two remain, below), 0.9.11 resolves links in shared notes by who typed them (signed claims; P11 and S11 fixed), and fixes a change lost before it was sent and a share taken in before its sharer's contact record (both found that day, by the benchmark and in CI), 0.9.12 fixes a shared folder's move taken for every note moving out (CI), 0.9.13 keeps every backup after a suspicious run until confirmed, 0.9.14 makes typing offline as quick as online, 0.9.15 a start open only what changed, 0.9.16 has the tests run the plugin's own wiring (`SyncSession`), 0.9.17 makes one rule of three pairs of copies and fixes the stale-lock race and the backup's settings copy, 0.9.18 moves the server's vault lock out of `rooms.ts`. The list the user agreed on 2026-11-10 is done; open are the benchmark's remaining findings (Known issues) and the device run before 1.0.0. The user updates server, backup server and every device together (friend codes from before 0.9.8 no longer redeem), sets `MYCEL_TRUST_PROXY`, starts afresh once (below, "Starting afresh"); publishing comes last.**_
 
 ## Where we are
 
@@ -290,7 +290,16 @@ Ordered by the user on 2026-10-14 (the table is in CLAUDE.md, Conventions).
 - **1.0.0** - all of the above done and verified on devices.
 - **Later:** syncing plugins and their settings (direction in CLAUDE.md); the
   operator's backup of the data directory, ciphertext only (moved out of 0.7 by the
-  user on 2026-10-15).
+  user on 2026-10-15); **merging a canvas three ways** (the user, 2026-11-17: "das ist
+  was für nach 1.0.0"). Today a canvas changed on two devices at once is kept twice
+  (`name (conflict date time).canvas`). Instead: merged per node and per edge by their
+  `id` against the version both devices last agreed on (the version history holds it) -
+  added on one side taken, deleted on one side and untouched on the other dropped,
+  changed on both merged field by field (position from one, text from the other; a text
+  node's text through the notes' merge), fields of other plugins kept, the result always
+  valid JSON. Only the same field changed two ways is a real conflict: both kept (a
+  second node beside it, invariant 4), and chosen in "Compare versions" - the canvas
+  there too. Possibly with the git-like merge window for notes (below, "Open questions").
 
 ## In flight / half-finished
 
@@ -323,6 +332,13 @@ user's call, as with the earlier branches.
 
 ## Open questions for the user
 
+- **A git-like merge window for notes** (2026-11-17): "Compare versions" takes per passage
+  this device's, the other's or both, and shows what the note will say. Asked for: blocks of
+  both put together into one merged note, as git tools do. Asked back whether that goes now
+  or after 1.0.0 with the canvas merge, and how (mechanics in the session's answer: three
+  panes, a passage taken in either order, the result editable by hand). Not started.
+- **Which read hung the Time Machine's *Abort*** (2026-11-17, fixed in 0.9.21 whatever it
+  was): the log of that day on the device it hung on.
 - "Compare versions" on a note (2026-10-12): on which device it appeared, and the date
   the dialog names - then that device's log of the day. Not answered; low priority.
 - Whether the user's loss through the guard on 2026-10-20 was two runs in a row

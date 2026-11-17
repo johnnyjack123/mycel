@@ -72,7 +72,9 @@ export interface Review {
 }
 
 const DIR = 'reviews'
-const MAX_REVIEWS = 100
+// Joining an older copy of a vault merges every note that differs at once, and each is
+// marked in the explorer until looked at: a hundred left the rest unmarked (0.9.22).
+const MAX_REVIEWS = 2000
 
 export class ReviewStore {
   private reviews: Review[] | null = null
@@ -114,12 +116,18 @@ export class ReviewStore {
       log.warn('listing the reviews failed', error)
     }
     this.reviews = found.sort((a, b) => b.at - a.at)
+    this.changed()
     return this.reviews
   }
 
   /** Whether a note waits for a review - cheap, for menus; false until the list was read once. */
   pendingFor(docId: string): Review | undefined {
     return this.reviews?.find((review) => review.docId === docId)
+  }
+
+  /** Every note waiting for a review, as far as the list was read: for the explorer's marks. */
+  pending(): Review[] {
+    return this.reviews ?? []
   }
 
   /**

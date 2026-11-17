@@ -15,6 +15,8 @@ const { loadConfig } = await import('../../server/src/config.js')
 const { startServer } = await import('../../server/src/server.js')
 const { BackupStore } = await import('../src/sync/BackupStore.js')
 const { gateApp } = await import('../src/guard.js')
+const { reviewMarkCss } = await import('../src/history/ReviewMarks.js')
+const { ReviewStore } = await import('../src/sync/Reviews.js')
 const { FakeAdapter } = await import('./stubs/fake-vault.js')
 
 const root = mkdtempSync(join(tmpdir(), 'oc-join-selftest-'))
@@ -90,7 +92,9 @@ try {
   )
   const firstResult = A1.joinResults[0]
   check(firstResult?.ok === true && firstResult.choice === 'merge' && typeof firstResult.backup === 'string', 'and the window was told where the copy is', firstResult)
-  check(await eventually(() => A1.store?.trackedCount() === 3 && (A1.attachmentIndex?.live().length ?? 0) === 1), 'everything went up')
+  check(await eventually(() => A1.store?.trackedCount() === 3 && (A1.attachmentIndex?.live().length ?? 0) === 1), 'everything is in the index')
+  // Taken in, not yet sent: a device after it found the server's index empty, now and then.
+  check(await (A1.store?.whenAllSent(15_000) ?? false), 'and went up')
 
   // --- a restart is no first meeting ----------------------------------------------
   await A1.shutdown()
@@ -146,6 +150,11 @@ try {
       older.files.onlyHere.join() === 'extra.png',
     'path by path: the same, different, only here, only on the server - notes and files',
     older && { notes: older.notes, files: older.files }
+  )
+  check(
+    older?.merges.both.join() === 'Two.md' && older.merges.server.length === 0 && older.merges.here.length === 0,
+    'and the note that differs has text of its own on both sides: merging keeps both, worth a look',
+    older?.merges
   )
   await delay(800)
   check(
@@ -217,13 +226,56 @@ try {
   await A5.shutdown()
 
   // --- merging, as every device did before ----------------------------------------------
-  const A6 = new Device(name, false, { 'One.md': 'first\nmerged in\n', 'Mine.md': 'new on this device\n' })
+  const A6 = new Device(name, false, { 'One.md': 'first\nmerged in\n', 'Two.md': 'second\n', 'Mine.md': 'new on this device\n' })
   devices.push(A6)
   check(await A6.boot(), 'a device that merges starts')
-  check(A6.joinPlans[0]?.kind === 'related', 'it was asked', A6.joinPlans[0]?.kind)
+  const merging = A6.joinPlans[0]
+  check(merging?.kind === 'related', 'it was asked', merging?.kind)
+  check(
+    merging?.merges.here.join() === 'One.md' && merging.merges.server.join() === 'Two.md' && merging.merges.both.length === 0,
+    "and told before choosing what merging makes of each note that differs: one holds all of the server's text, the server's holds all of the other",
+    merging?.merges
+  )
   check(await eventually(() => A1.vault.text('Mine.md') === 'new on this device\n'), 'what only it had went up')
-  check(await eventually(() => A6.reviews.some((review) => review.path === 'One.md' && review.kind === 'no-base')), 'the note that differed was merged and listed to sort out')
-  check(copied(A6).size === 2, 'after a copy of its vault')
+  check(
+    await eventually(
+      () => A6.vault.text('One.md') === 'first\nmerged in\n' && A6.vault.text('Two.md') === 'second\nline added later\nwritten on the fourth device\n'
+    ),
+    'merged, each note became the longer version, as the window said',
+    { one: A6.vault.text('One.md'), two: A6.vault.text('Two.md') }
+  )
+  check(
+    await eventually(() => ['One.md', 'Two.md'].every((path) => A6.reviews.some((review) => review.path === path && review.kind === 'no-base'))),
+    'and both are listed to look at',
+    A6.reviews.map((review) => review.path)
+  )
+  const merged = A6.joinResults.at(-1)
+  check(merged?.ok === true && merged.merging === 2, 'the window was told how many notes are merged and marked', merged)
+  const marks = reviewMarkCss(['One.md', 'Deep/er/Note "q".md'])
+  check(
+    marks.includes('.nav-file-title[data-path="One.md"]') &&
+      marks.includes('.nav-file-title[data-path="Deep/er/Note \\"q\\".md"]') &&
+      marks.includes('.nav-folder-title[data-path="Deep"]') &&
+      marks.includes('.nav-folder-title[data-path="Deep/er"]') &&
+      !marks.includes('data-path=""'),
+    'each note to look at is marked in the explorer by its path, and every folder above it',
+    marks
+  )
+  {
+    const reviews = new ReviewStore(new FakeAdapter() as never, PLUGIN_DIR)
+    let told = 0
+    reviews.onChange(() => (told += 1))
+    const one = await reviews.add({ docId: 'd1', path: 'One.md', at: 1, kind: 'no-base', mine: 'a\n', theirs: 'b\n', merged: 'b\na\n' })
+    await reviews.add({ docId: 'd2', path: 'Two.md', at: 2, kind: 'no-base', mine: 'a\n', theirs: 'b\n', merged: 'b\na\n' })
+    const before = told
+    await reviews.remove(one.id)
+    check(
+      reviews.pending().map((review) => review.path).join() === 'Two.md' && !reviews.pendingFor('d1') && told === before + 1,
+      '"Done" takes a note off the list, and says so: its mark and "Compare versions" go with it',
+      reviews.pending()
+    )
+  }
+  check(copied(A6).size === 3, 'after a copy of its vault')
   await A6.shutdown()
 
   // --- another vault ----------------------------------------------------------------------

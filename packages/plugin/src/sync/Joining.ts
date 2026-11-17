@@ -5,6 +5,7 @@ import type { AttachmentIndex } from './AttachmentIndex.js'
 import type { AttachmentStore } from './AttachmentStore.js'
 import type { BackupStore } from './BackupStore.js'
 import type { DocStore } from './DocStore.js'
+import { baselessMerge } from './Reconciler.js'
 import type { JoinRecord, StateStore } from './StateStore.js'
 import type { VaultIndex } from './VaultIndex.js'
 import { log } from '../log.js'
@@ -45,9 +46,25 @@ export interface JoinSide {
   onlyThere: string[]
 }
 
+/**
+ * What "Merge both" makes of the notes that differ (`notes.different`) - none of them has a
+ * base, so each keeps every line of both sides (invariant 3). Told apart before anything is
+ * merged, so the window can say how much merges by itself and how much is worth a look.
+ */
+export interface JoinMerges {
+  /** The server's version holds every line of this vault's: the note becomes the server's. */
+  server: string[]
+  /** This vault's version holds every line of the server's: the note stays as it is here. */
+  here: string[]
+  /** Each side has lines of its own: the note holds both, passage by passage. */
+  both: string[]
+}
+
 export interface JoinPlan {
   kind: JoinKind
   notes: JoinSide
+  /** The notes that differ, by what merging them makes of them. */
+  merges: JoinMerges
   files: JoinSide
   /** What the copy made first holds: every file of this vault. */
   backup: { files: number; bytes: number }
@@ -65,6 +82,8 @@ export type JoinResult =
       trashed: number
       /** Notes and files the server's version could not be had for: merged, as ever. */
       notTaken: string[]
+      /** Notes that differed and are merged as the sync reaches them, each marked in the explorer until looked at. */
+      merging: number
       /** Carried on after the device stopped while carrying it out. */
       resumed: boolean
     }
@@ -156,7 +175,9 @@ export class Joining {
     if (this.postponed) return false
     const plan = await this.compare()
     if (this.stopped) return false
-    log.info(`compared with the server: ${plan.kind}; notes ${this.counts(plan.notes)}; files ${this.counts(plan.files)}`)
+    log.info(
+      `compared with the server: ${plan.kind}; notes ${this.counts(plan.notes)} (merging: ${plan.merges.server.length} take the server's, ${plan.merges.here.length} stay, ${plan.merges.both.length} keep both); files ${this.counts(plan.files)}`
+    )
     if (plan.kind === 'empty') {
       await state.setJoin(vaultId, { at: Date.now(), choice: 'merge', done: true })
       return true
@@ -215,6 +236,7 @@ export class Joining {
       taken,
       trashed,
       notTaken: notTaken.slice(0, NAMED_MAX),
+      merging: record.choice === 'server' ? 0 : plan.notes.different.length + plan.notes.unknown.length,
       resumed
     })
     return true
@@ -298,6 +320,7 @@ export class Joining {
 
     const notes = side()
     const files = side()
+    const merges: JoinMerges = { server: [], here: [], both: [] }
     const notesBoth: Array<{ file: TFile; docId: string }> = []
     for (const file of notesHere) {
       const docId = notesThere.get(file.path)
@@ -325,8 +348,13 @@ export class Joining {
     await pool(notesBoth, () => this.stopped, async ({ file, docId }) => {
       try {
         const there = await store.serverText(docId)
-        if (there === null) notes.unknown.push(file.path)
-        else (there === (await app.vault.read(file)) ? notes.same : notes.different).push(file.path)
+        const here = there === null ? null : await app.vault.read(file)
+        if (there === null || here === null) notes.unknown.push(file.path)
+        else if (there === here) notes.same.push(file.path)
+        else {
+          notes.different.push(file.path)
+          merges[baselessMerge(here, there).holds].push(file.path)
+        }
       } catch (error) {
         log.warn(`${file.path}: comparing it with the server failed`, error)
         notes.unknown.push(file.path)
@@ -345,7 +373,7 @@ export class Joining {
       }
       tick()
     }
-    for (const list of [notes, files]) for (const paths of Object.values(list)) paths.sort()
+    for (const list of [notes, files, merges]) for (const paths of Object.values(list)) paths.sort()
 
     const here = notesHere.length + filesHere.length
     const there = notesThere.size + filesThere.size
@@ -367,6 +395,7 @@ export class Joining {
     return {
       kind,
       notes,
+      merges,
       files,
       backup: { files: everything.length, bytes: everything.reduce((sum, file) => sum + file.stat.size, 0) }
     }

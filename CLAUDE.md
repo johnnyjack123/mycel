@@ -478,7 +478,12 @@ the plugin folder): "Compare versions" in the note's menu shows the two
 versions passage by passage and lets the user keep this device's, the other's
 or both. `DocStore.applyReview` backs up, then applies the choice as an edit —
 merged three ways into the note if it changed since. Choosing "both"
-everywhere is exactly the merge that happened (checked in `test:merge`).
+everywhere is exactly the merge that happened (checked in `test:merge`). Every
+note with a review is marked in the file explorer, its folders with a dot
+(`history/ReviewMarks.ts`, a stylesheet by path like the shared folders' marks),
+until *Apply* or *Done* takes it off the list (0.9.22). The joining window says
+before the choice what merging makes of each differing note (`baselessMerge`,
+the same rule as `reconcile` without a base).
 
 ### Attachments
 
@@ -901,7 +906,7 @@ npm run test:account   # the account with real devices: signing the other device
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
 npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too, and at once while a read from the server hangs), the vault lock, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
 npm run test:replace   # every key of an account replaced: the vaults and files written anew, the other device, a contact confirming again, a replacement carried on by another device — in-process server
-npm run test:join      # a device meeting a vault on the server for the first time: what the comparison finds, the copy of the vault, "Not now", the server's version, merging, carrying on after a restart — in-process server
+npm run test:join      # a device meeting a vault on the server for the first time: what the comparison finds and what merging will make of it, the copy of the vault, "Not now", the server's version, merging, the explorer's marks, carrying on after a restart — in-process server
 npm run test:security  # every attack of the audit (docs/AUDIT.md): the server attacked over HTTP and WebSocket, the plugin's paths, links, folders and gate, the backup task — in-process servers
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by MYCEL_RESTIC (where it lies here: docs/PROGRESS.md)
@@ -945,7 +950,8 @@ top of a locked note's editor in Obsidian's own editor), the notification center
 its tabs and its buttons; since 0.9.11 the marks of someone else's links in Obsidian's editor
 and reading view, and opening them - Obsidian calling `workspace.openLinkText` for every
 way a link is opened is assumed, not tested; since 0.9.19 the joining window, and Obsidian's
-trash reporting each file it takes as a delete (`SyncSession.leaving` relies on it).
+trash reporting each file it takes as a delete (`SyncSession.leaving` relies on it); since 0.9.22
+the marks of notes to look at in Obsidian's file explorer (its `data-path` attributes).
 
 ## Gotchas
 
@@ -1059,6 +1065,11 @@ is listed in `docs/PROGRESS.md`, "Roadmap". (Recovery codes and 2FA: built in
 **The operator's backup (later).** The data directory as it is - ciphertext only -
 pulled with a dedicated, revocable backup token rather than an account. Moved out of
 0.7 by the user on 2026-10-15.
+
+**Merging a canvas three ways (after 1.0.0, the user, 2026-11-17).** A canvas changed on
+two devices at once is kept twice today. Merged per node and edge by `id` against the last
+agreed version instead, a real conflict kept twice inside the canvas and chosen in "Compare
+versions"; the design is in `docs/PROGRESS.md`, Roadmap.
 
 **Syncing plugins and their settings (wanted, optional, after 1.0.0).** Moved
 back by the user on 2026-10-14. Not through the

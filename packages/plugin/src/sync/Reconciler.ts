@@ -74,6 +74,19 @@ function applyEditsToText(source: string, edits: TextEdit[]): string {
   return result
 }
 
+/**
+ * What merging two versions of a note without a base makes of them - exactly what
+ * `reconcile` does then, said before it is done (the joining window, 0.9.22):
+ * the server's version when it holds every line of this one, this one when it
+ * holds every line of the server's, and otherwise both, passage by passage.
+ */
+export function baselessMerge(local: string, remote: string): { text: string; holds: 'server' | 'here' | 'both' } {
+  const edits = additiveEdits(remote, local)
+  if (edits.length === 0) return { text: remote, holds: 'server' }
+  const text = applyEditsToText(remote, edits)
+  return { text, holds: text === local ? 'here' : 'both' }
+}
+
 export function reconcile(input: ReconcileInput): ReconcileOutcome {
   const { base, local, remote } = input
 

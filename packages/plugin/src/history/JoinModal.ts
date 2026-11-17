@@ -1,4 +1,4 @@
-import { App, Modal, Setting } from 'obsidian'
+import { App, Modal, Setting, setIcon } from 'obsidian'
 import type { JoinChoice, JoinPlan, JoinResult, JoinSide, JoinStage } from '../sync/Joining'
 
 /** What the window says about where things are. */
@@ -219,6 +219,7 @@ export class JoinModal extends Modal {
     }
 
     if (plan.kind === 'same' || plan.kind === 'related' || plan.kind === 'unrelated') this.table(contentEl, plan)
+    if (plan.kind === 'related' || plan.kind === 'unrelated') this.summary(contentEl, plan)
     this.lists(contentEl, plan)
 
     if (plan.backup.files > 0) {
@@ -236,11 +237,9 @@ export class JoinModal extends Modal {
       new Setting(choices)
         .setName('Merge both')
         .setDesc(
-          `Nothing is lost. What only this vault has goes up, what only the server has comes down. ${
-            differ > 0
-              ? `The ${count(differ, 'note or file', 'notes and files')} that differ keep both versions: a note gets the lines of both - lines deleted on one side come back - and is listed under "Notes with two versions…" to sort out; a file is kept twice.`
-              : ''
-          }`
+          differ > 0
+            ? 'Nothing is lost: what only one side has goes to the other, and what differs keeps both versions, as listed above.'
+            : 'Nothing is lost: what only one side has goes to the other.'
         )
         .addButton((button) =>
           button
@@ -292,8 +291,66 @@ export class JoinModal extends Modal {
     row('Files', plan.files)
   }
 
+  /**
+   * What "Merge both" does, before it is chosen: how much merges by itself and how much
+   * is worth a look (the user, 2026-11-17) - told apart by `JoinPlan.merges`, which is what
+   * the merge will do.
+   */
+  private summary(containerEl: HTMLElement, plan: JoinPlan): void {
+    const { notes, files, merges } = plan
+    const box = containerEl.createDiv({ cls: 'mycel-join-summary' })
+    box.createDiv({ cls: 'mycel-join-summary-title', text: 'If you merge both' })
+    const line = (icon: string, cls: string, text: string): void => {
+      const row = box.createDiv({ cls: `mycel-join-summary-row ${cls}` })
+      setIcon(row.createSpan({ cls: 'mycel-join-summary-icon' }), icon)
+      row.createSpan({ text })
+    }
+    const alike = notes.same.length + files.same.length
+    const up = notes.onlyHere.length + files.onlyHere.length
+    const down = notes.onlyThere.length + files.onlyThere.length
+    if (alike + up + down > 0) {
+      const parts = [
+        alike > 0 ? `${alike} alike on both sides` : '',
+        up > 0 ? `${up} only in this vault, which go${up === 1 ? 'es' : ''} up` : '',
+        down > 0 ? `${down} only on the server, which come${down === 1 ? 's' : ''} down` : ''
+      ].filter(Boolean)
+      line('check', 'is-fine', `Nothing to decide for ${count(alike + up + down, 'note or file', 'notes and files')}: ${parts.join(', ')}.`)
+    }
+    const longer = merges.server.length + merges.here.length
+    if (longer > 0) {
+      line(
+        'check',
+        'is-fine',
+        `${count(longer, 'note differs', 'notes differ')} only by text one side added: one version holds all of the other, and the note becomes that longer version - most likely right. A passage deleted on one side since comes back.`
+      )
+    }
+    if (merges.both.length > 0) {
+      line(
+        'alert-triangle',
+        'is-look',
+        `${count(merges.both.length, 'note has', 'notes have')} text of its own on both sides. Every passage of both is kept, one after the other - worth a look.`
+      )
+    }
+    if (files.different.length > 0) {
+      line(
+        'alert-triangle',
+        'is-look',
+        `${count(files.different.length, 'file differs', 'files differ')} - a canvas, a picture, a PDF are not merged: each is kept twice, under its name and as "name (conflict date time)".`
+      )
+    }
+    if (notes.unknown.length > 0) {
+      line('help-circle', 'is-look', `${count(notes.unknown.length, 'note', 'notes')} could not be compared - the server did not answer in time. Merged like the others.`)
+    }
+    if (notes.different.length + notes.unknown.length > 0) {
+      box.createDiv({
+        cls: 'mycel-join-summary-note',
+        text: 'Every note that is merged gets a mark in the file explorer. "Compare versions" in its menu shows both versions and lets you choose per passage; "Done" there takes the mark away.'
+      })
+    }
+  }
+
   private lists(containerEl: HTMLElement, plan: JoinPlan): void {
-    const { notes, files } = plan
+    const { notes, files, merges } = plan
     const group = (label: string, paths: string[]): void => {
       if (paths.length === 0) return
       const details = containerEl.createEl('details', { cls: 'mycel-join-list' })
@@ -303,7 +360,10 @@ export class JoinModal extends Modal {
       if (paths.length > LISTED_MAX) list.createEl('li', { text: `and ${paths.length - LISTED_MAX} more` })
     }
     if (plan.kind === 'upload' || plan.kind === 'download') return
-    group('Differ', [...notes.different, ...files.different])
+    group('Notes that keep text of both sides', merges.both)
+    group("Notes that become the server's longer version", merges.server)
+    group("Notes that stay as this vault's longer version", merges.here)
+    group('Files kept twice', files.different)
     group('Not compared: the server did not answer in time', notes.unknown)
     group('Only in this vault', [...notes.onlyHere, ...files.onlyHere])
     group('Only on the server', [...notes.onlyThere, ...files.onlyThere])
@@ -334,6 +394,11 @@ export class JoinModal extends Modal {
       })
     } else {
       contentEl.createEl('p', { text: 'The sync runs now. A large vault takes a while; keep Obsidian open.' })
+      if (result.merging > 0) {
+        contentEl.createEl('p', {
+          text: `${count(result.merging, 'note that differed is', 'notes that differed are')} merged as the sync reaches ${result.merging === 1 ? 'it' : 'them'}, and marked in the file explorer until you looked: "Compare versions" in a note's menu, then "Done". "Notes with two versions…" in the command palette lists them all.`
+        })
+      }
     }
     if (result.notTaken.length > 0) {
       contentEl.createEl('p', {

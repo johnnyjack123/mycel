@@ -16,7 +16,7 @@ import {
 import * as e2e from '@mycel/shared/crypto'
 import { hashWasmArgon2id } from '../src/account/argon2.js'
 import { Replay } from '../src/history/RoomHistory.js'
-import { additiveEdits, reconcile } from '../src/sync/Reconciler.js'
+import { additiveEdits, baselessMerge, reconcile } from '../src/sync/Reconciler.js'
 import { idsAt, linksIn, linksNear, touchedBy, touches } from '../src/share/links.js'
 import { versionStep } from '../src/share/sharedVersion.js'
 import { besides, numbered, renameInRounds } from '../src/sync/renames.js'
@@ -162,6 +162,29 @@ check(
   reconcile({ base: 'x', local: 'y', remote: 'x', pristine: false, markers: true }).kind === 'adopt-local',
   'an untouched document adopts the file'
 )
+
+{
+  // The joining window says before merging what a merge without a base makes of each note (0.9.22).
+  const cases: Array<[string, string, 'server' | 'here' | 'both']> = [
+    ['a\n', 'a\nb\n', 'server'],
+    ['a\nb\n', 'a\n', 'here'],
+    ['a\nmine\nc\n', 'a\ntheirs\nc\n', 'both'],
+    ['', 'a\n', 'server'],
+    ['a\n', '', 'here'],
+    ['x\ny\n', 'y\nz\n', 'both']
+  ]
+  const told = cases.map(([local, remote, expected]) => {
+    const said = baselessMerge(local, remote)
+    const done = reconcile({ base: null, local, remote, pristine: false, markers: false })
+    const text = done.kind === 'merge' ? done.text : done.kind === 'adopt-remote' ? remote : local
+    return { local, remote, expected, holds: said.holds, same: said.text === text }
+  })
+  check(
+    told.every((each) => each.holds === each.expected && each.same),
+    'what the joining window says a merge without a base makes of a note is what it makes',
+    told
+  )
+}
 
 {
   // Without a base the reconcile must never delete: "missing here" and "added

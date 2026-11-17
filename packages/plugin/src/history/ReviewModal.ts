@@ -51,8 +51,8 @@ export class ReviewModal extends Modal {
       cls: 'setting-item-description',
       text:
         this.review.kind === 'no-base'
-          ? `This note said different things on your devices when they met (${new Date(this.review.at).toLocaleString()}), and nothing told which side changed what. Both versions were kept. Choose per passage what stays.`
-          : `This note was changed in the same place on two devices (${new Date(this.review.at).toLocaleString()}). Both changes were kept. Choose per passage what stays.`
+          ? `This note said different things on your devices when they met (${new Date(this.review.at).toLocaleString()}), and nothing told which side changed what, so it was merged keeping every line of both. Choose per passage what stays - or press Done if it is right as it is.`
+          : `This note was changed in the same place on two devices (${new Date(this.review.at).toLocaleString()}). Both changes were kept. Choose per passage what stays - or press Done if it is right as it is.`
     })
 
     new Setting(contentEl)
@@ -81,8 +81,8 @@ export class ReviewModal extends Modal {
       )
       .addButton((button) =>
         button
-          .setButtonText('Keep it as it is')
-          .setTooltip('Both versions stay in the note, and this review goes away')
+          .setButtonText('Done')
+          .setTooltip('The note stays as it is now; its mark in the file explorer and "Compare versions" go away')
           .onClick(() => void busy(button, () => this.keep()))
       )
   }
@@ -145,6 +145,7 @@ export class ReviewModal extends Modal {
 
   private async keep(): Promise<void> {
     await this.dismiss()
+    new Notice(`${this.review.path}: done - it stays as it is.`)
     this.close()
   }
 
