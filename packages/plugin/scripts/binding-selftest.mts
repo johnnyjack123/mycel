@@ -400,5 +400,95 @@ check(
   }
 }
 
+// --- "Compare versions": the note put together from both versions, passage by passage (0.9.23) ---
+{
+  const obsidian = await import('obsidian')
+  obsidian.installDomHelpers()
+  const { Modal } = obsidian
+  const { ReviewModal } = await import('../src/history/ReviewModal.js')
+  const review = {
+    id: 'r1',
+    docId: 'd1',
+    path: 'Einkauf.md',
+    at: Date.now(),
+    kind: 'no-base' as const,
+    mine: '# Einkauf\n- Milch\n- Eier\nend\n',
+    theirs: '# Einkauf\n- Brot\nend\n',
+    merged: '# Einkauf\n- Brot\n- Milch\n- Eier\nend\n'
+  }
+  const opened = (applied: string[], dismissed: string[]): InstanceType<typeof ReviewModal> => {
+    const modal = new ReviewModal(
+      {} as never,
+      review,
+      async (text) => {
+        applied.push(text)
+        return 'applied'
+      },
+      async () => {
+        dismissed.push(review.id)
+      }
+    )
+    modal.open()
+    return modal
+  }
+  const passages = (modal: InstanceType<typeof ReviewModal>): HTMLElement[] =>
+    Array.from(modal.contentEl.querySelectorAll<HTMLElement>('.mycel-merge-row:not(.mycel-merge-head)'))
+  const button = (root: HTMLElement, text: string): HTMLButtonElement | undefined =>
+    Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find((each) => each.textContent?.trim() === text)
+  const progress = (modal: InstanceType<typeof ReviewModal>): string => modal.contentEl.querySelector('.mycel-merge-progress')?.textContent ?? ''
+
+  const applied: string[] = []
+  const dismissed: string[] = []
+  const modal = opened(applied, dismissed)
+  const rows = passages(modal)
+  check(
+    rows.length === 1 && rows[0]?.classList.contains('is-open') === true && (rows[0]?.querySelector('textarea')?.value ?? null) === '' && progress(modal) === '1 of 1 passage still open',
+    'the window opens with each passage that differs empty in the middle',
+    { rows: rows.length, progress: progress(modal) }
+  )
+  const take = (side: 'mine' | 'theirs'): void => passages(modal)[0]?.querySelector<HTMLButtonElement>(`.mycel-merge-cell.is-${side} .mycel-merge-take`)?.click()
+  take('theirs')
+  take('mine')
+  const area = (): HTMLTextAreaElement | null => passages(modal)[0]?.querySelector('textarea') ?? null
+  check(
+    area()?.value === '- Brot\n- Milch\n- Eier\n' && !passages(modal)[0]?.classList.contains('is-open') && progress(modal) === 'All 1 passage decided',
+    'Take brings each side into the middle, in the order taken',
+    { value: area()?.value, progress: progress(modal) }
+  )
+  const textarea = area() as HTMLTextAreaElement
+  textarea.value = '- Brot\n- Milch\n- Hafermilch\n'
+  textarea.dispatchEvent(new window.Event('input'))
+  button(modal.contentEl, 'Apply')?.click()
+  await delay(20)
+  check(applied.join() === '# Einkauf\n- Brot\n- Milch\n- Hafermilch\nend\n' && Modal.open.length === 0, 'what is written in the middle by hand is what Apply writes', applied)
+
+  // Nothing taken: asked first, left out only when confirmed.
+  const empty: string[] = []
+  const second = opened(empty, [])
+  button(second.contentEl, 'Apply')?.click()
+  await delay(20)
+  const asked = Modal.open.at(-1)
+  check(
+    asked !== undefined && asked !== second && (asked.titleEl.textContent ?? '').includes('1 passage is still empty') && empty.length === 0,
+    'Apply with a passage still empty asks first',
+    asked?.titleEl.textContent
+  )
+  if (asked) button(asked.contentEl, 'Stop')?.click()
+  await delay(20)
+  check(empty.length === 0 && Modal.open.at(-1) === second, 'Stop goes back to the window, nothing applied')
+  button(second.contentEl, 'Apply')?.click()
+  await delay(20)
+  const again = Modal.open.at(-1)
+  if (again && again !== second) button(again.contentEl, 'Apply anyway')?.click()
+  await delay(20)
+  check(empty.join() === '# Einkauf\nend\n', 'and "Apply anyway" leaves the empty passage out', empty)
+
+  const done: string[] = []
+  const third = opened([], done)
+  button(third.contentEl, 'Done')?.click()
+  await delay(20)
+  check(done.join() === 'r1' && Modal.open.length === 0, 'Done takes the note off the list as it is')
+}
+
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)
 process.exit(failures.length === 0 ? 0 : 1)

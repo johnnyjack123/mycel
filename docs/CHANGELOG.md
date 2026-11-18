@@ -8,6 +8,24 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.23** (2026-11-18, branch `feat/merge-window`, the user's design of the day) - **"Compare
+  versions" puts the note together as git's merge tools do.** This device's version on the left,
+  the other on the right, the result in the middle, one row per passage that differs. What both
+  versions have stands in the middle already; each differing passage starts empty and is brought
+  in one at a time - *Take* on either side, both in the order taken, *Give back* to take one out
+  again, or written by hand (the middle is editable per passage; what is taken after that comes
+  after the text). A side with nothing there can be taken too (*Take: nothing*), which decides the
+  passage as empty. Above: how many passages are still open, *Next open passage*, all from this
+  device, all from the other, empty again. *Apply* with a passage still empty asks first and then
+  leaves it out (the user's choice); *Done* leaves the note as the merge made it. On a narrow screen
+  the two versions and the result stand one below the other. The model is `MergeDraft`
+  (`sync/Reviews.ts`), checked in `test:merge` (order, giving back, text by hand, an empty side,
+  every side at once, both everywhere being the merge's own result, a last line without a
+  break); the window itself in `test:sync`, in jsdom (opening, *Take*, writing by hand, *Apply*
+  asking about an empty passage, *Stop*, *Apply anyway*, *Done*) - the test stub of `obsidian`
+  has a `Modal`, a `Setting` and Obsidian's element helpers for that now. A canvas in it waits for
+  the canvas merge, after 1.0.0.
+
 - **0.9.22** (2026-11-17, branch `feat/join-overview`, the user's wishes of the day) - **the
   joining window says before the choice what "Merge both" does, and every note merged is marked
   in the file explorer until looked at.** The comparison now merges each differing note the way

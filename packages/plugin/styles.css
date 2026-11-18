@@ -933,79 +933,196 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
   word-break: break-word;
 }
 
-/* Comparing the two versions of a note. */
-.mycel-review-modal {
-  width: min(900px, 95vw);
+/* Putting a note together from its two versions, as git's merge tools do: this device's
+   version, the result, the other version - one row per passage that differs. */
+.mycel-merge-modal {
+  width: min(1400px, 96vw);
 }
 
-.mycel-review-list {
-  max-height: 50vh;
+.mycel-merge-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0.5em 0;
+}
+
+.mycel-merge-progress {
+  font-weight: var(--font-semibold);
+  color: var(--text-success);
+}
+
+.mycel-merge-progress.is-open {
+  color: var(--text-accent);
+}
+
+.mycel-merge-all {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4em;
+}
+
+.mycel-merge-list {
+  max-height: 65vh;
   overflow-y: auto;
-  margin: 0.5em 0 1em;
+  margin: 0 0 1em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
 }
 
-.mycel-review-list pre,
-.mycel-review-same {
+.mycel-merge-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-areas: 'mine result theirs';
+  gap: 0.5em;
+  padding: 0.5em;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.mycel-merge-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-top: 0.4em;
+  padding-bottom: 0.4em;
+  background-color: var(--background-primary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+}
+
+.mycel-merge-cell {
+  min-width: 0;
+}
+
+.mycel-merge-cell.is-mine {
+  grid-area: mine;
+}
+
+.mycel-merge-cell.is-result {
+  grid-area: result;
+  position: relative;
+}
+
+.mycel-merge-cell.is-theirs {
+  grid-area: theirs;
+}
+
+.mycel-merge-same,
+.mycel-merge-block,
+.mycel-merge-slot {
   margin: 0;
+  font-family: var(--font-monospace);
   font-size: 0.85em;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.mycel-review-same {
-  padding: 0.25em 0.6em;
+.mycel-merge-same {
+  padding: 0.3em 0.8em;
+  border-bottom: 1px solid var(--background-modifier-border);
   color: var(--text-muted);
 }
 
-.mycel-review-hunk {
-  margin: 0.4em 0;
-  padding: 0.5em;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
+.mycel-merge-same.is-folded {
+  cursor: pointer;
 }
 
-.mycel-review-sides {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.5em;
-}
-
-.mycel-review-side {
+.mycel-merge-block {
   padding: 0.4em 0.6em;
-  border-radius: 4px;
+  border-radius: var(--radius-s);
   background-color: var(--background-secondary);
 }
 
-.mycel-review-side.is-mine {
+.mycel-merge-cell.is-mine .mycel-merge-block {
   border-left: 3px solid var(--color-blue);
 }
 
-.mycel-review-side.is-theirs {
+.mycel-merge-cell.is-theirs .mycel-merge-block {
   border-left: 3px solid var(--color-purple);
 }
 
-.mycel-review-label,
-.mycel-review-heading {
-  margin-bottom: 0.25em;
-  color: var(--text-muted);
-  font-size: 0.8em;
-  font-weight: 600;
+.mycel-merge-cell.is-taken .mycel-merge-block {
+  opacity: 0.55;
 }
 
-.mycel-review-choices {
-  display: flex;
-  gap: 0.4em;
-  margin-top: 0.5em;
+.mycel-merge-take {
+  display: inline-flex;
+  gap: 0.3em;
+  align-items: center;
+  margin-bottom: 0.3em;
 }
 
-.mycel-review-choices button.is-active {
-  background-color: var(--interactive-accent);
-  color: var(--text-on-accent);
+.mycel-merge-cell.is-theirs .mycel-merge-take {
+  float: right;
 }
 
-@media (max-width: 600px) {
-  .mycel-review-sides {
+.mycel-merge-take-icon {
+  display: inline-flex;
+}
+
+.mycel-merge-take-icon svg {
+  width: 1em;
+  height: 1em;
+}
+
+.mycel-merge-slot {
+  display: block;
+  width: 100%;
+  min-height: 40px;
+  padding: 0.4em 1.8em 0.4em 0.6em;
+  resize: vertical;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+}
+
+.mycel-merge-row.is-open .mycel-merge-slot {
+  border: 1px dashed var(--text-accent);
+  background-color: var(--background-modifier-hover);
+}
+
+.mycel-merge-clear {
+  position: absolute;
+  top: 0.2em;
+  right: 0.2em;
+}
+
+/* Narrow (a phone): the two versions, then the result, one below the other. */
+@media (max-width: 700px) {
+  .mycel-merge-row {
     grid-template-columns: 1fr;
+    grid-template-areas: 'mine' 'theirs' 'result';
+  }
+
+  .mycel-merge-head {
+    display: none;
+  }
+
+  .mycel-merge-cell.is-theirs .mycel-merge-take {
+    float: none;
+  }
+
+  .mycel-merge-cell:not(.is-taken) .mycel-merge-take-icon {
+    transform: rotate(90deg);
+  }
+
+  .mycel-merge-cell.is-theirs:not(.is-taken) .mycel-merge-take-icon {
+    transform: rotate(-90deg);
+  }
+
+  .mycel-merge-cell.is-mine .mycel-merge-block::before {
+    content: 'This device';
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.8em;
+  }
+
+  .mycel-merge-cell.is-theirs .mycel-merge-block::before {
+    content: 'Other version';
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.8em;
   }
 }
 
