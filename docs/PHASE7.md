@@ -413,7 +413,7 @@ notice, the real order of Obsidian's events when a folder is renamed, moved or d
 ## The small fixes
 
 From `docs/PROGRESS.md`, "Roadmap"; investigated on 2026-10-22 (line numbers as of
-`cebac26`). None needs a decision of the user's; each gets its test.
+`2a9b753`). None needs a decision of the user's; each gets its test.
 
 1. **Typing while sync restarts loses keystrokes.** `stopSync` lets every editor go
    as if for good (`main.ts:1120`, `EditorSync.ts:55`), the new `DocStore` starts with
