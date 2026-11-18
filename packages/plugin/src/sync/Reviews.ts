@@ -54,6 +54,118 @@ export function assemble(hunks: Hunk[], choices: Choice[]): string {
   return text
 }
 
+/** One side of a differing passage. */
+export type Side = 'mine' | 'theirs'
+
+/** Parts of a note one after another, a line break put between two where the first lacks one. */
+export function joinParts(parts: string[]): string {
+  let text = ''
+  for (const part of parts) {
+    if (part.length === 0) continue
+    if (text.length > 0 && !text.endsWith('\n')) text += '\n'
+    text += part
+  }
+  return text
+}
+
+/** A differing passage's place in the result: what was taken into it, in order, or written there by hand. */
+export interface Slot {
+  taken: Side[]
+  text: string
+  /** Written into by hand: taking another side adds to that text instead of building it anew. */
+  edited: boolean
+}
+
+/**
+ * The note being put together in "Compare versions", as git's merge tools do (the user,
+ * 2026-11-18): what both versions have stands as it is, and each passage that differs
+ * starts empty - this device's lines, the other's, both in the order taken, or text of
+ * one's own go into it, one passage at a time.
+ */
+export class MergeDraft {
+  readonly hunks: Hunk[]
+  /** One per differing passage, in order. */
+  readonly slots: Slot[]
+  private readonly differing: Hunk[]
+
+  constructor(mine: string, theirs: string) {
+    this.hunks = compare(mine, theirs)
+    this.differing = this.hunks.filter((hunk) => !hunk.same)
+    this.slots = this.differing.map(() => ({ taken: [], text: '', edited: false }))
+  }
+
+  /** The differing passage of slot `index`. */
+  hunk(index: number): Hunk {
+    return this.differing[index] as Hunk
+  }
+
+  private block(index: number, side: Side): string {
+    const hunk = this.hunk(index)
+    return side === 'mine' ? hunk.mine : hunk.theirs
+  }
+
+  take(index: number, side: Side): void {
+    const slot = this.slots[index]
+    if (!slot || slot.taken.includes(side)) return
+    slot.taken.push(side)
+    slot.text = slot.edited ? joinParts([slot.text, this.block(index, side)]) : joinParts(slot.taken.map((each) => this.block(index, each)))
+  }
+
+  /** Takes a side out again; from text written by hand only where it still stands as taken. */
+  remove(index: number, side: Side): void {
+    const slot = this.slots[index]
+    if (!slot || !slot.taken.includes(side)) return
+    slot.taken = slot.taken.filter((each) => each !== side)
+    if (!slot.edited) {
+      slot.text = joinParts(slot.taken.map((each) => this.block(index, each)))
+      return
+    }
+    const block = this.block(index, side)
+    const at = block.length > 0 ? slot.text.indexOf(block) : -1
+    if (at >= 0) slot.text = slot.text.slice(0, at) + slot.text.slice(at + block.length)
+  }
+
+  edit(index: number, text: string): void {
+    const slot = this.slots[index]
+    if (!slot) return
+    slot.text = text
+    slot.edited = true
+  }
+
+  clear(index: number): void {
+    const slot = this.slots[index]
+    if (!slot) return
+    slot.taken = []
+    slot.text = ''
+    slot.edited = false
+  }
+
+  /** Every passage from one side alone. */
+  takeAll(side: Side): void {
+    this.slots.forEach((_slot, index) => {
+      this.clear(index)
+      this.take(index, side)
+    })
+  }
+
+  /** Something was taken into it or written there - nothing taken from an empty side counts too. */
+  decided(index: number): boolean {
+    const slot = this.slots[index]
+    return slot !== undefined && (slot.taken.length > 0 || slot.edited)
+  }
+
+  /** Passages nothing was decided for yet. */
+  get open(): number {
+    return this.slots.filter((_slot, index) => !this.decided(index)).length
+  }
+
+  /** The note as put together: a passage nothing was decided for is left out. */
+  result(): string {
+    let next = 0
+    return joinParts(this.hunks.map((hunk) => (hunk.same ? hunk.mine : (this.slots[next++]?.text ?? ''))))
+  }
+}
+
 /** How the two versions came to be merged. */
 export type ReviewKind = 'no-base' | 'conflict'
 

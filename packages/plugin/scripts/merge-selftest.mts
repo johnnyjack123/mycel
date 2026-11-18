@@ -958,6 +958,59 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(assemble(noNewline, ['both']) === 'a\nc\nb', 'a last line without a line break still keeps both apart', assemble(noNewline, ['both']))
 }
 
+// --- putting a note together from both versions, passage by passage (0.9.23) ----------------
+{
+  const { MergeDraft, assemble, compare } = await import('../src/sync/Reviews.js')
+  const mine = 'title\nshared line\nchanged here\nkept\nonly here\n'
+  const theirs = 'title\nshared line\nchanged there\nkept\n'
+  const draft = new MergeDraft(mine, theirs)
+  check(
+    draft.slots.length === 2 && draft.open === 2 && draft.result() === 'title\nshared line\nkept\n',
+    'it starts with what both versions have, and an empty place for each passage that differs',
+    draft.result()
+  )
+  draft.take(0, 'theirs')
+  draft.take(0, 'mine')
+  check(
+    draft.slots[0]?.text === 'changed there\nchanged here\n' && draft.open === 1,
+    'a passage takes both sides, in the order taken',
+    draft.slots[0]
+  )
+  draft.remove(0, 'theirs')
+  check(draft.slots[0]?.text === 'changed here\n' && draft.decided(0), 'and gives one back again', draft.slots[0])
+  draft.take(1, 'theirs')
+  check(
+    draft.decided(1) && draft.slots[1]?.text === '' && draft.result() === 'title\nshared line\nchanged here\nkept\n',
+    'taking a side that has nothing there decides the passage too: it stays empty',
+    draft.result()
+  )
+  draft.edit(0, 'written by hand\n')
+  draft.take(0, 'theirs')
+  check(draft.slots[0]?.text === 'written by hand\nchanged there\n', 'text written by hand stays, and what is taken next comes after it', draft.slots[0])
+  draft.remove(0, 'theirs')
+  check(draft.slots[0]?.text === 'written by hand\n', 'giving that back takes out only what was taken', draft.slots[0])
+  draft.takeAll('mine')
+  check(draft.result() === mine, "everything from this device gives this device's version", draft.result())
+  draft.takeAll('theirs')
+  check(draft.result() === theirs, 'everything from the other gives the other version', draft.result())
+  const both = new MergeDraft(mine, theirs)
+  both.slots.forEach((_slot, index) => {
+    both.take(index, 'theirs')
+    both.take(index, 'mine')
+  })
+  check(
+    both.result() === assemble(compare(mine, theirs), []),
+    'the other side then this one everywhere is the note as the merge made it',
+    both.result()
+  )
+  const end = new MergeDraft('a\nb', 'a\nc')
+  end.take(0, 'theirs')
+  end.take(0, 'mine')
+  check(end.result() === 'a\nc\nb', 'a last line without a line break keeps both apart here too', end.result())
+  const open = new MergeDraft('x\none\ny\n', 'x\ntwo\ny\n')
+  check(open.result() === 'x\ny\n' && open.open === 1, 'a passage nothing was taken into is left out', open.result())
+}
+
 // --- emptying the trash ------------------------------------------------------------------
 {
   const { Trash } = await import('../src/sync/Trash.js')

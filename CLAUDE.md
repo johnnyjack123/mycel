@@ -474,11 +474,14 @@ the index arrives are queued and replayed.
 A merge without a base (typically two existing vaults meeting for the first
 time - since 0.9.19 only once the person chose to merge them, invariant 34), a base-less adopt that pulled the other side's lines in, and a merge that
 kept conflicts are recorded as a **review** (`sync/Reviews.ts`, device-local in
-the plugin folder): "Compare versions" in the note's menu shows the two
-versions passage by passage and lets the user keep this device's, the other's
-or both. `DocStore.applyReview` backs up, then applies the choice as an edit —
-merged three ways into the note if it changed since. Choosing "both"
-everywhere is exactly the merge that happened (checked in `test:merge`). Every
+the plugin folder): "Compare versions" in the note's menu puts the note together
+as git's merge tools do (0.9.23, `history/ReviewModal.ts`, its model `MergeDraft`):
+this device's version, the result, the other version, and every passage that
+differs starts empty in the middle until a side is taken into it - both in the
+order taken - or it is written by hand; *Apply* asks before leaving an empty one
+out. `DocStore.applyReview` backs up, then applies the result as an edit —
+merged three ways into the note if it changed since. Taking the other side, then
+this one, everywhere is exactly the merge that happened (checked in `test:merge`). Every
 note with a review is marked in the file explorer, its folders with a dot
 (`history/ReviewMarks.ts`, a stylesheet by path like the shared folders' marks),
 until *Apply* or *Done* takes it off the list (0.9.22). The joining window says
@@ -900,7 +903,7 @@ covered, and all of it must stay green.
 npm run test:merge     # merge/reconcile/identity and the crypto — no server, no DOM
 npm run test:load      # the built bundle imports, onload/start/unload run, Obsidian stubbed; current and versioned
 npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart — in-process
-npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay
+npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay; the merge window in jsdom
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
@@ -951,7 +954,8 @@ its tabs and its buttons; since 0.9.11 the marks of someone else's links in Obsi
 and reading view, and opening them - Obsidian calling `workspace.openLinkText` for every
 way a link is opened is assumed, not tested; since 0.9.19 the joining window, and Obsidian's
 trash reporting each file it takes as a delete (`SyncSession.leaving` relies on it); since 0.9.22
-the marks of notes to look at in Obsidian's file explorer (its `data-path` attributes).
+the marks of notes to look at in Obsidian's file explorer (its `data-path` attributes); since 0.9.23 the
+merge window's layout on a desktop and on a phone (its workings are tested in jsdom, `test:sync`).
 
 ## Gotchas
 
