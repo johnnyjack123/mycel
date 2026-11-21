@@ -264,6 +264,43 @@ try {
   )
   await A4.deleteRecoveryCode()
   check(await eventually(() => A1.hasRecoveryCode === false), 'and deleted on A4, on A1')
+
+  // --- deleting the vault on the server (0.9.24) ------------------------------------------------
+  await eventually(() => A1.socket?.connected === true && A4.socket?.connected === true)
+  check(await A1.deleteVault('not the password at all').then(() => false, () => true), 'deleting the vault on the server needs the password')
+  const heardBefore = A4.vaultDeletions
+  const deletedId = await A1.deleteVault()
+  check(
+    await eventually(() => A4.vaultDeletions > heardBefore && A4.socket?.connected === false),
+    "deleted from A1, the vault's connection on A4 closes and says why - and does not try again",
+    { heard: A4.vaultDeletions, connected: A4.socket?.connected }
+  )
+  await new Promise((resolve) => setTimeout(resolve, 1_500))
+  check(A4.socket?.connected === false, 'still closed a moment later')
+  const found = await A4.vaultState()
+  check(
+    'deleted' in found &&
+      found.deleted.vaultId === deletedId &&
+      found.deleted.by === 'owner' &&
+      found.deleted.device === A1.username &&
+      found.deleted.restorable &&
+      found.deleted.purgedAt === null,
+    'a start finds it deleted - by its owner, from which device, restorable for its week - and makes nothing anew unasked',
+    found
+  )
+  await A4.restoreVault(deletedId)
+  const back = await A1.vaultState()
+  check('vaultId' in back && back.vaultId === deletedId, 'taken back on A4, it is the same vault again on A1', back)
+  await A4.shutdown()
+  check(await A4.boot(), 'and A4 syncs it again')
+  check(await eventually(() => A4.socket?.connected === true), 'connected', { connected: A4.socket?.connected })
+
+  await A1.deleteVault()
+  const anew = await A4.createVaultAnew(deletedId)
+  check(anew !== deletedId, 'uploaded anew, the vault of that name takes another id')
+  const onA1 = await A1.vaultState()
+  check('vaultId' in onA1 && onA1.vaultId === anew, 'and every device of the account finds the new one by its name', onA1)
+  check(await A1.restoreVault(deletedId).then(() => false, () => true), 'the deleted one can no longer be taken back next to it')
 } catch (error) {
   check(false, 'the scenario ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {

@@ -31,6 +31,28 @@ export interface StoredVault {
   createdAt: number
 }
 
+/**
+ * A vault deleted on the server (0.9.24): out of `vaults`, so nothing opens it any
+ * more - every check of access asks `vaults` -, its data kept until `purgeAt`,
+ * then cleared by the running server's sweep. The record stays for good: its id
+ * is never taken again, and a device that synced it learns what happened.
+ */
+export interface StoredDeletedVault {
+  sealedName: string
+  /** Kept while it can be restored; gone with its data. */
+  wrappedKey?: string
+  createdAt: number
+  deletedAt: number
+  purgeAt: number
+  purgedAt?: number
+  by: 'owner' | 'admin'
+  sealedBy?: string
+  /** The vault made anew in its place. */
+  replacedBy?: string
+  /** The account's keys were replaced since: what it holds no key opens any more. */
+  keysReplaced?: boolean
+}
+
 export interface StoredAccount {
   accountId: string
   createdAt: number
@@ -41,6 +63,8 @@ export interface StoredAccount {
   wrappedPrivateKey: string
   wrappedAccountSecret: string
   vaults: Record<string, StoredVault>
+  /** Vaults deleted on the server, by id: being cleared, or gone. */
+  deletedVaults?: Record<string, StoredDeletedVault>
   /**
    * The session generation every valid token carries. Moving it on signs out
    * every device holding an older token; absent is 0.
@@ -176,6 +200,15 @@ function recoveryOf(record: unknown, now: number): StoredRecovery {
     wrappedAccountSecret: wrappedAccountSecret as string,
     createdAt: now
   }
+}
+
+/** Why a deleted vault cannot be taken back by `by` now; null when it can. */
+export function restoreRefusal(deleted: StoredDeletedVault, by: 'owner' | 'admin'): string | null {
+  if (deleted.purgedAt !== undefined || !deleted.wrappedKey) return 'its data is gone already'
+  if (deleted.replacedBy) return 'a vault was made anew in its place'
+  if (deleted.keysReplaced) return "the account's keys were replaced since; nothing opens what it holds"
+  if (deleted.by === 'admin' && by === 'owner') return "the server's admin deleted it; only the admin takes it back"
+  return null
 }
 
 /** Replaces the account's recovery code in the account and the index, in one change of the file. */
@@ -359,8 +392,11 @@ export class AccountStore {
     return accountId ? (data.accounts[accountId] ?? null) : null
   }
 
-  /** Registers a vault under the id the device derived, or returns the one it already has. */
-  addVault(accountId: string, vaultId: unknown, sealedName: unknown, wrappedKey: unknown): Promise<VaultRecord> {
+  /**
+   * Registers a vault under the id the device derived, or returns the one it already has.
+   * `replaces`: the deleted vault it is made anew in place of.
+   */
+  addVault(accountId: string, vaultId: unknown, sealedName: unknown, wrappedKey: unknown, replaces?: unknown): Promise<VaultRecord> {
     if (!isAccountId(vaultId)) return Promise.reject(new AccountError(400, 'not a vault id'))
     if (!decoded(sealedName, 16) || !decoded(wrappedKey, 16)) {
       return Promise.reject(new AccountError(400, 'a vault needs its sealed name and wrapped key'))
@@ -372,14 +408,120 @@ export class AccountStore {
       // First writer wins: a second device creating the same vault at the same
       // moment gets the first one's key back and uses that.
       if (existing) return { vaultId, sealedName: existing.sealedName, wrappedKey: existing.wrappedKey }
+      // Never the id of a deleted vault: a device that synced it would take the
+      // new one for the old, whose notes it still holds under another key.
+      if (account.deletedVaults?.[vaultId]) throw new AccountError(409, 'that vault was deleted on this server; a vault made anew takes another id')
       // An id derived from another account's secret never comes out of this
       // one's: whoever sends it learned it, and with it would open a vault
       // socket of that id and claim its index room before its owner's device did.
       for (const other of Object.values(data.accounts)) {
-        if (other.accountId !== accountId && other.vaults[vaultId]) throw new AccountError(409, 'that vault id is taken')
+        if (other.accountId !== accountId && (other.vaults[vaultId] || other.deletedVaults?.[vaultId])) throw new AccountError(409, 'that vault id is taken')
       }
       account.vaults[vaultId] = { sealedName: sealedName as string, wrappedKey: wrappedKey as string, createdAt: Date.now() }
+      const replaced = typeof replaces === 'string' ? account.deletedVaults?.[replaces] : undefined
+      if (replaced && !replaced.replacedBy) replaced.replacedBy = vaultId
       return { vaultId, sealedName: sealedName as string, wrappedKey: wrappedKey as string }
+    })
+  }
+
+  // --- deleting a vault (0.9.24) ---------------------------------------------------
+
+  /**
+   * Deletes a vault on the server: locked at once, its data kept for `graceMs`, then
+   * cleared by the running server's sweep - its own shares ending as forks, the
+   * shares accepted into it left. Its owner proves the password (`loginKey`), as for a
+   * recovery code: a token alone - stolen, say - deletes nothing. The admin's CLI does
+   * not ask (`'admin'`).
+   */
+  deleteVault(
+    accountId: string,
+    vaultId: unknown,
+    who: { loginKey: unknown } | 'admin',
+    sealedBy: unknown,
+    graceMs: number,
+    now = Date.now()
+  ): Promise<StoredDeletedVault> {
+    const current = who === 'admin' ? null : decoded(who.loginKey, 32)
+    if (who !== 'admin' && !current) return Promise.reject(new AccountError(400, 'the login key is missing'))
+    if (!isAccountId(vaultId)) return Promise.reject(new AccountError(400, 'not a vault id'))
+    if (sealedBy !== undefined && sealedBy !== null && (!decoded(sealedBy, 16) || (sealedBy as string).length > 2048)) {
+      return Promise.reject(new AccountError(400, 'the note on who deleted it is malformed'))
+    }
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account) throw new AccountError(who === 'admin' ? 404 : 401, 'unknown account')
+      if (current && account.loginHash !== loginHash(current)) throw new AccountError(403, 'the current password is wrong')
+      const vault = account.vaults[vaultId]
+      if (!vault) throw new AccountError(404, account.deletedVaults?.[vaultId] ? 'that vault is deleted already' : 'no such vault')
+      const deleted: StoredDeletedVault = {
+        sealedName: vault.sealedName,
+        wrappedKey: vault.wrappedKey,
+        createdAt: vault.createdAt,
+        deletedAt: now,
+        purgeAt: now + graceMs,
+        by: who === 'admin' ? 'admin' : 'owner',
+        ...(typeof sealedBy === 'string' ? { sealedBy } : {})
+      }
+      delete account.vaults[vaultId]
+      ;(account.deletedVaults ??= {})[vaultId] = deleted
+      return deleted
+    })
+  }
+
+  /**
+   * Takes a deleted vault back while its data is still there. A vault the admin
+   * deleted only the admin takes back; one made anew in its place, or keys replaced
+   * since, leave it where it is.
+   */
+  restoreVault(accountId: string, vaultId: unknown, by: 'owner' | 'admin'): Promise<StoredAccount> {
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      if (!account) throw new AccountError(by === 'admin' ? 404 : 401, 'unknown account')
+      const deleted = typeof vaultId === 'string' ? account.deletedVaults?.[vaultId] : undefined
+      if (!deleted) throw new AccountError(404, 'no such deleted vault')
+      const why = restoreRefusal(deleted, by)
+      if (why) throw new AccountError(409, why)
+      account.vaults[vaultId as string] = { sealedName: deleted.sealedName, wrappedKey: deleted.wrappedKey as string, createdAt: deleted.createdAt }
+      delete account.deletedVaults?.[vaultId as string]
+      return account
+    })
+  }
+
+  /** Deleted vaults whose time is up, for the sweep. */
+  async vaultPurges(now = Date.now()): Promise<Array<{ accountId: string; vaultId: string }>> {
+    const due: Array<{ accountId: string; vaultId: string }> = []
+    for (const account of Object.values((await this.load()).accounts)) {
+      for (const [vaultId, deleted] of Object.entries(account.deletedVaults ?? {})) {
+        if (deleted.purgedAt === undefined && deleted.purgeAt <= now) due.push({ accountId: account.accountId, vaultId })
+      }
+    }
+    return due
+  }
+
+  /** Deleted vaults whose data is still there - their connections are closed, the CLI's deletions too. */
+  async pendingVaultDeletions(): Promise<Array<{ accountId: string; vaultId: string; deletedAt: number }>> {
+    const pending: Array<{ accountId: string; vaultId: string; deletedAt: number }> = []
+    for (const account of Object.values((await this.load()).accounts)) {
+      for (const [vaultId, deleted] of Object.entries(account.deletedVaults ?? {})) {
+        if (deleted.purgedAt === undefined) pending.push({ accountId: account.accountId, vaultId, deletedAt: deleted.deletedAt })
+      }
+    }
+    return pending
+  }
+
+  /** The sweep cleared a deleted vault: its key and its backup keys go, the record stays. */
+  settleVaultPurge(accountId: string, vaultId: string, now = Date.now()): Promise<void> {
+    return this.update((data) => {
+      const account = data.accounts[accountId]
+      const deleted = account?.deletedVaults?.[vaultId]
+      if (!account || !deleted) return
+      deleted.purgedAt = now
+      delete deleted.wrappedKey
+      for (const [id, key] of Object.entries(account.backupKeys ?? {})) {
+        if (key.vaultId !== vaultId) continue
+        delete data.backupLogins[key.hash]
+        delete account.backupKeys?.[id]
+      }
     })
   }
 
@@ -669,6 +811,19 @@ export class AccountStore {
         sealedName: vault.sealedName,
         wrappedKey: vault.wrappedKey
       })),
+      deletedVaults: Object.entries(account.deletedVaults ?? {})
+        .map(([vaultId, deleted]) => ({
+          vaultId,
+          sealedName: deleted.sealedName,
+          deletedAt: deleted.deletedAt,
+          purgeAt: deleted.purgeAt,
+          purgedAt: deleted.purgedAt ?? null,
+          by: deleted.by,
+          sealedBy: deleted.sealedBy ?? null,
+          replacedBy: deleted.replacedBy ?? null,
+          restorable: restoreRefusal(deleted, 'owner') === null
+        }))
+        .sort((a, b) => a.deletedAt - b.deletedAt),
       recovery: account.recovery ? { createdAt: account.recovery.createdAt } : null,
       totp: Boolean(account.totp),
       backupKeys: Object.entries(account.backupKeys ?? {})
@@ -753,6 +908,8 @@ export class AccountStore {
         const vault = vaults[id] as { sealedName: string; wrappedKey: string }
         account.vaults[id] = { ...(account.vaults[id] as StoredVault), sealedName: vault.sealedName, wrappedKey: vault.wrappedKey }
       }
+      // A deleted vault is not written anew: its key stays under the secret before.
+      for (const deleted of Object.values(account.deletedVaults ?? {})) if (deleted.purgedAt === undefined) deleted.keysReplaced = true
       setRecoveryIn(data, account, recovery)
       account.replacing = {
         id: replacing.id,

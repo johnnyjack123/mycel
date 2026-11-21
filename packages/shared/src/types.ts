@@ -326,6 +326,28 @@ export interface VaultRecord {
   wrappedKey: string
 }
 
+/**
+ * A vault deleted on the server (0.9.24): locked at once, its data kept until
+ * `purgeAt`, restorable until then; its record stays for good, so its id is never
+ * taken again and a device that synced it learns what happened.
+ */
+export interface DeletedVaultRecord {
+  vaultId: string
+  sealedName: string
+  deletedAt: number
+  purgeAt: number
+  /** When its data went; null while it can still be restored. */
+  purgedAt: number | null
+  /** Its owner on a device, or the server's admin through the CLI. */
+  by: 'owner' | 'admin'
+  /** Which device deleted it and when, sealed like the name; null from the CLI. */
+  sealedBy: string | null
+  /** The vault made anew in its place, if any. */
+  replacedBy: string | null
+  /** Whether its owner can take it back now. */
+  restorable: boolean
+}
+
 export interface AccountBundle {
   accountId: string
   kdfVersion: number
@@ -333,6 +355,8 @@ export interface AccountBundle {
   wrappedPrivateKey: string
   wrappedAccountSecret: string
   vaults: VaultRecord[]
+  /** Vaults deleted on the server: being cleared, or gone. */
+  deletedVaults: DeletedVaultRecord[]
   /** When the recovery code was made; null without one. */
   recovery: { createdAt: number } | null
   /** Whether signing in asks for a code from an authenticator app. */
@@ -810,6 +834,15 @@ export interface CreateVaultRequest {
   vaultId: string
   sealedName: string
   wrappedKey: string
+  /** The deleted vault this one is made anew in place of: that one can no longer be restored next to it. */
+  replaces?: string
+}
+
+/** Deletes a vault on the server: the password, not a token alone. */
+export interface VaultDeleteRequest {
+  loginKey: string
+  /** Which device deleted it and when, sealed under the vault-name key. */
+  sealedBy?: string
 }
 
 export interface PasswordChangeRequest {
@@ -1149,8 +1182,9 @@ export interface IncomingFoldersResponse {
 /**
  * `revoked`: the owner took access away. `detached`: the participant kept a
  * copy of their own. `owner-removed`: the owner's account was deleted.
+ * `vault-deleted`: the owner's vault was deleted on the server (0.9.24).
  */
-export type ForkReason = 'revoked' | 'detached' | 'owner-removed'
+export type ForkReason = 'revoked' | 'detached' | 'owner-removed' | 'vault-deleted'
 
 export interface ForkSummary {
   docId: string

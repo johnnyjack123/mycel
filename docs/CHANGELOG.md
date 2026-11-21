@@ -8,6 +8,40 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.24** (2026-11-21, branch `feat/vault-delete`, the user's decisions of the day) - **a vault
+  can be deleted on the server: by its owner in the plugin, and by the admin through the CLI**
+  (invariant 35). Until now only a whole account could go (`mycel user remove`). Deleting moves
+  the vault out of the account's `vaults` into `deletedVaults` - every check of access on the
+  server asks `vaults`, so its socket, files, backup keys, lock and history are closed at once;
+  open connections are closed with a code of their own (`CLOSE_VAULT_DELETED`, 4410), which a
+  device reads instead of retrying. Its data stays for 7 days (`VAULT_DELETE_GRACE_MS`, the
+  user's choice over deleting at once) and can be taken back until then - by the owner, unless
+  the admin deleted it, a vault was made anew in its place, or the account's keys were replaced
+  since. Then the server's sweep clears it: the shares accepted into it are left (the server
+  knows where a share was accepted, `acceptedInto`, so this holds for the CLI too), its own
+  shares end as when an account goes - everyone in them keeps a copy with its history (fork
+  reason `vault-deleted`) -, its folder goes and its record stays, marked as cleared: an id is
+  never taken again, and a name made anew gets the next generation of its id
+  (`accountKeys.vaultId(secret, name, generation)`). In the plugin: *Delete on the server…* beside
+  the vault id in Settings → Account (only the vault this device syncs, the user's choice), with a
+  fresh backup first when a backup server is connected (failing, nothing is deleted), the name
+  typed and the password - a token alone deletes nothing. Every device of the account, the
+  deleting one too, stops and shows a window over everything: by whom and when (the device
+  sealed under the vault-name key), how long it can be taken back, and *Take it back*, *Upload
+  this vault anew* (a new vault of the name, compared first as any first connection),
+  *Connect to another vault* or *Not now*; a command brings it back, and a start never makes a
+  deleted vault anew unasked (`VaultDeletedError`). What a device kept of a vault for the sync -
+  never its files - is cleared once it is gone or made anew. The CLI: `mycel user list` shows
+  each vault's id, size and last change and every deleted one; `mycel vault remove` and
+  `mycel vault restore`. Checked in `test:rooms` (the password, the lock at once and its close
+  code, the account's other vault going on, the record, the id never taken again, a sweep before
+  its time, taking it back, the admin's deletion and its sweep, one made anew in its place, the
+  week over: the participant's copy, the shares accepted into it left, only its folder gone, not
+  cleared twice) and `test:account` with real devices (the password, the other device closed and
+  not retrying, a start finding it deleted with who and from where, taking it back and syncing
+  again, made anew under another id that every device finds by name). On a device only: the two
+  windows, and Obsidian's IndexedDB listing its databases for the clearing.
+
 - **0.9.23** (2026-11-18, branch `feat/merge-window`, the user's design of the day) - **"Compare
   versions" puts the note together as git's merge tools do.** This device's version on the left,
   the other on the right, the result in the middle, one row per passage that differs. What both

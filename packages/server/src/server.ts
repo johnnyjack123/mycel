@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import proxyAddr from '@fastify/proxy-addr'
 import { WebSocketServer, type WebSocket } from 'ws'
-import { CLOSE_SIGNED_OUT, WS_PROTOCOL, isHexId, tokenFromProtocols } from '@mycel/shared'
+import { CLOSE_SIGNED_OUT, CLOSE_VAULT_DELETED, WS_PROTOCOL, isHexId, tokenFromProtocols } from '@mycel/shared'
 import { AccountStore, sessionOf } from './accounts.js'
 import { TokenService, type TokenSession } from './auth.js'
 import { BlobStore } from './blobs.js'
@@ -215,6 +215,11 @@ export async function startServer(config: ServerConfig, options: StartOptions = 
         return
       }
       const accountId = session.accountId
+      // Deleted on the server: said in a close code its devices can read, so they stop rather than retry.
+      if (isHexId(vaultId) && account.deletedVaults?.[vaultId]) {
+        wss.handleUpgrade(request, socket, head, (ws) => heard(ws).close(CLOSE_VAULT_DELETED, 'vault deleted'))
+        return
+      }
       // A vault's connection carries its index; only its owner may open one.
       if (!isHexId(vaultId) || !account.vaults[vaultId]) {
         app.log.warn({ vaultId, accountId }, 'ws upgrade rejected')

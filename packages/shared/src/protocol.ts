@@ -242,6 +242,12 @@ export type MuxMessage = (typeof MUX)[keyof typeof MUX]
  */
 export const CLOSE_SIGNED_OUT = 4401
 
+/** The close code of a vault socket whose vault was deleted on the server (0.9.24): retrying is no use. */
+export const CLOSE_VAULT_DELETED = 4410
+
+/** How long a vault deleted on the server can be restored, before its data goes (the user, 2026-11-21). */
+export const VAULT_DELETE_GRACE_MS = 7 * 24 * 60 * 60 * 1000
+
 export const API = {
   health: '/health',
   config: '/auth/config',

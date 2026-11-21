@@ -486,7 +486,19 @@ export class MycelSettingTab extends PluginSettingTab {
           .addButton((button) =>
             button.setButtonText('Copy').onClick(() => void navigator.clipboard.writeText(ids.account))
           )
-        if (ids.vault) new Setting(containerEl).setName('Vault ID').setDesc(ids.vault)
+        if (ids.vault) {
+          const vault = ids.vault
+          new Setting(containerEl)
+            .setName('Vault ID')
+            .setDesc(`${vault} - deleting the vault on the server locks it on every device at once; it can be taken back for 7 days, then it is gone there. The files on your devices stay.`)
+            .addButton((button) => button.setButtonText('Copy').onClick(() => void navigator.clipboard.writeText(vault)))
+            .addButton((button) =>
+              button
+                .setButtonText('Delete on the server…')
+                .setWarning()
+                .onClick(() => this.plugin.deleteThisVault())
+            )
+        }
       }
       return
     }

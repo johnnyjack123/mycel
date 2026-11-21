@@ -28,7 +28,7 @@ rangeProto.getClientRects ??= () => []
 const { userColor } = await import('@mycel/shared')
 const { toBase64 } = await import('@mycel/shared/crypto')
 const { ConnectApi, fetchHttp } = await import('../src/account/api.js')
-const { Session } = await import('../src/account/Session.js')
+const { Session, VaultDeletedError } = await import('../src/account/Session.js')
 const { probeServer } = await import('../src/account/probe.js')
 const { KeyReplacement } = await import('../src/account/KeyReplacement.js')
 const { hashWasmArgon2id } = await import('../src/account/argon2.js')
@@ -264,6 +264,8 @@ export class Device {
   readonly joinResults: Array<import('../src/sync/Joining.js').JoinResult> = []
   /** How the last start of the notes went (`SyncSession.start`). */
   lastStart: import('../src/SyncSession.js').StartOutcome | null = null
+  /** How often the server said this device's vault was deleted (0.9.24). */
+  vaultDeletions = 0
 
   constructor(
     /** A recovery may choose another. */
@@ -376,6 +378,10 @@ export class Device {
           () => undefined
         ),
       full: () => undefined,
+      // main.ts stops the sync and asks the person; the tests look.
+      vaultDeleted: () => {
+        this.vaultDeletions += 1
+      },
       // What main.ts's `checkSignedIn` does.
       signedOut: (socket) =>
         void this.session.stillSignedIn().then(async (still) => {
@@ -554,6 +560,41 @@ export class Device {
   async deleteRecoveryCode(password = this.password): Promise<void> {
     if (!this.unlocked) throw new Error('not signed in')
     this.unlocked = await this.session.deleteRecoveryCode(this.unlocked, password)
+  }
+
+  // --- a vault deleted on the server (0.9.24) --------------------------------------------
+
+  /** What "Delete on the server…" does, with the password: the vault this device syncs. Its id. */
+  async deleteVault(password = this.password): Promise<string> {
+    if (!this.unlocked) throw new Error('not signed in')
+    const vault = await this.session.openVault(this.unlocked, VAULT)
+    this.unlocked = await this.session.deleteVault(this.unlocked, vault.vaultId, password, this.username)
+    return vault.vaultId
+  }
+
+  /** The vault of this device's name as the server has it now: open, or deleted and how - what a start finds. */
+  async vaultState(): Promise<{ vaultId: string } | { deleted: import('../src/account/Session.js').DeletedVaultInfo }> {
+    if (!this.unlocked) throw new Error('not signed in')
+    this.unlocked = await this.session.refreshBundle(this.unlocked)
+    try {
+      return { vaultId: (await this.session.openVault(this.unlocked, VAULT)).vaultId }
+    } catch (error) {
+      if (error instanceof VaultDeletedError) return { deleted: error.info }
+      throw error
+    }
+  }
+
+  /** "Take it back", from the window. */
+  async restoreVault(vaultId: string): Promise<void> {
+    if (!this.unlocked) throw new Error('not signed in')
+    this.unlocked = await this.session.restoreVault(this.unlocked, vaultId)
+  }
+
+  /** "Upload this vault anew", from the window: the new vault's id. */
+  async createVaultAnew(replaces: string): Promise<string> {
+    if (!this.unlocked) throw new Error('not signed in')
+    this.unlocked = await this.session.refreshBundle(this.unlocked)
+    return (await this.session.createVaultAnew(this.unlocked, VAULT, replaces)).vaultId
   }
 
   /** What connecting a backup server does on the device: a backup key for this vault, and the grant it hands over. */

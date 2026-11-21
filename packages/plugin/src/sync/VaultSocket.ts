@@ -7,7 +7,7 @@ import {
 } from 'y-protocols/awareness'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { CLOSE_SIGNED_OUT, MUX, awarenessAad, frameAad, snapshotAad, socketProtocols, type FolderTie, type Notice, type NotifyKind } from '@mycel/shared'
+import { CLOSE_SIGNED_OUT, CLOSE_VAULT_DELETED, MUX, awarenessAad, frameAad, snapshotAad, socketProtocols, type FolderTie, type Notice, type NotifyKind } from '@mycel/shared'
 import { bytes, concat, decrypt, encrypt, sha256, toHex, unpackFrame, utf8, type Bytes, type FrameVerdict, type OpenedFrame } from '@mycel/shared/crypto'
 import type { HistoryEntry } from './History.js'
 import { log } from '../log.js'
@@ -210,6 +210,8 @@ export interface SocketHandlers {
    * replaced a moment ago, or the device was signed out.
    */
   signedOut?(): void
+  /** The vault was deleted on the server (0.9.24): the socket stays closed, retrying is no use. */
+  vaultDeleted?(): void
   /** A push was refused because the vault is locked - this device may not have heard of the lock yet. */
   locked?(): void
   /** A push or a new room was refused: the room's owner has used up what the server lets them store. */
@@ -359,15 +361,21 @@ export class VaultSocket {
     }
     socket.onclose = (event: CloseEvent) => {
       const signedOut = event.code === CLOSE_SIGNED_OUT && this.handlers.signedOut !== undefined
+      const deleted = event.code === CLOSE_VAULT_DELETED
       if (!this.closed) {
-        log.info(`disconnected (${event.code}${event.reason ? ` ${event.reason}` : ''})${signedOut ? '' : `, retry ${this.retries + 1}`}`)
+        log.info(`disconnected (${event.code}${event.reason ? ` ${event.reason}` : ''})${signedOut || deleted ? '' : `, retry ${this.retries + 1}`}`)
       }
       this.ws = null
       for (const registration of this.registrations.values()) this.resetSync(registration)
       this.emit('disconnected')
       // Retrying with the same token would only be closed again.
       if (signedOut && !this.closed) this.handlers.signedOut?.()
-      else this.scheduleReconnect()
+      else if (deleted) {
+        if (!this.closed) {
+          log.warn('the vault was deleted on the server: nothing syncs any more')
+          this.handlers.vaultDeleted?.()
+        }
+      } else this.scheduleReconnect()
     }
     socket.onerror = () => {
       // `onclose` always follows, which is where the reconnect lives.

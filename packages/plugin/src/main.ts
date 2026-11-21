@@ -15,6 +15,7 @@ import * as Y from 'yjs'
 import { Notice, noticeWithAction, notices } from './notices.js'
 import { gateApp } from './guard.js'
 import {
+  VAULT_DELETE_GRACE_MS,
   roomSubject,
   type BlobUsageResponse,
   userColor,
@@ -35,7 +36,8 @@ import { KeyReplacement, KeyReplacementError } from './account/KeyReplacement'
 import { PasswordModal } from './account/PasswordModal'
 import { PasswordPromptModal, RecoveryCodeModal } from './account/RecoveryModals'
 import { TotpSetupModal, askKeepTotp, askTotpCode } from './account/TotpModals'
-import { Session, type OpenVault, type SecretStore, type Unlocked } from './account/Session'
+import { Session, VaultDeletedError, type DeletedVaultInfo, type OpenVault, type SecretStore, type Unlocked } from './account/Session'
+import { DeleteVaultModal, VaultDeletedModal } from './account/VaultDeleteModals'
 import { SetupWizard } from './account/SetupWizard'
 import { Backups } from './backup/Backups'
 import { BackupConnectModal, BackupTaskModal } from './backup/BackupModals'
@@ -337,6 +339,14 @@ export default class MycelPlugin extends Plugin {
   private readonly reviewMarks = new ReviewMarks()
   private unwatchReviews: (() => void) | null = null
   private reviewMarksTimer: number | null = null
+  /** The vault this device syncs was deleted on the server (0.9.24); nothing syncs while it is set. */
+  private deletedVault: DeletedVaultInfo | null = null
+  private deletedModal: VaultDeletedModal | null = null
+  /** Closed with "Not now": not shown again by itself until the vault changes. */
+  private deletedDismissed: string | null = null
+  private deletionHandling: Promise<void> | null = null
+  /** The vault this device is deleting this very moment. */
+  private deletingHere: string | null = null
   /** Editors and the reading view follow the links of shared notes across restarts of the sync, through this. */
   private readonly linkListeners = new Set<(docId: string) => void>()
   private readonly linkHost: LinkGuardHost = {
@@ -534,6 +544,16 @@ export default class MycelPlugin extends Plugin {
     this.addCommand({ id: 'copy-log', name: 'Copy the log (for a bug report)', callback: () => void this.copyLog() })
     this.addCommand({ id: 'compare-versions', name: 'Compare the two versions of this note', callback: () => void this.openReview() })
     this.addCommand({ id: 'review-notes', name: 'Notes with two versions…', callback: () => void this.openReviews() })
+    this.addCommand({
+      id: 'vault-deleted',
+      name: 'The vault was deleted on the server…',
+      checkCallback: (checking) => {
+        const deleted = this.deletedVault
+        if (!deleted) return false
+        if (!checking) this.vaultWasDeleted(deleted, false, true)
+        return true
+      }
+    })
     this.addCommand({ id: 'resync-note', name: 'Force resync of this note', callback: () => void this.resyncActive() })
     this.addCommand({
       id: 'restart-sync',
@@ -874,6 +894,149 @@ export default class MycelPlugin extends Plugin {
       return
     }
     this.settingTab?.refresh()
+    const bundle = this.unlocked.bundle
+    const running = this.vault?.vaultId
+    // Deleted from another device or by the admin: its connection may still be open here.
+    if (running && (bundle.deletedVaults ?? []).some((vault) => vault.vaultId === running)) {
+      void this.handleVaultDeleted(running, false)
+      return
+    }
+    const deleted = this.deletedVault
+    if (deleted && bundle.vaults.some((vault) => vault.vaultId === deleted.vaultId)) {
+      // Taken back elsewhere - on another device, or by the admin.
+      this.deletedVault = null
+      this.deletedModal?.close()
+      new Notice(`Mycel: "${deleted.name || this.vaultName()}" was taken back on the server; it syncs again.`, 8_000)
+      void this.startSync()
+    }
+  }
+
+  // --- a vault deleted on the server (0.9.24) -------------------------------------------
+
+  /** The vault this device synced, deleted on the server: nothing syncs until the person chose. */
+  private vaultWasDeleted(info: DeletedVaultInfo, deletedHere: boolean, asked = false): void {
+    // The server closes this device's socket too: whichever hears of it first, it was deleted here.
+    const own = deletedHere || this.deletingHere === info.vaultId
+    this.deletedVault = info
+    this.renderStatus()
+    log.warn(`the vault was deleted on the server (${info.by}, ${new Date(info.deletedAt).toISOString()}): nothing syncs`)
+    // Its data gone, what this device kept of it for the sync is of no use any more.
+    if (info.purgedAt !== null) void this.clearLocalVault(info.vaultId)
+    if (this.deletedDismissed === info.vaultId && !asked && !own) return
+    this.deletedModal?.close()
+    const modal = new VaultDeletedModal(this.app, info, own, {
+      restore: async () => {
+        if (!this.unlocked) throw new Error('Sign in first.')
+        this.unlocked = await this.session.restoreVault(this.unlocked, info.vaultId)
+        this.deletedVault = null
+        this.deletedDismissed = null
+        new Notice(`Mycel: "${info.name || this.vaultName()}" is back on the server; it syncs again.`, 8_000)
+        await this.startSync()
+      },
+      uploadAnew: async () => {
+        if (!this.unlocked) throw new Error('Sign in first.')
+        await this.session.createVaultAnew(this.unlocked, info.name || this.vaultName(), info.vaultId)
+        this.deletedVault = null
+        this.deletedDismissed = null
+        void this.clearLocalVault(info.vaultId)
+        await this.startSync()
+      },
+      otherVault: () => this.openOwnSettings()
+    })
+    modal.onClose = () => {
+      modal.contentEl.empty()
+      if (this.deletedModal === modal) this.deletedModal = null
+      if (this.deletedVault?.vaultId === info.vaultId) this.deletedDismissed = info.vaultId
+    }
+    this.deletedModal = modal
+    modal.open()
+  }
+
+  /** The socket or the account says the running vault was deleted: the sync stops, and the person is asked. One at a time. */
+  private handleVaultDeleted(vaultId: string | null, own: boolean): Promise<void> {
+    this.deletionHandling ??= (async () => {
+      await this.stopSync()
+      const unlocked = this.unlocked
+      if (unlocked) {
+        try {
+          this.unlocked = await this.session.refreshBundle(unlocked)
+        } catch (error) {
+          log.warn('asking the server about the deleted vault failed', error)
+        }
+      }
+      const info = vaultId && this.unlocked ? await this.session.describeDeleted(this.unlocked, vaultId) : null
+      if (info) this.vaultWasDeleted(info, own)
+      // Not deleted after all - taken back meanwhile.
+      else void this.startSync()
+    })().finally(() => {
+      this.deletionHandling = null
+    })
+    return this.deletionHandling
+  }
+
+  /** "Delete this vault on the server…", from the settings: the window, a backup first if asked, then the deletion. */
+  deleteThisVault(): void {
+    const vault = this.vault
+    const unlocked = this.unlocked
+    if (!vault || !unlocked) {
+      new Notice('Mycel: the vault is deleted on the server while it syncs.')
+      return
+    }
+    const backups = this.backupsOf()
+    const servers = backups?.servers() ?? []
+    new DeleteVaultModal(this.app, {
+      name: vault.name,
+      vaultId: vault.vaultId,
+      backups: servers.map((server) => server.label),
+      graceDays: Math.round(VAULT_DELETE_GRACE_MS / (24 * 60 * 60 * 1000)),
+      checkPassword: (password) => this.session.checkPassword(unlocked, password),
+      run: async (password, backUpFirst) => {
+        if (backUpFirst && backups) {
+          for (const server of servers) {
+            const outcome = await backups.backUpFresh(server.routeId)
+            if (!outcome.ok) throw new Error(`the backup on ${server.label} did not go through (${outcome.error ?? 'no reason given'})`)
+          }
+        }
+        if (!this.unlocked) throw new Error('Sign in first.')
+        this.deletingHere = vault.vaultId
+        try {
+          this.unlocked = await this.session.deleteVault(this.unlocked, vault.vaultId, password, Platform.isMobile ? 'a phone or tablet' : 'a computer')
+          log.info(`deleted the vault ${vault.vaultId} on the server, restorable until ${new Date(Date.now() + VAULT_DELETE_GRACE_MS).toISOString()}`)
+          await this.handleVaultDeleted(vault.vaultId, true)
+        } finally {
+          this.deletingHere = null
+        }
+      }
+    }).open()
+  }
+
+  /** What this device keeps of a vault for the sync - never its files - once that vault is of no use any more. */
+  private async clearLocalVault(vaultId: string): Promise<void> {
+    try {
+      const factory = window.indexedDB as IDBFactory & { databases?: () => Promise<Array<{ name?: string }>> }
+      if (typeof factory.databases !== 'function') return
+      let cleared = 0
+      for (const { name } of await factory.databases()) {
+        if (!name || !(name.startsWith(`mycel/${vaultId}/`) || name === `mycel-history/${vaultId}`)) continue
+        factory.deleteDatabase(name)
+        cleared += 1
+      }
+      if (cleared > 0) log.info(`cleared ${cleared} local store(s) of the deleted vault ${vaultId}`)
+    } catch (error) {
+      log.warn('clearing the local stores of a deleted vault failed', error)
+    }
+  }
+
+  /** Opens this plugin's settings; Obsidian has no public way to, so a notice says where they are when it fails. */
+  private openOwnSettings(): void {
+    const setting = (this.app as unknown as { setting?: { open?: () => void; openTabById?: (id: string) => void } }).setting
+    try {
+      setting?.open?.()
+      setting?.openTabById?.(this.manifest.id)
+    } catch {
+      // Below.
+    }
+    new Notice('Mycel: choose the vault under Settings → Mycel → Account, "Vault on the server".', 10_000)
   }
 
   openTotpSetup(intro: string | null = null): void {
@@ -1239,11 +1402,16 @@ export default class MycelPlugin extends Plugin {
       vault = await this.session.openVault(unlocked, this.vaultName())
     } catch (error) {
       if (stopped()) return
+      if (error instanceof VaultDeletedError) {
+        this.vaultWasDeleted(error.info, false)
+        return
+      }
       log.error('opening the vault failed', error)
       new Notice(`Mycel could not open the vault "${this.vaultName()}". Is the server reachable?`, 10_000)
       return
     }
     if (stopped()) return
+    this.deletedVault = null
     // The account's settings are the session's from here on; backups and rollbacks read them again.
     this.frozenSettings?.destroy()
     this.frozenSettings = null
@@ -1302,6 +1470,7 @@ export default class MycelPlugin extends Plugin {
       retentionDays: () => this.shared().historyRetentionDays,
       notify: (kind, payload) => this.onNotify(kind, payload),
       signedOut: (socket) => void this.checkSignedIn(socket),
+      vaultDeleted: () => void this.handleVaultDeleted(this.vault?.vaultId ?? null, false),
       locked: () => void this.checkVaultLock(),
       full: (room) => this.storageFull(room),
       askRecovery: (notes) => new RecoveryModal(this.app, notes).choose(),
@@ -2514,6 +2683,10 @@ export default class MycelPlugin extends Plugin {
   private renderStatus(): void {
     if (this.timeMachine.current) {
       this.statusBar.setText('Mycel: Time Machine - sync stopped')
+      return
+    }
+    if (this.deletedVault && !this.store) {
+      this.statusBar.setText('Mycel: vault deleted on the server - nothing syncs')
       return
     }
     if (this.sync?.joinWaiting) {

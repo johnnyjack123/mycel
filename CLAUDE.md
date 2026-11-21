@@ -322,6 +322,18 @@ someone's notes. Treat them as rules, not preferences.
     (`SyncSession.leaving`): trashing a note or file the server has is a delete for everyone. A
     device that synced before - by its record (`joined.json`) or by anything it agreed on - is
     never asked, and one that stopped while carrying out a choice carries it on unasked.
+35. **A vault deleted on the server is never made anew unasked, its id never taken again, and
+    only its record of deletion lets the server clear it** (0.9.24). Deleting moves it from the
+    account's `vaults` to `deletedVaults` - every check of access asks `vaults` - and closes its
+    connections with `CLOSE_VAULT_DELETED`; its data stays for `VAULT_DELETE_GRACE_MS`, and only
+    the sweep clears it then, from that record alone (as invariant 21 for accounts): its own shares
+    end as forks (invariant 20), the shares accepted into it are left, its folder goes, the record
+    stays. A device whose vault name finds a deleted vault stops and asks (`VaultDeletedError`,
+    `VaultDeletedModal`) - made anew silently, a device that synced it would take the new vault for
+    the old one, whose notes it holds under another key. A name made anew takes the next generation
+    of its id (`accountKeys.vaultId(secret, name, generation)`, `replaces`), so a deleted one can no
+    longer be restored next to it. Deleting needs the password (a token alone deletes nothing);
+    files on the devices are never touched.
 
 ## Architecture
 
@@ -902,10 +914,10 @@ covered, and all of it must stay green.
 ```bash
 npm run test:merge     # merge/reconcile/identity and the crypto — no server, no DOM
 npm run test:load      # the built bundle imports, onload/start/unload run, Obsidian stubbed; current and versioned
-npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart — in-process
+npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart, a vault deleted and cleared — in-process
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay; the merge window in jsdom
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
-npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA — in-process server
+npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA, a vault deleted on the server — in-process server
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
 npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too, and at once while a read from the server hangs), the vault lock, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
 npm run test:replace   # every key of an account replaced: the vaults and files written anew, the other device, a contact confirming again, a replacement carried on by another device — in-process server
@@ -955,7 +967,8 @@ and reading view, and opening them - Obsidian calling `workspace.openLinkText` f
 way a link is opened is assumed, not tested; since 0.9.19 the joining window, and Obsidian's
 trash reporting each file it takes as a delete (`SyncSession.leaving` relies on it); since 0.9.22
 the marks of notes to look at in Obsidian's file explorer (its `data-path` attributes); since 0.9.23 the
-merge window's layout on a desktop and on a phone (its workings are tested in jsdom, `test:sync`).
+merge window's layout on a desktop and on a phone (its workings are tested in jsdom, `test:sync`); since
+0.9.24 the windows of a vault deleted on the server, and IndexedDB listing its databases for clearing them.
 
 ## Gotchas
 
