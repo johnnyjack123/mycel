@@ -400,7 +400,7 @@ check(
   }
 }
 
-// --- "Compare versions": the note put together from both versions, passage by passage (0.9.23) ---
+/// --- "Compare versions": both versions line beside line, the note put together passage by passage (0.9.23, 0.9.26) ---
 {
   const obsidian = await import('obsidian')
   obsidian.installDomHelpers()
@@ -431,11 +431,11 @@ check(
     modal.open()
     return modal
   }
-  const passages = (modal: InstanceType<typeof ReviewModal>): HTMLElement[] =>
-    Array.from(modal.contentEl.querySelectorAll<HTMLElement>('.mycel-merge-row:not(.mycel-merge-head)'))
+  const passages = (modal: InstanceType<typeof ReviewModal>): HTMLElement[] => Array.from(modal.contentEl.querySelectorAll<HTMLElement>('.mycel-merge-passage'))
   const button = (root: HTMLElement, text: string): HTMLButtonElement | undefined =>
     Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find((each) => each.textContent?.trim() === text)
   const progress = (modal: InstanceType<typeof ReviewModal>): string => modal.contentEl.querySelector('.mycel-merge-progress')?.textContent ?? ''
+  const texts = (root: Element, selector: string): string[] => Array.from(root.querySelectorAll(selector)).map((el) => el.textContent ?? '')
 
   const applied: string[] = []
   const dismissed: string[] = []
@@ -446,21 +446,81 @@ check(
     'the window opens with each passage that differs empty in the middle',
     { rows: rows.length, progress: progress(modal) }
   )
-  const take = (side: 'mine' | 'theirs'): void => passages(modal)[0]?.querySelector<HTMLButtonElement>(`.mycel-merge-cell.is-${side} .mycel-merge-take`)?.click()
+  const same = modal.contentEl.querySelector('.mycel-merge-same') as HTMLElement
+  check(
+    texts(same, '.mycel-merge-line.is-mine .mycel-merge-text').join() === '# Einkauf' &&
+      texts(same, '.mycel-merge-line.is-result .mycel-merge-text').join() === '# Einkauf' &&
+      texts(same, '.mycel-merge-line.is-theirs .mycel-merge-text').join() === '# Einkauf',
+    'a line both versions have stands in all three columns - this device, the result and the other version',
+    texts(same, '.mycel-merge-line .mycel-merge-text')
+  )
+  const passage = rows[0] as HTMLElement
+  check(
+    texts(passage, '.mycel-merge-line.is-mine .mycel-merge-text').join('|') === '- Milch|- Eier' &&
+      texts(passage, '.mycel-merge-line.is-theirs .mycel-merge-text').join('|') === '- Brot' &&
+      passage.querySelectorAll('.mycel-merge-line.is-theirs.is-gap').length === 1 &&
+      texts(passage, '.mycel-merge-line.is-mine .mycel-merge-num').join() === '2,3',
+    'a passage shows each side whole with its line numbers, a gap where one side has fewer lines',
+    { mine: texts(passage, '.mycel-merge-line.is-mine'), theirs: texts(passage, '.mycel-merge-line.is-theirs') }
+  )
+  const take = (side: 'mine' | 'theirs'): void => passages(modal)[0]?.querySelector<HTMLButtonElement>(`.mycel-merge-take-cell.is-${side} .mycel-merge-take`)?.click()
   take('theirs')
   take('mine')
   const area = (): HTMLTextAreaElement | null => passages(modal)[0]?.querySelector('textarea') ?? null
   check(
-    area()?.value === '- Brot\n- Milch\n- Eier\n' && !passages(modal)[0]?.classList.contains('is-open') && progress(modal) === 'All 1 passage decided',
+    area()?.value === '- Brot\n- Milch\n- Eier' && !passages(modal)[0]?.classList.contains('is-open') && progress(modal) === 'All 1 passage decided',
     'Take brings each side into the middle, in the order taken',
     { value: area()?.value, progress: progress(modal) }
   )
   const textarea = area() as HTMLTextAreaElement
-  textarea.value = '- Brot\n- Milch\n- Hafermilch\n'
+  textarea.value = '- Brot\n- Milch\n- Hafermilch'
   textarea.dispatchEvent(new window.Event('input'))
   button(modal.contentEl, 'Apply')?.click()
   await delay(20)
   check(applied.join() === '# Einkauf\n- Brot\n- Milch\n- Hafermilch\nend\n' && Modal.open.length === 0, 'what is written in the middle by hand is what Apply writes', applied)
+
+  // Single lines by their number, from either side.
+  const picked: string[] = []
+  const lined = opened(picked, [])
+  const number = (side: 'mine' | 'theirs', text: string): HTMLButtonElement | undefined =>
+    Array.from(passages(lined)[0]?.querySelectorAll<HTMLButtonElement>(`.mycel-merge-line.is-${side} .mycel-merge-num`) ?? []).find((each) => each.textContent === text)
+  number('theirs', '2')?.click()
+  number('mine', '3')?.click()
+  const linedArea = passages(lined)[0]?.querySelector('textarea')
+  check(
+    linedArea?.value === '- Brot\n- Eier' && passages(lined)[0]?.querySelectorAll('.mycel-merge-line.is-picked').length === 2 && progress(lined) === 'All 1 passage decided',
+    "a line's number brings that line alone into the middle, marked as taken",
+    linedArea?.value
+  )
+
+  // Copying from one side gives that side's lines alone, without numbers or the other columns.
+  const passageEl = passages(lined)[0] as HTMLElement
+  const mineTexts = Array.from(passageEl.querySelectorAll<HTMLElement>('.mycel-merge-line.is-mine .mycel-merge-text'))
+  const from = mineTexts[0]?.firstChild
+  const to = mineTexts[1]?.firstChild
+  let copied: string | null = null
+  if (from && to) {
+    mineTexts[0]?.dispatchEvent(new window.Event('pointerdown', { bubbles: true }))
+    const range = document.createRange()
+    range.setStart(from, 2)
+    range.setEnd(to, (to.textContent ?? '').length)
+    const selection = document.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    const event = new window.Event('copy', { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'clipboardData', {
+      value: {
+        setData: (_type: string, text: string) => {
+          copied = text
+        }
+      }
+    })
+    mineTexts[0]?.dispatchEvent(event)
+  }
+  check(copied === 'Milch\n- Eier', 'copying a selection made in one version takes its text alone, line by line', copied)
+  button(lined.contentEl, 'Apply')?.click()
+  await delay(20)
+  check(picked.join() === '# Einkauf\n- Brot\n- Eier\nend\n', 'and Apply writes the note so put together', picked)
 
   // Nothing taken: asked first, left out only when confirmed.
   const empty: string[] = []

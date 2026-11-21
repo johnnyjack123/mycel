@@ -1,5 +1,6 @@
 import type { DataAdapter } from 'obsidian'
 import { lineDiff } from '@mycel/shared'
+import { alignVersions, type Aligned, type Passage } from './align.js'
 import { log } from '../log.js'
 
 // A note that differed on two devices with nothing to tell which side changed
@@ -68,61 +69,123 @@ export function joinParts(parts: string[]): string {
   return text
 }
 
+/** What a passage's place in the result took: a side's lines there, or one line of a side. */
+export interface Picked {
+  side: Side
+  /** The line's index in that version; null for every line the side has in the passage. */
+  line: number | null
+}
+
 /** A differing passage's place in the result: what was taken into it, in order, or written there by hand. */
 export interface Slot {
-  taken: Side[]
+  picks: Picked[]
   text: string
-  /** Written into by hand: taking another side adds to that text instead of building it anew. */
+  /** Written into by hand: taking more adds to that text instead of building it anew. */
   edited: boolean
 }
 
 /**
  * The note being put together in "Compare versions", as git's merge tools do (the user,
  * 2026-11-18): what both versions have stands as it is, and each passage that differs
- * starts empty - this device's lines, the other's, both in the order taken, or text of
- * one's own go into it, one passage at a time.
+ * starts empty - this device's lines, the other's, both in the order taken, single lines of
+ * either, or text of one's own go into it, one passage at a time. The passages are as fine
+ * as the two versions allow (`alignVersions`, 2026-11-21): a stretch only one side has is
+ * one of its own.
  */
 export class MergeDraft {
-  readonly hunks: Hunk[]
-  /** One per differing passage, in order. */
+  readonly aligned: Aligned
+  /** The passages that differ, in order; one slot each. */
+  readonly passages: Passage[]
   readonly slots: Slot[]
-  private readonly differing: Hunk[]
 
   constructor(mine: string, theirs: string) {
-    this.hunks = compare(mine, theirs)
-    this.differing = this.hunks.filter((hunk) => !hunk.same)
-    this.slots = this.differing.map(() => ({ taken: [], text: '', edited: false }))
+    this.aligned = alignVersions(mine, theirs)
+    this.passages = this.aligned.runs.filter((run): run is Passage => !run.same)
+    this.slots = this.passages.map(() => ({ picks: [], text: '', edited: false }))
   }
 
-  /** The differing passage of slot `index`. */
-  hunk(index: number): Hunk {
-    return this.differing[index] as Hunk
+  passage(index: number): Passage {
+    return this.passages[index] as Passage
   }
 
-  private block(index: number, side: Side): string {
-    const hunk = this.hunk(index)
-    return side === 'mine' ? hunk.mine : hunk.theirs
+  lines(side: Side): string[] {
+    return side === 'mine' ? this.aligned.mine : this.aligned.theirs
   }
 
+  /** Every line a side has in the passage, as it stands there. */
+  sideText(index: number, side: Side): string {
+    const passage = this.passage(index)
+    return side === 'mine'
+      ? this.aligned.mine.slice(passage.mineFrom, passage.mineTo).join('')
+      : this.aligned.theirs.slice(passage.theirsFrom, passage.theirsTo).join('')
+  }
+
+  private holds(index: number, side: Side, line: number): boolean {
+    const passage = this.passage(index)
+    return side === 'mine' ? line >= passage.mineFrom && line < passage.mineTo : line >= passage.theirsFrom && line < passage.theirsTo
+  }
+
+  private pickText(index: number, pick: Picked): string {
+    return pick.line === null ? this.sideText(index, pick.side) : (this.lines(pick.side)[pick.line] ?? '')
+  }
+
+  private rebuild(index: number): void {
+    const slot = this.slots[index]
+    if (slot && !slot.edited) slot.text = joinParts(slot.picks.map((pick) => this.pickText(index, pick)))
+  }
+
+  /** Takes picks out; from text written by hand only where each still stands as taken. */
+  private drop(index: number, gone: Picked[]): void {
+    const slot = this.slots[index]
+    if (!slot || gone.length === 0) return
+    slot.picks = slot.picks.filter((pick) => !gone.includes(pick))
+    if (!slot.edited) return this.rebuild(index)
+    for (const pick of gone) {
+      const text = this.pickText(index, pick)
+      const at = text.length > 0 ? slot.text.indexOf(text) : -1
+      if (at >= 0) slot.text = slot.text.slice(0, at) + slot.text.slice(at + text.length)
+    }
+  }
+
+  private add(index: number, pick: Picked): void {
+    const slot = this.slots[index]
+    if (!slot) return
+    slot.picks.push(pick)
+    if (slot.edited) slot.text = joinParts([slot.text, this.pickText(index, pick)])
+    else this.rebuild(index)
+  }
+
+  /** Whether every line of a side is in the passage's place. */
+  taken(index: number, side: Side): boolean {
+    return this.slots[index]?.picks.some((pick) => pick.side === side && pick.line === null) ?? false
+  }
+
+  /** Whether a line of a side is in the passage's place, alone or with its side. */
+  picked(index: number, side: Side, line: number): boolean {
+    return this.taken(index, side) || (this.slots[index]?.picks.some((pick) => pick.side === side && pick.line === line) ?? false)
+  }
+
+  /** Every line of a side, after what is there; single lines of that side taken before go into it. */
   take(index: number, side: Side): void {
     const slot = this.slots[index]
-    if (!slot || slot.taken.includes(side)) return
-    slot.taken.push(side)
-    slot.text = slot.edited ? joinParts([slot.text, this.block(index, side)]) : joinParts(slot.taken.map((each) => this.block(index, each)))
+    if (!slot || this.taken(index, side)) return
+    this.drop(index, slot.picks.filter((pick) => pick.side === side))
+    this.add(index, { side, line: null })
   }
 
-  /** Takes a side out again; from text written by hand only where it still stands as taken. */
+  /** Takes a side out again, its single lines too. */
   remove(index: number, side: Side): void {
     const slot = this.slots[index]
-    if (!slot || !slot.taken.includes(side)) return
-    slot.taken = slot.taken.filter((each) => each !== side)
-    if (!slot.edited) {
-      slot.text = joinParts(slot.taken.map((each) => this.block(index, each)))
-      return
-    }
-    const block = this.block(index, side)
-    const at = block.length > 0 ? slot.text.indexOf(block) : -1
-    if (at >= 0) slot.text = slot.text.slice(0, at) + slot.text.slice(at + block.length)
+    if (slot) this.drop(index, slot.picks.filter((pick) => pick.side === side))
+  }
+
+  /** One line of a side, after what is there - or out again. Nothing while the whole side is taken. */
+  toggleLine(index: number, side: Side, line: number): void {
+    const slot = this.slots[index]
+    if (!slot || this.taken(index, side) || !this.holds(index, side, line)) return
+    const there = slot.picks.find((pick) => pick.side === side && pick.line === line)
+    if (there) this.drop(index, [there])
+    else this.add(index, { side, line })
   }
 
   edit(index: number, text: string): void {
@@ -135,7 +198,7 @@ export class MergeDraft {
   clear(index: number): void {
     const slot = this.slots[index]
     if (!slot) return
-    slot.taken = []
+    slot.picks = []
     slot.text = ''
     slot.edited = false
   }
@@ -151,7 +214,7 @@ export class MergeDraft {
   /** Something was taken into it or written there - nothing taken from an empty side counts too. */
   decided(index: number): boolean {
     const slot = this.slots[index]
-    return slot !== undefined && (slot.taken.length > 0 || slot.edited)
+    return slot !== undefined && (slot.picks.length > 0 || slot.edited)
   }
 
   /** Passages nothing was decided for yet. */
@@ -159,10 +222,15 @@ export class MergeDraft {
     return this.slots.filter((_slot, index) => !this.decided(index)).length
   }
 
-  /** The note as put together: a passage nothing was decided for is left out. */
+  /**
+   * The note as put together: a passage nothing was decided for is left out. What both have
+   * is this device's lines - the two differ there at most in the break after the last line.
+   */
   result(): string {
     let next = 0
-    return joinParts(this.hunks.map((hunk) => (hunk.same ? hunk.mine : (this.slots[next++]?.text ?? ''))))
+    return joinParts(
+      this.aligned.runs.map((run) => (run.same ? this.aligned.mine.slice(run.mineFrom, run.mineTo).join('') : (this.slots[next++]?.text ?? '')))
+    )
   }
 }
 

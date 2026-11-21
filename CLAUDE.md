@@ -488,12 +488,17 @@ time - since 0.9.19 only once the person chose to merge them, invariant 34), a b
 kept conflicts are recorded as a **review** (`sync/Reviews.ts`, device-local in
 the plugin folder): "Compare versions" in the note's menu puts the note together
 as git's merge tools do (0.9.23, `history/ReviewModal.ts`, its model `MergeDraft`):
-this device's version, the result, the other version, and every passage that
-differs starts empty in the middle until a side is taken into it - both in the
-order taken - or it is written by hand; *Apply* asks before leaving an empty one
-out. `DocStore.applyReview` backs up, then applies the result as an edit —
-merged three ways into the note if it changed since. Taking the other side, then
-this one, everywhere is exactly the merge that happened (checked in `test:merge`). Every
+this device's version, the result, the other version, both versions whole and line
+beside line (0.9.26, `sync/align.ts`): what both have on the same rows in all three
+columns, lines that resemble each other paired with their changes marked, a gap
+opposite a line only one side has; a stretch only one side has is a passage of its
+own. Every passage that differs starts empty in the middle until a side is taken
+into it - both in the order taken, or single lines by their number - or it is
+written by hand; *Apply* asks before leaving an empty one out. `DocStore.applyReview`
+backs up, then applies the result as an edit — merged three ways into the note if it
+changed since. Taking the other side, then this one, everywhere keeps exactly the
+lines the merge kept (checked in `test:merge`); the passages being finer than the
+merge's, not always in its order. Every
 note with a review is marked in the file explorer, its folders with a dot
 (`history/ReviewMarks.ts`, a stylesheet by path like the shared folders' marks),
 until *Apply* or *Done* takes it off the list (0.9.22). The joining window says
@@ -967,8 +972,11 @@ and reading view, and opening them - Obsidian calling `workspace.openLinkText` f
 way a link is opened is assumed, not tested; since 0.9.19 the joining window, and Obsidian's
 trash reporting each file it takes as a delete (`SyncSession.leaving` relies on it); since 0.9.22
 the marks of notes to look at in Obsidian's file explorer (its `data-path` attributes); since 0.9.23 the
-merge window's layout on a desktop and on a phone (its workings are tested in jsdom, `test:sync`); since
-0.9.24 the windows of a vault deleted on the server, and IndexedDB listing its databases for clearing them.
+merge window's layout on a desktop and on a phone (its workings are tested in jsdom, `test:sync`; since
+0.9.26 its rows were looked at in a browser, rendered with the real stylesheet but not Obsidian's, and
+copying a selection from one version relies on Obsidian's window passing its `copy` event on); since 0.9.24 the windows of
+a vault deleted on the server, and IndexedDB listing its databases for clearing them; since 0.9.26 the setup
+guide's live comparison.
 
 ## Gotchas
 

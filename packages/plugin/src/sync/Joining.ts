@@ -95,6 +95,8 @@ export interface JoinHost {
   progress(stage: JoinStage, done: number, total: number): void
   ask(plan: JoinPlan): Promise<JoinChoice>
   finished(result: JoinResult): void
+  /** Nothing to compare: the device synced the vault before, or neither side has anything. */
+  skipped?(reason: 'before' | 'empty'): void
 }
 
 export interface JoiningParts {
@@ -164,12 +166,16 @@ export class Joining {
   async decide(): Promise<boolean> {
     const { state, vaultId } = this.parts
     const record = state.joinOf(vaultId)
-    if (record?.done) return true
+    if (record?.done) {
+      this.parts.host.skipped?.('before')
+      return true
+    }
     if (record) return this.carryOn(record)
     // Synced before there was a record: every note and file it agreed on is its base.
     if (this.knownBefore()) {
       await state.setJoin(vaultId, { at: Date.now(), choice: 'before', done: true })
       log.info('this device synced the vault before: no comparison')
+      this.parts.host.skipped?.('before')
       return true
     }
     if (this.postponed) return false
@@ -180,6 +186,7 @@ export class Joining {
     )
     if (plan.kind === 'empty') {
       await state.setJoin(vaultId, { at: Date.now(), choice: 'merge', done: true })
+      this.parts.host.skipped?.('empty')
       return true
     }
     const choice = await this.parts.host.ask(plan)
