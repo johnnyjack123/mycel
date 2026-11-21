@@ -9,7 +9,7 @@ import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SignJWT } from 'jose'
-import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, CLOSE_SIGNED_OUT, type FolderTie, type Notice, type NotifyKind } from '@mycel/shared'
+import { BLOB_CHUNK_BYTES, BLOB_CHUNK_OVERHEAD, CLOSE_SIGNED_OUT, CLOSE_VAULT_DELETED, VAULT_DELETE_GRACE_MS, type FolderTie, type Notice, type NotifyKind } from '@mycel/shared'
 import { AccountStore, sessionOf, type StoredAccount } from '../src/accounts.js'
 import { TokenService } from '../src/auth.js'
 import { BlobStore } from '../src/blobs.js'
@@ -1560,6 +1560,108 @@ try {
     check(expired.log === null && expired.reason === 'owner-removed', 'then it goes, and the tombstone stays', expired)
     await hub.subscribe(afterRestart, room2, 0, true)
     check(afterRestart.take()[0]?.type === 'revoked', 'still answering the share as ended')
+  }
+
+  // --- deleting one vault on the server (0.9.24) ------------------------------------------------
+  {
+    const unaKeys = keyMaterial()
+    const una = (await accounts.register(unaKeys, 'open')).accountId
+    const vic = (await accounts.register(keyMaterial(), 'open')).accountId
+    await contacts.pair(una, vic)
+    const gone = (await accounts.addVault(una, hexId(), b64(32), b64(48))).vaultId
+    const kept = (await accounts.addVault(una, hexId(), b64(32), b64(48))).vaultId
+    const vicVault = (await accounts.addVault(vic, hexId(), b64(32), b64(48))).vaultId
+    const unaDevice = new Client(una, gone)
+    const unaElsewhere = new Client(una, kept)
+    const vicDevice = new Client(vic, vicVault)
+    for (const client of [unaDevice, unaElsewhere, vicDevice]) hub.attach(client)
+    // Una's note in the vault that goes, shared with Vic; one in her other vault; Vic's, shared into the one that goes.
+    const ownNote = hexId()
+    const keptNote = hexId()
+    const vicNote = hexId()
+    await hub.subscribe(unaDevice, `idx:${gone}`, 0)
+    await hub.push(unaDevice, `idx:${gone}`, 1, 0, bytes('index'))
+    await hub.subscribe(unaDevice, `doc:${ownNote}`, 0)
+    await hub.push(unaDevice, `doc:${ownNote}`, 1, 0, bytes('una wrote this'))
+    await hub.share(una, { docId: ownNote, account: vic, role: 'write', withHistory: true, keys: { '0': 'sealed-for-vic' }, title: 't' })
+    await hub.accept(vic, ownNote, vicVault)
+    await hub.subscribe(unaElsewhere, `doc:${keptNote}`, 0)
+    await hub.push(unaElsewhere, `doc:${keptNote}`, 1, 0, bytes('elsewhere'))
+    await hub.subscribe(vicDevice, `doc:${vicNote}`, 0)
+    await hub.push(vicDevice, `doc:${vicNote}`, 1, 0, bytes('vic wrote this'))
+    await hub.share(vic, { docId: vicNote, account: una, role: 'write', withHistory: true, keys: { '0': 'sealed-for-una' }, title: 't' })
+    await hub.accept(una, vicNote, gone)
+    await hub.subscribe(vicDevice, `doc:${ownNote}`, 0, false)
+    for (const client of [unaDevice, unaElsewhere, vicDevice]) client.take()
+    const closed = (client: Client): boolean => client.take().some((message) => message.type === 'close' && message.code === CLOSE_VAULT_DELETED)
+
+    check(
+      (await status(() => accounts.deleteVault(una, gone, { loginKey: b64(32) }, undefined, VAULT_DELETE_GRACE_MS))) === 403,
+      'deleting a vault needs the password: a token alone deletes nothing'
+    )
+    const at = Date.now()
+    const deleted = await accounts.deleteVault(una, gone, { loginKey: unaKeys.loginKey }, b64(24), VAULT_DELETE_GRACE_MS, at)
+    hub.closeVault(una, gone)
+    check(
+      deleted.purgeAt === at + VAULT_DELETE_GRACE_MS && closed(unaDevice) && !closed(unaElsewhere),
+      "a deleted vault is locked at once: its connections close with a code of their own; the account's other vault carries on"
+    )
+    const listed = accounts.bundle((await accounts.get(una)) as StoredAccount)
+    check(
+      !listed.vaults.some((vault) => vault.vaultId === gone) &&
+        listed.deletedVaults.some((vault) => vault.vaultId === gone && vault.restorable && vault.by === 'owner' && vault.purgedAt === null && vault.sealedBy !== null),
+      'the account lists it as deleted - by its owner, restorable, its data still there',
+      listed.deletedVaults
+    )
+    check(existsSync(join(dataDir, 'users', una, gone)), 'its data stays meanwhile')
+    check((await status(() => accounts.addVault(una, gone, b64(32), b64(48)))) === 409, 'its id is never taken again')
+    await hub.sweep(at + 60_000)
+    check(
+      existsSync(join(dataDir, 'users', una, gone)) && (await hub.members(una, ownNote)).members.some((member) => member.account === vic),
+      'a sweep before its time touches nothing; its shares go on'
+    )
+    await accounts.restoreVault(una, gone, 'owner')
+    check(((await accounts.get(una)) as StoredAccount).vaults[gone] !== undefined, 'taken back within the week, it is there again')
+
+    await accounts.deleteVault(una, gone, 'admin', undefined, VAULT_DELETE_GRACE_MS, at + 1)
+    check((await status(() => accounts.restoreVault(una, gone, 'owner'))) === 409, "one the server's admin deleted, only the admin takes back")
+    unaElsewhere.take()
+    await hub.sweep(at + 60_000)
+    check(
+      closed(unaDevice) && unaElsewhere.take().some((message) => message.kind === 'account-changed'),
+      "the CLI only marks it: the sweep closes its connections and tells the account's devices"
+    )
+    await accounts.restoreVault(una, gone, 'admin')
+
+    // Deleted for good, after a vault was made anew in its place.
+    await accounts.deleteVault(una, gone, { loginKey: unaKeys.loginKey }, undefined, VAULT_DELETE_GRACE_MS, at)
+    const anew = (await accounts.addVault(una, hexId(), b64(32), b64(48), gone)).vaultId
+    const replaced = accounts.bundle((await accounts.get(una)) as StoredAccount).deletedVaults.find((vault) => vault.vaultId === gone)
+    check(
+      replaced?.replacedBy === anew && replaced.restorable === false && (await status(() => accounts.restoreVault(una, gone, 'owner'))) === 409,
+      'made anew in its place, the deleted one can no longer be taken back next to it',
+      replaced
+    )
+    vicDevice.take()
+    await hub.sweep(at + VAULT_DELETE_GRACE_MS + 1)
+    const fork = await hub.fork(vic, ownNote)
+    check(
+      fork.reason === 'vault-deleted' && fork.log?.frames.map((frame) => text(Buffer.from(frame.data, 'base64'))).join() === 'una wrote this' && vicDevice.take().some((message) => message.type === 'revoked'),
+      'once its week is over, its own shares end: the participant keeps what they could read',
+      fork
+    )
+    check(
+      !(await hub.members(vic, vicNote)).members.some((member) => member.account === una),
+      'the shares accepted into it are left'
+    )
+    check(!existsSync(join(dataDir, 'users', una, gone)) && existsSync(join(dataDir, 'users', una, kept)), 'its folder goes, and only its')
+    const settled = accounts.bundle((await accounts.get(una)) as StoredAccount).deletedVaults.find((vault) => vault.vaultId === gone)
+    check(
+      settled?.purgedAt !== null && settled?.restorable === false && (await status(() => accounts.restoreVault(una, gone, 'admin'))) === 409,
+      'its record stays, marked as cleared; nobody takes it back now',
+      settled
+    )
+    check((await accounts.vaultPurges(at + VAULT_DELETE_GRACE_MS + 2)).length === 0, 'and the sweep does not clear it twice')
   }
 
   // --- backup keys: a backup server reads one vault -------------------------------------

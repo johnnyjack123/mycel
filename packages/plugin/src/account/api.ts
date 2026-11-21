@@ -28,6 +28,7 @@ import {
   type InboxResponse,
   type RedeemRequest,
   type CreateVaultRequest,
+  type VaultDeleteRequest,
   type FolderAcceptRequest,
   type FolderEndRequest,
   type FolderJoinRequest,
@@ -214,6 +215,15 @@ export class ConnectApi {
 
   createVault(request: CreateVaultRequest): Promise<VaultRecord> {
     return this.call('POST', API.vaults, request)
+  }
+
+  /** Deletes a vault on the server (0.9.24): locked at once, restorable for a week. */
+  deleteVault(vaultId: string, request: VaultDeleteRequest): Promise<AccountBundle> {
+    return this.call('POST', `${API.vaults}/${vaultId}/delete`, request)
+  }
+
+  restoreVault(vaultId: string): Promise<AccountBundle> {
+    return this.call('POST', `${API.vaults}/${vaultId}/restore`, {})
   }
 
   sealedEpochs(room: string): Promise<SealedEpochsResponse> {

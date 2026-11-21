@@ -93,9 +93,11 @@ A template sits in `docs/server.env`:
 
 ```bash
 docker compose exec mycel mycel invite                    # a code for one new account
-docker compose exec mycel mycel user list                 # account ids, created, vaults, recovery code, 2fa, backup keys
+docker compose exec mycel mycel user list                 # account ids, created, recovery code, 2fa, backup keys; each vault's id, size, last change
 docker compose exec mycel mycel user remove <accountId>
 docker compose exec mycel mycel user 2fa-off <accountId>  # a lost phone, no recovery code
+docker compose exec mycel mycel vault remove <accountId> <vaultId>   # one vault: locked at once, restorable for 7 days
+docker compose exec mycel mycel vault restore <accountId> <vaultId>  # taken back within those 7 days
 ```
 
 There are no names to list: everyone finds their account id in the plugin's settings,
@@ -118,6 +120,17 @@ everything it shared, within a few minutes: everyone a note was shared with keep
 as a note of their own, with the history they could read. The server holds that part
 for them for 90 days if none of their devices is online meanwhile. Then it deletes the
 account's data. Only accounts removed this way are ever deleted.
+
+`vault remove` deletes one vault of an account (0.9.24); the person tells you its id -
+the plugin shows it in the settings, *Vault ID* - or you pick it by size and last change
+from `user list`. Its owner can do the same from the plugin, with their password. The
+vault is locked at once (from the CLI within five minutes, the server's next sweep): no
+device of the account syncs it any more, and each shows a window saying so; the files on
+the devices stay as they are. Its data stays for 7 days, and `vault restore` takes it
+back until then - a vault you deleted only you take back, one its owner deleted they can
+take back themselves. After that the server ends its shares - everyone in them keeps a
+copy, as when an account goes -, leaves the shares others made into it, and deletes its
+folder. Its record stays, marked as cleared: the id is never given out again.
 
 ## Without Docker
 

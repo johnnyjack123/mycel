@@ -181,9 +181,16 @@ export const accountKeys = {
    */
   previousWrap: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'mycel previous-wrap'),
   vaultName: (secret: Bytes): Promise<Bytes> => hkdf(secret, 'mycel vault-name'),
-  /** The same on every device of the account, and meaningless to everyone else. */
-  vaultId: async (secret: Bytes, vaultName: string): Promise<string> =>
-    toHex((await hmac(await hkdf(secret, 'mycel vault-id'), `vault::${vaultName.trim()}`)).subarray(0, 16))
+  /**
+   * The same on every device of the account, and meaningless to everyone else.
+   * `generation`: a name whose vault was deleted on the server takes the next one
+   * when it is made anew - an id is never used twice (0.9.24). The digits end at
+   * the first `::`, so no two names and generations meet.
+   */
+  vaultId: async (secret: Bytes, vaultName: string, generation = 0): Promise<string> =>
+    toHex(
+      (await hmac(await hkdf(secret, 'mycel vault-id'), generation === 0 ? `vault::${vaultName.trim()}` : `vault-gen::${generation}::${vaultName.trim()}`)).subarray(0, 16)
+    )
 }
 
 /**

@@ -2,6 +2,7 @@ import { readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   CLOSE_SIGNED_OUT,
+  CLOSE_VAULT_DELETED,
   docRoom,
   folderRoom,
   isHexId,
@@ -203,6 +204,8 @@ export class RoomHub {
   private readonly disconnectListeners = new Set<(account: string) => void>()
   /** Accounts removed while connections of theirs may still be open; they create nothing any more. */
   private readonly gone = new Set<string>()
+  /** `account/vault/deletedAt` of deleted vaults whose account was told once since the start - a CLI's deletion is heard by the sweep. */
+  private readonly deletionsTold = new Set<string>()
   /** `account/vault/blob` -> the rooms whose attachment lists name it. */
   private readonly attached = new Map<string, Set<string>>()
   private sweeping: Promise<void> | null = null
@@ -550,6 +553,17 @@ export class RoomHub {
       if (client.account === account) client.close(CLOSE_SIGNED_OUT, 'signed out')
     }
     for (const listener of this.disconnectListeners) listener(account)
+  }
+
+  /**
+   * Closes the connections of a vault deleted on the server (0.9.24): the upgrade
+   * checks the vault once, so a socket open before would carry on. Its devices
+   * learn it from the close code and stop.
+   */
+  closeVault(account: string, vaultId: string): void {
+    for (const client of Array.from(this.clients)) {
+      if (client.account === account && client.vaultId === vaultId) client.close(CLOSE_VAULT_DELETED, 'vault deleted')
+    }
   }
 
   /** Other connections an account holds - the relay's - closed on the same occasions. */
@@ -2095,8 +2109,56 @@ export class RoomHub {
         console.error(`[mycel] clearing the removed account ${account} failed; trying again later`, error)
       }
     }
+    // Vaults deleted on the server: their connections closed - the CLI only marks them -
+    // and once their time is up, their data cleared.
+    for (const { accountId, vaultId, deletedAt } of await this.accounts.pendingVaultDeletions()) {
+      this.closeVault(accountId, vaultId)
+      // A vault taken back and deleted again is news again.
+      const key = `${accountId}/${vaultId}/${deletedAt}`
+      if (!this.deletionsTold.has(key)) {
+        this.deletionsTold.add(key)
+        this.notify(accountId, 'account-changed', { account: accountId })
+      }
+    }
+    for (const { accountId, vaultId } of await this.accounts.vaultPurges(now)) {
+      try {
+        await this.clearVault(accountId, vaultId, now)
+        await this.accounts.settleVaultPurge(accountId, vaultId, now)
+        this.notify(accountId, 'account-changed', { account: accountId })
+        console.info(`[mycel] deleted vault ${vaultId} of ${accountId}: its shares ended and its data is deleted`)
+      } catch (error) {
+        console.error(`[mycel] clearing the deleted vault ${vaultId} of ${accountId} failed; trying again later`, error)
+      }
+    }
     const expired = await this.forks.expire(now)
     if (expired > 0) console.info(`[mycel] ${expired} kept share history(s) expired, 90 days after their owner's account went`)
+  }
+
+  /**
+   * A vault deleted on the server whose time is up (0.9.24): the shares accepted into
+   * it are left, as a device deleting them would; its own shares end as if their owner
+   * had gone - every participant keeping what they could read -; then its folder goes.
+   */
+  private async clearVault(account: string, vaultId: string, now: number): Promise<void> {
+    if (!isAccountId(account) || !isHexId(vaultId)) return
+    this.closeVault(account, vaultId)
+    const metas = Array.from(this.metas.values())
+    for (const meta of metas) {
+      if (meta.owner === account || meta.members[account]?.acceptedInto !== vaultId) continue
+      if (roomKind(meta.room) === 'doc') await this.leave(account, roomSubject(meta.room))
+    }
+    for (const meta of metas) {
+      if (meta.owner === account || meta.members[account]?.acceptedInto !== vaultId) continue
+      if (roomKind(meta.room) === 'fld') await this.leaveFolder(account, roomSubject(meta.room))
+    }
+    // Notes before folders: a note's participants through its folder are found in the folder.
+    const owned = metas.filter((meta) => meta.owner === account && meta.vaultId === vaultId)
+    for (const meta of [...owned.filter((each) => roomKind(each.room) !== 'fld'), ...owned.filter((each) => roomKind(each.room) === 'fld')]) {
+      await this.closeOwnerless(meta, now, 'vault-deleted')
+    }
+    this.breakLock(account, vaultId)
+    await this.forks.flush()
+    await rm(join(this.options.dataDir, 'users', account, vaultId), { recursive: true, force: true })
   }
 
   private async clearAccount(account: string, now: number): Promise<void> {
@@ -2111,7 +2173,7 @@ export class RoomHub {
     const folders = metas.filter((meta) => roomKind(meta.room) === 'fld')
     for (const meta of [...metas.filter((other) => roomKind(other.room) !== 'fld'), ...folders]) {
       if (meta.owner === account) {
-        await this.closeOwnerless(meta, now)
+        await this.closeOwnerless(meta, now, 'owner-removed')
       } else if (meta.members[account] || meta.sealedKeys[account] || meta.folder?.from?.[account] !== undefined) {
         delete meta.members[account]
         delete meta.sealedKeys[account]
@@ -2126,8 +2188,8 @@ export class RoomHub {
     await rm(join(this.options.dataDir, 'users', account), { recursive: true, force: true })
   }
 
-  /** A room whose owner's account was removed: its participants keep their part, then it goes. */
-  private async closeOwnerless(meta: RoomMeta, now: number): Promise<void> {
+  /** A room whose owner's account, or vault, was removed: its participants keep their part, then it goes. */
+  private async closeOwnerless(meta: RoomMeta, now: number, reason: 'owner-removed' | 'vault-deleted'): Promise<void> {
     const isFolder = roomKind(meta.room) === 'fld'
     // A note's participants through its folder too; a folder's own room keeps
     // nothing - its members fork the notes, which they have where they lie.
@@ -2137,10 +2199,12 @@ export class RoomHub {
     if (open) {
       if (!isFolder) {
         for (const member of participants) {
-          await this.keepSafely(this.keepForFork(open, member, 'owner-removed', now), meta.room, member)
+          await this.keepSafely(this.keepForFork(open, member, reason, now), meta.room, member)
         }
       }
-      for (const subscriber of open.subscribers) subscriber.sendRevoked(meta.room, "the owner's account was removed")
+      for (const subscriber of open.subscribers) {
+        subscriber.sendRevoked(meta.room, reason === 'owner-removed' ? "the owner's account was removed" : 'the owner deleted the vault')
+      }
       open.subscribers.clear()
       if (open.idleTimer) clearTimeout(open.idleTimer)
       await open.log.flush()

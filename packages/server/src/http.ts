@@ -4,6 +4,7 @@ import {
   BLOB_CHUNK_BYTES,
   BLOB_CHUNK_OVERHEAD,
   PROTOCOL_VERSION,
+  VAULT_DELETE_GRACE_MS,
   isHexId,
   type AcceptRequest,
   type AttachBlobsRequest,
@@ -33,6 +34,7 @@ import {
   type ContactReplyRequest,
   type ContactsResponse,
   type CreateVaultRequest,
+  type VaultDeleteRequest,
   type InboxResponse,
   type RedeemRequest,
   type DocRequest,
@@ -543,7 +545,29 @@ export function createHttpApp(
     const accountId = await user(request, reply)
     if (!accountId) return undefined
     const body = (request.body ?? {}) as Partial<CreateVaultRequest>
-    return accounts.addVault(accountId, body.vaultId, body.sealedName, body.wrappedKey)
+    const record = await accounts.addVault(accountId, body.vaultId, body.sealedName, body.wrappedKey, body.replaces)
+    if (body.replaces !== undefined) hub.notify(accountId, 'account-changed', { account: accountId })
+    return record
+  })
+
+  // A vault deleted on the server (0.9.24): locked at once, restorable for a week, then cleared by the sweep.
+  app.post<{ Params: { vaultId: string } }>(`${API.vaults}/:vaultId/delete`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return guarded(request, reply, async (): Promise<AccountBundle> => {
+      const body = (request.body ?? {}) as Partial<VaultDeleteRequest>
+      await accounts.deleteVault(accountId, request.params.vaultId, { loginKey: body.loginKey }, body.sealedBy, VAULT_DELETE_GRACE_MS, now())
+      hub.closeVault(accountId, request.params.vaultId)
+      const account = await accounts.get(accountId)
+      if (!account) throw new AccountError(401, 'unknown account')
+      return changed(accountId, accounts.bundle(account))
+    })
+  })
+
+  app.post<{ Params: { vaultId: string } }>(`${API.vaults}/:vaultId/restore`, async (request, reply) => {
+    const accountId = await user(request, reply)
+    if (!accountId) return undefined
+    return changed(accountId, accounts.bundle(await accounts.restoreVault(accountId, request.params.vaultId, 'owner')))
   })
 
   // --- contacts ------------------------------------------------------------------

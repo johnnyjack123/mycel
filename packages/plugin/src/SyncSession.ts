@@ -102,6 +102,8 @@ export interface SyncHost {
   // What the server says that the person hears about: about the account - contacts, a lock of this vault -, never a share or a folder.
   notify(kind: AccountNoticeKind, payload: ServerNotice): void
   signedOut(socket: VaultSocket): void
+  /** The vault was deleted on the server (0.9.24): the session is no use any more. */
+  vaultDeleted(): void
   locked(): void
   full(room: string): void
 
@@ -231,6 +233,7 @@ export class SyncSession {
       denied: (room, reason) => log.error(`${room} was refused: ${reason}`),
       diverged: (room) => this.recovery?.diverged(room),
       signedOut: () => host.signedOut(socket),
+      vaultDeleted: () => host.vaultDeleted(),
       locked: () => host.locked(),
       full: (room) => host.full(room)
     })

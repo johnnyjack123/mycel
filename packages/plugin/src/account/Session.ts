@@ -160,6 +160,32 @@ function vaultNameAad(vaultId: string): string {
   return `vault-name:${vaultId}`
 }
 
+function vaultDeletedAad(vaultId: string): string {
+  return `vault-deleted:${vaultId}`
+}
+
+/** A vault deleted on the server, as this device can tell it (0.9.24). */
+export interface DeletedVaultInfo {
+  vaultId: string
+  name: string
+  deletedAt: number
+  purgeAt: number
+  /** When its data went; null while it can still be restored. */
+  purgedAt: number | null
+  by: 'owner' | 'admin'
+  /** Which device of the account deleted it, as it called itself; null from the admin's CLI. */
+  device: string | null
+  replacedBy: string | null
+  restorable: boolean
+}
+
+/** The vault of that name was deleted on the server: it is not made anew unasked. */
+export class VaultDeletedError extends Error {
+  constructor(readonly info: DeletedVaultInfo) {
+    super(`the vault "${info.name}" was deleted on the server`)
+  }
+}
+
 export class Session {
   /**
    * A request of this device that moves the account's session generation,
@@ -654,21 +680,121 @@ export class Session {
     const vaultName = name.trim()
     const wrapKey = await accountKeys.vaultWrap(unlocked.accountSecret)
     let record = await this.vaultNamed(unlocked, vaultName)
-    const vaultId = record?.vaultId ?? (await accountKeys.vaultId(unlocked.accountSecret, vaultName))
     if (!record) {
-      const key = randomBytes(32)
-      const nameKey = await aesKey(await accountKeys.vaultName(unlocked.accountSecret))
-      // If another device created it a moment ago, the server returns that
-      // one, wrapped key and all, and this key is simply dropped.
-      record = await this.api.createVault({
-        vaultId,
-        sealedName: toBase64(await encrypt(nameKey, utf8(vaultName), vaultNameAad(vaultId))),
-        wrappedKey: await wrapSecret(wrapKey, key, VAULT_KEY)
-      })
-      unlocked.bundle.vaults.push(record)
-      this.secrets.save(BUNDLE, JSON.stringify(unlocked.bundle))
+      // Deleted on the server: not made anew unasked - a device that synced it would
+      // take a new vault for the old one, and the person decides what comes next (0.9.24).
+      const deleted = await this.deletedNamed(unlocked, vaultName)
+      if (deleted) throw new VaultDeletedError(deleted)
+      record = await this.createVault(unlocked, vaultName, null)
     }
-    return { vaultId, name: vaultName, key: await unwrapSecret(wrapKey, record.wrappedKey, VAULT_KEY) }
+    return { vaultId: record.vaultId, name: vaultName, key: await unwrapSecret(wrapKey, record.wrappedKey, VAULT_KEY) }
+  }
+
+  /** A vault of that name made anew in place of a deleted one (0.9.24): another id, another key. */
+  async createVaultAnew(unlocked: Unlocked, name: string, replaces: string): Promise<OpenVault> {
+    const vaultName = name.trim()
+    const existing = await this.vaultNamed(unlocked, vaultName)
+    const record = existing ?? (await this.createVault(unlocked, vaultName, replaces))
+    const wrapKey = await accountKeys.vaultWrap(unlocked.accountSecret)
+    return { vaultId: record.vaultId, name: vaultName, key: await unwrapSecret(wrapKey, record.wrappedKey, VAULT_KEY) }
+  }
+
+  /**
+   * Registers a vault under the first id of its name no vault of the account had - an
+   * id is never used twice. If another device created it a moment ago, the server
+   * returns that one, wrapped key and all, and this key is simply dropped.
+   */
+  private async createVault(unlocked: Unlocked, vaultName: string, replaces: string | null): Promise<VaultRecord> {
+    const wrapKey = await accountKeys.vaultWrap(unlocked.accountSecret)
+    const nameKey = await aesKey(await accountKeys.vaultName(unlocked.accountSecret))
+    for (let attempt = 0; ; attempt += 1) {
+      const taken = new Set([...unlocked.bundle.vaults, ...(unlocked.bundle.deletedVaults ?? [])].map((vault) => vault.vaultId))
+      let generation = 0
+      let vaultId = await accountKeys.vaultId(unlocked.accountSecret, vaultName)
+      while (taken.has(vaultId)) {
+        generation += 1
+        vaultId = await accountKeys.vaultId(unlocked.accountSecret, vaultName, generation)
+      }
+      try {
+        const record = await this.api.createVault({
+          vaultId,
+          sealedName: toBase64(await encrypt(nameKey, utf8(vaultName), vaultNameAad(vaultId))),
+          wrappedKey: await wrapSecret(wrapKey, randomBytes(32), VAULT_KEY),
+          ...(replaces ? { replaces } : {})
+        })
+        unlocked.bundle.vaults.push(record)
+        this.secrets.save(BUNDLE, JSON.stringify(unlocked.bundle))
+        return record
+      } catch (error) {
+        // Deleted since this device last asked: the next id, once.
+        if (attempt > 0 || !(error instanceof ApiError) || error.status !== 409) throw error
+        unlocked.bundle = await this.api.account()
+        this.secrets.save(BUNDLE, JSON.stringify(unlocked.bundle))
+      }
+    }
+  }
+
+  /** The newest vault of that name deleted on the server, if any. */
+  private async deletedNamed(unlocked: Unlocked, name: string): Promise<DeletedVaultInfo | null> {
+    const key = await aesKey(await accountKeys.vaultName(unlocked.accountSecret))
+    const newestFirst = [...(unlocked.bundle.deletedVaults ?? [])].sort((a, b) => b.deletedAt - a.deletedAt)
+    for (const deleted of newestFirst) {
+      try {
+        if (fromUtf8(await decrypt(key, fromBase64(deleted.sealedName), vaultNameAad(deleted.vaultId))) === name) return this.describeDeleted(unlocked, deleted.vaultId)
+      } catch {
+        // Not readable with this secret: sealed before the account's keys were replaced.
+      }
+    }
+    return null
+  }
+
+  /** What this device can tell of a vault deleted on the server; null when it is not. */
+  async describeDeleted(unlocked: Unlocked, vaultId: string): Promise<DeletedVaultInfo | null> {
+    const deleted = (unlocked.bundle.deletedVaults ?? []).find((each) => each.vaultId === vaultId)
+    if (!deleted) return null
+    const key = await aesKey(await accountKeys.vaultName(unlocked.accountSecret))
+    let name = ''
+    let device: string | null = null
+    try {
+      name = fromUtf8(await decrypt(key, fromBase64(deleted.sealedName), vaultNameAad(vaultId)))
+    } catch {
+      // Sealed before the account's keys were replaced.
+    }
+    if (deleted.sealedBy) {
+      try {
+        const note = JSON.parse(fromUtf8(await decrypt(key, fromBase64(deleted.sealedBy), vaultDeletedAad(vaultId)))) as { device?: unknown }
+        if (typeof note.device === 'string') device = note.device
+      } catch {
+        // A note this device cannot read says nothing.
+      }
+    }
+    return {
+      vaultId,
+      name,
+      deletedAt: deleted.deletedAt,
+      purgeAt: deleted.purgeAt,
+      purgedAt: deleted.purgedAt,
+      by: deleted.by,
+      device,
+      replacedBy: deleted.replacedBy,
+      restorable: deleted.restorable
+    }
+  }
+
+  /**
+   * Deletes a vault on the server (0.9.24): locked at once on every device, restorable
+   * for a week. The password, as for a recovery code: a token alone deletes nothing.
+   * `device`: how this device calls itself, sealed for the account's other devices.
+   */
+  async deleteVault(unlocked: Unlocked, vaultId: string, password: string, device: string): Promise<Unlocked> {
+    const loginKey = await this.currentLoginKey(unlocked, password)
+    const key = await aesKey(await accountKeys.vaultName(unlocked.accountSecret))
+    const sealedBy = toBase64(await encrypt(key, utf8(JSON.stringify({ device, at: Date.now() })), vaultDeletedAad(vaultId)))
+    return this.withBundle(unlocked, await this.api.deleteVault(vaultId, { loginKey, sealedBy }))
+  }
+
+  async restoreVault(unlocked: Unlocked, vaultId: string): Promise<Unlocked> {
+    return this.withBundle(unlocked, await this.api.restoreVault(vaultId))
   }
 
   /**
