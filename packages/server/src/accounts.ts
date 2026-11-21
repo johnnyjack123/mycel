@@ -487,6 +487,16 @@ export class AccountStore {
     })
   }
 
+  /**
+   * The accounts that hold a vault id, live or deleted - one, since `addVault` never gives an
+   * id out twice; the admin's CLI finds a vault's account by it (0.9.25).
+   */
+  async accountsOfVault(vaultId: string): Promise<string[]> {
+    return Object.values((await this.load()).accounts)
+      .filter((account) => account.vaults[vaultId] !== undefined || account.deletedVaults?.[vaultId] !== undefined)
+      .map((account) => account.accountId)
+  }
+
   /** Deleted vaults whose time is up, for the sweep. */
   async vaultPurges(now = Date.now()): Promise<Array<{ accountId: string; vaultId: string }>> {
     const due: Array<{ accountId: string; vaultId: string }> = []

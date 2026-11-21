@@ -1615,6 +1615,10 @@ try {
     )
     check(existsSync(join(dataDir, 'users', una, gone)), 'its data stays meanwhile')
     check((await status(() => accounts.addVault(una, gone, b64(32), b64(48)))) === 409, 'its id is never taken again')
+    check(
+      (await accounts.accountsOfVault(gone)).join() === una && (await accounts.accountsOfVault(kept)).join() === una && (await accounts.accountsOfVault(hexId())).length === 0,
+      "a vault's id alone finds its account, deleted or not - what the admin's CLI goes by (0.9.25)"
+    )
     await hub.sweep(at + 60_000)
     check(
       existsSync(join(dataDir, 'users', una, gone)) && (await hub.members(una, ownNote)).members.some((member) => member.account === vic),

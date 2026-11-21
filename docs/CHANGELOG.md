@@ -8,6 +8,17 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.25** (2026-11-21, on `main`, the user's question after trying it) - **`mycel vault remove`
+  and `mycel vault restore` take the vault's id alone.** 0.9.24 asked for the account's id too,
+  for no good reason: the server never gives a vault id to two accounts (`addVault` refuses one
+  another account holds, deleted ones included), so the CLI looks the account up
+  (`accountsOfVault`) and names it in what it says. Restoring is then: find the vault marked
+  deleted in `mycel user list`, `mycel vault restore <vaultId>`. Should an `accounts.json` put
+  together by hand list the id twice, it changes nothing and says so; given an account id the
+  way 0.9.24 wanted, it says that the vault's id alone is enough. Checked in `test:rooms`
+  (the id finds its account, live or deleted, and an unknown one none) and by hand against a
+  scratch data folder (remove, list, restore by the id alone, an unknown id, the old form).
+
 - **0.9.24** (2026-11-21, branch `feat/vault-delete`, the user's decisions of the day) - **a vault
   can be deleted on the server: by its owner in the plugin, and by the admin through the CLI**
   (invariant 35). Until now only a whole account could go (`mycel user remove`). Deleting moves

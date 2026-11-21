@@ -9,8 +9,8 @@
 //   mycel user list
 //   mycel user remove <accountId>
 //   mycel user 2fa-off <accountId>
-//   mycel vault remove <accountId> <vaultId>
-//   mycel vault restore <accountId> <vaultId>
+//   mycel vault remove <vaultId>
+//   mycel vault restore <vaultId>
 import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { VAULT_DELETE_GRACE_MS, isHexId } from '@mycel/shared'
@@ -22,8 +22,8 @@ const USAGE = `usage:
   mycel user list                            every account: id, created, recovery code, 2fa, backup keys, and its vaults
   mycel user remove <accountId>              delete an account (its id is shown in the plugin's settings)
   mycel user 2fa-off <accountId>             turn off two-factor sign-in, for a lost phone without a recovery code
-  mycel vault remove <accountId> <vaultId>   delete one vault: locked at once, restorable for 7 days, then cleared
-  mycel vault restore <accountId> <vaultId>  take a deleted vault back within those 7 days`
+  mycel vault remove <vaultId>               delete one vault: locked at once, restorable for 7 days, then cleared
+  mycel vault restore <vaultId>              take a deleted vault back within those 7 days`
 
 function day(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10)
@@ -63,7 +63,7 @@ async function folderStats(dir: string): Promise<{ bytes: number; changed: numbe
 }
 
 async function main(argv: string[]): Promise<number> {
-  const [scope, command, id, second] = argv
+  const [scope, command, id] = argv
   // As the server writes accounts.json: its user's alone.
   process.umask(0o077)
   // The same settings as the server, or it would write to another data directory.
@@ -77,7 +77,7 @@ async function main(argv: string[]): Promise<number> {
     console.log('In Obsidian: Settings -> Mycel -> Create a new account, with this code.')
     return 0
   }
-  if (scope === 'vault') return vault(accounts, command, id, second)
+  if (scope === 'vault') return vault(accounts, command, id)
   if (scope !== 'user' || !command) {
     console.log(USAGE)
     return scope === undefined || scope === 'help' || scope === '--help' ? 0 : 1
@@ -138,22 +138,42 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-/** One vault of an account, by its id: deleted on the server, or taken back (0.9.24). */
-async function vault(accounts: AccountStore, command: string | undefined, accountId: string | undefined, id: string | undefined): Promise<number> {
-  if ((command !== 'remove' && command !== 'restore') || !isAccountId(accountId) || id === undefined || !isHexId(id)) {
-    console.error(`usage: mycel vault ${command === 'restore' ? 'restore' : 'remove'} <accountId> <vaultId>   (both from "mycel user list")`)
+/**
+ * One vault, by its id: deleted on the server, or taken back (0.9.24). The id alone is
+ * enough - the server never gives one out to two accounts -, so its account is looked up
+ * (0.9.25, the user).
+ */
+async function vault(accounts: AccountStore, command: string | undefined, id: string | undefined): Promise<number> {
+  if ((command !== 'remove' && command !== 'restore') || id === undefined || !isHexId(id)) {
+    console.error(`usage: mycel vault ${command === 'restore' ? 'restore' : 'remove'} <vaultId>   (from "mycel user list")`)
     return 1
   }
   const vaultId: string = id
+  const holders = await accounts.accountsOfVault(vaultId)
+  if (holders.length === 0) {
+    // 0.9.24 asked for the account id first.
+    console.error(
+      (await accounts.get(vaultId))
+        ? `${vaultId} is an account id; the vault's id alone is enough: mycel vault ${command} <vaultId>   (from "mycel user list")`
+        : `no vault ${vaultId} on this server`
+    )
+    return 1
+  }
+  // Only an accounts.json put together by hand could hold it twice: then nothing is guessed.
+  if (holders.length > 1) {
+    console.error(`the vault ${vaultId} is listed under more than one account (${holders.join(', ')}); accounts.json was edited by hand - nothing was changed`)
+    return 1
+  }
+  const accountId = holders[0] as string
   try {
     if (command === 'remove') {
       const deleted = await accounts.deleteVault(accountId, vaultId, 'admin', undefined, VAULT_DELETE_GRACE_MS)
       console.log(
-        `The vault ${vaultId} is deleted: within five minutes the running server closes its connections, and no device of the account syncs it any more - their files stay with them. Its data stays until ${day(deleted.purgeAt)}; "mycel vault restore ${accountId} ${vaultId}" takes it back until then. After that the server ends its shares - everyone keeps a copy of what was shared with them - and deletes it.`
+        `The vault ${vaultId} of account ${accountId} is deleted: within five minutes the running server closes its connections, and no device of the account syncs it any more - their files stay with them. Its data stays until ${day(deleted.purgeAt)}; "mycel vault restore ${vaultId}" takes it back until then. After that the server ends its shares - everyone keeps a copy of what was shared with them - and deletes it.`
       )
     } else {
       await accounts.restoreVault(accountId, vaultId, 'admin')
-      console.log(`The vault ${vaultId} is back. Its devices offer to connect again; the backup keys it had work again.`)
+      console.log(`The vault ${vaultId} of account ${accountId} is back. Its devices offer to connect again; the backup keys it had work again.`)
     }
     return 0
   } catch (error) {

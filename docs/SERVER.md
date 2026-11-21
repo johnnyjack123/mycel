@@ -96,8 +96,8 @@ docker compose exec mycel mycel invite                    # a code for one new a
 docker compose exec mycel mycel user list                 # account ids, created, recovery code, 2fa, backup keys; each vault's id, size, last change
 docker compose exec mycel mycel user remove <accountId>
 docker compose exec mycel mycel user 2fa-off <accountId>  # a lost phone, no recovery code
-docker compose exec mycel mycel vault remove <accountId> <vaultId>   # one vault: locked at once, restorable for 7 days
-docker compose exec mycel mycel vault restore <accountId> <vaultId>  # taken back within those 7 days
+docker compose exec mycel mycel vault remove <vaultId>    # one vault: locked at once, restorable for 7 days
+docker compose exec mycel mycel vault restore <vaultId>   # taken back within those 7 days
 ```
 
 There are no names to list: everyone finds their account id in the plugin's settings,
@@ -123,7 +123,10 @@ account's data. Only accounts removed this way are ever deleted.
 
 `vault remove` deletes one vault of an account (0.9.24); the person tells you its id -
 the plugin shows it in the settings, *Vault ID* - or you pick it by size and last change
-from `user list`. Its owner can do the same from the plugin, with their password. The
+from `user list`. The vault's id alone is enough: the server never gives one id to two
+accounts, so the CLI finds the account itself and names it (0.9.25). `user list` marks a
+deleted vault as such, with the day it is cleared - `vault restore` with that id takes it
+back. Its owner can do the same from the plugin, with their password. The
 vault is locked at once (from the CLI within five minutes, the server's next sweep): no
 device of the account syncs it any more, and each shows a window saying so; the files on
 the devices stay as they are. Its data stays for 7 days, and `vault restore` takes it
