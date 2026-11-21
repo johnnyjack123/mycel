@@ -271,6 +271,27 @@
   margin: 0.35em 0;
 }
 
+/* The first comparison with the vault on the server, running while the guide shows its last step. */
+.mycel-setup-join {
+  margin: 0.5em 0 1em;
+  padding: 0.5em 0.75em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+}
+
+.mycel-setup-join p {
+  margin: 0.3em 0;
+}
+
+.mycel-setup-join-bar {
+  width: 100%;
+}
+
+.mycel-setup-join-done {
+  font-weight: var(--font-semibold);
+  color: var(--text-success);
+}
+
 .mycel-setup-nav {
   display: flex;
   flex-wrap: wrap;
@@ -934,7 +955,8 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
 }
 
 /* Putting a note together from its two versions, as git's merge tools do: this device's
-   version, the result, the other version - one row per passage that differs. */
+   version, the result, the other version - both versions whole, line beside line, one
+   grid row per line, so a long line wraps and its row grows on all three sides alike. */
 .mycel-merge-modal {
   width: min(1400px, 96vw);
 }
@@ -971,13 +993,13 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
   border-radius: var(--radius-m);
 }
 
-.mycel-merge-row {
+.mycel-merge-head,
+.mycel-merge-same,
+.mycel-merge-passage {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  grid-template-areas: 'mine result theirs';
-  gap: 0.5em;
-  padding: 0.5em;
-  border-bottom: 1px solid var(--background-modifier-border);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 0.5em;
+  padding: 0 0.5em;
 }
 
 .mycel-merge-head {
@@ -986,76 +1008,152 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
   z-index: 1;
   padding-top: 0.4em;
   padding-bottom: 0.4em;
+  border-bottom: 1px solid var(--background-modifier-border);
   background-color: var(--background-primary);
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
-  font-weight: var(--font-semibold);
-}
-
-.mycel-merge-cell {
-  min-width: 0;
-}
-
-.mycel-merge-cell.is-mine {
-  grid-area: mine;
-}
-
-.mycel-merge-cell.is-result {
-  grid-area: result;
-  position: relative;
-}
-
-.mycel-merge-cell.is-theirs {
-  grid-area: theirs;
-}
-
-.mycel-merge-same,
-.mycel-merge-block,
-.mycel-merge-slot {
-  margin: 0;
-  font-family: var(--font-monospace);
-  font-size: 0.85em;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .mycel-merge-same {
-  padding: 0.3em 0.8em;
+  padding-top: 0.2em;
+  padding-bottom: 0.2em;
+}
+
+.mycel-merge-passage {
+  padding-top: 0.4em;
+  padding-bottom: 0.4em;
+  border-top: 1px solid var(--background-modifier-border);
   border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.mycel-merge-passage + .mycel-merge-passage {
+  border-top: none;
+}
+
+.mycel-merge-head .is-mine,
+.mycel-merge-line.is-mine,
+.mycel-merge-take-cell.is-mine {
+  grid-column: 1;
+}
+
+.mycel-merge-head .is-result,
+.mycel-merge-line.is-result {
+  grid-column: 2;
+}
+
+.mycel-merge-head .is-theirs,
+.mycel-merge-line.is-theirs,
+.mycel-merge-take-cell.is-theirs {
+  grid-column: 3;
+}
+
+.mycel-merge-line {
+  display: flex;
+  gap: 0.6em;
+  min-width: 0;
+  min-height: 1.5em;
+  padding: 0 0.4em;
+  font-family: var(--font-monospace);
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+
+.mycel-merge-same .mycel-merge-line {
   color: var(--text-muted);
 }
 
-.mycel-merge-same.is-folded {
+/* At the top of its line, also of one that wraps: a button would centre its number. */
+.mycel-merge-num {
+  flex: 0 0 2.5em;
+  align-self: flex-start;
+  text-align: right;
+  color: var(--text-faint);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button.mycel-merge-num {
+  height: auto;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-s);
+  background: none;
+  box-shadow: none;
+  font: inherit;
+  color: var(--text-faint);
   cursor: pointer;
 }
 
-.mycel-merge-block {
-  padding: 0.4em 0.6em;
-  border-radius: var(--radius-s);
-  background-color: var(--background-secondary);
+button.mycel-merge-num:hover:not(:disabled) {
+  color: var(--text-accent);
+  background-color: var(--background-modifier-hover);
 }
 
-.mycel-merge-cell.is-mine .mycel-merge-block {
-  border-left: 3px solid var(--color-blue);
+button.mycel-merge-num:disabled {
+  cursor: default;
 }
 
-.mycel-merge-cell.is-theirs .mycel-merge-block {
-  border-left: 3px solid var(--color-purple);
+.mycel-merge-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
-.mycel-merge-cell.is-taken .mycel-merge-block {
+/* A selection that began in one version stays in it. */
+.mycel-merge-list.is-selecting-mine .mycel-merge-line:not(.is-mine) .mycel-merge-text,
+.mycel-merge-list.is-selecting-theirs .mycel-merge-line:not(.is-theirs) .mycel-merge-text {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.mycel-merge-passage .mycel-merge-line.is-mine {
+  background-color: rgba(var(--color-blue-rgb), 0.07);
+  border-left: 3px solid rgba(var(--color-blue-rgb), 0.6);
+}
+
+.mycel-merge-passage .mycel-merge-line.is-theirs {
+  background-color: rgba(var(--color-purple-rgb), 0.07);
+  border-left: 3px solid rgba(var(--color-purple-rgb), 0.6);
+}
+
+.mycel-merge-passage .mycel-merge-line.is-mine .mycel-merge-changed {
+  background-color: rgba(var(--color-blue-rgb), 0.25);
+  border-radius: 2px;
+}
+
+.mycel-merge-passage .mycel-merge-line.is-theirs .mycel-merge-changed {
+  background-color: rgba(var(--color-purple-rgb), 0.25);
+  border-radius: 2px;
+}
+
+/* In the middle already, with its side or alone. */
+.mycel-merge-passage .mycel-merge-line.is-picked {
   opacity: 0.55;
+}
+
+/* Where this side has no line: the rows below stay level with the other side's. */
+.mycel-merge-passage .mycel-merge-line.is-gap {
+  border-left-color: transparent;
+  background-color: transparent;
+  background-image: repeating-linear-gradient(135deg, var(--background-modifier-border) 0 1px, transparent 1px 6px);
+}
+
+.mycel-merge-take-cell {
+  grid-row: 1;
+  margin-bottom: 0.3em;
+}
+
+.mycel-merge-take-cell.is-theirs {
+  text-align: right;
 }
 
 .mycel-merge-take {
   display: inline-flex;
   gap: 0.3em;
   align-items: center;
-  margin-bottom: 0.3em;
-}
-
-.mycel-merge-cell.is-theirs .mycel-merge-take {
-  float: right;
 }
 
 .mycel-merge-take-icon {
@@ -1067,17 +1165,34 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
   height: 1em;
 }
 
+.mycel-merge-result {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-width: 0;
+}
+
 .mycel-merge-slot {
+  flex: 1 0 auto;
   display: block;
+  box-sizing: border-box;
   width: 100%;
   min-height: 40px;
+  margin: 0;
   padding: 0.4em 1.8em 0.4em 0.6em;
   resize: vertical;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
+  font-family: var(--font-monospace);
+  font-size: 0.85em;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.mycel-merge-row.is-open .mycel-merge-slot {
+.mycel-merge-passage.is-open .mycel-merge-slot {
   border: 1px dashed var(--text-accent);
   background-color: var(--background-modifier-hover);
 }
@@ -1088,41 +1203,86 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
   right: 0.2em;
 }
 
-/* Narrow (a phone): the two versions, then the result, one below the other. */
-@media (max-width: 700px) {
-  .mycel-merge-row {
-    grid-template-columns: 1fr;
-    grid-template-areas: 'mine' 'theirs' 'result';
-  }
+.mycel-merge-fold {
+  grid-column: 1 / -1;
+  justify-self: center;
+  margin: 0.2em 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
 
+/* Narrow (a phone): per passage this device's lines, the other's, then the result, one
+   below the other; what both have shown once. */
+@media (max-width: 700px) {
   .mycel-merge-head {
     display: none;
   }
 
-  .mycel-merge-cell.is-theirs .mycel-merge-take {
-    float: none;
+  .mycel-merge-same {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .mycel-merge-cell:not(.is-taken) .mycel-merge-take-icon {
-    transform: rotate(90deg);
+  .mycel-merge-same .mycel-merge-line.is-mine,
+  .mycel-merge-same .mycel-merge-line.is-theirs {
+    display: none;
   }
 
-  .mycel-merge-cell.is-theirs:not(.is-taken) .mycel-merge-take-icon {
-    transform: rotate(-90deg);
+  .mycel-merge-same .mycel-merge-line.is-result {
+    grid-column: 1;
   }
 
-  .mycel-merge-cell.is-mine .mycel-merge-block::before {
+  .mycel-merge-passage {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .mycel-merge-take-cell.is-mine {
+    order: 1;
+  }
+
+  .mycel-merge-passage .mycel-merge-line.is-mine {
+    order: 2;
+  }
+
+  .mycel-merge-take-cell.is-theirs {
+    order: 3;
+    margin-top: 0.5em;
+    text-align: left;
+  }
+
+  .mycel-merge-passage .mycel-merge-line.is-theirs {
+    order: 4;
+  }
+
+  .mycel-merge-result {
+    order: 5;
+    margin-top: 0.5em;
+  }
+
+  .mycel-merge-passage .mycel-merge-line.is-gap {
+    display: none;
+  }
+
+  .mycel-merge-take-cell.is-mine::before {
     content: 'This device';
     display: block;
     color: var(--text-muted);
     font-size: 0.8em;
   }
 
-  .mycel-merge-cell.is-theirs .mycel-merge-block::before {
+  .mycel-merge-take-cell.is-theirs::before {
     content: 'Other version';
     display: block;
     color: var(--text-muted);
     font-size: 0.8em;
+  }
+
+  .mycel-merge-take-cell:not(.is-taken) .mycel-merge-take-icon {
+    transform: rotate(90deg);
+  }
+
+  .mycel-merge-take-cell.is-theirs:not(.is-taken) .mycel-merge-take-icon {
+    transform: rotate(-90deg);
   }
 }
 

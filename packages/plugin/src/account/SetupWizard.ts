@@ -26,6 +26,18 @@ export interface SetupHost {
 type Step = 'welcome' | 'server' | 'vault' | 'account' | 'recovery' | 'done'
 type Mode = 'sign-in' | 'create'
 
+/**
+ * How the first comparison with the vault on the server stands while the guide is open: it
+ * starts with signing in, so it runs during the last steps, and the question it ends in waits
+ * for the guide to close (`Joining`).
+ */
+export type JoinWatch =
+  | { state: 'comparing'; done: number; total: number }
+  /** A choice carried on after a restart: copying or taking the server's version. */
+  | { state: 'working'; done: number; total: number }
+  | { state: 'compared' }
+  | { state: 'skipped'; reason: 'before' | 'empty' }
+
 /** The dots at the top. The recovery code belongs to the account's step: only a new account has one to show. */
 const DOTS: Step[] = ['welcome', 'server', 'vault', 'account', 'done']
 /** A device signed in already only hears what Mycel is and where things are: connecting anew means signing out first. */
@@ -84,6 +96,10 @@ export class SetupWizard extends Modal {
   private problemEl: HTMLElement | null = null
   private backButton: ButtonComponent | null = null
   private strengthTimer: number | null = null
+  private joinWatch: JoinWatch | null = null
+  private joinEl: HTMLElement | null = null
+  private joinBar: HTMLProgressElement | null = null
+  private joinCount: HTMLElement | null = null
   private closedNow: () => void = () => undefined
   /** Resolves once the guide is closed: what the first sync asks waits for it. */
   readonly closed = new Promise<void>((resolve) => {
@@ -140,6 +156,9 @@ export class SetupWizard extends Modal {
     this.problemEl = null
     this.statusEl = null
     this.backButton = null
+    this.joinEl = null
+    this.joinBar = null
+    this.joinCount = null
     // The fields are built anew; whether passwords show carries over.
     this.reveal = new PasswordReveal(this.reveal.revealed)
     this.progress(contentEl)
@@ -256,6 +275,61 @@ export class SetupWizard extends Modal {
   private stopJudging(): void {
     if (this.strengthTimer !== null) window.clearTimeout(this.strengthTimer)
     this.strengthTimer = null
+  }
+
+  /** The first comparison moved on: the last step says so at once, or when it is reached. */
+  joinUpdate(watch: JoinWatch): void {
+    const before = this.joinWatch
+    this.joinWatch = watch
+    const counting = watch.state === 'comparing' || watch.state === 'working'
+    if (counting && before?.state === watch.state && this.joinBar && this.joinCount) {
+      this.joinBar.max = Math.max(watch.total, 1)
+      this.joinBar.value = watch.done
+      this.joinCount.setText(this.joinCountText(watch))
+      return
+    }
+    this.drawJoin()
+  }
+
+  private joinCountText(watch: { state: 'comparing' | 'working'; done: number; total: number }): string {
+    if (watch.state === 'working') return `${watch.done} of ${watch.total}.`
+    return watch.total === 0 ? 'Nothing both have to read.' : `${watch.done} of ${watch.total} compared.`
+  }
+
+  private drawJoin(): void {
+    const el = this.joinEl
+    if (!el) return
+    el.empty()
+    this.joinBar = null
+    this.joinCount = null
+    const watch = this.joinWatch
+    const counter = (done: number, total: number, text: string): void => {
+      this.joinBar = el.createEl('progress', { cls: 'mycel-setup-join-bar' })
+      this.joinBar.max = Math.max(total, 1)
+      this.joinBar.value = done
+      this.joinCount = el.createEl('p', { cls: 'setting-item-description', text })
+    }
+    if (!watch) {
+      el.createEl('p', {
+        text: 'Mycel is reaching the vault on the server. Unless this device synced it before, it then compares the two - every note and file both have is read on both sides - and shows what it found once you close this guide. Nothing is changed before you choose what happens.'
+      })
+    } else if (watch.state === 'comparing') {
+      el.createEl('p', { text: 'Comparing this vault with the one on the server: every note and file both have is read on both sides. Nothing is changed meanwhile.' })
+      counter(watch.done, watch.total, this.joinCountText(watch))
+      el.createEl('p', { cls: 'setting-item-description', text: 'You can close this guide meanwhile: what was found shows when the comparison is done. For a large vault, keep Obsidian open.' })
+    } else if (watch.state === 'working') {
+      el.createEl('p', { text: 'Carrying on connecting this vault, where this device stopped before.' })
+      counter(watch.done, watch.total, this.joinCountText(watch))
+    } else if (watch.state === 'compared') {
+      el.createEl('p', { cls: 'mycel-setup-join-done', text: 'Compared. Close this guide to see what was found and choose what happens - nothing is changed before that.' })
+    } else {
+      el.createEl('p', {
+        text:
+          watch.reason === 'before'
+            ? 'This device synced this vault before, so there was nothing to compare: it syncs now.'
+            : 'Neither this vault nor the one on the server has anything yet, so there was nothing to compare: it syncs now.'
+      })
+    }
   }
 
   // --- the steps -------------------------------------------------------------
@@ -618,9 +692,8 @@ export class SetupWizard extends Modal {
     if (!settings.syncEnabled) {
       containerEl.createEl('p', { text: 'Syncing is turned off on this device: Settings → Mycel → This device, "Sync this vault".' })
     } else if (this.signedIn) {
-      containerEl.createEl('p', {
-        text: 'Once you close this guide, Mycel compares this vault with the one on the server - unless this device synced it before - and shows what it found: nothing is changed before you choose what happens. For a large vault, give it a while and keep Obsidian open.'
-      })
+      this.joinEl = containerEl.createDiv({ cls: 'mycel-setup-join' })
+      this.drawJoin()
     }
     if (this.connected) {
       containerEl.createEl('p', {

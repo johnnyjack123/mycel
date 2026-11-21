@@ -1000,7 +1000,7 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   })
   check(
     both.result() === assemble(compare(mine, theirs), []),
-    'the other side then this one everywhere is the note as the merge made it',
+    'the other side then this one everywhere is the note as the merge made it, where the passages are as the merge saw them',
     both.result()
   )
   const end = new MergeDraft('a\nb', 'a\nc')
@@ -1009,6 +1009,103 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(end.result() === 'a\nc\nb', 'a last line without a line break keeps both apart here too', end.result())
   const open = new MergeDraft('x\none\ny\n', 'x\ntwo\ny\n')
   check(open.result() === 'x\ny\n' && open.open === 1, 'a passage nothing was taken into is left out', open.result())
+}
+
+// --- both versions line beside line, the passages as fine as they allow (0.9.26) --------------
+{
+  const { alignVersions, lineChanges, resemblance } = await import('../src/sync/align.js')
+  const { MergeDraft } = await import('../src/sync/Reviews.js')
+  // The user's case (2026-11-21): two lines on both devices; on one, a line put between them,
+  // the last one changed and a line added below it.
+  const theirs = 'Zeile 1\nZeile 2'
+  const mine = 'Zeile 1\nneu dazwischen\nZeile 2 geändert\nneu darunter'
+  const aligned = alignVersions(mine, theirs)
+  const shape = aligned.runs.map((run) =>
+    run.same ? `same ${run.mineTo - run.mineFrom}` : run.rows.map((row) => `${row.mine ?? '-'}|${row.theirs ?? '-'}${row.paired ? '~' : ''}`).join(',')
+  )
+  check(
+    JSON.stringify(shape) === JSON.stringify(['same 1', '1|-', '2|1~', '3|-']),
+    'the line both have is one row on both sides; the changed line stands beside its old self, each added line alone with a gap opposite',
+    shape
+  )
+  check(resemblance('Zeile 2 geändert', 'Zeile 2') >= 0.5 && resemblance('neu dazwischen', 'Zeile 2') < 0.5, 'a line written on resembles the line it was; another line does not')
+  const changes = lineChanges('Zeile 2 geändert', 'Zeile 2')
+  check(
+    JSON.stringify(changes) === JSON.stringify({ mine: [[7, 16]], theirs: [] }),
+    'what changed within a line is marked by whole words',
+    changes
+  )
+
+  const below = alignVersions('a\nb\nc', 'a\nb')
+  check(
+    below.runs.length === 2 && below.runs[0]?.same === true && below.runs[0].mineTo === 2,
+    'a line added below the last one leaves the last one alike, though only one of them ends in a line break',
+    below.runs
+  )
+  const replaced = alignVersions('x\nfoo bar baz\nqux quux\ny\n', 'x\nentirely other\ny\n')
+  const replacedPassages = replaced.runs.filter((run) => !run.same)
+  check(
+    replacedPassages.length === 1 && !replacedPassages[0]?.same && replacedPassages[0]?.rows.length === 2 && replacedPassages[0]?.rows[1]?.theirs === null,
+    'lines replaced by unlike ones stand side by side as one passage, the shorter side ending in a gap',
+    replacedPassages
+  )
+  const rewritten = alignVersions('p\nalpha one\nbeta two\nq\n', 'p\nalpha 1\nbeta 2\nq\n')
+  const rewrittenPassages = rewritten.runs.filter((run) => !run.same)
+  check(
+    rewrittenPassages.length === 1 && !rewrittenPassages[0]?.same && rewrittenPassages[0]?.rows.every((row) => row.paired) === true,
+    'lines changed on both sides one after another are one passage, each beside its counterpart',
+    rewrittenPassages
+  )
+  const many = Array.from({ length: 600 }, (_v, i) => `mine ${i} ${'x'.repeat(i % 7)}`).join('\n')
+  const others = Array.from({ length: 600 }, (_v, i) => `theirs ${i} ${'y'.repeat(i % 5)}`).join('\n')
+  const started = performance.now()
+  const large = alignVersions(many, others)
+  check(
+    large.runs.length >= 1 && performance.now() - started < 3_000,
+    'a passage too large to weigh line by line is laid out without pairing, quickly',
+    { runs: large.runs.length, ms: Math.round(performance.now() - started) }
+  )
+
+  const draft = new MergeDraft(mine, theirs)
+  check(draft.slots.length === 3 && draft.result() === 'Zeile 1\n', 'three passages to decide, the line both have already in the result', draft.result())
+  draft.toggleLine(1, 'theirs', 1)
+  draft.toggleLine(1, 'mine', 2)
+  check(
+    draft.slots[1]?.text === 'Zeile 2\nZeile 2 geändert\n' && draft.picked(1, 'mine', 2) && draft.decided(1),
+    'single lines of either side go into the middle, in the order taken',
+    draft.slots[1]
+  )
+  draft.toggleLine(1, 'theirs', 1)
+  check(draft.slots[1]?.text === 'Zeile 2 geändert\n' && !draft.picked(1, 'theirs', 1), 'and come out again', draft.slots[1])
+  draft.toggleLine(1, 'mine', 3)
+  check(draft.slots[1]?.text === 'Zeile 2 geändert\n', 'a line of another passage is not taken into this one', draft.slots[1])
+  draft.take(1, 'mine')
+  draft.toggleLine(1, 'mine', 2)
+  check(
+    draft.slots[1]?.picks.length === 1 && draft.slots[1]?.text === 'Zeile 2 geändert\n' && draft.taken(1, 'mine'),
+    'taking the whole side takes in its single lines; a line of it cannot be taken apart from it then',
+    draft.slots[1]
+  )
+  draft.edit(0, 'by hand\n')
+  draft.toggleLine(0, 'mine', 1)
+  check(draft.slots[0]?.text === 'by hand\nneu dazwischen\n', 'a single line goes after text written by hand', draft.slots[0])
+  draft.toggleLine(0, 'mine', 1)
+  check(draft.slots[0]?.text === 'by hand\n', 'and only it comes out again', draft.slots[0])
+  draft.takeAll('mine')
+  check(draft.result() === mine, "everything from this device gives this device's version, its last line without a break as it was", draft.result())
+
+  const merged = reconcile({ base: null, local: mine, remote: theirs, pristine: false, markers: false })
+  const all = new MergeDraft(mine, theirs)
+  all.slots.forEach((_slot, index) => {
+    all.take(index, 'theirs')
+    all.take(index, 'mine')
+  })
+  const lines = (text: string): string => text.split('\n').filter((line) => line.length > 0).sort().join('\n')
+  check(
+    merged.kind === 'merge' && lines(all.result()) === lines(merged.text),
+    'the other side then this one everywhere keeps every line the merge kept - each finer passage in its own place',
+    { draft: all.result(), merged: merged.kind === 'merge' ? merged.text : merged.kind }
+  )
 }
 
 // --- emptying the trash ------------------------------------------------------------------

@@ -165,6 +165,23 @@ function diffLines(a: string[], b: string[]): Hunk[] {
   return hunks
 }
 
+/** A run of two lists of strings, equal or not, by index: [aStart, aEnd) and [bStart, bEnd). */
+export interface ListHunk {
+  type: 'equal' | 'replace'
+  aStart: number
+  aEnd: number
+  bStart: number
+  bEnd: number
+}
+
+/**
+ * Two lists of strings compared item by item, each item whole - lines already split as the
+ * caller needs them, or the words of one line.
+ */
+export function listDiff(a: string[], b: string[]): ListHunk[] {
+  return diffLines(a, b)
+}
+
 export interface LineHunk {
   type: 'equal' | 'replace'
   aFrom: number

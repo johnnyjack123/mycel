@@ -1552,13 +1552,17 @@ export default class MycelPlugin extends Plugin {
       return made
     }
     return {
+      // While the setup guide is open, its last step shows the comparison; the question waits for it to close.
       progress: (stage, done, total) => {
-        if (!this.wizard) modal().progress(stage, done, total)
+        if (this.wizard) this.wizard.joinUpdate({ state: stage === 'compare' ? 'comparing' : 'working', done, total })
+        else modal().progress(stage, done, total)
       },
       ask: async (plan) => {
+        this.wizard?.joinUpdate({ state: 'compared' })
         await this.wizard?.closed
         return modal().ask(plan)
       },
+      skipped: (reason) => this.wizard?.joinUpdate({ state: 'skipped', reason }),
       finished: (result) => {
         modal().finished(result)
         this.renderStatus()

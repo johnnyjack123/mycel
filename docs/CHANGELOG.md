@@ -8,6 +8,36 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.26** (2026-11-21, branch `feat/merge-align`, the user's design of the day after trying
+  0.9.25) - **"Compare versions" shows both versions whole, line beside line**, and the setup
+  guide shows the first comparison while it runs. The user's case: a note of two lines on both
+  devices; on one, a line put between them, the last one changed and one added below; the line
+  both had showed only under *This device*. It was drawn once as a strip across the whole
+  window, outside the three columns, and every line after it was one block, the other side's
+  "Zeile 2" beside the new line instead of beside its changed self. Now
+  (`sync/align.ts`, `alignVersions`): every line is a row across the three columns - a long line
+  wraps and its row grows on all sides alike -, what both have stands in all three (in the middle
+  already, a long run folded), and where they differ lines that resemble each other are paired
+  (letter pairs in common, or a line gone into a longer one), their changed words marked, a
+  hatched gap opposite a line only one side has. A stretch only one side has is a passage of its
+  own, stretches both sides have run together into one: the user's case is three passages, two of
+  them from one side only. As decided, every passage still starts empty. Besides *Take*, a line's
+  number brings that line alone into the middle (and takes it out again), in the order clicked
+  (`MergeDraft.toggleLine`); a selection begun in one version copies that version's text alone,
+  without numbers or the other columns. A line added below a last line that had no break no
+  longer makes that last line differ (lines are compared without their break). Since the
+  passages are finer than the merge's, the other side then this one everywhere keeps exactly the
+  lines the merge kept, but not always in its order (`test:merge`, restated). On a phone each
+  passage stands as this device's lines, the other's, then the middle. The setup guide's last
+  step said the comparison would start once it was closed; it starts with signing in. That step
+  now shows it live - a bar while it compares, "Compared" with the question waiting for the guide
+  to close, or why there was nothing to compare (`JoinHost.skipped`). Checked in `test:merge` (the
+  user's case laid out row by row, a line added below the last one, unlike lines replaced, lines
+  changed one after another, a large passage laid out quickly without pairing, single lines in and
+  out, after text written by hand) and `test:sync` (the line both have in all three columns, line
+  numbers and gaps, a line taken by its number, copying from one version, Apply); the layout looked
+  at in a browser, wide and narrow, from the window rendered with the real stylesheet.
+
 - **0.9.25** (2026-11-21, on `main`, the user's question after trying it) - **`mycel vault remove`
   and `mycel vault restore` take the vault's id alone.** 0.9.24 asked for the account's id too,
   for no good reason: the server never gives a vault id to two accounts (`addVault` refuses one
