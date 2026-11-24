@@ -653,6 +653,7 @@ export class TimeMachineControl implements PastEditorHost {
   async recoverAtStart(): Promise<boolean> {
     const files = await PastFiles.resume(this.host.vault, this.host.adapter, this.host.root)
     if (!files) {
+      await PastFiles.clearLeftovers(this.host.adapter, this.host.root)
       this.holding = false
       return true
     }

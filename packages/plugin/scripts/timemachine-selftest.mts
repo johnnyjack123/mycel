@@ -21,7 +21,7 @@ const { pastEditorExtension } = await import('../src/history/pastEditor.js')
 const { LockSeal, VaultLockedError, lockNonce, takeVaultLock } = await import('../src/sync/VaultLock.js')
 const { Blobs } = await import('../src/sync/Blobs.js')
 const { Notice, notices } = await import('../src/notices.js')
-const { FakeAdapter } = await import('./stubs/fake-vault.js')
+const { FakeAdapter, FakeVault } = await import('./stubs/fake-vault.js')
 const { EditorState } = await import('@codemirror/state')
 const { EditorView } = await import('@codemirror/view')
 
@@ -289,6 +289,139 @@ try {
     barScale(80),
     barScale(200)
   ])
+
+  // --- Windows holding the copies a moment: leaving the past goes all the same (0.9.27) ---------------
+  {
+    const DIR = 'plugin'
+    type Plain = InstanceType<typeof FakeAdapter>
+    type Vault = InstanceType<typeof FakeVault>
+    const refusal = (syscall: string, path: string): Error => Object.assign(new Error(`EPERM: operation not permitted, ${syscall} '${path}'`), { code: 'EPERM' })
+    /**
+     * The plugin folder as Windows answered while something held the copies: `rmdir` and `remove`
+     * refused so many times. With `slow.on`, reading a copy takes a second.
+     */
+    const holding = (plain: Plain, refuse: { rmdir: number; remove: number }, events: string[] = [], slow = { on: false }): Plain =>
+      new Proxy(plain, {
+        get(target, name, receiver) {
+          if (name === 'rmdir') {
+            return async (path: string) => {
+              events.push('rmdir')
+              if (refuse.rmdir > 0) {
+                refuse.rmdir -= 1
+                throw refusal('rmdir', `${path}/copies`)
+              }
+              return target.rmdir(path)
+            }
+          }
+          if (name === 'remove') {
+            return async (path: string) => {
+              if (refuse.remove > 0) {
+                refuse.remove -= 1
+                throw refusal('unlink', path)
+              }
+              return target.remove(path)
+            }
+          }
+          if (name === 'readBinary') {
+            return async (path: string) => {
+              const data = await target.readBinary(path)
+              if (slow.on && path.includes('/copies/')) {
+                await delay(1_000)
+                events.push('read')
+              }
+              return data
+            }
+          }
+          const value = Reflect.get(target, name, receiver) as unknown
+          return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value
+        }
+      })
+    const vaultNow = (): Vault => new FakeVault({ 'Note.md': 'now\n', 'Later.md': 'later\n' })
+    const showPast = async (vault: Vault, adapter: Plain) => {
+      const files = await PastFiles.begin(vault as never, adapter as never, DIR, { scope: null, lockId: null, vaultId: null })
+      await files.show('Note.md', 'the past\n')
+      await files.show('Later.md', null)
+      return files
+    }
+    const isNow = (vault: Vault): boolean => vault.text('Note.md') === 'now\n' && vault.text('Later.md') === 'later\n'
+    const copies = (plain: Plain): string[] => Array.from(plain.binaries.keys()).filter((key) => key.includes('/timemachine/copies/'))
+
+    {
+      const vault = vaultNow()
+      const plain = new FakeAdapter()
+      const refuse = { rmdir: 2, remove: 0 }
+      const events: string[] = []
+      const slow = { on: false }
+      const adapter = holding(plain, refuse, events, slow)
+      const files = await showPast(vault, adapter)
+      check(vault.text('Note.md') === 'the past\n' && vault.text('Later.md') === undefined, 'the past lies in the files', vault.text('Note.md'))
+      const report = await files.restore()
+      // An editor's marks still reading what the note says now as the copies go.
+      slow.on = true
+      const reading = files.originalBytes('Note.md')
+      await files.finish()
+      check(report.failed.length === 0 && isNow(vault), 'every file goes back', report)
+      check((await reading) !== undefined && events[0] === 'read' && events[1] === 'rmdir', 'a copy still being read is waited for before the copies go', events)
+      check(
+        refuse.rmdir === 0 && !(await plain.exists(`${DIR}/timemachine`)) && !(await PastFiles.pending(adapter as never, DIR)),
+        'Windows refusing to remove the copies for a moment (EPERM): tried again, and journal and copies go'
+      )
+    }
+    {
+      const vault = vaultNow()
+      const plain = new FakeAdapter()
+      const refuse = { rmdir: 99, remove: 0 }
+      const adapter = holding(plain, refuse)
+      const files = await showPast(vault, adapter)
+      const report = await files.restore()
+      const left = await files.finish().then(
+        () => null,
+        (error: unknown) => error
+      )
+      check(
+        report.failed.length === 0 && left === null && isNow(vault) && !(await PastFiles.pending(adapter as never, DIR)),
+        'refusing for good: leaving the past goes all the same, the journal gone - in 0.9.26 it failed with every file back, and the rollback never ran',
+        left
+      )
+      check((await files.originalBytes('Note.md')) === undefined, 'and what a note says now is read from the vault from then on, never from a copy')
+      const leftOver = copies(plain)
+      check(leftOver.length > 0, 'the copies stay for now', leftOver)
+      refuse.rmdir = 0
+      const again = await showPast(vault, adapter)
+      check(
+        leftOver.every((key) => !plain.binaries.has(key)) && copies(plain).length > 0 && copies(plain).every((key) => key.split('/').pop()?.startsWith(`${again.start.at}-`) === true),
+        'the next Time Machine clears what was left first, its own copies named apart',
+        copies(plain)
+      )
+      await PastFiles.clearLeftovers(adapter as never, DIR)
+      check((await PastFiles.pending(adapter as never, DIR)) && copies(plain).length > 0, 'and leftovers are never cleared while a journal waits')
+      const back = await again.restore()
+      await again.finish()
+      check(back.failed.length === 0 && isNow(vault) && !(await plain.exists(`${DIR}/timemachine`)), 'that one goes back and away too')
+    }
+    {
+      const vault = vaultNow()
+      const plain = new FakeAdapter()
+      const refuse = { rmdir: 0, remove: 99 }
+      const adapter = holding(plain, refuse)
+      const files = await showPast(vault, adapter)
+      await files.restore()
+      const failed = await files.finish().then(
+        () => null,
+        (error: unknown) => error
+      )
+      check(
+        failed instanceof Error && (await PastFiles.pending(adapter as never, DIR)) && copies(plain).length > 0,
+        'a journal that cannot go: leaving says so, and journal and copies stay for Abort or the next start',
+        failed
+      )
+      refuse.remove = 0
+      const resumed = await PastFiles.resume(vault as never, adapter as never, DIR)
+      const report = await resumed?.restore()
+      await resumed?.finish()
+      check(report?.failed.length === 0 && isNow(vault) && !(await PastFiles.pending(adapter as never, DIR)), 'and the next try finishes it', report)
+    }
+  }
 
   for (const device of devices) check(await device.boot(), `${device.username} starts`)
   check(
