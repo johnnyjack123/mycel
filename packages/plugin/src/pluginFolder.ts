@@ -1,5 +1,32 @@
 import type { DataAdapter } from 'obsidian'
 
+/** What Windows answers while something else - a virus scanner, the search index - still holds a file or folder. */
+const HELD = /^(EPERM|EBUSY|EACCES|ENOTEMPTY)$/
+const HELD_RETRY_MS = [100, 300, 700, 1_500]
+
+function heldCode(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code
+  if (typeof code === 'string') return HELD.test(code)
+  return error instanceof Error && /^(EPERM|EBUSY|EACCES|ENOTEMPTY)\b/.test(error.message)
+}
+
+/**
+ * A step on the plugin's folder, tried again for a few seconds while the system holds what it
+ * touches: removing the Time Machine's copies failed on Windows with EPERM a moment after they
+ * were read, and with it leaving the past (0.9.27). Anything else fails at once.
+ */
+export async function untilFree<T>(step: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await step()
+    } catch (error) {
+      const wait = HELD_RETRY_MS[attempt]
+      if (wait === undefined || !heldCode(error)) throw error
+      await new Promise((resolve) => setTimeout(resolve, wait))
+    }
+  }
+}
+
 /**
  * Makes `dir` inside the plugin's folder `root`, each missing folder from there down, and
  * never asks about anything above `root`: that is Obsidian's configuration, behind the gate

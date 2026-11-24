@@ -8,6 +8,33 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.27** (2026-11-24, branch `fix/timemachine-cleanup`, found by the user) - **a rollback from
+  the Time Machine failed on Windows after every file was already back.** The user merged a note,
+  opened the Time Machine at the moment before it and chose *Restore this version*: nothing
+  happened but "Leaving the Time Machine failed: EPERM: operation not permitted, rmdir
+  '…\timemachine\copies'". Every file had gone back and been checked; then removing the plugin
+  folder's `timemachine/` - journal and copies in one `rmdir` - was refused by Windows, which
+  still held the copies a moment (a copy just read; a virus scanner or the index reading what was
+  just written). That failed the whole way out, so the rollback never ran and the past stayed
+  on screen. Now `PastFiles.finish` waits for any copy still being read (an editor's marks, the
+  overview), removes the journal - the one file that says the past may still be in the files -,
+  and then the copies as far as the system lets them. Both are tried again for a few seconds while
+  Windows answers EPERM, EBUSY, EACCES or ENOTEMPTY (`untilFree`, `pluginFolder.ts`). Copies
+  that still will not go are only logged. The next start, or the next Time Machine, clears them
+  (`PastFiles.clearLeftovers`), never while a journal waits. Copies are named per opening, so a
+  leftover the system still holds is never written over. Only a journal that cannot be removed
+  still fails leaving, with journal and copies intact for *Abort* or the next start. Checked in
+  `test:timemachine` with a plugin folder refusing as Windows did:
+  - refusing twice: tried again, and everything goes;
+  - refusing for good: leaving goes all the same and the journal is gone, and the next opening
+    clears the leftovers first;
+  - leftovers are not cleared while a journal waits;
+  - a journal that cannot go: leaving fails, and the next try finishes it;
+  - a copy being read is waited for.
+
+  Checked by putting the bug back: against the old `PastFiles.ts` the suite stops at the first
+  refusal, as on the user's device.
+
 - **0.9.26** (2026-11-21, branch `feat/merge-align`, the user's design of the day after trying
   0.9.25) - **"Compare versions" shows both versions whole, line beside line**, and the setup
   guide shows the first comparison while it runs. The user's case: a note of two lines on both

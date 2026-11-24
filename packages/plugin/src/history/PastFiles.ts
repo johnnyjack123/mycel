@@ -1,7 +1,7 @@
 import { TFile, TFolder, type DataAdapter, type TAbstractFile } from 'obsidian'
 import { bytes, contentHash, utf8 } from '@mycel/shared/crypto'
 import { log } from '../log.js'
-import { makePluginFolder } from '../pluginFolder.js'
+import { makePluginFolder, untilFree } from '../pluginFolder.js'
 
 // The past written into the vault's own files (`docs/TIMEMACHINE.md`, U3), and
 // taken out of them again. Only ever while the sync is stopped on this device:
@@ -107,6 +107,10 @@ export class PastFiles {
    */
   private closed = false
   private readonly writing = new Set<Promise<unknown>>()
+  /** Copies being read - for an editor's marks, the overview -, waited for before they are removed. */
+  private readonly reading = new Set<Promise<unknown>>()
+  /** The files are back and the journal goes: what lay at a path is read from the vault again, never from a copy. */
+  private finished = false
 
   private constructor(
     private readonly vault: PastVault,
@@ -131,6 +135,7 @@ export class PastFiles {
   /** Starts a journal; refused while one waits. */
   static async begin(vault: PastVault, adapter: DataAdapter, root: string, start: PastStart): Promise<PastFiles> {
     if (await PastFiles.pending(adapter, root)) throw new Error('the past of an earlier Time Machine still waits to be put back')
+    await PastFiles.clearLeftovers(adapter, root)
     const dir = PastFiles.dir(root)
     if (!(await adapter.exists(dir))) await adapter.mkdir(dir)
     if (!(await adapter.exists(`${dir}/copies`))) await adapter.mkdir(`${dir}/copies`)
@@ -200,10 +205,16 @@ export class PastFiles {
 
   /** What lay at a path before the Time Machine touched it; undefined while it has not, null for nothing. */
   async originalBytes(path: string): Promise<Uint8Array | null | undefined> {
-    if (!this.originals.has(path)) return undefined
+    if (this.finished || !this.originals.has(path)) return undefined
     const original = this.originals.get(path)
     if (!original) return null
-    return new Uint8Array(await this.adapter.readBinary(`${this.dir}/${original.copy}`))
+    const read = this.adapter.readBinary(`${this.dir}/${original.copy}`)
+    this.reading.add(read)
+    try {
+      return new Uint8Array(await read)
+    } finally {
+      this.reading.delete(read)
+    }
   }
 
   /**
@@ -219,7 +230,8 @@ export class PastFiles {
       const data = new Uint8Array(await this.vault.readBinary(file))
       const hash = await contentHash(bytes(data))
       this.copies += 1
-      const copy = `copies/${this.copies}`
+      // Named per opening: a copy an earlier one left, still held by the system, is never written over.
+      const copy = `copies/${this.start.at}-${this.copies}`
       await this.adapter.writeBinary(`${this.dir}/${copy}`, buffer(data))
       const back = new Uint8Array(await this.adapter.readBinary(`${this.dir}/${copy}`))
       if ((await contentHash(bytes(back))) !== hash) throw new Error(`the copy of ${path} did not read back as written`)
@@ -400,8 +412,31 @@ export class PastFiles {
     await this.adapter.writeBinary(target, buffer(data))
   }
 
-  /** The journal and the copies go - only after a restore that left nothing out. */
+  /**
+   * The journal goes, then the copies - only after a restore that left nothing out. The
+   * journal alone says the past may still lie in the files, so only it must go. The copies
+   * go as far as the system lets them: Windows refused to remove their folder (EPERM), and
+   * leaving the past failed with every file already back - a rollback from the Time
+   * Machine never ran (0.9.27). What stays goes the next time (`clearLeftovers`).
+   */
   async finish(): Promise<void> {
-    await this.adapter.rmdir(this.dir, true)
+    this.finished = true
+    await Promise.allSettled(Array.from(this.reading))
+    const journal = `${this.dir}/${JOURNAL}`
+    if (await this.adapter.exists(journal)) await untilFree(() => this.adapter.remove(journal))
+    await PastFiles.clearLeftovers(this.adapter, this.root)
+  }
+
+  /** What a journal gone left in the plugin folder, removed as far as it goes - never while a journal waits. */
+  static async clearLeftovers(adapter: DataAdapter, root: string): Promise<void> {
+    const dir = PastFiles.dir(root)
+    try {
+      await untilFree(async () => {
+        if (await PastFiles.pending(adapter, root)) return
+        if (await adapter.exists(dir)) await adapter.rmdir(dir, true)
+      })
+    } catch (error) {
+      log.warn('removing the copies of the Time Machine failed; they go the next time', error)
+    }
   }
 }

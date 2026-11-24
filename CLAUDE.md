@@ -263,7 +263,10 @@ someone's notes. Treat them as rules, not preferences.
     screen to be read from the server, a read never answered, and the bar stayed
     greyed out with the vault locked everywhere (0.9.21). Once the files go back
     they refuse the past (`PastFilesClosed`), and a failure on the way out leaves
-    *Abort* to press again.
+    *Abort* to press again. Only the journal decides whether the past may still lie in
+    the files, so only it must go before the sync starts. The copies go as far as the
+    system lets them and are cleared later (`clearLeftovers`). Windows briefly refused to
+    remove them (EPERM), and a rollback from the Time Machine never ran (0.9.27).
 31. **A path someone else wrote is checked before it names a file, and the plugin
     touches nothing but the vault's own files and its own folder.** A shared
     folder's document, a shared note's links, a sealed title come from other people
