@@ -578,7 +578,9 @@ written over, its content goes into `<plugin folder>/timemachine/copies/`, read 
 checked by its hash, and a journal line (`journal.jsonl`) names it - both before the step.
 Every write is announced in the journal before it happens. *Back to now* writes every
 original back with its times, checks each by its hash, removes what the past added and the
-folders made for it, and only then does the journal go. Whatever someone else wrote over a
+folders made for it, and only then does the journal go. The copies go after it, file by file,
+and nothing waits for them; their folders stay (0.9.28 - Google Drive had made every folder of
+a vault read-only, and Windows refused to remove them). Whatever someone else wrote over a
 past file meanwhile - a plugin, the user in another app - goes into
 `<plugin folder>/timemachine-aside/` first, at the moment it would be written over.
 

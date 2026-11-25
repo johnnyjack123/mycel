@@ -1,6 +1,6 @@
 import type { DataAdapter } from 'obsidian'
 import { log } from '../log.js'
-import { makePluginFolder } from '../pluginFolder.js'
+import { emptyFolder, makePluginFolder } from '../pluginFolder.js'
 
 // Copies taken before anything that could delete text. They live in the plugin
 // folder rather than the vault so they stay out of search, graph and tags - and
@@ -132,7 +132,11 @@ export class BackupStore {
     return this.adapter.read(path)
   }
 
-  /** Drops whole day folders past the retention window. */
+  /**
+   * Empties the day folders past the retention window, file by file, and removes the folders as
+   * far as the system lets them (`emptyFolder`): a read-only folder stays. Returns the days whose
+   * files all went.
+   */
   async prune(retentionDays: number): Promise<number> {
     if (retentionDays <= 0) return 0
     const base = [this.root, BACKUP_DIR].join('/')
@@ -140,13 +144,16 @@ export class BackupStore {
     const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000)
     const cutoffDay = dayOf(cutoff)
     let removed = 0
+    let folders = true
     const days = await this.adapter.list(base)
     for (const dayPath of days.folders) {
       const day = dayPath.split('/').pop() ?? ''
       if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day >= cutoffDay) continue
       try {
-        await this.adapter.rmdir(dayPath, true)
-        removed += 1
+        const emptied = await emptyFolder(this.adapter, dayPath, folders)
+        if (emptied.refused) folders = false
+        if (emptied.failed === 0) removed += 1
+        else log.error(`removing old backups in ${dayPath} failed for ${emptied.failed} file(s)`, emptied.error)
       } catch (error) {
         log.error(`removing old backups in ${dayPath} failed`, error)
       }

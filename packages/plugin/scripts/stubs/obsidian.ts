@@ -92,6 +92,19 @@ export function setIcon(el: HTMLElement, icon: string): void {
   el.setAttribute('data-icon', icon)
 }
 
+/** Only for the import: the Time Machine's bar builds one on a click no test makes. */
+export class Menu {
+  addItem(_build: (item: unknown) => unknown): this {
+    return this
+  }
+
+  addSeparator(): this {
+    return this
+  }
+
+  showAtMouseEvent(_event: MouseEvent): void {}
+}
+
 export class Modal {
   readonly modalEl: HTMLElement
   readonly titleEl: HTMLElement

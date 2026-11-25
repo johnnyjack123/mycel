@@ -266,9 +266,11 @@ someone's notes. Treat them as rules, not preferences.
     greyed out with the vault locked everywhere (0.9.21). Once the files go back
     they refuse the past (`PastFilesClosed`), and a failure on the way out leaves
     *Abort* to press again. Only the journal decides whether the past may still lie in
-    the files, so only it must go before the sync starts. The copies go as far as the
-    system lets them and are cleared later (`clearLeftovers`). Windows briefly refused to
-    remove them (EPERM), and a rollback from the Time Machine never ran (0.9.27).
+    the files, so only it must go before the sync starts. The copies are cleared behind
+    it, file by file, and nothing waits for that (`clearLeftovers`): Google Drive had made
+    every folder of a vault read-only, Windows refused to remove the copies' folder, and
+    first a rollback never ran (0.9.27), then the start, opening and leaving waited a
+    minute each (0.9.28).
 31. **A path someone else wrote is checked before it names a file, and the plugin
     touches nothing but the vault's own files and its own folder.** A shared
     folder's document, a shared note's links, a sealed title come from other people
@@ -452,7 +454,10 @@ While a vault is **locked** (`sync/VaultLock.ts`, on the server `vaultLocks.ts`;
 server answers the account's pushes into it with `locked` instead of `ack`; the device
 keeps them, as offline, and sends them once a `vault-lock` notice says the lock ended.
 Only the connection that named the lock's id writes - a rollback's, or a restore from the
-Time Machine before it lets go (0.8.15; before, only under a rollback's). The lock
+Time Machine before it lets go (0.8.15; before, only under a rollback's). The server tells
+the device taking a lock about it too, before it answers, so every lock is taken through
+`OwnLocks.take` and known as this device's before the request: the Time Machine's, known only
+from the answer, came in as another device's - a second window, its editors read-only (0.9.28). The lock
 seals what it covers (`LockPurpose.scope`: the vault, a folder, a note), and on the other
 devices that is read-only meanwhile (`history/EditLocks.ts`), a bar at the top of its
 editor saying so (0.8.16): typed into, a restore overwrote it. What is written all the same
@@ -929,7 +934,7 @@ npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-proces
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA, a vault deleted on the server — in-process server
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
-npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too, and at once while a read from the server hangs), the vault lock, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
+npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too, and at once while a read from the server hangs), a plugin folder whose folders refuse to go, the vault lock and the device taking it, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
 npm run test:replace   # every key of an account replaced: the vaults and files written anew, the other device, a contact confirming again, a replacement carried on by another device — in-process server
 npm run test:join      # a device meeting a vault on the server for the first time: what the comparison finds and what merging will make of it, the copy of the vault, "Not now", the server's version, merging, the explorer's marks, carrying on after a restart — in-process server
 npm run test:security  # every attack of the audit (docs/AUDIT.md): the server attacked over HTTP and WebSocket, the plugin's paths, links, folders and gate, the backup task — in-process servers
@@ -1032,6 +1037,12 @@ guide's live comparison.
   (`0xfeff`, `String.fromCharCode`). To look for them, read the files with Node:
   `grep -P` in Git Bash has no UTF-8 locale and fails, which with `2>/dev/null`
   looks exactly like "nothing found".
+- **Never rely on removing a folder.** A cloud client in the vault - Google Drive for desktop
+  on the user's PC - set the read-only attribute on every folder about seven seconds after it
+  appeared; Windows then refuses to remove the folder (EPERM) while its files go, and Obsidian's
+  recursive `rmdir` took about eleven seconds per try to say so. Empty a folder of the plugin's
+  with `emptyFolder` (`pluginFolder.ts`), never retry a folder, and never wait for clearing on
+  the way to the sync or the Time Machine (0.9.28). `untilFree` is for files only.
 - **`MYCEL_JWT_SECRET` needs 32 characters**, or the server does not start (0.9.8);
   unset, it makes one in its data folder (`jwt-secret`). Every test that sets one sets
   a long one. Behind a reverse proxy, `MYCEL_TRUST_PROXY` names it - unset, every

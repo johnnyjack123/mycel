@@ -158,3 +158,37 @@ export async function takeVaultLock(
     throw error
   }
 }
+
+/**
+ * The locks this device took, by what they say - known before the request goes out. The server
+ * tells every device of the account about a lock, this one too, before it answers the request
+ * that took it. The Time Machine knew its lock only once taken, so its own lock reached it as
+ * another device's: a second window over its own, every editor read-only, the connection holding
+ * what it wrote (0.9.28). The plugin, the Time Machine and the tests take every lock through here.
+ */
+export class OwnLocks {
+  private readonly sealed = new Set<string>()
+
+  has(sealed: string): boolean {
+    return this.sealed.has(sealed)
+  }
+
+  add(sealed: string): void {
+    this.sealed.add(sealed)
+  }
+
+  delete(sealed: string): void {
+    this.sealed.delete(sealed)
+  }
+
+  /** `takeVaultLock`, the lock this device's from before the request; forgotten again when refused. */
+  async take(api: ConnectApi, vaultId: string, kind: VaultLockKind, sealed: string, onLost: (why: string) => void): Promise<HeldLock> {
+    this.sealed.add(sealed)
+    try {
+      return await takeVaultLock(api, vaultId, kind, sealed, onLost)
+    } catch (error) {
+      this.sealed.delete(sealed)
+      throw error
+    }
+  }
+}

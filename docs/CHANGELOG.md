@@ -8,6 +8,62 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.28** (2026-11-25, branch `fix/readonly-folders`, found by the user, the cause found with
+  them over ssh on their PC) - **nothing waits any more for a folder Windows will not remove, and
+  the Time Machine no longer takes its own lock for another device's.** On the user's PC - not the
+  laptop, same versions - the plugin took a minute to start, half of the settings missing
+  meanwhile; opening, aborting and restoring in the Time Machine took a minute each; and a second
+  window came up beside the Time Machine's own. The plugin's log said, about 56 seconds after each
+  start, opening and leaving, `removing the copies of the Time Machine failed … EPERM: operation
+  not permitted, rmdir '…\timemachine\copies'` (once Obsidian's own "File system operation timed
+  out", after 60). The cause, found on the PC: **Google Drive for desktop synced the vault and set
+  the read-only attribute on every folder in it**, about seven seconds after the folder appeared.
+  Shown there: a new folder in the vault was read-only after 7 s, with Obsidian closed too; one in
+  `Documents` outside the vault, or in `C:\Temp`, was not; with Google Drive stopped, or the vault
+  no longer in it, none was after 60 s. Windows refuses to remove a read-only folder (`rd`:
+  "Zugriff verweigert"), while its files go. Obsidian's recursive `rmdir` removed the copies,
+  refused the folder and took about eleven seconds per try to say so (by the log's times); 0.9.27
+  tried five times, and waited for it before the sync started, before the past was shown and
+  before leaving it. Each opening made `copies` anew, and it turned read-only again. **0.9.27's
+  diagnosis - Windows holding the copies a moment - was wrong**: it was this attribute from the
+  first EPERM on, which no retry outlasts. Now:
+  - The plugin never relies on removing a folder (`emptyFolder`, `pluginFolder.ts`): files one by
+    one, then the folders as far as the system lets them, and once one refuses no other is asked.
+    So for the Time Machine's copies (whose folders simply stay), for old merge backups and a
+    vault's copy before joining (`BackupStore.prune`), and for rollback copies
+    (`pruneRollbackCopies`, and `Rollback.copyIsBackedUp` - which removed the copy whole, failed
+    on the folder once its files were gone, and then said the copy lay on this device alone).
+  - Nothing waits for clearing the Time Machine's copies. `PastFiles.finish` removes the journal -
+    it alone says the past may still lie in the files (invariant 30) - and clears behind it; a
+    start clears behind the start of the sync; an opening clears nothing. A clearing never takes
+    the copies of an opening going on beside it, never runs while a journal waits, runs one at a
+    time, and the plugin's unload waits for it (invariant 26).
+  - A folder of now that the past lacks, emptied and then refusing to go, stays empty in the past
+    instead of failing the moment shown.
+  - **The lock.** The server tells every device of the account about a lock, the device taking it
+    too, before it answers. The Time Machine knew its lock only from the answer, so its own lock
+    reached it first - in the PC's log 4 to 6 ms before `locked the vault for a preview`, at every
+    opening: a second window (`LockedModal`) over the Time Machine's own, whose *Lift the lock*
+    lifted the Time Machine's own lock; the editors read-only by "another device"; the connection
+    holding what it wrote. A rollback's lock had been known beforehand all along, and so had the
+    tests' harness's - which is why no test saw it. Every lock now goes through one `OwnLocks.take`
+    (`VaultLock.ts`), known as this device's before the request goes out: the rollback's, the Time
+    Machine's and the harness's.
+
+  Checked in `test:timemachine` with a plugin folder whose folders refuse as on the PC, each
+  refusal taking four seconds: leaving the past, a start (`TimeMachineControl.recoverAtStart`) and
+  an opening wait for no folder; the copies go behind them, file by file, an old name too, and no
+  folder is asked; a copy still being read is waited for; leftovers are not cleared while a journal
+  waits; a clearing running beside a new opening leaves that opening's copies; a journal that
+  cannot go still fails leaving and is finished by the next try; old backups, a vault's copy among
+  them, and rollback copies go file by file with one folder asked; where folders may go, they go
+  along. A lock is known as its own while asked for and forgotten when refused; a real device
+  taking a lock never locks itself, while the other device does. Checked by putting both bugs
+  back: 11 checks fail, among them the device locking itself on its own lock - in the test's own
+  server, too, the notice arrives before the answer. On the PC the vault was taken out of Google
+  Drive; its folders stay read-only until cleared, and the stuck `timemachine\copies` is kept for
+  trying 0.9.28 there.
+
 - **0.9.27** (2026-11-24, branch `fix/timemachine-cleanup`, found by the user) - **a rollback from
   the Time Machine failed on Windows after every file was already back.** The user merged a note,
   opened the Time Machine at the moment before it and chose *Restore this version*: nothing
@@ -33,7 +89,8 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
   - a copy being read is waited for.
 
   Checked by putting the bug back: against the old `PastFiles.ts` the suite stops at the first
-  refusal, as on the user's device.
+  refusal, as on the user's device. The diagnosis was wrong - a read-only folder, not a moment's
+  hold: see 0.9.28.
 
 - **0.9.26** (2026-11-21, branch `feat/merge-align`, the user's design of the day after trying
   0.9.25) - **"Compare versions" shows both versions whole, line beside line**, and the setup

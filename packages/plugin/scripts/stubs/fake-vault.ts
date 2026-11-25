@@ -69,6 +69,7 @@ export class FakeAdapter {
 
   async remove(path: string): Promise<void> {
     this.files.delete(path)
+    this.binaries.delete(path)
   }
 
   async list(path: string): Promise<{ files: string[]; folders: string[] }> {
