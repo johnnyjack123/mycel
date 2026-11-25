@@ -30,7 +30,9 @@ running it in **`docs/BACKUP.md`**; sharing a folder and the small fixes of 0.8 
 **`docs/PHASE7.md`**; the Time Machine (0.8.11, the user's decisions T1 to T8; its
 second round, 0.8.13, U1 to U5, V1 to V6, W1 to W3) in **`docs/TIMEMACHINE.md`**.
 A new milestone gets its design document written with the user before it is built: 0.9's
-is **`docs/PHASE8.md`** (decided 2026-11-03; being built, its order in `docs/PROGRESS.md`).
+is **`docs/PHASE8.md`** (decided 2026-11-03, built from 0.9.0 to 0.9.18). **The phase now is
+the device run before 1.0.0.** The user tries everything on real devices, and what they find
+becomes the next patch. `docs/PROGRESS.md` says what is still to try.
 The security audit (0.9.8) and its residual risks closed in 0.9.9 - every finding, its fix,
 its check, and what is known and not fixed - is **`docs/AUDIT.md`**.
 Licence: AGPL-3.0-or-later (`LICENSE.md`, the user, 2026-11-03).

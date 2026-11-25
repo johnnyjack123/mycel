@@ -12,6 +12,10 @@ surviving the server, `docs/PHASE4.md` for attachments, `docs/PHASE6.md` for the
 backup server, `docs/SERVER.md` for running the server, `docs/BACKUP.md` for
 running a backup server and `docs/CHANGELOG.md` for what each version changed.
 
+**Status:** 0.9, not released yet. Everything planned for 1.0.0 is built, and it is being
+tried on real devices first (`docs/PROGRESS.md`). It is not in Obsidian's community plugin
+directory: the plugin is installed from the `latest-build` release.
+
 ## Requirements
 
 - Node.js 22+ (includes npm; npm workspaces is used). Node 20 is end-of-life and

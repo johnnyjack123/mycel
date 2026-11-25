@@ -1,5 +1,9 @@
 # Phase 8 - hardening and a security audit (0.9)
 
+**Status (2026-11-25): built** - D, L, S, S2, N and A in 0.9.0 to 0.9.9, and the follow-ups in
+0.9.10 to 0.9.18 (below, "Built"). P, publishing, comes last, if the user decides to publish. Since
+0.9.19 the phase is the device run before 1.0.0 (`docs/PROGRESS.md`).
+
 Written 2026-11-03 after 0.8.17 as a draft; the user decided the same day (below, "Decided").
 0.9 is hardening only (the user, 2026-10-25): no new features, the roadmap's items in
 `docs/PROGRESS.md`, "Roadmap":
@@ -485,3 +489,19 @@ touches a device.
   log's prefix. The migration proposed above (the new plugin taking the old folder's data) is
   not built: the user starts afresh, so there is nothing to carry over. The repository's name
   on GitHub is the user's to change.
+- **0.9.8** - A, the review, by a separate agent with fresh context (`docs/AUDIT.md`: 23
+  findings fixed, each kept as an attack in `test:security`).
+- **0.9.9** - the audit's residual risks R1 to R9, and the setup wizard.
+- **0.9.10 to 0.9.18** - what followed (`docs/CHANGELOG.md`):
+  - three CI races (0.9.10);
+  - links in shared notes by who typed them (0.9.11);
+  - a shared folder's move (0.9.12);
+  - backups kept after a suspicious run (0.9.13);
+  - the benchmark's first findings (0.9.14, 0.9.15);
+  - the code review's proposals (0.9.16 to 0.9.18).
+- **P** - partly done:
+  - the repository is public since 2026-11-18, for CI rather than for publishing;
+  - `LICENSE.md` exists;
+  - the name is Mycel.
+  - Still missing: a release tagged `x.y.z`, a README naming what is needed, and the user's
+    decision to publish.
