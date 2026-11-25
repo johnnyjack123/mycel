@@ -2,7 +2,7 @@ import { TFile, type App, type DataAdapter, type EventRef, type WorkspaceLeaf } 
 import type { ConnectApi } from '../account/api.js'
 import { Notice, noticeWithAction } from '../notices.js'
 import type { RollbackRecord } from '../sync/AccountSettings.js'
-import { LockSeal, lockNonce, takeVaultLock, VaultLockedError, type HeldLock } from '../sync/VaultLock.js'
+import { LockSeal, lockNonce, VaultLockedError, type HeldLock, type OwnLocks } from '../sync/VaultLock.js'
 import { TimeMachineBar } from './Bar.js'
 import type { EditLocks } from './EditLocks.js'
 import type { ExplorerPolicy } from './ExplorerGuard.js'
@@ -76,6 +76,8 @@ export interface ControlHost {
   api: ConnectApi
   /** What may not be edited on this device; the control keeps its own part of it. */
   locks: EditLocks
+  /** The vault locks this device took: its own is never taken for another device's. */
+  ownLocks: OwnLocks
   settings(): { ticks: TickChoice; backups: boolean; marks: boolean }
   saveSettings(patch: Partial<{ ticks: TickChoice; backups: boolean; marks: boolean }>): Promise<void>
   /** Files larger than this stay as they are now: the device's download limit. */
@@ -147,11 +149,6 @@ export class TimeMachineControl implements PastEditorHost {
 
   shows(scope: TimeMachineScope): boolean {
     return this.session !== null && sameScope(this.session.scope, scope)
-  }
-
-  /** Whether this lock is the one this device holds for its own Time Machine. */
-  ownsLock(sealed: string): boolean {
-    return this.lock?.active === true && this.lock.info.sealed === sealed
   }
 
   onChange(listener: () => void): () => void {
@@ -246,6 +243,7 @@ export class TimeMachineControl implements PastEditorHost {
     if (!(await modal.ask())) return
     this.opening = true
     let stopped = false
+    let sealed: string | null = null
     try {
       modal.step('Reading the past from the server…')
       const settings = this.host.settings()
@@ -258,9 +256,9 @@ export class TimeMachineControl implements PastEditorHost {
       })
       if (!(await this.backUp((label) => modal.step(`Backing up on ${label}…`), (question) => modal.goOn(question, 'Show it anyway')))) throw new Cancelled()
       modal.step('Locking the vault on your other devices…')
-      const sealed = await prepared.seal.seal({ what: scopeName(scope), device: this.host.device(), nonce: lockNonce(), scope })
+      sealed = await prepared.seal.seal({ what: scopeName(scope), device: this.host.device(), nonce: lockNonce(), scope })
       const lockedAt = Date.now()
-      const lock = await takeVaultLock(this.host.api, prepared.vaultId, 'preview', sealed, (why) => this.lockLost(why))
+      const lock = await this.host.ownLocks.take(this.host.api, prepared.vaultId, 'preview', sealed, (why) => this.lockLost(why))
       this.lock = lock
       this.lockedAt = lockedAt
       modal.step('Stopping the sync on this device…')
@@ -289,6 +287,7 @@ export class TimeMachineControl implements PastEditorHost {
       modal.close()
       await this.lock?.release()
       this.lock = null
+      if (sealed) this.host.ownLocks.delete(sealed)
       this.host.locks.set(true, null)
       // A journal of an earlier Time Machine may still wait: its files go back before the sync may start.
       if (stopped && (await this.recoverAtStart())) await this.host.startSync()
@@ -517,7 +516,9 @@ export class TimeMachineControl implements PastEditorHost {
   /** The lock let go, and with it the editors here and the other devices. */
   private async letGo(): Promise<void> {
     this.host.writeUnderLock(null)
-    await this.lock?.release()
+    const lock = this.lock
+    await lock?.release()
+    if (lock) this.host.ownLocks.delete(lock.info.sealed)
     this.lock = null
     this.host.locks.set(true, null)
     this.emit()
@@ -653,7 +654,8 @@ export class TimeMachineControl implements PastEditorHost {
   async recoverAtStart(): Promise<boolean> {
     const files = await PastFiles.resume(this.host.vault, this.host.adapter, this.host.root)
     if (!files) {
-      await PastFiles.clearLeftovers(this.host.adapter, this.host.root)
+      // Behind the start, never before it: clearing waited for a folder Windows refused to remove, a minute at every start (0.9.28).
+      void PastFiles.clearLeftovers(this.host.adapter, this.host.root)
       this.holding = false
       return true
     }
@@ -704,6 +706,8 @@ export class TimeMachineControl implements PastEditorHost {
     } catch (error) {
       log.error('putting the files back on unload failed; the next start does it', error)
     }
+    // Nothing of the plugin outlives its unload (invariant 26); the clearing is quick, file by file.
+    await PastFiles.idle()
   }
 
   // --- drawing ----------------------------------------------------------------------

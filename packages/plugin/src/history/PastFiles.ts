@@ -18,6 +18,36 @@ const ASIDE_DIR = 'timemachine-aside'
 // Vault events this soon after the Time Machine wrote a path are its own.
 const OWN_EVENT_MS = 5_000
 
+/** Openings whose copies are still needed: a clearing beside a new opening never takes its copies. */
+const live = new Set<number>()
+/** One clearing at a time: two would race for the same copies. Never rejects. */
+let clearing: Promise<void> = Promise.resolve()
+
+/** The opening a copy was made for, from its name (`<at>-<n>`); NaN for one named before 0.9.27. */
+function openingOf(path: string): number {
+  const match = /^(\d+)-\d+$/.exec(path.slice(path.lastIndexOf('/') + 1))
+  return match ? Number(match[1]) : Number.NaN
+}
+
+async function clearCopies(adapter: DataAdapter, root: string): Promise<void> {
+  const dir = `${root}/${DIR}`
+  if (await adapter.exists(`${dir}/${JOURNAL}`)) return
+  const copies = `${dir}/copies`
+  if (!(await adapter.exists(copies))) return
+  let failed = 0
+  let first: unknown = null
+  for (const path of (await adapter.list(copies)).files) {
+    if (live.has(openingOf(path))) continue
+    try {
+      await adapter.remove(path)
+    } catch (error) {
+      failed += 1
+      first ??= error
+    }
+  }
+  if (failed > 0) log.warn(`${failed} copies of the Time Machine could not be removed; they go the next time`, first)
+}
+
 /** What the Time Machine needs of Obsidian's vault. */
 export interface PastVault {
   getAbstractFileByPath(path: string): TAbstractFile | null
@@ -132,14 +162,17 @@ export class PastFiles {
     return adapter.exists(`${PastFiles.dir(root)}/${JOURNAL}`)
   }
 
-  /** Starts a journal; refused while one waits. */
+  /**
+   * Starts a journal; refused while one waits. Its folders stay from one opening to the next:
+   * removing a folder may never work (`clearLeftovers`), and nothing waits for leftovers here.
+   */
   static async begin(vault: PastVault, adapter: DataAdapter, root: string, start: PastStart): Promise<PastFiles> {
     if (await PastFiles.pending(adapter, root)) throw new Error('the past of an earlier Time Machine still waits to be put back')
-    await PastFiles.clearLeftovers(adapter, root)
     const dir = PastFiles.dir(root)
     if (!(await adapter.exists(dir))) await adapter.mkdir(dir)
     if (!(await adapter.exists(`${dir}/copies`))) await adapter.mkdir(`${dir}/copies`)
     const files = new PastFiles(vault, adapter, root, { ...start, at: Date.now() })
+    live.add(files.start.at)
     await adapter.write(`${dir}/${JOURNAL}`, `${JSON.stringify({ t: 'start', at: files.start.at, ...start } satisfies Line)}\n`)
     return files
   }
@@ -163,6 +196,7 @@ export class PastFiles {
     const start =
       head?.t === 'start' ? { at: head.at, scope: head.scope, lockId: head.lockId, vaultId: head.vaultId } : { at: 0, scope: null, lockId: null, vaultId: null }
     const files = new PastFiles(vault, adapter, root, start)
+    live.add(start.at)
     for (const line of lines) {
       if (line.t === 'path' && !files.originals.has(line.path)) files.originals.set(line.path, line.original)
       else if (line.t === 'wrote') files.wrote.set(line.path, line.hash)
@@ -310,7 +344,11 @@ export class PastFiles {
     await this.show(path, original ? await this.readCopy(original) : null, original?.mtime)
   }
 
-  /** A folder of now that the past does not have, emptied by taking its files away. */
+  /**
+   * A folder of now that the past does not have, emptied by taking its files away. One that will
+   * not go - read-only, which Windows refuses to remove (0.9.28) - stays, empty: the past shows
+   * well enough with it, and failing showed nothing.
+   */
   removeFolderIfEmpty(path: string): Promise<void> {
     return this.writes(async () => {
       const folder = this.vault.getAbstractFileByPath(path)
@@ -318,7 +356,11 @@ export class PastFiles {
       await this.append({ t: 'unfolder', path })
       this.removedFolders.push(path)
       this.own.set(path, Date.now())
-      await this.vault.delete(folder, true)
+      try {
+        await this.vault.delete(folder, true)
+      } catch (error) {
+        log.warn(`the folder ${path} could not be taken away for the past; it stays, empty`, error)
+      }
     })
   }
 
@@ -413,30 +455,36 @@ export class PastFiles {
   }
 
   /**
-   * The journal goes, then the copies - only after a restore that left nothing out. The
-   * journal alone says the past may still lie in the files, so only it must go. The copies
-   * go as far as the system lets them: Windows refused to remove their folder (EPERM), and
-   * leaving the past failed with every file already back - a rollback from the Time
-   * Machine never ran (0.9.27). What stays goes the next time (`clearLeftovers`).
+   * The journal goes - only after a restore that left nothing out. It alone says the past may
+   * still lie in the files, so only it must go before anything goes on; the copies are cleared
+   * behind it (`clearLeftovers`), and nothing waits for them.
    */
   async finish(): Promise<void> {
     this.finished = true
     await Promise.allSettled(Array.from(this.reading))
     const journal = `${this.dir}/${JOURNAL}`
     if (await this.adapter.exists(journal)) await untilFree(() => this.adapter.remove(journal))
-    await PastFiles.clearLeftovers(this.adapter, this.root)
+    live.delete(this.start.at)
+    void PastFiles.clearLeftovers(this.adapter, this.root)
   }
 
-  /** What a journal gone left in the plugin folder, removed as far as it goes - never while a journal waits. */
-  static async clearLeftovers(adapter: DataAdapter, root: string): Promise<void> {
-    const dir = PastFiles.dir(root)
-    try {
-      await untilFree(async () => {
-        if (await PastFiles.pending(adapter, root)) return
-        if (await adapter.exists(dir)) await adapter.rmdir(dir, true)
-      })
-    } catch (error) {
-      log.warn('removing the copies of the Time Machine failed; they go the next time', error)
-    }
+  /**
+   * The copies of openings that are over, removed one file at a time - the folders stay. A
+   * folder may be impossible to remove: Google Drive set the read-only attribute on every folder
+   * of a vault it synced, and Windows refuses to remove such a folder (EPERM). Removing
+   * `timemachine/` whole, retried while Windows refused, held up the start of the sync, and
+   * opening and leaving the Time Machine, for a minute each (0.9.28). Never while a journal
+   * waits, never a copy of an opening still going; nobody needs to wait for it.
+   */
+  static clearLeftovers(adapter: DataAdapter, root: string): Promise<void> {
+    clearing = clearing
+      .then(() => clearCopies(adapter, root))
+      .catch((error: unknown) => log.warn('clearing the copies of the Time Machine failed; they go the next time', error))
+    return clearing
+  }
+
+  /** Resolves once no clearing runs - for the plugin's unload, which nothing may outlive. */
+  static idle(): Promise<void> {
+    return clearing
   }
 }

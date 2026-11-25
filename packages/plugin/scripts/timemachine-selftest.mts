@@ -18,7 +18,11 @@ const { TimeMachineSession } = await import('../src/history/TimeMachine.js')
 const { PastFiles, PastFilesClosed } = await import('../src/history/PastFiles.js')
 const { barScale } = await import('../src/history/Strip.js')
 const { pastEditorExtension } = await import('../src/history/pastEditor.js')
-const { LockSeal, VaultLockedError, lockNonce, takeVaultLock } = await import('../src/sync/VaultLock.js')
+const { LockSeal, OwnLocks, VaultLockedError, lockNonce, takeVaultLock } = await import('../src/sync/VaultLock.js')
+const { TimeMachineControl } = await import('../src/history/TimeMachineControl.js')
+const { BackupStore } = await import('../src/sync/BackupStore.js')
+const { pruneRollbackCopies } = await import('../src/sync/Rollback.js')
+const { ApiError } = await import('../src/account/api.js')
 const { Blobs } = await import('../src/sync/Blobs.js')
 const { Notice, notices } = await import('../src/notices.js')
 const { FakeAdapter, FakeVault } = await import('./stubs/fake-vault.js')
@@ -109,8 +113,7 @@ async function open(device: Device, scope: Scope, marks: Array<{ at: number; lab
     marks
   })
   const sealed = await prepared.seal.seal({ what: 'the test', device: device.username, nonce: lockNonce(), scope })
-  device.ownLocks.add(sealed)
-  const lock = await takeVaultLock(device.api, prepared.vaultId, 'preview', sealed, () => undefined)
+  const lock = await device.ownLocks.take(device.api, prepared.vaultId, 'preview', sealed, () => undefined)
   await device.shutdown({ keepViews: true })
   const files = await PastFiles.begin(device.vault as never, device.pluginAdapter as never, PLUGIN_DIR, { scope, lockId: lock.id, vaultId: prepared.vaultId })
   session.attach(files)
@@ -290,27 +293,33 @@ try {
     barScale(200)
   ])
 
-  // --- Windows holding the copies a moment: leaving the past goes all the same (0.9.27) ---------------
+  // --- a plugin folder whose folders will not go: read-only, as Google Drive left them (0.9.28) -----------
   {
     const DIR = 'plugin'
     type Plain = InstanceType<typeof FakeAdapter>
     type Vault = InstanceType<typeof FakeVault>
     const refusal = (syscall: string, path: string): Error => Object.assign(new Error(`EPERM: operation not permitted, ${syscall} '${path}'`), { code: 'EPERM' })
     /**
-     * The plugin folder as Windows answered while something held the copies: `rmdir` and `remove`
-     * refused so many times. With `slow.on`, reading a copy takes a second.
+     * The plugin folder on the user's PC: Google Drive for desktop had set the read-only attribute
+     * on every folder, so Windows refused to remove any (EPERM), and Obsidian took its time to say
+     * so - here `refuseMs`. Files went. `refuse.remove` refuses removing a file so many times; with
+     * `slow.on`, reading a copy takes a second; `gate` holds a listing of the copies until it opens.
      */
-    const holding = (plain: Plain, refuse: { rmdir: number; remove: number }, events: string[] = [], slow = { on: false }): Plain =>
+    const readOnlyFolders = (
+      plain: Plain,
+      events: string[] = [],
+      refuse = { remove: 0 },
+      slow = { on: false },
+      refuseMs = 4_000,
+      gate: { until: Promise<void> | null } = { until: null }
+    ): Plain =>
       new Proxy(plain, {
         get(target, name, receiver) {
           if (name === 'rmdir') {
             return async (path: string) => {
-              events.push('rmdir')
-              if (refuse.rmdir > 0) {
-                refuse.rmdir -= 1
-                throw refusal('rmdir', `${path}/copies`)
-              }
-              return target.rmdir(path)
+              events.push(`rmdir ${path}`)
+              await delay(refuseMs)
+              throw refusal('rmdir', path)
             }
           }
           if (name === 'remove') {
@@ -319,7 +328,14 @@ try {
                 refuse.remove -= 1
                 throw refusal('unlink', path)
               }
+              if (path.includes('/copies/')) events.push(`remove ${path.slice(path.lastIndexOf('/') + 1)}`)
               return target.remove(path)
+            }
+          }
+          if (name === 'list') {
+            return async (path: string) => {
+              if (gate.until && path.endsWith('/copies')) await gate.until
+              return target.list(path)
             }
           }
           if (name === 'readBinary') {
@@ -345,65 +361,107 @@ try {
     }
     const isNow = (vault: Vault): boolean => vault.text('Note.md') === 'now\n' && vault.text('Later.md') === 'later\n'
     const copies = (plain: Plain): string[] => Array.from(plain.binaries.keys()).filter((key) => key.includes('/timemachine/copies/'))
+    const took = async (step: () => Promise<unknown>): Promise<number> => {
+      const started = Date.now()
+      await step()
+      return Date.now() - started
+    }
+    /** What an earlier opening left, as on the PC: copies whose journal went, one named before 0.9.27. */
+    const leaveCopies = async (plain: Plain): Promise<string[]> => {
+      await plain.mkdir(`${DIR}/timemachine`)
+      await plain.mkdir(`${DIR}/timemachine/copies`)
+      const left = [`${DIR}/timemachine/copies/1700000000000-1`, `${DIR}/timemachine/copies/1700000000000-2`, `${DIR}/timemachine/copies/7`]
+      for (const path of left) await plain.writeBinary(path, bytes('an old copy').buffer as ArrayBuffer)
+      return left
+    }
 
     {
       const vault = vaultNow()
       const plain = new FakeAdapter()
-      const refuse = { rmdir: 2, remove: 0 }
       const events: string[] = []
       const slow = { on: false }
-      const adapter = holding(plain, refuse, events, slow)
+      const adapter = readOnlyFolders(plain, events, { remove: 0 }, slow)
       const files = await showPast(vault, adapter)
       check(vault.text('Note.md') === 'the past\n' && vault.text('Later.md') === undefined, 'the past lies in the files', vault.text('Note.md'))
       const report = await files.restore()
       // An editor's marks still reading what the note says now as the copies go.
       slow.on = true
       const reading = files.originalBytes('Note.md')
-      await files.finish()
-      check(report.failed.length === 0 && isNow(vault), 'every file goes back', report)
-      check((await reading) !== undefined && events[0] === 'read' && events[1] === 'rmdir', 'a copy still being read is waited for before the copies go', events)
+      const leaving = await took(() => files.finish())
+      check(report.failed.length === 0 && isNow(vault) && !(await PastFiles.pending(adapter as never, DIR)), 'every file goes back, and the journal goes', report)
       check(
-        refuse.rmdir === 0 && !(await plain.exists(`${DIR}/timemachine`)) && !(await PastFiles.pending(adapter as never, DIR)),
-        'Windows refusing to remove the copies for a moment (EPERM): tried again, and journal and copies go'
-      )
-    }
-    {
-      const vault = vaultNow()
-      const plain = new FakeAdapter()
-      const refuse = { rmdir: 99, remove: 0 }
-      const adapter = holding(plain, refuse)
-      const files = await showPast(vault, adapter)
-      const report = await files.restore()
-      const left = await files.finish().then(
-        () => null,
-        (error: unknown) => error
-      )
-      check(
-        report.failed.length === 0 && left === null && isNow(vault) && !(await PastFiles.pending(adapter as never, DIR)),
-        'refusing for good: leaving the past goes all the same, the journal gone - in 0.9.26 it failed with every file back, and the rollback never ran',
-        left
+        leaving < 2_500,
+        'leaving the past waits for no folder: on the PC whose folders Google Drive had made read-only, each start, opening and leaving waited a minute',
+        leaving
       )
       check((await files.originalBytes('Note.md')) === undefined, 'and what a note says now is read from the vault from then on, never from a copy')
-      const leftOver = copies(plain)
-      check(leftOver.length > 0, 'the copies stay for now', leftOver)
-      refuse.rmdir = 0
-      const again = await showPast(vault, adapter)
+      await PastFiles.idle()
+      slow.on = false
+      const read = events.indexOf('read')
+      check((await reading) !== undefined && read >= 0 && read < events.findIndex((event) => event.startsWith('remove')), 'a copy still being read is waited for before the copies go', events)
       check(
-        leftOver.every((key) => !plain.binaries.has(key)) && copies(plain).length > 0 && copies(plain).every((key) => key.split('/').pop()?.startsWith(`${again.start.at}-`) === true),
-        'the next Time Machine clears what was left first, its own copies named apart',
-        copies(plain)
+        copies(plain).length === 0 && !events.some((event) => event.startsWith('rmdir')),
+        'the copies go behind it, file by file, and no folder is asked to go',
+        { left: copies(plain), events }
       )
-      await PastFiles.clearLeftovers(adapter as never, DIR)
-      check((await PastFiles.pending(adapter as never, DIR)) && copies(plain).length > 0, 'and leftovers are never cleared while a journal waits')
-      const back = await again.restore()
-      await again.finish()
-      check(back.failed.length === 0 && isNow(vault) && !(await plain.exists(`${DIR}/timemachine`)), 'that one goes back and away too')
     }
     {
       const vault = vaultNow()
       const plain = new FakeAdapter()
-      const refuse = { rmdir: 0, remove: 99 }
-      const adapter = holding(plain, refuse)
+      const events: string[] = []
+      const adapter = readOnlyFolders(plain, events)
+      const left = await leaveCopies(plain)
+      // The start of the plugin, as TimeMachineControl does it: no journal, so the sync may start at once.
+      const control = new TimeMachineControl({ vault, adapter, root: DIR } as never)
+      let free = false
+      const starting = await took(async () => {
+        free = await control.recoverAtStart()
+      })
+      check(free && starting < 2_500 && !control.blocksSync, 'a start with copies left over starts the sync at once - it waited a minute for them', starting)
+      await PastFiles.idle()
+      check(left.every((path) => !plain.binaries.has(path)) && !events.some((event) => event.startsWith('rmdir')), 'and clears them behind it, file by file, an old name too', {
+        left: copies(plain),
+        events
+      })
+
+      const again = await leaveCopies(plain)
+      const gate: { until: Promise<void> | null } = { until: null }
+      const gated = readOnlyFolders(plain, events, { remove: 0 }, { on: false }, 4_000, gate)
+      let shown: Awaited<ReturnType<typeof PastFiles.begin>> | null = null
+      const opening = await took(async () => {
+        shown = await showPast(vault, gated)
+      })
+      check(opening < 2_500 && again.every((path) => plain.binaries.has(path)), 'the next opening waits for no leftovers either', opening)
+      await PastFiles.clearLeftovers(gated as never, DIR)
+      check(again.every((path) => plain.binaries.has(path)) && copies(plain).length > again.length, 'leftovers are never cleared while a journal waits', copies(plain))
+
+      // Leaving, and an opening right behind it while the clearing still lists the copies: the new opening's stay.
+      const first = shown as unknown as Awaited<ReturnType<typeof PastFiles.begin>>
+      await first.restore()
+      let open = (): void => undefined
+      gate.until = new Promise<void>((resolve) => {
+        open = resolve
+      })
+      await first.finish()
+      const next = await showPast(vault, gated)
+      open()
+      await PastFiles.idle()
+      const own = copies(plain)
+      check(
+        own.length > 0 && own.every((key) => key.split('/').pop()?.startsWith(`${next.start.at}-`) === true) && again.every((path) => !plain.binaries.has(path)),
+        "a clearing running beside a new opening takes what was left and never that opening's copies",
+        own
+      )
+      const back = await next.restore()
+      await next.finish()
+      await PastFiles.idle()
+      check(back.failed.length === 0 && isNow(vault) && copies(plain).length === 0, 'and that one goes back from them, and they go after it', back)
+    }
+    {
+      const vault = vaultNow()
+      const plain = new FakeAdapter()
+      const refuse = { remove: 99 }
+      const adapter = readOnlyFolders(plain, [], refuse)
       const files = await showPast(vault, adapter)
       await files.restore()
       const failed = await files.finish().then(
@@ -419,8 +477,71 @@ try {
       const resumed = await PastFiles.resume(vault as never, adapter as never, DIR)
       const report = await resumed?.restore()
       await resumed?.finish()
-      check(report?.failed.length === 0 && isNow(vault) && !(await PastFiles.pending(adapter as never, DIR)), 'and the next try finishes it', report)
+      await PastFiles.idle()
+      check(
+        report?.failed.length === 0 && isNow(vault) && !(await PastFiles.pending(adapter as never, DIR)) && copies(plain).length === 0,
+        'and the next try finishes it',
+        report
+      )
     }
+
+    // The plugin's other copies: old merge backups and rollback copies go file by file, their folders as far as they will.
+    {
+      const plain = new FakeAdapter()
+      const events: string[] = []
+      const adapter = readOnlyFolders(plain, events, { remove: 0 }, { on: false }, 50)
+      const store = new BackupStore(adapter as never, DIR)
+      const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000)
+      const older = new Date(Date.now() - 41 * 24 * 60 * 60 * 1000)
+      await store.write('Note.md', 'local', 'old\n', old)
+      await store.write('Note.md', 'local', 'older\n', older)
+      await store.copyVault(['Deep/Note.md'], async () => bytes('deep\n').buffer as ArrayBuffer, () => undefined, older)
+      await store.write('Note.md', 'local', 'recent\n')
+      const pruned = await store.prune(30)
+      const kept = await store.list()
+      const files = [...plain.files.keys(), ...plain.binaries.keys()].filter((key) => key.includes('/backups/'))
+      check(
+        pruned === 2 && kept.length === 1 && files.length === 1 && events.filter((event) => event.startsWith('rmdir')).length === 1,
+        'old backups go file by file though their folders are read-only, the copy of a vault inside one too - and once a folder refused, no other is asked',
+        { pruned, files, events }
+      )
+      const free = new FakeAdapter()
+      const freeStore = new BackupStore(free as never, DIR)
+      await freeStore.write('Note.md', 'local', 'old\n', old)
+      await freeStore.copyVault(['Deep/Note.md'], async () => bytes('deep\n').buffer as ArrayBuffer, () => undefined, old)
+      await freeStore.write('Note.md', 'local', 'recent\n')
+      const freePruned = await freeStore.prune(30)
+      const days = (await free.list(`${DIR}/backups`)).folders
+      check(freePruned === 1 && days.length === 1 && (await freeStore.list()).length === 1, 'where folders may go, they go along', days)
+
+      const rollbacks = `${DIR}/rollbacks/2020-01-01 120000`
+      for (const dir of [`${DIR}/rollbacks`, rollbacks, `${rollbacks}/notes`]) await plain.mkdir(dir)
+      await plain.write(`${rollbacks}/rollback.json`, '{}\n')
+      await plain.write(`${rollbacks}/notes/Note.md`, 'then\n')
+      const removed = await pruneRollbackCopies(adapter as never, DIR, 30)
+      check(
+        removed === 1 && !(await plain.exists(`${rollbacks}/rollback.json`)) && !(await plain.exists(`${rollbacks}/notes/Note.md`)),
+        'and old rollback copies the same way',
+        removed
+      )
+    }
+  }
+
+  // --- a lock is this device's own before the request that takes it goes out (0.9.28) ---------------------
+  {
+    const own = new OwnLocks()
+    let ownBefore = false
+    const refusing = {
+      takeVaultLock: async () => {
+        ownBefore = own.has('sealed')
+        throw new ApiError(500, 'refused')
+      }
+    }
+    const refused = await own.take(refusing as never, 'vault', 'preview', 'sealed', () => undefined).then(
+      () => null,
+      (error: unknown) => error
+    )
+    check(ownBefore && refused instanceof ApiError && !own.has('sealed'), 'a lock is known as its own while it is asked for, and forgotten when refused', { ownBefore, refused })
   }
 
   for (const device of devices) check(await device.boot(), `${device.username} starts`)
@@ -428,6 +549,33 @@ try {
     await eventually(() => A2.vault.text('Welcome.md') === 'hello\n' && same(A2.vault.bytes('Bilder/Foto.png'), photo), 15_000),
     "A's second device has the whole vault"
   )
+
+  // --- the device that takes the lock never takes it for another device's (0.9.28) ----------------------------
+  // The server tells every device of the account, the taker too, before it answers. The Time Machine
+  // knew its lock only from that answer: on the user's PC its own lock arrived first, every time,
+  // and opened a second window over its own, the editors read-only.
+  {
+    const prepared = prepare(A1)
+    const sealed = await prepared.seal.seal({ what: 'the test', device: A1.username, nonce: lockNonce(), scope: { kind: 'vault' } })
+    const socket = A1.socket as NonNullable<Device['socket']>
+    const seen: boolean[] = []
+    const setLocked = socket.setLocked.bind(socket)
+    socket.setLocked = (locked: boolean): void => {
+      seen.push(locked)
+      setLocked(locked)
+    }
+    try {
+      const lock = await A1.ownLocks.take(A1.api, prepared.vaultId, 'preview', sealed, () => undefined)
+      check(await eventually(() => A2.socket?.isLocked === true), 'the other device hears of the lock')
+      await delay(300)
+      check(!seen.includes(true) && !socket.isLocked, "the device that took it never takes its own lock for another device's", seen)
+      await lock.release()
+      A1.ownLocks.delete(sealed)
+      check(await eventually(() => A2.socket?.isLocked === false), 'and the other device hears of its end')
+    } finally {
+      socket.setLocked = setLocked
+    }
+  }
   // The server says when notes were edited only to the minute, rounded down: the moment lies just before a
   // minute begins, and the changes after it in that minute - so none of them is rounded down to before it.
   let wait = 60_000 - (Date.now() % 60_000) - 2_000

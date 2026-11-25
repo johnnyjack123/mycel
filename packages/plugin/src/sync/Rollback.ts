@@ -23,7 +23,7 @@ import type { DocStore } from './DocStore.js'
 import type { RoomCrypto } from './VaultSocket.js'
 import { besides } from './renames.js'
 import { log } from '../log.js'
-import { makePluginFolder } from '../pluginFolder.js'
+import { emptyFolder, makePluginFolder } from '../pluginFolder.js'
 
 // Rolling the vault, or one folder of it, back to a moment (`docs/PHASE6.md`,
 // "Rolling back"). Three steps:
@@ -725,7 +725,12 @@ export class Rollback {
         if (!ref) continue
         const listed = new Map((await source.backupListing(server.routeId, ref)).map((entry) => [entry.path, entry.hash]))
         if (!outcome.copied.every((item) => listed.get(item.path) === item.hash)) continue
-        await this.deps.adapter.rmdir(outcome.copy, true)
+        // File by file: removed whole, a read-only folder failed after its files were gone, and the copy was said to be on this device alone (0.9.28).
+        const emptied = await emptyFolder(this.deps.adapter, outcome.copy, true)
+        if (emptied.failed > 0) {
+          log.warn(`the rollback's copy matched the backup on ${server.label}, but ${emptied.failed} file(s) of it would not go`, emptied.error)
+          return false
+        }
         log.info(`the rollback's copy matched the backup on ${server.label}; removed it from the plugin folder`)
         return true
       } catch (error) {
@@ -924,19 +929,22 @@ export class Rollback {
   }
 }
 
-/** Copies of rollbacks older than `retentionDays` go, as merge backups do. */
+/** Copies of rollbacks older than `retentionDays` go, as merge backups do - file by file, a read-only folder left (`emptyFolder`). */
 export async function pruneRollbackCopies(adapter: DataAdapter, root: string, retentionDays: number, now = Date.now()): Promise<number> {
   if (retentionDays <= 0) return 0
   const base = `${root}/${COPY_DIR}`
   if (!(await adapter.exists(base))) return 0
   const cutoff = stamp(new Date(now - retentionDays * 24 * 60 * 60 * 1000))
   let removed = 0
+  let folders = true
   for (const dir of (await adapter.list(base)).folders) {
     const name = dir.split('/').pop() ?? ''
     if (!/^\d{4}-\d{2}-\d{2} \d{6}$/.test(name) || name >= cutoff) continue
     try {
-      await adapter.rmdir(dir, true)
-      removed += 1
+      const emptied = await emptyFolder(adapter, dir, folders)
+      if (emptied.refused) folders = false
+      if (emptied.failed === 0) removed += 1
+      else log.warn(`removing the rollback copy ${dir} failed for ${emptied.failed} file(s)`, emptied.error)
     } catch (error) {
       log.warn(`removing the rollback copy ${dir} failed`, error)
     }

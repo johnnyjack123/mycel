@@ -11,9 +11,9 @@ function heldCode(error: unknown): boolean {
 }
 
 /**
- * A step on the plugin's folder, tried again for a few seconds while the system holds what it
- * touches: removing the Time Machine's copies failed on Windows with EPERM a moment after they
- * were read, and with it leaving the past (0.9.27). Anything else fails at once.
+ * A step on a file of the plugin's folder, tried again for a few seconds while the system holds
+ * it - a virus scanner reading what was just written. Anything else fails at once. Never for a
+ * folder: what refused there was a read-only folder, which no waiting changes (0.9.28).
  */
 export async function untilFree<T>(step: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt += 1) {
@@ -25,6 +25,55 @@ export async function untilFree<T>(step: () => Promise<T>): Promise<T> {
       await new Promise((resolve) => setTimeout(resolve, wait))
     }
   }
+}
+
+/** What emptying a folder of the plugin's left behind. */
+export interface Emptied {
+  /** Files removed. */
+  removed: number
+  /** Files that would not go, and the first reason. */
+  failed: number
+  error: unknown
+  /** A folder refused to go - its system refuses them all, so the caller asks no more of them. */
+  refused: boolean
+}
+
+/**
+ * Removes every file below `dir`, then - with `folders` - the folders as far as the system lets
+ * them, the deepest first, and never relies on that: a folder can be impossible to remove. Google
+ * Drive for desktop set the read-only attribute on every folder of a vault it synced, Windows then
+ * refused to remove one (EPERM), and Obsidian took about eleven seconds per try to say so; files it left
+ * alone. Removing the Time Machine's folder whole held up the start of the sync, and opening and
+ * leaving the Time Machine, for a minute each (0.9.28). Once one folder refuses, no other is asked.
+ */
+export async function emptyFolder(adapter: Pick<DataAdapter, 'list' | 'remove' | 'rmdir'>, dir: string, folders: boolean): Promise<Emptied> {
+  const emptied: Emptied = { removed: 0, failed: 0, error: null, refused: false }
+  const walked: string[] = []
+  const walk = async (folder: string): Promise<void> => {
+    const listed = await adapter.list(folder)
+    for (const file of listed.files) {
+      try {
+        await adapter.remove(file)
+        emptied.removed += 1
+      } catch (error) {
+        emptied.failed += 1
+        emptied.error ??= error
+      }
+    }
+    for (const inner of listed.folders) await walk(inner)
+    walked.push(folder)
+  }
+  await walk(dir)
+  if (!folders || emptied.failed > 0) return emptied
+  for (const folder of walked) {
+    try {
+      await adapter.rmdir(folder, false)
+    } catch {
+      emptied.refused = true
+      break
+    }
+  }
+  return emptied
 }
 
 /**

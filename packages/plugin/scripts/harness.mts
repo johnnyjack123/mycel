@@ -37,7 +37,7 @@ const { SyncSession, CarriedTexts } = await import('../src/SyncSession.js')
 const { openInviteSession, openPairingSession } = await import('../src/backup/BackupLink.js')
 const { Backups } = await import('../src/backup/Backups.js')
 const { Rollback } = await import('../src/sync/Rollback.js')
-const { LockSeal, lockNonce, takeVaultLock } = await import('../src/sync/VaultLock.js')
+const { LockSeal, OwnLocks, lockNonce } = await import('../src/sync/VaultLock.js')
 const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
 )
@@ -642,8 +642,8 @@ export class Device {
     this.session.forgetServer()
   }
 
-  /** Locks of the vault this device took itself, by what they say. */
-  readonly ownLocks = new Set<string>()
+  /** Locks of the vault this device took itself, by what they say - main.ts's, which the Time Machine takes its lock through too. */
+  readonly ownLocks = new OwnLocks()
   /** The lock this device writes under, named to every new connection - main.ts's `heldLockId`. */
   heldLockId: string | null = null
 
@@ -659,8 +659,7 @@ export class Device {
     if (!keys) throw new Error('not running')
     const scope = folder ? { kind: 'folder' as const, path: folder } : { kind: 'vault' as const }
     const sealed = await new LockSeal(keys.settingsCrypto(), keys.vaultId).seal({ what: 'a rollback', device: this.username, nonce: lockNonce(), scope })
-    this.ownLocks.add(sealed)
-    const lock = await takeVaultLock(this.api, keys.vaultId, 'rollback', sealed, () => undefined)
+    const lock = await this.ownLocks.take(this.api, keys.vaultId, 'rollback', sealed, () => undefined)
     this.heldLockId = lock.id
     this.socket?.holdLock(lock.id)
     return {

@@ -85,7 +85,7 @@ import type { Review, ReviewStore } from './sync/Reviews'
 import { ReviewListModal, ReviewModal } from './history/ReviewModal'
 import type { VaultIndex } from './sync/VaultIndex'
 import type { SocketStatus, VaultSocket } from './sync/VaultSocket'
-import { LockSeal, inLockScope, lockNonce, takeVaultLock, type LockPurpose, type LockScope } from './sync/VaultLock'
+import { LockSeal, OwnLocks, inLockScope, lockNonce, type LockPurpose, type LockScope } from './sync/VaultLock'
 import { MycelSettingTab, DEFAULT_SETTINGS, MOBILE_DOWNLOAD_LIMIT_MB, type MycelSettings } from './settings'
 import { CarriedTexts, SyncSession, type AccountNoticeKind, type SyncHost, type SyncTiming } from './SyncSession'
 import { log, withSummary } from './log'
@@ -254,8 +254,8 @@ export default class MycelPlugin extends Plugin {
   private timeMachine!: TimeMachineControl
   /** The account settings as they were when the sync stopped for the Time Machine: backups and rollbacks read them meanwhile. */
   private frozenSettings: AccountSettings | null = null
-  /** Locks of the vault this device took itself, by what they say: their notices are no news here. */
-  private readonly ownLocks = new Set<string>()
+  /** Locks of the vault this device took itself - a rollback's, the Time Machine's: their notices are no news here. */
+  private readonly ownLocks = new OwnLocks()
   /** Another device's lock, shown here once. */
   private lockShown: string | null = null
   private lockModal: LockedModal | null = null
@@ -1720,6 +1720,7 @@ export default class MycelPlugin extends Plugin {
       root: this.pluginDir(),
       api: this.api,
       locks: this.editLocks,
+      ownLocks: this.ownLocks,
       settings: () => ({ ticks: this.settings.timeMachineTicks, backups: this.settings.timeMachineBackups, marks: this.settings.timeMachineMarks }),
       saveSettings: async (patch) => {
         if (patch.ticks !== undefined) this.settings.timeMachineTicks = patch.ticks
@@ -1952,26 +1953,20 @@ export default class MycelPlugin extends Plugin {
     const scope: LockScope = folder ? { kind: 'folder', path: folder } : { kind: 'vault' }
     const what = folder ? `the folder ${folder.slice(folder.lastIndexOf('/') + 1)}` : 'the vault'
     const sealed = await seal.seal({ what, device: Platform.isMobile ? 'a phone or tablet' : 'a computer', nonce: lockNonce(), scope })
-    this.ownLocks.add(sealed)
-    try {
-      const lock = await takeVaultLock(this.api, keys.vaultId, 'rollback', sealed, () =>
-        new Notice('The lock of the vault was lifted on another device while the rollback runs: what they write merges in as usual.', 12_000)
-      )
-      this.heldLockId = lock.id
-      this.socket?.holdLock(lock.id)
-      return {
-        release: async () => {
-          // What the rollback changed reaches the server before the others write again.
-          await this.store?.whenAllSent(30_000)
-          this.heldLockId = null
-          this.socket?.holdLock(null)
-          await lock.release()
-          this.ownLocks.delete(sealed)
-        }
+    const lock = await this.ownLocks.take(this.api, keys.vaultId, 'rollback', sealed, () =>
+      new Notice('The lock of the vault was lifted on another device while the rollback runs: what they write merges in as usual.', 12_000)
+    )
+    this.heldLockId = lock.id
+    this.socket?.holdLock(lock.id)
+    return {
+      release: async () => {
+        // What the rollback changed reaches the server before the others write again.
+        await this.store?.whenAllSent(30_000)
+        this.heldLockId = null
+        this.socket?.holdLock(null)
+        await lock.release()
+        this.ownLocks.delete(sealed)
       }
-    } catch (error) {
-      this.ownLocks.delete(sealed)
-      throw error
     }
   }
 
@@ -2019,7 +2014,7 @@ export default class MycelPlugin extends Plugin {
       this.lockShown = null
       return
     }
-    if (this.ownLocks.has(lock.sealed) || this.timeMachine.ownsLock(lock.sealed)) return
+    if (this.ownLocks.has(lock.sealed)) return
     this.socket?.setLocked(true)
     if (this.lockShown === lock.sealed) return
     this.lockShown = lock.sealed

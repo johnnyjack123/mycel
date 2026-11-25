@@ -2,8 +2,8 @@
 
 _Last updated: 2026-11-25 · **Phase: the device run before 1.0.0.** 0.9 - hardening and the
 security audit - is built. The user started afresh on 2026-11-13 and is trying everything on
-real devices. Each thing they find or ask for becomes the next patch: 0.9.19 to 0.9.27 so far.
-Current version: **0.9.27** (`latest-build`, CI green on `main`). 1.0.0 follows once everything
+real devices. Each thing they find or ask for becomes the next patch: 0.9.19 to 0.9.28 so far.
+Current version: **0.9.28** (`latest-build`, CI green on `main`). 1.0.0 follows once everything
 is verified on devices, then publishing, if the user wants it._
 
 ## Where we are
@@ -56,10 +56,15 @@ the user runs the new setup and reports back. Each finding or wish was a version
 | 0.9.25 | 11-21 | The CLI takes the vault's id alone. |
 | 0.9.26 | 11-21 | The user's design: both versions line beside line, and the setup guide's live comparison. |
 | 0.9.27 | 11-24 | Found by the user: a rollback from the Time Machine failed on Windows (EPERM while removing the copies). |
+| 0.9.28 | 11-25 | Found by the user, the cause found with them over ssh: Google Drive made every folder of the PC's vault read-only, Windows refused to remove them, and the start, opening and leaving the Time Machine waited a minute each; the Time Machine took its own lock for another device's. |
 
 **Next:**
-1. The user installs 0.9.27 - only the plugin changed in 0.9.26 and 0.9.27 - and does the
-   rollback from the Time Machine again.
+1. The user installs 0.9.28 on the PC - only the plugin changed since 0.9.25 - and tries it
+   there, with the stuck, read-only `timemachine\copies` of the test vault `sync-test` kept for
+   it: a start, opening and aborting the Time Machine, a restore, and the rollback from the Time
+   Machine again. The log shows the times over ssh (the user's PC, `ssh pc`, only inside that
+   vault). Afterwards the read-only attribute is taken off that vault's folders
+   (`attrib -r /s /d`).
 2. Then on through "Still to try on devices" below.
 3. Findings come first, then 1.0.0. What 1.0.0 still needs besides is the user's call:
    publishing, item 12.
@@ -90,6 +95,11 @@ the user runs the new setup and reports back. Each finding or wish was a version
 ### Still to try on devices
 
 What only a device can show (CLAUDE.md, Testing) and nobody has tried yet, newest first:
+- **0.9.28:**
+  - on the PC with its read-only `timemachine\copies`: a start connecting within seconds of
+    `loaded`, opening and aborting the Time Machine at once, no second window beside its own;
+  - a restore and a rollback from the Time Machine there;
+  - on a device whose folders may go, `timemachine/` and old backups cleared as before.
 - **0.9.27:**
   - a rollback from the Time Machine on Windows (the user's case);
   - Obsidian restarted while the past is shown.
@@ -400,11 +410,20 @@ How to run the end-to-end suites without touching the user's server is in CLAUDE
 ### 2026-11-25
 - The docs were brought to the phase: this file's head, "Where we are", "Still to try on
   devices", the roadmap, known issues and the log; CLAUDE.md's pointer to 0.9.
+- The user's PC (not the laptop, same versions): the plugin took a minute to start, half of the
+  settings missing meanwhile; opening, aborting and restoring in the Time Machine took a minute
+  each, with a second window beside its own. Found together, over ssh on the PC (allowed only
+  inside the test vault): Google Drive for desktop synced that vault and made every folder in it
+  read-only after ~7 s, Windows refuses to remove such a folder, and 0.9.27 waited for removing
+  the copies' folder at all three places. 0.9.27's diagnosis (Windows holding the copies a
+  moment) was wrong. The user took the vault out of Google Drive. Fixed as 0.9.28, with the lock
+  the Time Machine took for another device's, seen in the same log.
 
 ### 2026-11-24
 - The user: "Compare versions" of 0.9.26 is much better, and a merge went well.
 - A rollback from the Time Machine on Windows did nothing. Removing the plugin folder's copies
-  failed with EPERM after every file was back, and that failed the way out. Fixed as 0.9.27.
+  failed with EPERM after every file was back, and that failed the way out. Fixed as 0.9.27 -
+  taken for Windows holding the copies a moment; it was a read-only folder (0.9.28).
 
 ### 2026-11-21
 - 0.9.24: deleting a vault on the server, the user's decisions of the day.
