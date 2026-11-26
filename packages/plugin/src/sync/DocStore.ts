@@ -30,7 +30,6 @@ export interface DocStoreOptions {
   vaultId: string
   user: CollabUser
   excludeGlobs: string[]
-  conflictMarkers: boolean
   maxLoadedDocuments: number
   syncTimeoutMs: number
   writeDebounceMs: number
@@ -1000,7 +999,7 @@ export class DocStore {
     // document went on from that text, so that is where file and document
     // last agreed - whatever base was recorded before.
     const base = this.heldBefore(docId, local) ? local : await this.baseFor(docId)
-    const outcome = reconcile({ base, local, remote, pristine: handle.pristine, markers: this.options.conflictMarkers })
+    const outcome = reconcile({ base, local, remote, pristine: handle.pristine })
     await this.applyOutcome(docId, file, handle, local, remote, base, outcome)
   }
 
@@ -1066,23 +1065,25 @@ export class DocStore {
         if (!(local === base && (local === this.recentWrite(docId) || this.heldBefore(docId, local)))) {
           await this.backups.write(file.path, 'local', local)
         }
+        const before = Date.now()
         await this.writeFile(docId, file, remote, local === base)
         await this.recordAgreement(docId, file, remote)
         // Without a base, this device's version was only a part of the other
         // one - nothing of it was lost, but the other side's lines came in
         // unasked. Worth a look like any merge of two unrelated versions.
-        if (base === null && local.length > 0) this.review(docId, file.path, 'no-base', local, remote, remote)
+        if (base === null && local.length > 0) this.review(docId, file.path, 'no-base', local, remote, remote, before)
         return
 
       case 'merge': {
         await this.backups.captureBoth(file.path, local, remote)
         await this.backups.write(file.path, 'merged', outcome.text)
+        const before = Date.now()
         this.applyToDocument(handle, outcome.text)
         await this.writeFile(docId, file, outcome.text)
         await this.recordAgreement(docId, file, outcome.text)
         this.announceMerge(file, outcome)
         if (outcome.additiveOnly || outcome.conflicts > 0) {
-          this.review(docId, file.path, outcome.additiveOnly ? 'no-base' : 'conflict', local, remote, outcome.text)
+          this.review(docId, file.path, outcome.additiveOnly ? 'no-base' : 'conflict', local, remote, outcome.text, before)
         }
         return
       }
@@ -1120,7 +1121,7 @@ export class DocStore {
       return remote
     }
     const pristine = this.handles.get(docId)?.pristine ?? false
-    const outcome = reconcile({ base, local, remote, pristine, markers: this.options.conflictMarkers })
+    const outcome = reconcile({ base, local, remote, pristine })
     if (outcome.kind !== 'agree') {
       const detail = outcome.kind === 'merge' ? ` (${outcome.additiveOnly ? 'no common base, union' : `${outcome.conflicts} conflict(s)`})` : ''
       log.info(
@@ -1141,7 +1142,8 @@ export class DocStore {
         await this.backups.write(path, 'merged', outcome.text)
         if (file) this.announceMerge(file, outcome)
         if (outcome.additiveOnly || outcome.conflicts > 0) {
-          this.review(docId, path, outcome.additiveOnly ? 'no-base' : 'conflict', local, remote, outcome.text)
+          // The caller writes it into editor and document after this.
+          this.review(docId, path, outcome.additiveOnly ? 'no-base' : 'conflict', local, remote, outcome.text, Date.now())
         }
         return outcome.text
     }
@@ -1153,11 +1155,12 @@ export class DocStore {
     return () => this.reviewListeners.delete(listener)
   }
 
-  private review(docId: string, path: string, kind: ReviewKind, mine: string, theirs: string, merged: string): void {
+  /** `at`: taken before the merge was written - the Time Machine marks the moment before it (0.9.29). */
+  private review(docId: string, path: string, kind: ReviewKind, mine: string, theirs: string, merged: string, at: number): void {
     if (mine === theirs) return
     // An error: not that anything failed, but someone has to look at it.
     log.error(`${path}: two versions kept (${kind}); choose with "Compare versions"`)
-    for (const listener of this.reviewListeners) listener({ docId, path, at: Date.now(), kind, mine, theirs, merged })
+    for (const listener of this.reviewListeners) listener({ docId, path, at, kind, mine, theirs, merged })
   }
 
   /**
@@ -1171,7 +1174,7 @@ export class DocStore {
       const current = handle.text()
       const path = this.index.pathFor(docId) ?? docId
       await this.backups.write(path, 'local', current)
-      const target = current === merged ? chosen : threeWayMerge(merged, current, chosen, { markers: this.options.conflictMarkers }).text
+      const target = current === merged ? chosen : threeWayMerge(merged, current, chosen, { markers: false }).text
       const edits = textEdits(current, target)
       // Not from the file: the file follows, like a restore.
       if (edits.length > 0) handle.doc.transact(() => applyTextEdits(handle.ytext, edits), RESTORE_ORIGIN)
@@ -1845,7 +1848,7 @@ export class DocStore {
       const path = this.index.pathFor(docId) ?? docId
       if (backUp && current !== text && current.length > 0) await this.backups.write(path, 'local', current)
       const merged = base !== null && current !== base
-      const target = merged ? threeWayMerge(base, current, text, { markers: this.options.conflictMarkers }).text : text
+      const target = merged ? threeWayMerge(base, current, text, { markers: false }).text : text
       const edits = textEdits(current, target)
       if (edits.length > 0) handle.doc.transact(() => applyTextEdits(handle.ytext, edits), RESTORE_ORIGIN)
       if (merged) log.info(`${path}: written in after the lock was taken - merged into the text restored`)

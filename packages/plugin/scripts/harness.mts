@@ -240,6 +240,9 @@ export class Device {
   /** Members the server listed who are not contacts, as the window over everything would name them. */
   readonly unknownMembers: Array<{ accounts: string[]; place: { kind: string } }> = []
   retentionDays = 30
+  /** What the account's other devices call this one, and its id (0.9.29) - main.ts's `deviceName` and `deviceId`. */
+  deviceName = 'a test device'
+  readonly deviceId = Math.random().toString(16).slice(2, 10)
   /** How many notes the device holds open at most (`maxLoadedDocuments`). */
   maxLoaded = 500
   /** How far a rollback trusts the server's clock; an hour unless a test says otherwise. */
@@ -337,6 +340,9 @@ export class Device {
       root: PLUGIN_DIR,
       openLocal: this.locals.open,
       history: () => this.locals.history,
+      clearLocal: async (vaultId) => {
+        await this.locals.clearVault(vaultId)
+      },
       editors: this.editors,
       carried: this.carried,
       timing: {
@@ -353,7 +359,6 @@ export class Device {
         vaultId: openVault.vaultId,
         user,
         excludeGlobs: [],
-        conflictMarkers: true,
         maxLoadedDocuments: this.maxLoaded,
         syncTimeoutMs: 4_000,
         writeDebounceMs: 150
@@ -362,6 +367,7 @@ export class Device {
       shareFolder: () => 'Shared',
       autoAccept: () => true,
       retentionDays: () => this.retentionDays,
+      device: () => ({ id: this.deviceId, name: this.deviceName }),
       notify: (kind, payload) => {
         // Caught, as main.ts's `processContacts` does: the next notice reads the inbox again.
         if (kind === 'contact') void this.contacts?.processInbox().catch(() => undefined)
@@ -766,6 +772,21 @@ export class Device {
    * restart of sync, as signing out and in or a changed setting does - and
    * whatever is typed meanwhile stays in them.
    */
+  /** *Reset this device's sync*, as main.ts's `resetDeviceSync` does once the session is stopped (0.9.29). */
+  async forgetSync(vaultId: string): Promise<void> {
+    await SyncSession.forgetDevice(
+      {
+        adapter: this.pluginAdapter as never,
+        root: PLUGIN_DIR,
+        carried: this.carried,
+        clearLocal: async (id) => {
+          await this.locals.clearVault(id)
+        }
+      },
+      vaultId
+    )
+  }
+
   async shutdown(options: { keepViews?: boolean } = {}): Promise<void> {
     this.backupsController?.closeSessions()
     if (!options.keepViews) for (const view of this.views.splice(0)) view.close()

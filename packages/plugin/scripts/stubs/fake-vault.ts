@@ -526,6 +526,17 @@ export class MemoryLocalStores {
     }
   }
 
+  /** Every database of a vault of the server deleted, its history too - as `deleteLocalStores` does with IndexedDB (0.9.29). */
+  async clearVault(vaultId: string): Promise<number> {
+    const names = Array.from(new Set([...this.saved.keys(), ...this.meta.keys()])).filter((name) => name.startsWith(`mycel/${vaultId}/`))
+    for (const name of names) {
+      this.saved.delete(name)
+      this.meta.delete(name)
+    }
+    await this.history.prune(Number.POSITIVE_INFINITY)
+    return names.length
+  }
+
   /** What a database keeps beside its document - the cursor, the outbox's pieces - by key. */
   keys(name: string): string[] {
     return Array.from(this.meta.get(name)?.keys() ?? [])

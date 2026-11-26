@@ -57,7 +57,8 @@ const SETTINGS = ' settings.json'
 // the account's records - who has which role in a share (a contact's account
 // id), the epoch floors, links asked about, rollbacks (the plugin's
 // `AccountSettings` keys).
-const NOT_SETTINGS = /^(contact|code|pending|backup[A-Za-z]*|role|epoch|linkAsked|rollback):|^recovery$/
+// Notes waiting to be compared and the Time Machine's marks are records, not settings - and the former hold whole note texts (0.9.29).
+const NOT_SETTINGS = /^(contact|code|pending|backup[A-Za-z]*|role|epoch|linkAsked|rollback|review|event):|^recovery$/
 
 /** The vault's folder name: its name, made a single path segment. */
 export function vaultFolder(name: string): string {

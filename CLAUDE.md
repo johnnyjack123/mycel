@@ -341,6 +341,18 @@ someone's notes. Treat them as rules, not preferences.
     of its id (`accountKeys.vaultId(secret, name, generation)`, `replaces`), so a deleted one can no
     longer be restored next to it. Deleting needs the password (a token alone deletes nothing);
     files on the devices are never touched.
+36. **One Obsidian vault per vault of the server and computer, and a device forgets its sync only
+    once everything it wrote reached the server** (0.9.29). The databases a device keeps for the
+    sync are named by the server's vault id alone (`mycel/<vaultId>/…`, `mycel-history/<vaultId>`),
+    and every Obsidian vault on a computer sees the same ones: two syncing the same vault of the
+    server shared copies, outboxes and log positions, and a reset or a deleted vault in one cleared
+    the other's. The first to sync it claims it in storage all of them see (`VaultClaims`,
+    `window.localStorage`); another one syncs nothing and asks before it takes over, and the first
+    stops the moment it hears. Nothing clears databases it does not hold. *Reset this device's
+    sync* (`SyncSession.forgetDevice`) clears the databases and what the device agreed on and how it
+    met the vault - never the vault's files, never the server - and the next start meets the vault
+    as a new device (invariant 34); it is refused while anything is unsent
+    (`SyncSession.whyNotForget`), since until then it lies in those databases alone.
 
 ## Architecture
 
@@ -417,7 +429,8 @@ someone's notes. Treat them as rules, not preferences.
   re-creating it from its own copy.
 - Note rooms are `doc:<docId>` and are global: two vaults hold the same docId
   under paths of their own when a note is shared.
-- Account-wide settings (exclusions, conflict markers, retentions, share folder)
+- Account-wide settings (exclusions, retentions, share folder - and since 0.9.29 the notes
+  waiting in "Compare versions" and the Time Machine's marks)
   live in `set:<vaultId>`; device-local ones in `data.json`.
 
 ### Transport
@@ -495,8 +508,12 @@ the index arrives are queued and replayed.
 
 A merge without a base (typically two existing vaults meeting for the first
 time - since 0.9.19 only once the person chose to merge them, invariant 34), a base-less adopt that pulled the other side's lines in, and a merge that
-kept conflicts are recorded as a **review** (`sync/Reviews.ts`, device-local in
-the plugin folder): "Compare versions" in the note's menu puts the note together
+kept conflicts - both sides one after the other, never in `<<<<<<<` markers (0.9.29) - are
+recorded as a **review** (`sync/Reviews.ts`): in the account's settings since 0.9.29, so every
+device of the account marks the note and any of them can put it together, *Apply* or *Done*
+taking it off everywhere; each names the device where the versions met, "This device" only
+there (`versionNames`), and one too large for that (3 MB of text, or beyond 500 waiting) stays
+in that device's plugin folder, where all lay before. "Compare versions" in the note's menu puts the note together
 as git's merge tools do (0.9.23, `history/ReviewModal.ts`, its model `MergeDraft`):
 this device's version, the result, the other version, both versions whole and line
 beside line (0.9.26, `sync/align.ts`): what both have on the same rows in all three
@@ -676,7 +693,14 @@ people: whoever runs it can read the vaults on it.
   tab lists the account's rollbacks and restores, never cleared, each with *Undo…*, which
   opens the Time Machine at the moment before it (0.8.16).
 - **The settings are in tabs** - Account, Contacts, Backups, This device, All
-  devices; signed out only Account and This device.
+  devices; signed out only Account and This device. What concerns the whole vault - its id,
+  deleting it on the server - is under All devices (0.9.29).
+- **A device has a name** (0.9.29, This device; its kind until given one, `device.ts`) and an
+  id (`deviceId`, made once): the name is what the other devices call it in a lock's window,
+  in "Compare versions" and in the Time Machine's marks; the id tells its reviews from
+  another device's. The status bar counts the notes that sync; how many are open right now -
+  the rest watched, opened when they change - is in its tooltip: "synced 2/16" read as two of
+  sixteen synced.
 - **The settings tab is live** (`settings.ts` `refresh`): a change of the
   account-wide settings from another device draws it again, and so does the
   account's state - 2FA, the recovery code - which the server announces with
@@ -879,7 +903,11 @@ per tick - a version of a note, a change of a folder or the vault, as fine as ch
 (every change, a minute, five, an hour, a day) -, each the state after it, the newest
 being *now*, a fixed distance apart and scrolling beyond what fits, a gap where a day
 begins; the moment before each earlier rollback of exactly that place a place of its own,
-where the notification center's *Undo…* opens it; and, behind a switch
+where the notification center's *Undo…* opens it; the moments before the events worth
+finding again (0.9.29: a merge that kept two versions, "Compare versions" applied, a device
+joining, the answer when the server had other data, a share begun or ended - recorded in
+the account's settings, `AccountSettings.addEvent`, the last 300, their time taken before
+anything changed; `eventMarks`); and, behind a switch
 kept on the device, the backups older than the history. A moment is written as its
 structure at once and its contents in the background, the note in front first; a note's
 editor marks its changes against now (`history/pastEditor.ts`); the overview beside the
@@ -936,7 +964,7 @@ npm run test:account   # the account with real devices: signing the other device
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
 npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too, and at once while a read from the server hangs), a plugin folder whose folders refuse to go, the vault lock and the device taking it, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
 npm run test:replace   # every key of an account replaced: the vaults and files written anew, the other device, a contact confirming again, a replacement carried on by another device — in-process server
-npm run test:join      # a device meeting a vault on the server for the first time: what the comparison finds and what merging will make of it, the copy of the vault, "Not now", the server's version, merging, the explorer's marks, carrying on after a restart — in-process server
+npm run test:join      # a device meeting a vault on the server for the first time: what the comparison finds and what merging will make of it, the copy of the vault, "Not now", the server's version, merging, the explorer's marks, notes to compare on every device, carrying on after a restart, resetting a device's sync, one Obsidian vault per vault of the server — in-process server
 npm run test:security  # every attack of the audit (docs/AUDIT.md): the server attacked over HTTP and WebSocket, the plugin's paths, links, folders and gate, the backup task — in-process servers
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by MYCEL_RESTIC (where it lies here: docs/PROGRESS.md)

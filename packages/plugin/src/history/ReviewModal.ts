@@ -2,7 +2,7 @@ import { App, Modal, Setting, setIcon } from 'obsidian'
 import { Notice } from '../notices.js'
 import { busy } from '../busy.js'
 import { lineChanges, lineText, type Row, type SameRun } from '../sync/align.js'
-import { MergeDraft, type Review, type Side } from '../sync/Reviews.js'
+import { MergeDraft, versionNames, type Review, type Side } from '../sync/Reviews.js'
 import { ConfirmModal } from './TimeMachineModals.js'
 
 /** Lines both versions have shown around a passage before the rest of the run folds away. */
@@ -61,7 +61,9 @@ export class ReviewModal extends Modal {
     app: App,
     private readonly review: Review,
     private readonly apply: (text: string) => Promise<'applied' | 'merged'>,
-    private readonly dismiss: () => Promise<void>
+    private readonly dismiss: () => Promise<void>,
+    /** What the two versions are called here: "This device" only on the device where they met (`versionNames`). */
+    private readonly names: { mine: string; mineWords: string; theirs: string } = { mine: 'This device', mineWords: 'this device', theirs: 'Other version' }
   ) {
     super(app)
     this.draft = new MergeDraft(review.mine, review.theirs)
@@ -95,7 +97,7 @@ export class ReviewModal extends Modal {
       button.addEventListener('click', run)
     }
     allButton('Next open passage', () => this.nextOpen())
-    allButton('All from this device', () => this.everywhere('mine'))
+    allButton(`All from ${this.names.mineWords}`, () => this.everywhere('mine'))
     allButton('All from the other', () => this.everywhere('theirs'))
     allButton('Empty again', () => this.everywhere(null))
 
@@ -104,9 +106,9 @@ export class ReviewModal extends Modal {
     list.addEventListener('pointerdown', (event) => this.startSelecting(event))
     list.addEventListener('copy', (event) => this.copy(event))
     const head = list.createDiv({ cls: 'mycel-merge-head' })
-    head.createDiv({ cls: 'is-mine', text: 'This device' })
+    head.createDiv({ cls: 'is-mine', text: this.names.mine })
     head.createDiv({ cls: 'is-result', text: 'The note will say' })
-    head.createDiv({ cls: 'is-theirs', text: 'Other version' })
+    head.createDiv({ cls: 'is-theirs', text: this.names.theirs })
 
     const runs = this.draft.aligned.runs
     let index = 0
@@ -370,7 +372,9 @@ export class ReviewListModal extends Modal {
   constructor(
     app: App,
     private readonly reviews: Review[],
-    private readonly compareOne: (review: Review) => void
+    private readonly compareOne: (review: Review) => void,
+    /** This device's id: a review made on another device says where. */
+    private readonly deviceId = ''
   ) {
     super(app)
   }
@@ -384,7 +388,11 @@ export class ReviewListModal extends Modal {
     for (const review of this.reviews) {
       new Setting(this.contentEl)
         .setName(review.path)
-        .setDesc(`${review.kind === 'no-base' ? 'Differed between devices' : 'Changed in the same place twice'} · ${new Date(review.at).toLocaleString()}`)
+        .setDesc(
+          `${review.kind === 'no-base' ? 'Differed between devices' : 'Changed in the same place twice'} · ${new Date(review.at).toLocaleString()}${
+            review.deviceId && review.deviceId !== this.deviceId ? ` · met on ${versionNames(review, this.deviceId).mineWords}` : ''
+          }`
+        )
         .addButton((button) =>
           button
             .setButtonText('Compare')

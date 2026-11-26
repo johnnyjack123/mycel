@@ -47,7 +47,7 @@ import { BackupModal } from './history/BackupModal'
 import { ApplyModal } from './history/ApplyModal'
 import type { PastItem, TimeMachineScope } from './history/TimeMachine'
 import { TimeMachineControl, type HandedLock, type Prepared } from './history/TimeMachineControl'
-import { LocalOnlyModal, LockedModal } from './history/TimeMachineModals'
+import { ConfirmModal, LocalOnlyModal, LockedModal } from './history/TimeMachineModals'
 import { TIME_MACHINE_VIEW, TimeMachineView } from './history/TimeMachineView'
 import { pastEditorExtension } from './history/pastEditor'
 import { EditLocks } from './history/EditLocks'
@@ -74,6 +74,8 @@ import { Blobs } from './sync/Blobs'
 import { openIndexedDb } from './sync/DocHandle'
 import type { DocStore, DocStoreOptions, NoteSyncState } from './sync/DocStore'
 import { indexedDbHistory } from './sync/History'
+import { deleteLocalStores } from './sync/LocalStores'
+import { VaultClaims, claimKey, memoryClaimStorage, type ClaimHolder, type ClaimStorage } from './sync/VaultClaims'
 import { RecoveryModal } from './history/RecoveryModal'
 import { JoinModal } from './history/JoinModal'
 import type { JoinHost } from './sync/Joining'
@@ -81,18 +83,19 @@ import type { Trash } from './sync/Trash'
 import { TrashModal } from './history/TrashModal'
 import { Rollback, pruneRollbackCopies } from './sync/Rollback'
 import { FileVersionsModal } from './history/FileVersionsModal'
-import type { Review, ReviewStore } from './sync/Reviews'
+import { versionNames, type Review, type ReviewStore } from './sync/Reviews'
 import { ReviewListModal, ReviewModal } from './history/ReviewModal'
 import type { VaultIndex } from './sync/VaultIndex'
 import type { SocketStatus, VaultSocket } from './sync/VaultSocket'
 import { LockSeal, OwnLocks, inLockScope, lockNonce, type LockPurpose, type LockScope } from './sync/VaultLock'
 import { MycelSettingTab, DEFAULT_SETTINGS, MOBILE_DOWNLOAD_LIMIT_MB, type MycelSettings } from './settings'
+import { defaultDeviceName, deviceWords } from './device'
 import { CarriedTexts, SyncSession, type AccountNoticeKind, type SyncHost, type SyncTiming } from './SyncSession'
 import { log, withSummary } from './log'
 
 // Settings of earlier versions that moved to the account, and are handed over
 // once to its settings document.
-const MOVED_TO_ACCOUNT = ['excludeGlobs', 'conflictMarkers', 'backupRetentionDays'] as const
+const MOVED_TO_ACCOUNT = ['excludeGlobs', 'backupRetentionDays'] as const
 const COMPACT_EVERY_MS = 6 * 60 * 60 * 1000
 const COMPACT_DELAY_MS = 60 * 1000
 const NOTE_STATUS_MS = 400
@@ -398,6 +401,12 @@ export default class MycelPlugin extends Plugin {
     this.statusBar = this.addStatusBarItem()
     this.statusBar.addEventListener('click', () => {
       if (this.sync?.joinWaiting) this.joinAgain()
+      else if (this.claimedElsewhere && !this.store) void this.askToTakeOver()
+    })
+    // Another Obsidian vault on this computer took over the vault of the server this one syncs: its window says so here.
+    this.registerDomEvent(window, 'storage', (event: StorageEvent) => {
+      const vaultId = this.vault?.vaultId
+      if (vaultId && event.key === claimKey(vaultId)) void this.claimTaken(vaultId)
     })
     this.noteStatus = this.addStatusBarItem()
     this.noteStatus.addClass('mycel-note-status')
@@ -644,7 +653,7 @@ export default class MycelPlugin extends Plugin {
   /** Another device's lock in a sentence: what it is for. */
   private lockSentence(): string {
     const other = this.otherLock
-    const device = other?.purpose?.device ?? 'another device of yours'
+    const device = other?.purpose ? deviceWords(other.purpose.device) : 'another device of yours'
     const what = other?.purpose?.what ?? 'the vault'
     return other?.lock.kind === 'rollback'
       ? `Read-only while ${device} rolls back ${what}.`
@@ -693,6 +702,10 @@ export default class MycelPlugin extends Plugin {
     }
     if (stored.attachmentDownloadLimitMb === undefined && Platform.isMobile) settings.attachmentDownloadLimitMb = MOBILE_DOWNLOAD_LIMIT_MB
     this.settings = settings
+    if (!settings.deviceId) {
+      settings.deviceId = toHex(randomBytes(8))
+      await this.saveData(settings)
+    }
     const moved: Partial<SharedSettings> = {}
     for (const key of MOVED_TO_ACCOUNT) {
       if (stored[key] !== undefined) (moved as Record<string, unknown>)[key] = stored[key]
@@ -708,6 +721,11 @@ export default class MycelPlugin extends Plugin {
 
   private vaultName(): string {
     return this.settings.vaultName || this.app.vault.getName()
+  }
+
+  /** What the account's other devices call this one. */
+  deviceName(): string {
+    return this.settings.deviceName.trim() || defaultDeviceName(Platform)
   }
 
   /** The account id, not the name: names are not unique, and a caret of one's own other device is told apart by it. */
@@ -752,7 +770,6 @@ export default class MycelPlugin extends Plugin {
       vaultId: this.vault?.vaultId ?? '',
       user: this.user(),
       excludeGlobs: shared.excludeGlobs,
-      conflictMarkers: shared.conflictMarkers,
       maxLoadedDocuments: this.settings.maxLoadedDocuments,
       syncTimeoutMs: this.settings.syncTimeoutMs,
       writeDebounceMs: this.settings.writeDebounceMs
@@ -1000,7 +1017,7 @@ export default class MycelPlugin extends Plugin {
         if (!this.unlocked) throw new Error('Sign in first.')
         this.deletingHere = vault.vaultId
         try {
-          this.unlocked = await this.session.deleteVault(this.unlocked, vault.vaultId, password, Platform.isMobile ? 'a phone or tablet' : 'a computer')
+          this.unlocked = await this.session.deleteVault(this.unlocked, vault.vaultId, password, this.deviceName())
           log.info(`deleted the vault ${vault.vaultId} on the server, restorable until ${new Date(Date.now() + VAULT_DELETE_GRACE_MS).toISOString()}`)
           await this.handleVaultDeleted(vault.vaultId, true)
         } finally {
@@ -1012,19 +1029,65 @@ export default class MycelPlugin extends Plugin {
 
   /** What this device keeps of a vault for the sync - never its files - once that vault is of no use any more. */
   private async clearLocalVault(vaultId: string): Promise<void> {
+    // Another Obsidian vault on this computer holds it: they are its databases, not this one's (0.9.29).
+    if (!this.claims.mine(vaultId)) return
     try {
-      const factory = window.indexedDB as IDBFactory & { databases?: () => Promise<Array<{ name?: string }>> }
-      if (typeof factory.databases !== 'function') return
-      let cleared = 0
-      for (const { name } of await factory.databases()) {
-        if (!name || !(name.startsWith(`mycel/${vaultId}/`) || name === `mycel-history/${vaultId}`)) continue
-        factory.deleteDatabase(name)
-        cleared += 1
-      }
+      const cleared = await deleteLocalStores(vaultId)
       if (cleared > 0) log.info(`cleared ${cleared} local store(s) of the deleted vault ${vaultId}`)
     } catch (error) {
       log.warn('clearing the local stores of a deleted vault failed', error)
     }
+  }
+
+  // --- one Obsidian vault per vault of the server and computer (0.9.29) ------------------------------
+
+  /** Another Obsidian vault on this computer holds the vault of the server this one names: nothing syncs here until it is taken over. */
+  private claimedElsewhere: { vaultId: string; holder: ClaimHolder } | null = null
+
+  private claimsMade: VaultClaims | null = null
+
+  private get claims(): VaultClaims {
+    if (!this.claimsMade) {
+      let storage: ClaimStorage
+      try {
+        storage = window.localStorage
+      } catch {
+        storage = memoryClaimStorage()
+      }
+      this.claimsMade = new VaultClaims(storage ?? memoryClaimStorage(), {
+        id: (this.app as unknown as { appId?: string }).appId ?? this.app.vault.getName(),
+        name: this.app.vault.getName()
+      })
+    }
+    return this.claimsMade
+  }
+
+  /** Asked before this Obsidian vault takes over a vault of the server another one here syncs. */
+  private async askToTakeOver(): Promise<void> {
+    const claimed = this.claimedElsewhere
+    if (!claimed) return
+    const take = await new ConfirmModal(
+      this.app,
+      'Another vault on this computer syncs this one',
+      `The Obsidian vault "${claimed.holder.name}" on this computer syncs "${this.vaultName()}" on the server. Two Obsidian vaults on one computer would share the copies Mycel keeps of it - what waits to be sent, where each note stands -, and resetting or deleting it in one would clear the other's. Sync it here instead? "${claimed.holder.name}" stops syncing it, and starts again only when taken back there.`,
+      'Sync it here instead'
+    ).ask()
+    if (!take || this.claimedElsewhere !== claimed) return
+    this.claims.take(claimed.vaultId)
+    this.claimedElsewhere = null
+    log.info(`this Obsidian vault took over syncing ${claimed.vaultId} from "${claimed.holder.name}"`)
+    await this.startSync()
+  }
+
+  /** Taken over by another Obsidian vault on this computer, while this one synced it. */
+  private async claimTaken(vaultId: string): Promise<void> {
+    const holder = this.claims.holder(vaultId)
+    if (!holder || this.claims.mine(vaultId)) return
+    await this.stopSync()
+    this.claimedElsewhere = { vaultId, holder }
+    log.warn(`the Obsidian vault "${holder.name}" on this computer took over syncing ${vaultId}: stopped here`)
+    new Notice(`Mycel: the Obsidian vault "${holder.name}" on this computer syncs "${this.vaultName()}" now, so this one stopped. Click the status bar to take it back.`, 0)
+    this.renderStatus()
   }
 
   /** Opens this plugin's settings; Obsidian has no public way to, so a notice says where they are when it fails. */
@@ -1135,6 +1198,36 @@ export default class MycelPlugin extends Plugin {
   }
 
   /**
+   * *Reset this device's sync* (0.9.29): what this device knows of the vault's sync forgotten -
+   * its databases, what it agreed on, how it met the vault -, never the vault's files nor
+   * anything on the server, and signed in it stays. Its next start meets the vault as a new
+   * device would: a copy of the vault, the comparison, the question. Refused while anything
+   * written here has not reached the server: it lies in those databases until then.
+   */
+  async resetDeviceSync(): Promise<void> {
+    if (this.timeMachine.current) throw new Error('Leave the Time Machine first.')
+    const sync = this.sync
+    const vault = this.vault
+    if (!sync || !vault) throw new Error('Mycel is not connected - nothing written here may be lost, so it has to reach the server first.')
+    const before = await sync.whyNotForget(10_000)
+    if (before) throw new Error(before)
+    const go = await new ConfirmModal(
+      this.app,
+      "Reset this device's sync",
+      `This device forgets what it knows of syncing "${this.vaultName()}": its copies of the notes, what it last agreed on with the server, and that it ever connected. The notes and files in this vault stay, and so does everything on the server and on your other devices; you stay signed in. Then it connects as a new device would: it copies this vault into the plugin folder, compares it with the server and asks how to join.`,
+      'Reset'
+    ).ask()
+    if (!go || this.sync !== sync) return
+    // Written meanwhile, while the window asked.
+    const still = await sync.whyNotForget(10_000)
+    if (still) throw new Error(still)
+    await this.stopSync()
+    await SyncSession.forgetDevice(this.syncHost(), vault.vaultId)
+    new Notice("Mycel: this device forgot the vault's sync. It connects again as a new device - compare and choose in the window that opens.", 10_000)
+    await this.startSync()
+  }
+
+  /**
    * The server closed the socket as signed out. Either this device changed the
    * password a moment ago and carries on with its new token, or another device
    * did - then this one stops. Files and unsent edits stay; they go out once
@@ -1220,7 +1313,7 @@ export default class MycelPlugin extends Plugin {
     try {
       const vaults = await this.session.allVaults(unlocked)
       await new KeyReplacement(this.api, unlocked, vaults, {
-        device: Platform.isMobile ? 'a phone or tablet' : 'a computer',
+        device: this.deviceName(),
         progress: ({ vault, what, done, of }) => notice.setMessage(`Mycel: writing "${vault}" anew under the new keys - ${what} ${done} of ${of}`)
       }).run()
       const finished = await this.session.finishReplacement(unlocked)
@@ -1412,6 +1505,16 @@ export default class MycelPlugin extends Plugin {
     }
     if (stopped()) return
     this.deletedVault = null
+    // One Obsidian vault per vault of the server on this computer: their databases would be the same (0.9.29).
+    const holder = this.claims.claim(vault.vaultId)
+    if (holder) {
+      this.claimedElsewhere = { vaultId: vault.vaultId, holder }
+      log.warn(`the Obsidian vault "${holder.name}" on this computer syncs ${vault.vaultId}: nothing syncs here until it is taken over`)
+      this.renderStatus()
+      void this.askToTakeOver()
+      return
+    }
+    this.claimedElsewhere = null
     // The account's settings are the session's from here on; backups and rollbacks read them again.
     this.frozenSettings?.destroy()
     this.frozenSettings = null
@@ -1449,6 +1552,11 @@ export default class MycelPlugin extends Plugin {
       root: this.pluginDir(),
       openLocal: openIndexedDb,
       history: (vaultId) => indexedDbHistory(vaultId),
+      clearLocal: async (vaultId) => {
+        if (!this.claims.mine(vaultId)) throw new Error('another Obsidian vault on this computer syncs this vault: its databases are not this one\'s to clear')
+        const cleared = await deleteLocalStores(vaultId)
+        log.info(`cleared ${cleared} local store(s) of ${vaultId}`)
+      },
       editors: this.editors,
       carried: this.carried,
       get timing(): SyncTiming {
@@ -1468,6 +1576,7 @@ export default class MycelPlugin extends Plugin {
       shareFolder: () => this.shared().sharedFolder,
       autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1,
       retentionDays: () => this.shared().historyRetentionDays,
+      device: () => ({ id: this.settings.deviceId, name: this.deviceName() }),
       notify: (kind, payload) => this.onNotify(kind, payload),
       signedOut: (socket) => void this.checkSignedIn(socket),
       vaultDeleted: () => void this.handleVaultDeleted(this.vault?.vaultId ?? null, false),
@@ -1737,7 +1846,7 @@ export default class MycelPlugin extends Plugin {
         const backups = this.backupsOf() ?? (this.frozenSettings ? this.backupServers : null)
         return backups && backups.servers().length > 0 ? backups : null
       },
-      device: () => (Platform.isMobile ? 'a phone or tablet' : 'a computer'),
+      device: () => this.deviceName(),
       stopSync: () => this.stopSync(),
       startSync: () => this.startSync(),
       whenSyncing: async (timeoutMs) => {
@@ -1761,6 +1870,8 @@ export default class MycelPlugin extends Plugin {
         return store.whenIndexSent(Math.max(0, until - Date.now()))
       },
       rollbacks: () => this.rollbackRecords(),
+      events: () => (this.accountSettings ?? this.frozenSettings)?.events() ?? [],
+      reviewsWaiting: () => this.reviews?.pending() ?? [],
       openOverview: () => this.openTimeMachineOverview(),
       closeOverview: () => {
         for (const leaf of this.app.workspace.getLeavesOfType(TIME_MACHINE_VIEW)) leaf.detach()
@@ -1952,7 +2063,7 @@ export default class MycelPlugin extends Plugin {
     const seal = new LockSeal(keys.settingsCrypto(), keys.vaultId)
     const scope: LockScope = folder ? { kind: 'folder', path: folder } : { kind: 'vault' }
     const what = folder ? `the folder ${folder.slice(folder.lastIndexOf('/') + 1)}` : 'the vault'
-    const sealed = await seal.seal({ what, device: Platform.isMobile ? 'a phone or tablet' : 'a computer', nonce: lockNonce(), scope })
+    const sealed = await seal.seal({ what, device: this.deviceName(), nonce: lockNonce(), scope })
     const lock = await this.ownLocks.take(this.api, keys.vaultId, 'rollback', sealed, () =>
       new Notice('The lock of the vault was lifted on another device while the rollback runs: what they write merges in as usual.', 12_000)
     )
@@ -2023,7 +2134,7 @@ export default class MycelPlugin extends Plugin {
     this.otherLock = { lock, purpose }
     // A lock this device cannot read covers the vault.
     const scope: LockScope = purpose?.scope ?? { kind: 'vault' }
-    const what = purpose ? `${purpose.what}, on ${purpose.device}` : 'another device of yours'
+    const what = purpose ? `${purpose.what}, on ${deviceWords(purpose.device)}` : 'another device of yours'
     this.editLocks.set(false, {
       scope,
       why: `Locked: ${lock.kind === 'rollback' ? 'a rollback of' : 'the Time Machine shows the past of'} ${what}. Click to see more, or to lift the lock.`,
@@ -2046,7 +2157,7 @@ export default class MycelPlugin extends Plugin {
   vaultLockState(): string | null {
     const other = this.otherLock
     if (!other) return null
-    const what = other.purpose ? `${other.purpose.what}, on ${other.purpose.device}` : 'another device of yours'
+    const what = other.purpose ? `${other.purpose.what}, on ${deviceWords(other.purpose.device)}` : 'another device of yours'
     return `${other.lock.kind === 'rollback' ? 'A rollback of' : 'The Time Machine shows the past of'} ${what}, since ${new Date(other.lock.takenAt).toLocaleString()}.`
   }
 
@@ -2520,7 +2631,7 @@ export default class MycelPlugin extends Plugin {
       new Notice('Sign in to Mycel first.')
       return
     }
-    new ReviewListModal(this.app, await reviews.list(), (review) => this.showReview(review)).open()
+    new ReviewListModal(this.app, await reviews.list(), (review) => this.showReview(review), this.settings.deviceId).open()
   }
 
   private showReview(review: Review): void {
@@ -2531,11 +2642,16 @@ export default class MycelPlugin extends Plugin {
       this.app,
       review,
       async (text) => {
+        // Every device shows it: put together on another one meanwhile, applying here would merge a second result into the first.
+        if (!reviews.has(review.id)) throw new Error('this note was put together on another of your devices meanwhile')
+        const at = Date.now()
         const outcome = await store.applyReview(review.docId, review.merged, text)
+        this.sync?.mark({ kind: 'compared', at, docId: review.docId, path: store.entry(review.docId)?.path ?? review.path })
         await reviews.remove(review.id)
         return outcome
       },
-      () => reviews.remove(review.id)
+      () => reviews.remove(review.id),
+      versionNames(review, this.settings.deviceId)
     ).open()
   }
 
@@ -2680,12 +2796,17 @@ export default class MycelPlugin extends Plugin {
   }
 
   private renderStatus(): void {
+    this.statusBar.removeAttribute('aria-label')
     if (this.timeMachine.current) {
       this.statusBar.setText('Mycel: Time Machine - sync stopped')
       return
     }
     if (this.deletedVault && !this.store) {
       this.statusBar.setText('Mycel: vault deleted on the server - nothing syncs')
+      return
+    }
+    if (this.claimedElsewhere && !this.store) {
+      this.statusBar.setText(`Mycel: "${this.claimedElsewhere.holder.name}" on this computer syncs it - click`)
       return
     }
     if (this.sync?.joinWaiting) {
@@ -2707,7 +2828,13 @@ export default class MycelPlugin extends Plugin {
     const moving = [transfers?.uploads ? `↑${transfers.uploads}` : '', transfers?.downloads ? `↓${transfers.downloads}` : '']
       .filter(Boolean)
       .join(' ')
-    this.statusBar.setText(`Mycel: ${label} ·${this.store.loadedCount()}/${this.store.trackedCount()}${moving ? ` · ${moving}` : ''}`)
+    // Not "loaded/tracked": "synced 2/16" read as two of sixteen synced, when the other fourteen were merely at rest (0.9.29).
+    const notes = this.store.trackedCount()
+    this.statusBar.setText(`Mycel: ${label} · ${notes} ${notes === 1 ? 'note' : 'notes'}${moving ? ` · ${moving}` : ''}`)
+    this.statusBar.setAttribute(
+      'aria-label',
+      `${this.store.loadedCount()} of them open right now. The others are synced too: the server says when one changes, and it opens then.`
+    )
   }
 
   /** The note or file in front of you and where it stands; null when it is not synced at all. */

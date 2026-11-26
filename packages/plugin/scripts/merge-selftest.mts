@@ -133,21 +133,21 @@ check(applyToText('a\nb\nc\n', 'a\nc\n') === 'a\nc\n', 'deleting a line in the m
 
 // --- reconcile ---------------------------------------------------------------
 
-check(reconcile({ base: 'x', local: 'x', remote: 'x', pristine: false, markers: true }).kind === 'agree', 'agree')
+check(reconcile({ base: 'x', local: 'x', remote: 'x', pristine: false }).kind === 'agree', 'agree')
 check(
-  reconcile({ base: null, local: 'note', remote: '', pristine: true, markers: true }).kind === 'seed',
+  reconcile({ base: null, local: 'note', remote: '', pristine: true }).kind === 'seed',
   'a document that never carried anything is seeded'
 )
 check(
-  reconcile({ base: 'note', local: 'note', remote: '', pristine: true, markers: true }).kind === 'seed',
+  reconcile({ base: 'note', local: 'note', remote: '', pristine: true }).kind === 'seed',
   'also where the device knew the note: a server and a local store both lost do not empty the file'
 )
 check(
-  reconcile({ base: 'note', local: 'note', remote: '', pristine: false, markers: true }).kind === 'adopt-remote',
+  reconcile({ base: 'note', local: 'note', remote: '', pristine: false }).kind === 'adopt-remote',
   'a note emptied elsewhere empties the untouched file'
 )
 {
-  const emptied = reconcile({ base: null, local: 'note', remote: '', pristine: false, markers: true })
+  const emptied = reconcile({ base: null, local: 'note', remote: '', pristine: false })
   check(
     emptied.kind === 'merge' && emptied.additiveOnly && emptied.text === 'note',
     'without a base an emptied note gets the text back, never an empty file',
@@ -155,11 +155,11 @@ check(
   )
 }
 check(
-  reconcile({ base: 'x', local: 'x', remote: 'y', pristine: false, markers: true }).kind === 'adopt-remote',
+  reconcile({ base: 'x', local: 'x', remote: 'y', pristine: false }).kind === 'adopt-remote',
   'an untouched file adopts the document'
 )
 check(
-  reconcile({ base: 'x', local: 'y', remote: 'x', pristine: false, markers: true }).kind === 'adopt-local',
+  reconcile({ base: 'x', local: 'y', remote: 'x', pristine: false }).kind === 'adopt-local',
   'an untouched document adopts the file'
 )
 
@@ -175,7 +175,7 @@ check(
   ]
   const told = cases.map(([local, remote, expected]) => {
     const said = baselessMerge(local, remote)
-    const done = reconcile({ base: null, local, remote, pristine: false, markers: false })
+    const done = reconcile({ base: null, local, remote, pristine: false })
     const text = done.kind === 'merge' ? done.text : done.kind === 'adopt-remote' ? remote : local
     return { local, remote, expected, holds: said.holds, same: said.text === text }
   })
@@ -193,8 +193,7 @@ check(
     base: null,
     local: 'kept\nlocal only\n',
     remote: 'kept\nremote only\n',
-    pristine: false,
-    markers: true
+    pristine: false
   })
   check(outcome.kind === 'merge', 'no base still merges')
   if (outcome.kind === 'merge') {
@@ -208,6 +207,27 @@ check(
   check(
     additiveEdits('kept\nremote only\n', 'kept\nlocal only\n').every((edit) => edit.to === edit.from),
     'additive edits never delete'
+  )
+}
+
+{
+  // A base, and both sides changed the same line: both stay, one after the other, never in markers - the note
+  // goes into "Compare versions" as one merged without a base does (0.9.29). What only one side did still holds.
+  const outcome = reconcile({
+    base: 'one\ntwo\nthree\nfour\n',
+    local: 'one\nTWO here\nthree\n',
+    remote: 'one\nTWO there\nthree\nfour\n',
+    pristine: false
+  })
+  check(
+    outcome.kind === 'merge' &&
+      outcome.conflicts === 1 &&
+      !outcome.text.includes('<<<<<<<') &&
+      outcome.text.includes('TWO here') &&
+      outcome.text.includes('TWO there') &&
+      !outcome.text.includes('four'),
+    'a conflict keeps both sides without markers, and a line deleted on one side stays deleted',
+    outcome
   )
 }
 
@@ -944,7 +964,7 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   check(differing === 2, 'the passages that differ are found, in whole lines', hunks)
   check(assemble(hunks, Array(differing).fill('mine')) === mine, "taking this device's side everywhere gives this device's version")
   check(assemble(hunks, Array(differing).fill('theirs')) === theirs, 'taking the other side everywhere gives the other version')
-  const merged = reconcile({ base: null, local: mine, remote: theirs, pristine: false, markers: false })
+  const merged = reconcile({ base: null, local: mine, remote: theirs, pristine: false })
   check(
     merged.kind === 'merge' && assemble(hunks, []) === merged.text,
     'keeping both everywhere is exactly what the merge without a base kept',
@@ -1094,7 +1114,7 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   draft.takeAll('mine')
   check(draft.result() === mine, "everything from this device gives this device's version, its last line without a break as it was", draft.result())
 
-  const merged = reconcile({ base: null, local: mine, remote: theirs, pristine: false, markers: false })
+  const merged = reconcile({ base: null, local: mine, remote: theirs, pristine: false })
   const all = new MergeDraft(mine, theirs)
   all.slots.forEach((_slot, index) => {
     all.take(index, 'theirs')
@@ -1149,7 +1169,7 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   const there = new AccountSettings()
   const remote: boolean[] = []
   here.onChange((_settings, fromElsewhere) => remote.push(fromElsewhere))
-  here.set({ conflictMarkers: false })
+  here.set({ sharedFolder: 'From others' })
   there.set({ historyRetentionDays: 7 })
   Y.applyUpdate(here.doc, Y.encodeStateAsUpdate(there.doc), 'socket')
   check(

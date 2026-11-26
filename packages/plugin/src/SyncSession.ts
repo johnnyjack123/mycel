@@ -19,7 +19,7 @@ import { LinkClaims, notePeople, type LinkQuestion } from './share/LinkClaims.js
 import type { ForeignLink } from './share/LinkedNotes.js'
 import { SharedFiles } from './share/SharedFiles.js'
 import { Sharing, type MemberPlace } from './share/Sharing.js'
-import { AccountSettings } from './sync/AccountSettings.js'
+import { AccountSettings, type MarkEvent } from './sync/AccountSettings.js'
 import { AttachmentIndex } from './sync/AttachmentIndex.js'
 import { AttachmentStore, type AttachmentOptions } from './sync/AttachmentStore.js'
 import { BackupStore } from './sync/BackupStore.js'
@@ -85,6 +85,8 @@ export interface SyncHost {
   readonly root: string
   readonly openLocal: OpenLocalStore
   history(vaultId: string): HistoryStore
+  /** Every database this device keeps for a vault - its notes, its index and settings, its history - deleted, and waited for. */
+  clearLocal(vaultId: string): Promise<void>
   /** Outlives the session: Obsidian keeps its editors while the sync stops and starts again. */
   readonly editors: EditorSync
   readonly carried: CarriedTexts
@@ -98,6 +100,8 @@ export interface SyncHost {
   /** Whether shares that come in are taken without asking - with a single vault there is nowhere else for them. */
   autoAccept(): boolean
   retentionDays(): number
+  /** This device, as the account's other devices know it: what it records carries its name and id. */
+  device(): { id: string; name: string }
 
   // What the server says that the person hears about: about the account - contacts, a lock of this vault -, never a share or a folder.
   notify(kind: AccountNoticeKind, payload: ServerNotice): void
@@ -221,9 +225,6 @@ export class SyncSession {
     this.state = state
     const backups = new BackupStore(host.adapter, host.root)
     this.backups = backups
-    const reviews = new ReviewStore(host.adapter, host.root)
-    this.reviews = reviews
-    void reviews.list()
     const index = new VaultIndex(vault.vaultId, (path, generation) => keys.docId(path, generation))
     this.index = index
     const socket = new VaultSocket(host.serverUrl, vault.vaultId, () => host.token(), {
@@ -251,6 +252,12 @@ export class SyncSession {
     this.settingsStore = settingsStore
     await settingsStore.whenSynced
     if (stopped()) return false
+    // What this device records there - the Time Machine's marks - carries its name.
+    accountSettings.recordAs(host.device().name)
+    // In the account's settings, so every device of the account shows them and can put them together (0.9.29).
+    const reviews = new ReviewStore(host.adapter, host.root, accountSettings, host.device())
+    this.reviews = reviews
+    void reviews.list()
     // Epochs only go forward, on every device of the vault: a server moving a room back is caught here.
     keys.setEpochRecord({ floor: (room) => accountSettings.epochFloor(room), raise: (room, epoch) => accountSettings.raiseEpochFloor(room, epoch) })
     keys.onEpochBehind((room) => this.epochBehind(room))
@@ -332,7 +339,8 @@ export class SyncSession {
           set: (room, account, role) => accountSettings.setShareRole(room, account, role)
         },
         approveFiles: (docId) => this.sharedFiles?.approve(docId),
-        claimLinks: async (docId) => this.linkClaims?.claimAll(docId)
+        claimLinks: async (docId) => this.linkClaims?.claimAll(docId),
+        marked: (event) => accountSettings.addEvent(event)
       },
       contacts
     )
@@ -353,7 +361,8 @@ export class SyncSession {
         autoAccept: () => host.autoAccept(),
         settleMs: host.timing.folderSettleMs,
         decideMs: host.timing.folderDecideMs,
-        foreignLink: this.foreignLink
+        foreignLink: this.foreignLink,
+        marked: (event) => accountSettings.addEvent(event)
       },
       host.folderPrompts,
       (news) => host.folderNews(news),
@@ -399,7 +408,8 @@ export class SyncSession {
       state,
       backups,
       host: host.joining,
-      leaving: (path) => this.leave(path)
+      leaving: (path) => this.leave(path),
+      marked: (event) => accountSettings.addEvent(event)
     })
 
     // Editors bind as soon as the index is there, not after the whole vault
@@ -413,6 +423,7 @@ export class SyncSession {
     store.onLeave((docId) => void this.sharing?.leave(docId))
     store.onReview((review) => {
       void reviews.add(review).catch((error: unknown) => log.error(`keeping the review of ${review.path} failed`, error))
+      accountSettings.addEvent({ kind: 'merged', at: review.at, docId: review.docId, path: review.path })
       host.reviewed?.(review)
     })
     this.unwatchers.push(
@@ -558,6 +569,36 @@ export class SyncSession {
     return true
   }
 
+  /** Something worth a mark in the Time Machine, made on this device - "Compare versions" applied (0.9.29). */
+  mark(event: Omit<MarkEvent, 'id' | 'device'>): void {
+    this.accountSettings?.addEvent(event)
+  }
+
+  /**
+   * Why this device may not forget the vault's sync now, or null: everything it wrote
+   * reached the server. Forgotten before, an edit only in its databases would be lost.
+   */
+  async whyNotForget(timeoutMs: number): Promise<string | null> {
+    const { store, attachments } = this
+    if (!this.started || !store) return 'Mycel is not connected - nothing written here may be lost, so it has to reach the server first.'
+    if (!(await store.whenAllSent(timeoutMs))) return 'Something written on this device has not reached the server yet. Try again once it is connected and the cloud in the status bar shows it is sent.'
+    if ((attachments?.activeTransfers().uploads ?? 0) > 0) return 'Files are still being uploaded. Try again once that is done.'
+    return null
+  }
+
+  /**
+   * What this device knows of a vault's sync, forgotten - its databases, what it agreed on,
+   * how it met the vault -, never the vault's files nor anything on the server: its next start
+   * meets the vault as a new device would, compares and asks (*Reset this device's sync*,
+   * 0.9.29). Only while no session of the vault runs.
+   */
+  static async forgetDevice(host: Pick<SyncHost, 'adapter' | 'root' | 'carried' | 'clearLocal'>, vaultId: string): Promise<void> {
+    host.carried.take(vaultId)
+    await host.clearLocal(vaultId)
+    await StateStore.forget(host.adapter, host.root)
+    log.info(`this device forgot the sync of the vault ${vaultId}: its next start meets it anew`)
+  }
+
   /** History older than the retention folded, here and on the server, and notes deleted before it let go of. */
   async compact(): Promise<void> {
     if (!this.started || !this.compactor) return
@@ -667,6 +708,7 @@ export class SyncSession {
     this.contacts = null
     this.compactor = null
     this.trash = null
+    this.reviews?.stop()
     this.reviews = null
     this.history = null
   }

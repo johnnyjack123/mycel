@@ -127,6 +127,10 @@ export interface MycelSettings {
   timeMachineMarks: boolean
   /** The setup wizard was opened on this device: it never opens by itself again. */
   setupShown: boolean
+  /** What the account's other devices call this one - in comparing versions, in a lock's window. Empty: by its kind. */
+  deviceName: string
+  /** Tells this device's records apart from another's of the same note - made once, never shown. */
+  deviceId: string
 }
 
 export const DEFAULT_SETTINGS: MycelSettings = {
@@ -144,7 +148,9 @@ export const DEFAULT_SETTINGS: MycelSettings = {
   timeMachineBackups: false,
   timeMachineTicks: 'auto',
   timeMachineMarks: true,
-  setupShown: false
+  setupShown: false,
+  deviceName: '',
+  deviceId: ''
 }
 
 /** Where a phone starts: its storage and data plan are not a desktop's. */
@@ -486,19 +492,6 @@ export class MycelSettingTab extends PluginSettingTab {
           .addButton((button) =>
             button.setButtonText('Copy').onClick(() => void navigator.clipboard.writeText(ids.account))
           )
-        if (ids.vault) {
-          const vault = ids.vault
-          new Setting(containerEl)
-            .setName('Vault ID')
-            .setDesc(`${vault} - deleting the vault on the server locks it on every device at once; it can be taken back for 7 days, then it is gone there. The files on your devices stay.`)
-            .addButton((button) => button.setButtonText('Copy').onClick(() => void navigator.clipboard.writeText(vault)))
-            .addButton((button) =>
-              button
-                .setButtonText('Delete on the server…')
-                .setWarning()
-                .onClick(() => this.plugin.deleteThisVault())
-            )
-        }
       }
       return
     }
@@ -1119,6 +1112,19 @@ export class MycelSettingTab extends PluginSettingTab {
     }
 
     new Setting(containerEl)
+      .setName('Name of this device')
+      .setDesc('What your other devices call this one: in "Compare versions", and while it locks the vault.')
+      .addText((text) =>
+        text
+          .setPlaceholder(this.plugin.deviceName())
+          .setValue(settings.deviceName)
+          .onChange(async (value) => {
+            settings.deviceName = value.trim()
+            await this.plugin.saveSettings()
+          })
+      )
+
+    new Setting(containerEl)
       .setName('Sync this vault')
       .setDesc('Notes, and every other file of the vault - images, PDFs. Turning this off stops all syncing on this device.')
       .addToggle((toggle) =>
@@ -1188,6 +1194,20 @@ export class MycelSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings()
         })
       )
+
+    if (settings.username) {
+      new Setting(containerEl)
+        .setName("Reset this device's sync")
+        .setDesc(
+          'Forgets what this device knows of syncing this vault, and connects it again as a new device would: comparing with the server and asking first. The notes here, the server and your other devices are not touched; you stay signed in. Only once everything written here reached the server.'
+        )
+        .addButton((button) =>
+          button
+            .setButtonText('Reset…')
+            .setWarning()
+            .onClick(() => void this.run(() => this.plugin.resetDeviceSync(), button))
+        )
+    }
   }
 
   private shared(containerEl: HTMLElement): void {
@@ -1217,13 +1237,6 @@ export class MycelSettingTab extends PluginSettingTab {
             })
           )
       )
-
-    new Setting(containerEl)
-      .setName('Conflict markers')
-      .setDesc(
-        'Wrap regions both sides changed incompatibly in <<<<<<< markers. Off keeps both versions one after the other, without markers.'
-      )
-      .addToggle((toggle) => toggle.setValue(current.conflictMarkers).onChange((value) => update({ conflictMarkers: value })))
 
     new Setting(containerEl)
       .setName('Folder for shared notes')
@@ -1277,6 +1290,23 @@ export class MycelSettingTab extends PluginSettingTab {
           const parsed = Number.parseInt(value, 10)
           if (Number.isFinite(parsed) && parsed >= 0) update({ backupRetentionDays: parsed })
         })
+      )
+
+    // The vault itself, for every device at once: what the server and the admin's `mycel user list` know it by, and deleting it there.
+    const vault = this.plugin.ids()?.vault
+    if (!vault) return
+    new Setting(containerEl)
+      .setName('Vault ID')
+      .setDesc(vault)
+      .addButton((button) => button.setButtonText('Copy').onClick(() => void navigator.clipboard.writeText(vault)))
+    new Setting(containerEl)
+      .setName('Delete this vault on the server')
+      .setDesc('Locks it on every device at once. It can be taken back for 7 days, then it is gone on the server. The files on your devices stay.')
+      .addButton((button) =>
+        button
+          .setButtonText('Delete on the server…')
+          .setWarning()
+          .onClick(() => this.plugin.deleteThisVault())
       )
   }
 }

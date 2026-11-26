@@ -16,7 +16,6 @@ import {
 
 export interface SharedSettings {
   excludeGlobs: string[]
-  conflictMarkers: boolean
   historyRetentionDays: number
   backupRetentionDays: number
   /** Where notes other people share with this account land. Only a default. */
@@ -25,7 +24,6 @@ export interface SharedSettings {
 
 export const DEFAULT_SHARED_SETTINGS: SharedSettings = {
   excludeGlobs: [],
-  conflictMarkers: true,
   historyRetentionDays: 30,
   backupRetentionDays: 14,
   sharedFolder: 'Shared'
@@ -107,6 +105,71 @@ const ROLLBACK_KEY = 'rollback:'
 // The notification center lists them, notes restored included (0.8.16).
 const ROLLBACKS_KEPT = 50
 
+/** `review:<id>`: a note whose two versions wait to be put together, on any device of the account (0.9.29). */
+const REVIEW_KEY = 'review:'
+
+/**
+ * `event:<id>`: something worth finding again in the Time Machine, which marks the moment
+ * before it (0.9.29): a merge that kept two versions, "Compare versions" applied, a device
+ * joining the vault, the answer when the server had other data, a share begun or ended.
+ */
+const EVENT_KEY = 'event:'
+const EVENTS_KEPT = 300
+
+export type MarkKind = 'merged' | 'compared' | 'joined' | 'recovery' | 'shared' | 'share-ended'
+const MARK_KINDS: readonly string[] = ['merged', 'compared', 'joined', 'recovery', 'shared', 'share-ended']
+
+export interface MarkEvent {
+  id: string
+  kind: MarkKind
+  /** Taken before it changed anything: the mark is the moment just before. */
+  at: number
+  /** The device it happened on, by its name then. */
+  device: string
+  docId?: string
+  /** The note's path then - or the folder's, for a folder's share. */
+  path?: string
+  /** A shared folder rather than a note. */
+  folder?: boolean
+  /** A device joining: `merge` or `server`; the server's other data: `device` or `server`. */
+  choice?: string
+}
+
+function markEvent(value: unknown): MarkEvent | null {
+  if (!value || typeof value !== 'object') return null
+  const event = value as Partial<MarkEvent>
+  if (typeof event.id !== 'string' || typeof event.at !== 'number' || typeof event.device !== 'string') return null
+  if (typeof event.kind !== 'string' || !MARK_KINDS.includes(event.kind)) return null
+  for (const text of [event.docId, event.path, event.choice]) if (text !== undefined && typeof text !== 'string') return null
+  if (event.folder !== undefined && typeof event.folder !== 'boolean') return null
+  return event as MarkEvent
+}
+
+/** What the settings hold of a review; its shape is `Review`'s (`Reviews.ts`), checked as it is read. */
+export interface StoredReview {
+  id: string
+  docId: string
+  path: string
+  at: number
+  kind: 'no-base' | 'conflict'
+  mine: string
+  theirs: string
+  merged: string
+  device?: string
+  deviceId?: string
+}
+
+function storedReview(value: unknown): StoredReview | null {
+  if (!value || typeof value !== 'object') return null
+  const review = value as Partial<StoredReview>
+  const texts = [review.id, review.docId, review.path, review.mine, review.theirs, review.merged]
+  if (!texts.every((text) => typeof text === 'string') || typeof review.at !== 'number') return null
+  if (review.kind !== 'no-base' && review.kind !== 'conflict') return null
+  if (review.device !== undefined && typeof review.device !== 'string') return null
+  if (review.deviceId !== undefined && typeof review.deviceId !== 'string') return null
+  return review as StoredReview
+}
+
 // One key per entry, so two devices adding different contacts at once do not
 // overwrite each other the way one shared object would.
 const CONTACT = 'contact:'
@@ -145,10 +208,6 @@ export class AccountSettings {
     const folder = this.map.get('sharedFolder')
     return {
       excludeGlobs: stringList(this.map.get('excludeGlobs')) ?? defaults.excludeGlobs,
-      conflictMarkers:
-        typeof this.map.get('conflictMarkers') === 'boolean'
-          ? (this.map.get('conflictMarkers') as boolean)
-          : defaults.conflictMarkers,
       historyRetentionDays: wholeNumber(this.map.get('historyRetentionDays')) ?? defaults.historyRetentionDays,
       backupRetentionDays: wholeNumber(this.map.get('backupRetentionDays')) ?? defaults.backupRetentionDays,
       sharedFolder: typeof folder === 'string' ? folder : defaults.sharedFolder
@@ -316,6 +375,69 @@ export class AccountSettings {
       this.map.set(`${ROLLBACK_KEY}${record.id}`, record)
       for (const old of this.rollbacks().slice(ROLLBACKS_KEPT)) this.map.delete(`${ROLLBACK_KEY}${old.id}`)
     }, 'local')
+  }
+
+  // The notes whose two versions wait to be put together: here, every device of the
+  // account shows them and any of them can do it - before 0.9.29 they lay in the plugin
+  // folder of the device where the versions met, and only it could.
+
+  reviews(): StoredReview[] {
+    const found: StoredReview[] = []
+    this.map.forEach((value, key) => {
+      if (!key.startsWith(REVIEW_KEY)) return
+      const review = storedReview(value)
+      if (review && key === `${REVIEW_KEY}${review.id}`) found.push(review)
+    })
+    return found
+  }
+
+  setReview(review: StoredReview): void {
+    this.put(`${REVIEW_KEY}${review.id}`, review)
+  }
+
+  deleteReview(id: string): void {
+    if (this.map.has(`${REVIEW_KEY}${id}`)) this.put(`${REVIEW_KEY}${id}`, null)
+  }
+
+  /** This device's name, which every event it records carries. */
+  private recorder = 'a device'
+
+  recordAs(device: string): void {
+    this.recorder = device
+  }
+
+  /** Every event worth a mark in the Time Machine, the newest first. */
+  events(): MarkEvent[] {
+    const found: MarkEvent[] = []
+    this.map.forEach((value, key) => {
+      if (!key.startsWith(EVENT_KEY)) return
+      const event = markEvent(value)
+      if (event && key === `${EVENT_KEY}${event.id}`) found.push(event)
+    })
+    return found.sort((a, b) => b.at - a.at)
+  }
+
+  /** Records one, made on this device; the oldest beyond the last few hundred go. */
+  addEvent(event: Omit<MarkEvent, 'id' | 'device'>): void {
+    const id = `${event.at.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    this.doc.transact(() => {
+      this.map.set(`${EVENT_KEY}${id}`, { ...event, id, device: this.recorder } satisfies MarkEvent)
+      for (const old of this.events().slice(EVENTS_KEPT)) this.map.delete(`${EVENT_KEY}${old.id}`)
+    }, 'local')
+  }
+
+  /** Told whenever a review comes, changes or goes - here or on another device. */
+  onReviews(listener: () => void): () => void {
+    const observe = (event: Y.YMapEvent<unknown>): void => {
+      for (const key of event.keysChanged) {
+        if (key.startsWith(REVIEW_KEY)) {
+          listener()
+          return
+        }
+      }
+    }
+    this.map.observe(observe)
+    return () => this.map.unobserve(observe)
   }
 
   /** `remote`: the change came from another device - or from this device's copy as it loaded. */

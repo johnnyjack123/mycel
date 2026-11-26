@@ -16,8 +16,10 @@ const { startServer } = await import('../../server/src/server.js')
 const { BackupStore } = await import('../src/sync/BackupStore.js')
 const { gateApp } = await import('../src/guard.js')
 const { reviewMarkCss } = await import('../src/history/ReviewMarks.js')
-const { ReviewStore } = await import('../src/sync/Reviews.js')
+const { ReviewStore, versionNames } = await import('../src/sync/Reviews.js')
+const { AccountSettings } = await import('../src/sync/AccountSettings.js')
 const { FakeAdapter } = await import('./stubs/fake-vault.js')
+const Y = await import('yjs')
 
 const root = mkdtempSync(join(tmpdir(), 'oc-join-selftest-'))
 const server = await startServer(
@@ -227,6 +229,7 @@ try {
 
   // --- merging, as every device did before ----------------------------------------------
   const A6 = new Device(name, false, { 'One.md': 'first\nmerged in\n', 'Two.md': 'second\n', 'Mine.md': 'new on this device\n' })
+  A6.deviceName = 'the sixth device'
   devices.push(A6)
   check(await A6.boot(), 'a device that merges starts')
   const merging = A6.joinPlans[0]
@@ -251,6 +254,31 @@ try {
   )
   const merged = A6.joinResults.at(-1)
   check(merged?.ok === true && merged.merging === 2, 'the window was told how many notes are merged and marked', merged)
+  // Every device of the account shows them, and any of them can put them together (0.9.29).
+  const elsewhere = (): Array<{ path: string; deviceId?: string; id: string }> => A1.sync?.reviews?.pending() ?? []
+  check(
+    await eventually(() => ['One.md', 'Two.md'].every((path) => elsewhere().some((review) => review.path === path && review.deviceId === A6.deviceId))),
+    'another device of the account shows the notes to look at too, made on the device where they met',
+    elsewhere()
+  )
+  // And the Time Machine marks the moments before (0.9.29): the device joining, and each merge.
+  const marked = (): Array<{ kind: string; path?: string; choice?: string; device: string }> => A1.sync?.accountSettings?.events() ?? []
+  check(
+    await eventually(
+      () =>
+        marked().some((event) => event.kind === 'joined' && event.choice === 'merge' && event.device === A6.deviceName) &&
+        ['One.md', 'Two.md'].every((path) => marked().some((event) => event.kind === 'merged' && event.path === path))
+    ),
+    'every device of the account has the marks: the device joining, merging both, and each note merged',
+    marked()
+  )
+  const doneElsewhere = elsewhere().find((review) => review.path === 'One.md')
+  if (doneElsewhere) await A1.sync?.reviews?.remove(doneElsewhere.id)
+  check(
+    await eventually(() => !(A6.sync?.reviews?.pending() ?? []).some((review) => review.path === 'One.md') && (A6.sync?.reviews?.pending() ?? []).some((review) => review.path === 'Two.md')),
+    '"Done" on another device takes it off the list here too',
+    A6.sync?.reviews?.pending().map((review) => review.path)
+  )
   const marks = reviewMarkCss(['One.md', 'Deep/er/Note "q".md'])
   check(
     marks.includes('.nav-file-title[data-path="One.md"]') &&
@@ -275,8 +303,115 @@ try {
       reviews.pending()
     )
   }
+  {
+    // Reviews in the account's settings, on two devices whose settings meet as the sync makes them (0.9.29).
+    const here = new AccountSettings()
+    const there = new AccountSettings()
+    const meet = (): void => {
+      Y.applyUpdate(there.doc, Y.encodeStateAsUpdate(here.doc), 'socket')
+      Y.applyUpdate(here.doc, Y.encodeStateAsUpdate(there.doc), 'socket')
+    }
+    // Made before 0.9.29: in this device's plugin folder only.
+    const folder = new FakeAdapter()
+    const old = new ReviewStore(folder as never, PLUGIN_DIR)
+    await old.add({ docId: 'd0', path: 'Old.md', at: 1, kind: 'no-base', mine: 'a\n', theirs: 'b\n', merged: 'b\na\n' })
+    const mine = new ReviewStore(folder as never, PLUGIN_DIR, here, { id: 'aaaa1111', name: 'PC' })
+    const theirs = new ReviewStore(new FakeAdapter() as never, PLUGIN_DIR, there, { id: 'bbbb2222', name: 'Laptop' })
+    let told = 0
+    theirs.onChange(() => (told += 1))
+    await mine.list()
+    const localLeft = Array.from(folder.files.keys()).filter((key) => key.includes('/reviews/'))
+    meet()
+    const moved = theirs.pending().find((review) => review.path === 'Old.md')
+    check(
+      localLeft.length === 0 && moved?.device === 'PC' && moved.deviceId === 'aaaa1111' && told > 0,
+      'a review made before 0.9.29 moves into the settings, made on the device it lay on, and the other device is told',
+      { localLeft, moved }
+    )
+    const fromHere = await mine.add({ docId: 'd1', path: 'One.md', at: 2, kind: 'conflict', mine: 'here\n', theirs: 'there\n', merged: 'here\nthere\n' })
+    const fromThere = await theirs.add({ docId: 'd1', path: 'One.md', at: 3, kind: 'conflict', mine: 'laptop\n', theirs: 'there\n', merged: 'laptop\nthere\n' })
+    meet()
+    check(
+      fromHere.id !== fromThere.id && mine.pending().filter((review) => review.docId === 'd1').length === 2,
+      "the same note merged on two devices keeps each device's own version, side by side",
+      mine.pending()
+    )
+    const again = await mine.add({ docId: 'd1', path: 'One.md', at: 4, kind: 'conflict', mine: 'later\n', theirs: 'there\n', merged: 'later\nthere\n' })
+    check(
+      again.id === fromHere.id && again.mine === 'here\n',
+      "a later merge on the same device takes its earlier one's place, keeping that device's text from before either",
+      again
+    )
+    check(
+      versionNames(fromThere, 'aaaa1111').mine === 'On Laptop' && versionNames(fromHere, 'aaaa1111').mine === 'This device',
+      '"This device" only where the versions met; elsewhere the device that had them is named',
+      versionNames(fromThere, 'aaaa1111')
+    )
+    // Put together on the other device while this one merged the note again: the newer merge is news, and stays.
+    await theirs.remove(fromHere.id)
+    meet()
+    check(mine.has(fromHere.id) && theirs.has(fromHere.id), 'a review put together on one device while another merged the note anew stays, with the newer merge', mine.pending())
+    await theirs.remove(fromHere.id)
+    meet()
+    check(!mine.has(fromHere.id) && mine.has(fromThere.id), 'put together on one device, it is gone on the other - and only that one', mine.pending())
+    const huge = 'x'.repeat(1_100_000)
+    const large = await mine.add({ docId: 'd9', path: 'Huge.md', at: 5, kind: 'no-base', mine: huge, theirs: huge, merged: huge })
+    meet()
+    check(
+      mine.has(large.id) && !theirs.has(large.id) && Array.from(folder.files.keys()).some((key) => key.endsWith(`${large.id}.json`)),
+      'one too large for every device stays on the device where it was made, as all did before',
+      theirs.pending().map((review) => review.path)
+    )
+    mine.stop()
+    theirs.stop()
+    here.destroy()
+    there.destroy()
+  }
   check(copied(A6).size === 3, 'after a copy of its vault')
   await A6.shutdown()
+
+  // --- Reset this device's sync (0.9.29) -------------------------------------------------------
+  {
+    const vaultId = A1.keys?.vaultId as string
+    const notes = (): string =>
+      A1.vault
+        .paths()
+        .filter((path) => path.endsWith('.md'))
+        .sort()
+        .map((path) => `${path}=${A1.vault.text(path)}`)
+        .join('|')
+    check(await eventually(async () => (await A1.sync?.whyNotForget(1_000)) === null), 'with everything sent, the device may forget')
+    const before = notes()
+    const asked = A1.joinPlans.length
+    await A1.shutdown()
+    await A1.forgetSync(vaultId)
+    check(
+      !A1.locals.has(`mycel/${vaultId}/idx`) && !(await A1.pluginAdapter.exists(`${PLUGIN_DIR}/joined.json`)) && !(await A1.pluginAdapter.exists(`${PLUGIN_DIR}/state.json`)),
+      'its databases, what it agreed on and how it met the vault are gone - the files of the vault are not',
+      before
+    )
+    A1.joinAnswer = 'merge'
+    check(await A1.boot(), 'it starts again')
+    check(A1.joinPlans.length === asked + 1, 'and meets the vault as a new device: compared, and asked', A1.joinPlans.at(-1)?.kind)
+    check(
+      await eventually(() => notes() === before && !A1.vault.paths().some((path) => path.includes('conflict'))),
+      'merging what it has with the server makes nothing twice: every note as before',
+      { before, after: notes() }
+    )
+  }
+  {
+    // One Obsidian vault per vault of the server and computer (0.9.29): the claims they all see.
+    const { VaultClaims, memoryClaimStorage } = await import('../src/sync/VaultClaims.js')
+    const shared = memoryClaimStorage()
+    const work = new VaultClaims(shared, { id: 'obsidian-a', name: 'Work' })
+    const copy = new VaultClaims(shared, { id: 'obsidian-b', name: 'Work copy' })
+    check(work.claim('v1') === null && work.mine('v1'), 'the first Obsidian vault to sync it holds it')
+    const refused = copy.claim('v1')
+    check(refused?.name === 'Work' && !copy.mine('v1') && work.mine('v1'), 'another on the same computer is told which one holds it, and takes nothing', refused)
+    check(copy.claim('v2') === null && work.mine('v2') === false, 'another vault of the server is free for it')
+    copy.take('v1')
+    check(copy.mine('v1') && !work.mine('v1') && work.holder('v1')?.name === 'Work copy', 'taken over when asked, and the first one hears it no longer holds it')
+  }
 
   // --- another vault ----------------------------------------------------------------------
   const A7 = new Device(name, false, { 'Recipes/Bread.md': 'flour\n', 'Recipes/Soup.md': 'water\n', 'Recipes/Cake.md': 'sugar\n' })

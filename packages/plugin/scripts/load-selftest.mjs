@@ -76,7 +76,7 @@ const obsidian = {
       this.manifest = { id: 'mycel', dir: '.obsidian/plugins/mycel' }
     }
     addStatusBarItem() {
-      return { setText: fn, addClass: fn, removeClass: fn, addEventListener: fn, empty: fn, hide: fn, show: fn, setAttribute: fn }
+      return { setText: fn, addClass: fn, removeClass: fn, addEventListener: fn, empty: fn, hide: fn, show: fn, setAttribute: fn, removeAttribute: fn }
     }
     registerView = (type) => registered.views.push(type)
     addSettingTab = fn
@@ -84,6 +84,7 @@ const obsidian = {
     addRibbonIcon = () => ({ addClass: fn, createSpan: () => ({ setText: fn, toggleClass: fn }) })
     addCommand = (command) => registered.commands.push(command.id)
     registerEvent = fn
+    registerDomEvent = fn
     register = fn
     registerEditorExtension = (extension) => registered.editorExtensions.push(extension)
     registerMarkdownPostProcessor = fn
