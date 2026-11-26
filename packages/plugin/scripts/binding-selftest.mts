@@ -152,7 +152,7 @@ class Host {
       recentWrite: () => this.recent,
       resolve: async (local: string, remote: string, released: string | null) => {
         const pristine = (this.ytext.doc?.store.clients.size ?? 0) === 0
-        const outcome = reconcile({ base: released ?? this.base, local, remote, pristine, markers: false })
+        const outcome = reconcile({ base: released ?? this.base, local, remote, pristine })
         if (outcome.kind === 'merge') return outcome.text
         return outcome.kind === 'seed' || outcome.kind === 'adopt-local' ? local : remote
       },

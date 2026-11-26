@@ -1225,13 +1225,6 @@ export class MycelSettingTab extends PluginSettingTab {
       )
 
     new Setting(containerEl)
-      .setName('Conflict markers')
-      .setDesc(
-        'Wrap regions both sides changed incompatibly in <<<<<<< markers. Off keeps both versions one after the other, without markers.'
-      )
-      .addToggle((toggle) => toggle.setValue(current.conflictMarkers).onChange((value) => update({ conflictMarkers: value })))
-
-    new Setting(containerEl)
       .setName('Folder for shared notes')
       .setDesc('Where a note someone shares with you is created. Move it anywhere afterwards; it stays shared.')
       .addText((text) =>

@@ -16,7 +16,6 @@ import {
 
 export interface SharedSettings {
   excludeGlobs: string[]
-  conflictMarkers: boolean
   historyRetentionDays: number
   backupRetentionDays: number
   /** Where notes other people share with this account land. Only a default. */
@@ -25,7 +24,6 @@ export interface SharedSettings {
 
 export const DEFAULT_SHARED_SETTINGS: SharedSettings = {
   excludeGlobs: [],
-  conflictMarkers: true,
   historyRetentionDays: 30,
   backupRetentionDays: 14,
   sharedFolder: 'Shared'
@@ -145,10 +143,6 @@ export class AccountSettings {
     const folder = this.map.get('sharedFolder')
     return {
       excludeGlobs: stringList(this.map.get('excludeGlobs')) ?? defaults.excludeGlobs,
-      conflictMarkers:
-        typeof this.map.get('conflictMarkers') === 'boolean'
-          ? (this.map.get('conflictMarkers') as boolean)
-          : defaults.conflictMarkers,
       historyRetentionDays: wholeNumber(this.map.get('historyRetentionDays')) ?? defaults.historyRetentionDays,
       backupRetentionDays: wholeNumber(this.map.get('backupRetentionDays')) ?? defaults.backupRetentionDays,
       sharedFolder: typeof folder === 'string' ? folder : defaults.sharedFolder

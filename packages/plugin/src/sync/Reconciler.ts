@@ -17,7 +17,6 @@ export interface ReconcileInput {
    * on purpose is empty too.
    */
   pristine: boolean
-  markers: boolean
 }
 
 export type ReconcileOutcome =
@@ -101,7 +100,9 @@ export function reconcile(input: ReconcileInput): ReconcileOutcome {
   if (base !== null) {
     if (base === local) return { kind: 'adopt-remote' }
     if (base === remote) return { kind: 'adopt-local' }
-    const merged = threeWayMerge(base, local, remote, { markers: input.markers })
+    // Where both changed the same passage, both stay one after the other, never inside `<<<<<<<` markers:
+    // the note is listed to be put together in "Compare versions", as one merged without a base is (0.9.29).
+    const merged = threeWayMerge(base, local, remote, { markers: false })
     return { kind: 'merge', text: merged.text, conflicts: merged.conflicts, additiveOnly: false }
   }
 

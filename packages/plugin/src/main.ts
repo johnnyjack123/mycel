@@ -93,7 +93,7 @@ import { log, withSummary } from './log'
 
 // Settings of earlier versions that moved to the account, and are handed over
 // once to its settings document.
-const MOVED_TO_ACCOUNT = ['excludeGlobs', 'conflictMarkers', 'backupRetentionDays'] as const
+const MOVED_TO_ACCOUNT = ['excludeGlobs', 'backupRetentionDays'] as const
 const COMPACT_EVERY_MS = 6 * 60 * 60 * 1000
 const COMPACT_DELAY_MS = 60 * 1000
 const NOTE_STATUS_MS = 400
@@ -762,7 +762,6 @@ export default class MycelPlugin extends Plugin {
       vaultId: this.vault?.vaultId ?? '',
       user: this.user(),
       excludeGlobs: shared.excludeGlobs,
-      conflictMarkers: shared.conflictMarkers,
       maxLoadedDocuments: this.settings.maxLoadedDocuments,
       syncTimeoutMs: this.settings.syncTimeoutMs,
       writeDebounceMs: this.settings.writeDebounceMs

@@ -353,7 +353,6 @@ export class Device {
         vaultId: openVault.vaultId,
         user,
         excludeGlobs: [],
-        conflictMarkers: true,
         maxLoadedDocuments: this.maxLoaded,
         syncTimeoutMs: 4_000,
         writeDebounceMs: 150

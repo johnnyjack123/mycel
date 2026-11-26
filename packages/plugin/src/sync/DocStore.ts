@@ -30,7 +30,6 @@ export interface DocStoreOptions {
   vaultId: string
   user: CollabUser
   excludeGlobs: string[]
-  conflictMarkers: boolean
   maxLoadedDocuments: number
   syncTimeoutMs: number
   writeDebounceMs: number
@@ -1000,7 +999,7 @@ export class DocStore {
     // document went on from that text, so that is where file and document
     // last agreed - whatever base was recorded before.
     const base = this.heldBefore(docId, local) ? local : await this.baseFor(docId)
-    const outcome = reconcile({ base, local, remote, pristine: handle.pristine, markers: this.options.conflictMarkers })
+    const outcome = reconcile({ base, local, remote, pristine: handle.pristine })
     await this.applyOutcome(docId, file, handle, local, remote, base, outcome)
   }
 
@@ -1120,7 +1119,7 @@ export class DocStore {
       return remote
     }
     const pristine = this.handles.get(docId)?.pristine ?? false
-    const outcome = reconcile({ base, local, remote, pristine, markers: this.options.conflictMarkers })
+    const outcome = reconcile({ base, local, remote, pristine })
     if (outcome.kind !== 'agree') {
       const detail = outcome.kind === 'merge' ? ` (${outcome.additiveOnly ? 'no common base, union' : `${outcome.conflicts} conflict(s)`})` : ''
       log.info(
@@ -1171,7 +1170,7 @@ export class DocStore {
       const current = handle.text()
       const path = this.index.pathFor(docId) ?? docId
       await this.backups.write(path, 'local', current)
-      const target = current === merged ? chosen : threeWayMerge(merged, current, chosen, { markers: this.options.conflictMarkers }).text
+      const target = current === merged ? chosen : threeWayMerge(merged, current, chosen, { markers: false }).text
       const edits = textEdits(current, target)
       // Not from the file: the file follows, like a restore.
       if (edits.length > 0) handle.doc.transact(() => applyTextEdits(handle.ytext, edits), RESTORE_ORIGIN)
@@ -1845,7 +1844,7 @@ export class DocStore {
       const path = this.index.pathFor(docId) ?? docId
       if (backUp && current !== text && current.length > 0) await this.backups.write(path, 'local', current)
       const merged = base !== null && current !== base
-      const target = merged ? threeWayMerge(base, current, text, { markers: this.options.conflictMarkers }).text : text
+      const target = merged ? threeWayMerge(base, current, text, { markers: false }).text : text
       const edits = textEdits(current, target)
       if (edits.length > 0) handle.doc.transact(() => applyTextEdits(handle.ytext, edits), RESTORE_ORIGIN)
       if (merged) log.info(`${path}: written in after the lock was taken - merged into the text restored`)
