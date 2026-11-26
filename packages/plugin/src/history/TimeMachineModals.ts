@@ -1,6 +1,7 @@
 import { Modal, type App } from 'obsidian'
 import type { VaultLockInfo } from '@mycel/shared'
 import { busy } from '../busy.js'
+import { deviceWords } from '../device.js'
 import type { LockPurpose } from '../sync/VaultLock.js'
 
 // Windows over everything for the Time Machine's states that guard the vault:
@@ -111,7 +112,7 @@ export class LockedModal extends Modal {
   onOpen(): void {
     const { contentEl } = this
     this.titleEl.setText('The vault is locked')
-    const what = this.purpose ? `${this.purpose.what}, on ${this.purpose.device}` : 'another device of yours'
+    const what = this.purpose ? `${this.purpose.what}, on ${deviceWords(this.purpose.device)}` : 'another device of yours'
     contentEl.createEl('p', {
       text:
         this.lock.kind === 'rollback'

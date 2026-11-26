@@ -87,6 +87,7 @@ import type { VaultIndex } from './sync/VaultIndex'
 import type { SocketStatus, VaultSocket } from './sync/VaultSocket'
 import { LockSeal, OwnLocks, inLockScope, lockNonce, type LockPurpose, type LockScope } from './sync/VaultLock'
 import { MycelSettingTab, DEFAULT_SETTINGS, MOBILE_DOWNLOAD_LIMIT_MB, type MycelSettings } from './settings'
+import { defaultDeviceName, deviceWords } from './device'
 import { CarriedTexts, SyncSession, type AccountNoticeKind, type SyncHost, type SyncTiming } from './SyncSession'
 import { log, withSummary } from './log'
 
@@ -644,7 +645,7 @@ export default class MycelPlugin extends Plugin {
   /** Another device's lock in a sentence: what it is for. */
   private lockSentence(): string {
     const other = this.otherLock
-    const device = other?.purpose?.device ?? 'another device of yours'
+    const device = other?.purpose ? deviceWords(other.purpose.device) : 'another device of yours'
     const what = other?.purpose?.what ?? 'the vault'
     return other?.lock.kind === 'rollback'
       ? `Read-only while ${device} rolls back ${what}.`
@@ -693,6 +694,10 @@ export default class MycelPlugin extends Plugin {
     }
     if (stored.attachmentDownloadLimitMb === undefined && Platform.isMobile) settings.attachmentDownloadLimitMb = MOBILE_DOWNLOAD_LIMIT_MB
     this.settings = settings
+    if (!settings.deviceId) {
+      settings.deviceId = toHex(randomBytes(8))
+      await this.saveData(settings)
+    }
     const moved: Partial<SharedSettings> = {}
     for (const key of MOVED_TO_ACCOUNT) {
       if (stored[key] !== undefined) (moved as Record<string, unknown>)[key] = stored[key]
@@ -708,6 +713,11 @@ export default class MycelPlugin extends Plugin {
 
   private vaultName(): string {
     return this.settings.vaultName || this.app.vault.getName()
+  }
+
+  /** What the account's other devices call this one. */
+  deviceName(): string {
+    return this.settings.deviceName.trim() || defaultDeviceName(Platform)
   }
 
   /** The account id, not the name: names are not unique, and a caret of one's own other device is told apart by it. */
@@ -1000,7 +1010,7 @@ export default class MycelPlugin extends Plugin {
         if (!this.unlocked) throw new Error('Sign in first.')
         this.deletingHere = vault.vaultId
         try {
-          this.unlocked = await this.session.deleteVault(this.unlocked, vault.vaultId, password, Platform.isMobile ? 'a phone or tablet' : 'a computer')
+          this.unlocked = await this.session.deleteVault(this.unlocked, vault.vaultId, password, this.deviceName())
           log.info(`deleted the vault ${vault.vaultId} on the server, restorable until ${new Date(Date.now() + VAULT_DELETE_GRACE_MS).toISOString()}`)
           await this.handleVaultDeleted(vault.vaultId, true)
         } finally {
@@ -1220,7 +1230,7 @@ export default class MycelPlugin extends Plugin {
     try {
       const vaults = await this.session.allVaults(unlocked)
       await new KeyReplacement(this.api, unlocked, vaults, {
-        device: Platform.isMobile ? 'a phone or tablet' : 'a computer',
+        device: this.deviceName(),
         progress: ({ vault, what, done, of }) => notice.setMessage(`Mycel: writing "${vault}" anew under the new keys - ${what} ${done} of ${of}`)
       }).run()
       const finished = await this.session.finishReplacement(unlocked)
@@ -1737,7 +1747,7 @@ export default class MycelPlugin extends Plugin {
         const backups = this.backupsOf() ?? (this.frozenSettings ? this.backupServers : null)
         return backups && backups.servers().length > 0 ? backups : null
       },
-      device: () => (Platform.isMobile ? 'a phone or tablet' : 'a computer'),
+      device: () => this.deviceName(),
       stopSync: () => this.stopSync(),
       startSync: () => this.startSync(),
       whenSyncing: async (timeoutMs) => {
@@ -1952,7 +1962,7 @@ export default class MycelPlugin extends Plugin {
     const seal = new LockSeal(keys.settingsCrypto(), keys.vaultId)
     const scope: LockScope = folder ? { kind: 'folder', path: folder } : { kind: 'vault' }
     const what = folder ? `the folder ${folder.slice(folder.lastIndexOf('/') + 1)}` : 'the vault'
-    const sealed = await seal.seal({ what, device: Platform.isMobile ? 'a phone or tablet' : 'a computer', nonce: lockNonce(), scope })
+    const sealed = await seal.seal({ what, device: this.deviceName(), nonce: lockNonce(), scope })
     const lock = await this.ownLocks.take(this.api, keys.vaultId, 'rollback', sealed, () =>
       new Notice('The lock of the vault was lifted on another device while the rollback runs: what they write merges in as usual.', 12_000)
     )
@@ -2023,7 +2033,7 @@ export default class MycelPlugin extends Plugin {
     this.otherLock = { lock, purpose }
     // A lock this device cannot read covers the vault.
     const scope: LockScope = purpose?.scope ?? { kind: 'vault' }
-    const what = purpose ? `${purpose.what}, on ${purpose.device}` : 'another device of yours'
+    const what = purpose ? `${purpose.what}, on ${deviceWords(purpose.device)}` : 'another device of yours'
     this.editLocks.set(false, {
       scope,
       why: `Locked: ${lock.kind === 'rollback' ? 'a rollback of' : 'the Time Machine shows the past of'} ${what}. Click to see more, or to lift the lock.`,
@@ -2046,7 +2056,7 @@ export default class MycelPlugin extends Plugin {
   vaultLockState(): string | null {
     const other = this.otherLock
     if (!other) return null
-    const what = other.purpose ? `${other.purpose.what}, on ${other.purpose.device}` : 'another device of yours'
+    const what = other.purpose ? `${other.purpose.what}, on ${deviceWords(other.purpose.device)}` : 'another device of yours'
     return `${other.lock.kind === 'rollback' ? 'A rollback of' : 'The Time Machine shows the past of'} ${what}, since ${new Date(other.lock.takenAt).toLocaleString()}.`
   }
 
@@ -2680,6 +2690,7 @@ export default class MycelPlugin extends Plugin {
   }
 
   private renderStatus(): void {
+    this.statusBar.removeAttribute('aria-label')
     if (this.timeMachine.current) {
       this.statusBar.setText('Mycel: Time Machine - sync stopped')
       return
@@ -2707,7 +2718,13 @@ export default class MycelPlugin extends Plugin {
     const moving = [transfers?.uploads ? `↑${transfers.uploads}` : '', transfers?.downloads ? `↓${transfers.downloads}` : '']
       .filter(Boolean)
       .join(' ')
-    this.statusBar.setText(`Mycel: ${label} ·${this.store.loadedCount()}/${this.store.trackedCount()}${moving ? ` · ${moving}` : ''}`)
+    // Not "loaded/tracked": "synced 2/16" read as two of sixteen synced, when the other fourteen were merely at rest (0.9.29).
+    const notes = this.store.trackedCount()
+    this.statusBar.setText(`Mycel: ${label} · ${notes} ${notes === 1 ? 'note' : 'notes'}${moving ? ` · ${moving}` : ''}`)
+    this.statusBar.setAttr(
+      'aria-label',
+      `${this.store.loadedCount()} of them open right now. The others are synced too: the server says when one changes, and it opens then.`
+    )
   }
 
   /** The note or file in front of you and where it stands; null when it is not synced at all. */

@@ -1,5 +1,6 @@
 import { App, Modal, Setting } from 'obsidian'
 import { busy } from '../busy.js'
+import { deviceWords } from '../device.js'
 import type { DeletedVaultInfo } from './Session.js'
 
 // Deleting a vault on the server, and what a device sees once it was (0.9.24, the
@@ -147,7 +148,7 @@ export class VaultDeletedModal extends Modal {
       ? `You deleted it from this device on ${date(info.deletedAt)}.`
       : info.by === 'admin'
         ? `The server's admin deleted it on ${date(info.deletedAt)}.`
-        : `It was deleted on ${date(info.deletedAt)}${info.device ? `, from ${info.device} of yours` : ''}.`
+        : `It was deleted on ${date(info.deletedAt)}${info.device ? `, from ${/^(a|an) /.test(info.device) ? `${info.device} of yours` : `your device ${deviceWords(info.device)}`}` : ''}.`
     contentEl.createEl('p', { text: `${who} Nothing syncs on this device any more; your files here stay as they are.` })
     if (info.purgedAt !== null) {
       contentEl.createEl('p', { text: `Its data is gone from the server since ${date(info.purgedAt)}.` })
