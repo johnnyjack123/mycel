@@ -2721,7 +2721,7 @@ export default class MycelPlugin extends Plugin {
     // Not "loaded/tracked": "synced 2/16" read as two of sixteen synced, when the other fourteen were merely at rest (0.9.29).
     const notes = this.store.trackedCount()
     this.statusBar.setText(`Mycel: ${label} · ${notes} ${notes === 1 ? 'note' : 'notes'}${moving ? ` · ${moving}` : ''}`)
-    this.statusBar.setAttr(
+    this.statusBar.setAttribute(
       'aria-label',
       `${this.store.loadedCount()} of them open right now. The others are synced too: the server says when one changes, and it opens then.`
     )

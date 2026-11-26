@@ -76,7 +76,7 @@ const obsidian = {
       this.manifest = { id: 'mycel', dir: '.obsidian/plugins/mycel' }
     }
     addStatusBarItem() {
-      return { setText: fn, addClass: fn, removeClass: fn, addEventListener: fn, empty: fn, hide: fn, show: fn, setAttribute: fn }
+      return { setText: fn, addClass: fn, removeClass: fn, addEventListener: fn, empty: fn, hide: fn, show: fn, setAttribute: fn, removeAttribute: fn }
     }
     registerView = (type) => registered.views.push(type)
     addSettingTab = fn
