@@ -249,21 +249,62 @@ export interface Review {
   theirs: string
   /** What the merge made of them - the note's text right after. */
   merged: string
+  /** The device where the two met, by its name then; absent on reviews from before 0.9.29. */
+  device?: string
+  /** That device's id: "this device" means it only there. */
+  deviceId?: string
+}
+
+/** What the two versions are called where the review is shown: "this device" only where they met. */
+export function versionNames(review: Review, deviceId: string): { mine: string; mineWords: string; theirs: string } {
+  if (review.deviceId === undefined || review.deviceId === deviceId) return { mine: 'This device', mineWords: 'this device', theirs: 'Other version' }
+  const device = review.device ?? 'another device'
+  return { mine: `On ${device}`, mineWords: `"${device}"`, theirs: 'Other version' }
+}
+
+/** The account's settings, where every device finds the reviews (`AccountSettings`). */
+export interface SharedReviews {
+  reviews(): Review[]
+  setReview(review: Review): void
+  deleteReview(id: string): void
+  onReviews(listener: () => void): () => void
 }
 
 const DIR = 'reviews'
 // Joining an older copy of a vault merges every note that differs at once, and each is
 // marked in the explorer until looked at: a hundred left the rest unmarked (0.9.22).
 const MAX_REVIEWS = 2000
+// Every device holds every review in the account's settings: beyond these a review stays on
+// the device where it was made, as all did before 0.9.29. A note's three texts in one frame
+// must stay well below what the server takes in one message (32 MB).
+const SHARED_MAX = 500
+const SHARED_MAX_CHARS = 3_000_000
 
+function sizeOf(review: Review): number {
+  return review.mine.length + review.theirs.length + review.merged.length
+}
+
+/**
+ * The reviews of a vault: in the account's settings, where every device of the account
+ * finds them (`shared`), and in this device's plugin folder those too large for that - or
+ * all of them, without `shared`. The plugin folder held them all before 0.9.29; they move
+ * into the settings the first time they are read.
+ */
 export class ReviewStore {
-  private reviews: Review[] | null = null
+  /** This device's own, from its plugin folder; null until read. */
+  private local: Review[] | null = null
+  private reading: Promise<Review[]> | null = null
   private readonly listeners = new Set<() => void>()
+  private readonly unwatch: (() => void) | null
 
   constructor(
     private readonly adapter: Pick<DataAdapter, 'exists' | 'mkdir' | 'write' | 'read' | 'list' | 'remove'>,
-    private readonly root: string
-  ) {}
+    private readonly root: string,
+    private readonly shared: SharedReviews | null = null,
+    private readonly device: { id: string; name: string } | null = null
+  ) {
+    this.unwatch = shared?.onReviews(() => this.changed()) ?? null
+  }
 
   private dir(): string {
     return `${this.root}/${DIR}`
@@ -278,8 +319,24 @@ export class ReviewStore {
     for (const listener of this.listeners) listener()
   }
 
+  stop(): void {
+    this.unwatch?.()
+    this.listeners.clear()
+  }
+
+  /** Every review, the newest first - read from the plugin folder once, and moved into the settings then. */
   async list(): Promise<Review[]> {
-    if (this.reviews) return this.reviews
+    this.reading ??= this.readLocal().then(async (found) => {
+      this.local = found
+      await this.moveIntoSettings()
+      this.changed()
+      return found
+    })
+    await this.reading
+    return this.all()
+  }
+
+  private async readLocal(): Promise<Review[]> {
     const found: Review[] = []
     try {
       if (await this.adapter.exists(this.dir())) {
@@ -295,41 +352,94 @@ export class ReviewStore {
     } catch (error) {
       log.warn('listing the reviews failed', error)
     }
-    this.reviews = found.sort((a, b) => b.at - a.at)
-    this.changed()
-    return this.reviews
+    return found
   }
 
-  /** Whether a note waits for a review - cheap, for menus; false until the list was read once. */
+  /** The reviews made here before they were shared: into the settings, made here, as far as they fit. */
+  private async moveIntoSettings(): Promise<void> {
+    if (!this.shared || !this.local || this.local.length === 0) return
+    let moved = 0
+    for (const review of [...this.local].sort((a, b) => a.at - b.at)) {
+      const here: Review = { ...review, device: review.device ?? this.device?.name, deviceId: review.deviceId ?? this.device?.id }
+      if (!this.fitsShared(here)) continue
+      this.shared.setReview(here)
+      await this.removeLocal(review.id)
+      moved += 1
+    }
+    if (moved > 0) log.info(`${moved} note(s) to compare moved into the account's settings: every device shows them now`)
+  }
+
+  private all(): Review[] {
+    const shared = this.shared?.reviews() ?? []
+    const ids = new Set(shared.map((review) => review.id))
+    return [...shared, ...(this.local ?? []).filter((review) => !ids.has(review.id))].sort((a, b) => b.at - a.at).slice(0, MAX_REVIEWS)
+  }
+
+  /** Whether a note waits for a review - cheap, for menus; this device's own only once the list was read. */
   pendingFor(docId: string): Review | undefined {
-    return this.reviews?.find((review) => review.docId === docId)
+    return this.all().find((review) => review.docId === docId)
   }
 
-  /** Every note waiting for a review, as far as the list was read: for the explorer's marks. */
+  /** Every note waiting for a review: for the explorer's marks. */
   pending(): Review[] {
-    return this.reviews ?? []
+    return this.all()
+  }
+
+  /** Whether the review is still there - put together on another device meanwhile, it is not. */
+  has(id: string): boolean {
+    return this.all().some((review) => review.id === id)
+  }
+
+  private fitsShared(review: Review): boolean {
+    if (!this.shared || sizeOf(review) > SHARED_MAX_CHARS) return false
+    const others = this.shared.reviews().filter((candidate) => candidate.id !== review.id)
+    return others.length < SHARED_MAX
   }
 
   /**
-   * One review per note: a later merge of the same note is what the user now
-   * sees, so it takes the earlier one's place - keeping the earlier "mine",
-   * which is this device's own text from before either merge.
+   * One review per note and device: a later merge of the same note here is what
+   * the user now sees, so it takes the earlier one's place - keeping the earlier
+   * "mine", which is this device's own text from before either merge. Another
+   * device's review of the same note stays beside it: its "mine" is its own.
    */
-  async add(review: Omit<Review, 'id'>): Promise<Review> {
-    const reviews = await this.list()
-    const earlier = reviews.find((candidate) => candidate.docId === review.docId)
-    const next: Review = { ...review, id: earlier?.id ?? `${review.at.toString(36)}-${review.docId.slice(0, 8)}`, mine: earlier?.mine ?? review.mine }
-    if (!(await this.adapter.exists(this.dir()))) await this.adapter.mkdir(this.dir())
-    await this.adapter.write(`${this.dir()}/${next.id}.json`, JSON.stringify(next))
-    this.reviews = [next, ...reviews.filter((candidate) => candidate.id !== next.id)].slice(0, MAX_REVIEWS)
+  async add(review: Omit<Review, 'id' | 'device' | 'deviceId'>): Promise<Review> {
+    await this.list()
+    const deviceId = this.device?.id
+    const earlier = this.all().find((candidate) => candidate.docId === review.docId && (candidate.deviceId === undefined || candidate.deviceId === deviceId))
+    const next: Review = {
+      ...review,
+      id: earlier?.id ?? `${review.at.toString(36)}-${review.docId.slice(0, 8)}${deviceId ? `-${deviceId.slice(0, 4)}` : ''}`,
+      mine: earlier?.mine ?? review.mine,
+      ...(this.device ? { device: this.device.name, deviceId: this.device.id } : {})
+    }
+    if (this.fitsShared(next)) {
+      ;(this.shared as SharedReviews).setReview(next)
+      await this.removeLocal(next.id)
+    } else {
+      if (this.shared) log.warn(`${review.path}: its versions are kept on this device only - too large, or too many notes wait already`)
+      await this.writeLocal(next)
+      this.shared?.deleteReview(next.id)
+    }
     this.changed()
     return next
   }
 
   async remove(id: string): Promise<void> {
-    const reviews = await this.list()
-    this.reviews = reviews.filter((review) => review.id !== id)
-    await this.adapter.remove(`${this.dir()}/${id}.json`).catch(() => undefined)
+    await this.list()
+    this.shared?.deleteReview(id)
+    await this.removeLocal(id)
     this.changed()
+  }
+
+  private async writeLocal(review: Review): Promise<void> {
+    if (!(await this.adapter.exists(this.dir()))) await this.adapter.mkdir(this.dir())
+    await this.adapter.write(`${this.dir()}/${review.id}.json`, JSON.stringify(review))
+    this.local = [review, ...(this.local ?? []).filter((candidate) => candidate.id !== review.id)]
+  }
+
+  private async removeLocal(id: string): Promise<void> {
+    if (!this.local?.some((review) => review.id === id)) return
+    this.local = this.local.filter((review) => review.id !== id)
+    await this.adapter.remove(`${this.dir()}/${id}.json`).catch(() => undefined)
   }
 }

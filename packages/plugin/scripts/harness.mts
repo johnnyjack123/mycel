@@ -240,6 +240,9 @@ export class Device {
   /** Members the server listed who are not contacts, as the window over everything would name them. */
   readonly unknownMembers: Array<{ accounts: string[]; place: { kind: string } }> = []
   retentionDays = 30
+  /** What the account's other devices call this one, and its id (0.9.29) - main.ts's `deviceName` and `deviceId`. */
+  deviceName = 'a test device'
+  readonly deviceId = Math.random().toString(16).slice(2, 10)
   /** How many notes the device holds open at most (`maxLoadedDocuments`). */
   maxLoaded = 500
   /** How far a rollback trusts the server's clock; an hour unless a test says otherwise. */
@@ -361,6 +364,7 @@ export class Device {
       shareFolder: () => 'Shared',
       autoAccept: () => true,
       retentionDays: () => this.retentionDays,
+      device: () => ({ id: this.deviceId, name: this.deviceName }),
       notify: (kind, payload) => {
         // Caught, as main.ts's `processContacts` does: the next notice reads the inbox again.
         if (kind === 'contact') void this.contacts?.processInbox().catch(() => undefined)

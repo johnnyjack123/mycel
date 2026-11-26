@@ -98,6 +98,8 @@ export interface SyncHost {
   /** Whether shares that come in are taken without asking - with a single vault there is nowhere else for them. */
   autoAccept(): boolean
   retentionDays(): number
+  /** This device, as the account's other devices know it: what it records carries its name and id. */
+  device(): { id: string; name: string }
 
   // What the server says that the person hears about: about the account - contacts, a lock of this vault -, never a share or a folder.
   notify(kind: AccountNoticeKind, payload: ServerNotice): void
@@ -221,9 +223,6 @@ export class SyncSession {
     this.state = state
     const backups = new BackupStore(host.adapter, host.root)
     this.backups = backups
-    const reviews = new ReviewStore(host.adapter, host.root)
-    this.reviews = reviews
-    void reviews.list()
     const index = new VaultIndex(vault.vaultId, (path, generation) => keys.docId(path, generation))
     this.index = index
     const socket = new VaultSocket(host.serverUrl, vault.vaultId, () => host.token(), {
@@ -251,6 +250,10 @@ export class SyncSession {
     this.settingsStore = settingsStore
     await settingsStore.whenSynced
     if (stopped()) return false
+    // In the account's settings, so every device of the account shows them and can put them together (0.9.29).
+    const reviews = new ReviewStore(host.adapter, host.root, accountSettings, host.device())
+    this.reviews = reviews
+    void reviews.list()
     // Epochs only go forward, on every device of the vault: a server moving a room back is caught here.
     keys.setEpochRecord({ floor: (room) => accountSettings.epochFloor(room), raise: (room, epoch) => accountSettings.raiseEpochFloor(room, epoch) })
     keys.onEpochBehind((room) => this.epochBehind(room))
@@ -667,6 +670,7 @@ export class SyncSession {
     this.contacts = null
     this.compactor = null
     this.trash = null
+    this.reviews?.stop()
     this.reviews = null
     this.history = null
   }

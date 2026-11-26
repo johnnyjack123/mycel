@@ -105,6 +105,34 @@ const ROLLBACK_KEY = 'rollback:'
 // The notification center lists them, notes restored included (0.8.16).
 const ROLLBACKS_KEPT = 50
 
+/** `review:<id>`: a note whose two versions wait to be put together, on any device of the account (0.9.29). */
+const REVIEW_KEY = 'review:'
+
+/** What the settings hold of a review; its shape is `Review`'s (`Reviews.ts`), checked as it is read. */
+export interface StoredReview {
+  id: string
+  docId: string
+  path: string
+  at: number
+  kind: 'no-base' | 'conflict'
+  mine: string
+  theirs: string
+  merged: string
+  device?: string
+  deviceId?: string
+}
+
+function storedReview(value: unknown): StoredReview | null {
+  if (!value || typeof value !== 'object') return null
+  const review = value as Partial<StoredReview>
+  const texts = [review.id, review.docId, review.path, review.mine, review.theirs, review.merged]
+  if (!texts.every((text) => typeof text === 'string') || typeof review.at !== 'number') return null
+  if (review.kind !== 'no-base' && review.kind !== 'conflict') return null
+  if (review.device !== undefined && typeof review.device !== 'string') return null
+  if (review.deviceId !== undefined && typeof review.deviceId !== 'string') return null
+  return review as StoredReview
+}
+
 // One key per entry, so two devices adding different contacts at once do not
 // overwrite each other the way one shared object would.
 const CONTACT = 'contact:'
@@ -310,6 +338,42 @@ export class AccountSettings {
       this.map.set(`${ROLLBACK_KEY}${record.id}`, record)
       for (const old of this.rollbacks().slice(ROLLBACKS_KEPT)) this.map.delete(`${ROLLBACK_KEY}${old.id}`)
     }, 'local')
+  }
+
+  // The notes whose two versions wait to be put together: here, every device of the
+  // account shows them and any of them can do it - before 0.9.29 they lay in the plugin
+  // folder of the device where the versions met, and only it could.
+
+  reviews(): StoredReview[] {
+    const found: StoredReview[] = []
+    this.map.forEach((value, key) => {
+      if (!key.startsWith(REVIEW_KEY)) return
+      const review = storedReview(value)
+      if (review && key === `${REVIEW_KEY}${review.id}`) found.push(review)
+    })
+    return found
+  }
+
+  setReview(review: StoredReview): void {
+    this.put(`${REVIEW_KEY}${review.id}`, review)
+  }
+
+  deleteReview(id: string): void {
+    if (this.map.has(`${REVIEW_KEY}${id}`)) this.put(`${REVIEW_KEY}${id}`, null)
+  }
+
+  /** Told whenever a review comes, changes or goes - here or on another device. */
+  onReviews(listener: () => void): () => void {
+    const observe = (event: Y.YMapEvent<unknown>): void => {
+      for (const key of event.keysChanged) {
+        if (key.startsWith(REVIEW_KEY)) {
+          listener()
+          return
+        }
+      }
+    }
+    this.map.observe(observe)
+    return () => this.map.unobserve(observe)
   }
 
   /** `remote`: the change came from another device - or from this device's copy as it loaded. */

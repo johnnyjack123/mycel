@@ -81,7 +81,7 @@ import type { Trash } from './sync/Trash'
 import { TrashModal } from './history/TrashModal'
 import { Rollback, pruneRollbackCopies } from './sync/Rollback'
 import { FileVersionsModal } from './history/FileVersionsModal'
-import type { Review, ReviewStore } from './sync/Reviews'
+import { versionNames, type Review, type ReviewStore } from './sync/Reviews'
 import { ReviewListModal, ReviewModal } from './history/ReviewModal'
 import type { VaultIndex } from './sync/VaultIndex'
 import type { SocketStatus, VaultSocket } from './sync/VaultSocket'
@@ -1477,6 +1477,7 @@ export default class MycelPlugin extends Plugin {
       shareFolder: () => this.shared().sharedFolder,
       autoAccept: () => (this.unlocked?.bundle.vaults.length ?? 0) <= 1,
       retentionDays: () => this.shared().historyRetentionDays,
+      device: () => ({ id: this.settings.deviceId, name: this.deviceName() }),
       notify: (kind, payload) => this.onNotify(kind, payload),
       signedOut: (socket) => void this.checkSignedIn(socket),
       vaultDeleted: () => void this.handleVaultDeleted(this.vault?.vaultId ?? null, false),
@@ -2529,7 +2530,7 @@ export default class MycelPlugin extends Plugin {
       new Notice('Sign in to Mycel first.')
       return
     }
-    new ReviewListModal(this.app, await reviews.list(), (review) => this.showReview(review)).open()
+    new ReviewListModal(this.app, await reviews.list(), (review) => this.showReview(review), this.settings.deviceId).open()
   }
 
   private showReview(review: Review): void {
@@ -2540,11 +2541,14 @@ export default class MycelPlugin extends Plugin {
       this.app,
       review,
       async (text) => {
+        // Every device shows it: put together on another one meanwhile, applying here would merge a second result into the first.
+        if (!reviews.has(review.id)) throw new Error('this note was put together on another of your devices meanwhile')
         const outcome = await store.applyReview(review.docId, review.merged, text)
         await reviews.remove(review.id)
         return outcome
       },
-      () => reviews.remove(review.id)
+      () => reviews.remove(review.id),
+      versionNames(review, this.settings.deviceId)
     ).open()
   }
 
