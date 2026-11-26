@@ -1,5 +1,6 @@
 import type { DataAdapter } from 'obsidian'
 import { log } from '../log.js'
+import { emptyFolder } from '../pluginFolder.js'
 
 // Per-device bookkeeping that must not travel through the CRDT: what this
 // machine last agreed on with the shared document.
@@ -77,6 +78,22 @@ export class StateStore {
 
   private path(...parts: string[]): string {
     return [this.root, ...parts].join('/')
+  }
+
+  /**
+   * What this device agreed on with every vault, and how it met them - gone, so the next
+   * start meets the vault as a new device would (*Reset this device's sync*, 0.9.29).
+   * Backups, reviews, the log stay. Only while no store is open on it.
+   */
+  static async forget(adapter: DataAdapter, root: string): Promise<void> {
+    for (const file of [STATE_FILE, ATTACHMENTS_FILE, CLEARED_FILE, UNSENT_FILE, JOINED_FILE]) {
+      const path = `${root}/${file}`
+      if (await adapter.exists(path)) await adapter.remove(path)
+    }
+    const base = `${root}/${BASE_DIR}`
+    if (!(await adapter.exists(base))) return
+    const emptied = await emptyFolder(adapter, base, true)
+    if (emptied.failed > 0) throw new Error(`${emptied.failed} base text(s) of this device could not be removed`)
   }
 
   private async ensureDir(path: string): Promise<void> {

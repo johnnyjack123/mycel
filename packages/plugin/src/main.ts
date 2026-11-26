@@ -47,7 +47,7 @@ import { BackupModal } from './history/BackupModal'
 import { ApplyModal } from './history/ApplyModal'
 import type { PastItem, TimeMachineScope } from './history/TimeMachine'
 import { TimeMachineControl, type HandedLock, type Prepared } from './history/TimeMachineControl'
-import { LocalOnlyModal, LockedModal } from './history/TimeMachineModals'
+import { ConfirmModal, LocalOnlyModal, LockedModal } from './history/TimeMachineModals'
 import { TIME_MACHINE_VIEW, TimeMachineView } from './history/TimeMachineView'
 import { pastEditorExtension } from './history/pastEditor'
 import { EditLocks } from './history/EditLocks'
@@ -74,6 +74,8 @@ import { Blobs } from './sync/Blobs'
 import { openIndexedDb } from './sync/DocHandle'
 import type { DocStore, DocStoreOptions, NoteSyncState } from './sync/DocStore'
 import { indexedDbHistory } from './sync/History'
+import { deleteLocalStores } from './sync/LocalStores'
+import { VaultClaims, claimKey, memoryClaimStorage, type ClaimHolder, type ClaimStorage } from './sync/VaultClaims'
 import { RecoveryModal } from './history/RecoveryModal'
 import { JoinModal } from './history/JoinModal'
 import type { JoinHost } from './sync/Joining'
@@ -399,6 +401,12 @@ export default class MycelPlugin extends Plugin {
     this.statusBar = this.addStatusBarItem()
     this.statusBar.addEventListener('click', () => {
       if (this.sync?.joinWaiting) this.joinAgain()
+      else if (this.claimedElsewhere && !this.store) void this.askToTakeOver()
+    })
+    // Another Obsidian vault on this computer took over the vault of the server this one syncs: its window says so here.
+    this.registerDomEvent(window, 'storage', (event: StorageEvent) => {
+      const vaultId = this.vault?.vaultId
+      if (vaultId && event.key === claimKey(vaultId)) void this.claimTaken(vaultId)
     })
     this.noteStatus = this.addStatusBarItem()
     this.noteStatus.addClass('mycel-note-status')
@@ -1021,19 +1029,65 @@ export default class MycelPlugin extends Plugin {
 
   /** What this device keeps of a vault for the sync - never its files - once that vault is of no use any more. */
   private async clearLocalVault(vaultId: string): Promise<void> {
+    // Another Obsidian vault on this computer holds it: they are its databases, not this one's (0.9.29).
+    if (!this.claims.mine(vaultId)) return
     try {
-      const factory = window.indexedDB as IDBFactory & { databases?: () => Promise<Array<{ name?: string }>> }
-      if (typeof factory.databases !== 'function') return
-      let cleared = 0
-      for (const { name } of await factory.databases()) {
-        if (!name || !(name.startsWith(`mycel/${vaultId}/`) || name === `mycel-history/${vaultId}`)) continue
-        factory.deleteDatabase(name)
-        cleared += 1
-      }
+      const cleared = await deleteLocalStores(vaultId)
       if (cleared > 0) log.info(`cleared ${cleared} local store(s) of the deleted vault ${vaultId}`)
     } catch (error) {
       log.warn('clearing the local stores of a deleted vault failed', error)
     }
+  }
+
+  // --- one Obsidian vault per vault of the server and computer (0.9.29) ------------------------------
+
+  /** Another Obsidian vault on this computer holds the vault of the server this one names: nothing syncs here until it is taken over. */
+  private claimedElsewhere: { vaultId: string; holder: ClaimHolder } | null = null
+
+  private claimsMade: VaultClaims | null = null
+
+  private get claims(): VaultClaims {
+    if (!this.claimsMade) {
+      let storage: ClaimStorage
+      try {
+        storage = window.localStorage
+      } catch {
+        storage = memoryClaimStorage()
+      }
+      this.claimsMade = new VaultClaims(storage ?? memoryClaimStorage(), {
+        id: (this.app as unknown as { appId?: string }).appId ?? this.app.vault.getName(),
+        name: this.app.vault.getName()
+      })
+    }
+    return this.claimsMade
+  }
+
+  /** Asked before this Obsidian vault takes over a vault of the server another one here syncs. */
+  private async askToTakeOver(): Promise<void> {
+    const claimed = this.claimedElsewhere
+    if (!claimed) return
+    const take = await new ConfirmModal(
+      this.app,
+      'Another vault on this computer syncs this one',
+      `The Obsidian vault "${claimed.holder.name}" on this computer syncs "${this.vaultName()}" on the server. Two Obsidian vaults on one computer would share the copies Mycel keeps of it - what waits to be sent, where each note stands -, and resetting or deleting it in one would clear the other's. Sync it here instead? "${claimed.holder.name}" stops syncing it, and starts again only when taken back there.`,
+      'Sync it here instead'
+    ).ask()
+    if (!take || this.claimedElsewhere !== claimed) return
+    this.claims.take(claimed.vaultId)
+    this.claimedElsewhere = null
+    log.info(`this Obsidian vault took over syncing ${claimed.vaultId} from "${claimed.holder.name}"`)
+    await this.startSync()
+  }
+
+  /** Taken over by another Obsidian vault on this computer, while this one synced it. */
+  private async claimTaken(vaultId: string): Promise<void> {
+    const holder = this.claims.holder(vaultId)
+    if (!holder || this.claims.mine(vaultId)) return
+    await this.stopSync()
+    this.claimedElsewhere = { vaultId, holder }
+    log.warn(`the Obsidian vault "${holder.name}" on this computer took over syncing ${vaultId}: stopped here`)
+    new Notice(`Mycel: the Obsidian vault "${holder.name}" on this computer syncs "${this.vaultName()}" now, so this one stopped. Click the status bar to take it back.`, 0)
+    this.renderStatus()
   }
 
   /** Opens this plugin's settings; Obsidian has no public way to, so a notice says where they are when it fails. */
@@ -1141,6 +1195,36 @@ export default class MycelPlugin extends Plugin {
     this.unlocked = null
     this.renderStatus()
     new Notice('Mycel: signed out. Your notes stay in this vault.')
+  }
+
+  /**
+   * *Reset this device's sync* (0.9.29): what this device knows of the vault's sync forgotten -
+   * its databases, what it agreed on, how it met the vault -, never the vault's files nor
+   * anything on the server, and signed in it stays. Its next start meets the vault as a new
+   * device would: a copy of the vault, the comparison, the question. Refused while anything
+   * written here has not reached the server: it lies in those databases until then.
+   */
+  async resetDeviceSync(): Promise<void> {
+    if (this.timeMachine.current) throw new Error('Leave the Time Machine first.')
+    const sync = this.sync
+    const vault = this.vault
+    if (!sync || !vault) throw new Error('Mycel is not connected - nothing written here may be lost, so it has to reach the server first.')
+    const before = await sync.whyNotForget(10_000)
+    if (before) throw new Error(before)
+    const go = await new ConfirmModal(
+      this.app,
+      "Reset this device's sync",
+      `This device forgets what it knows of syncing "${this.vaultName()}": its copies of the notes, what it last agreed on with the server, and that it ever connected. The notes and files in this vault stay, and so does everything on the server and on your other devices; you stay signed in. Then it connects as a new device would: it copies this vault into the plugin folder, compares it with the server and asks how to join.`,
+      'Reset'
+    ).ask()
+    if (!go || this.sync !== sync) return
+    // Written meanwhile, while the window asked.
+    const still = await sync.whyNotForget(10_000)
+    if (still) throw new Error(still)
+    await this.stopSync()
+    await SyncSession.forgetDevice(this.syncHost(), vault.vaultId)
+    new Notice("Mycel: this device forgot the vault's sync. It connects again as a new device - compare and choose in the window that opens.", 10_000)
+    await this.startSync()
   }
 
   /**
@@ -1421,6 +1505,16 @@ export default class MycelPlugin extends Plugin {
     }
     if (stopped()) return
     this.deletedVault = null
+    // One Obsidian vault per vault of the server on this computer: their databases would be the same (0.9.29).
+    const holder = this.claims.claim(vault.vaultId)
+    if (holder) {
+      this.claimedElsewhere = { vaultId: vault.vaultId, holder }
+      log.warn(`the Obsidian vault "${holder.name}" on this computer syncs ${vault.vaultId}: nothing syncs here until it is taken over`)
+      this.renderStatus()
+      void this.askToTakeOver()
+      return
+    }
+    this.claimedElsewhere = null
     // The account's settings are the session's from here on; backups and rollbacks read them again.
     this.frozenSettings?.destroy()
     this.frozenSettings = null
@@ -1458,6 +1552,11 @@ export default class MycelPlugin extends Plugin {
       root: this.pluginDir(),
       openLocal: openIndexedDb,
       history: (vaultId) => indexedDbHistory(vaultId),
+      clearLocal: async (vaultId) => {
+        if (!this.claims.mine(vaultId)) throw new Error('another Obsidian vault on this computer syncs this vault: its databases are not this one\'s to clear')
+        const cleared = await deleteLocalStores(vaultId)
+        log.info(`cleared ${cleared} local store(s) of ${vaultId}`)
+      },
       editors: this.editors,
       carried: this.carried,
       get timing(): SyncTiming {
@@ -2704,6 +2803,10 @@ export default class MycelPlugin extends Plugin {
     }
     if (this.deletedVault && !this.store) {
       this.statusBar.setText('Mycel: vault deleted on the server - nothing syncs')
+      return
+    }
+    if (this.claimedElsewhere && !this.store) {
+      this.statusBar.setText(`Mycel: "${this.claimedElsewhere.holder.name}" on this computer syncs it - click`)
       return
     }
     if (this.sync?.joinWaiting) {

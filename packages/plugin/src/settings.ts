@@ -1194,6 +1194,20 @@ export class MycelSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings()
         })
       )
+
+    if (settings.username) {
+      new Setting(containerEl)
+        .setName("Reset this device's sync")
+        .setDesc(
+          'Forgets what this device knows of syncing this vault, and connects it again as a new device would: comparing with the server and asking first. The notes here, the server and your other devices are not touched; you stay signed in. Only once everything written here reached the server.'
+        )
+        .addButton((button) =>
+          button
+            .setButtonText('Reset…')
+            .setWarning()
+            .onClick(() => void this.run(() => this.plugin.resetDeviceSync(), button))
+        )
+    }
   }
 
   private shared(containerEl: HTMLElement): void {

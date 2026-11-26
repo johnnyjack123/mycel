@@ -370,6 +370,49 @@ try {
   check(copied(A6).size === 3, 'after a copy of its vault')
   await A6.shutdown()
 
+  // --- Reset this device's sync (0.9.29) -------------------------------------------------------
+  {
+    const vaultId = A1.keys?.vaultId as string
+    const notes = (): string =>
+      A1.vault
+        .paths()
+        .filter((path) => path.endsWith('.md'))
+        .sort()
+        .map((path) => `${path}=${A1.vault.text(path)}`)
+        .join('|')
+    check(await eventually(async () => (await A1.sync?.whyNotForget(1_000)) === null), 'with everything sent, the device may forget')
+    const before = notes()
+    const asked = A1.joinPlans.length
+    await A1.shutdown()
+    await A1.forgetSync(vaultId)
+    check(
+      !A1.locals.has(`mycel/${vaultId}/idx`) && !(await A1.pluginAdapter.exists(`${PLUGIN_DIR}/joined.json`)) && !(await A1.pluginAdapter.exists(`${PLUGIN_DIR}/state.json`)),
+      'its databases, what it agreed on and how it met the vault are gone - the files of the vault are not',
+      before
+    )
+    A1.joinAnswer = 'merge'
+    check(await A1.boot(), 'it starts again')
+    check(A1.joinPlans.length === asked + 1, 'and meets the vault as a new device: compared, and asked', A1.joinPlans.at(-1)?.kind)
+    check(
+      await eventually(() => notes() === before && !A1.vault.paths().some((path) => path.includes('conflict'))),
+      'merging what it has with the server makes nothing twice: every note as before',
+      { before, after: notes() }
+    )
+  }
+  {
+    // One Obsidian vault per vault of the server and computer (0.9.29): the claims they all see.
+    const { VaultClaims, memoryClaimStorage } = await import('../src/sync/VaultClaims.js')
+    const shared = memoryClaimStorage()
+    const work = new VaultClaims(shared, { id: 'obsidian-a', name: 'Work' })
+    const copy = new VaultClaims(shared, { id: 'obsidian-b', name: 'Work copy' })
+    check(work.claim('v1') === null && work.mine('v1'), 'the first Obsidian vault to sync it holds it')
+    const refused = copy.claim('v1')
+    check(refused?.name === 'Work' && !copy.mine('v1') && work.mine('v1'), 'another on the same computer is told which one holds it, and takes nothing', refused)
+    check(copy.claim('v2') === null && work.mine('v2') === false, 'another vault of the server is free for it')
+    copy.take('v1')
+    check(copy.mine('v1') && !work.mine('v1') && work.holder('v1')?.name === 'Work copy', 'taken over when asked, and the first one hears it no longer holds it')
+  }
+
   // --- another vault ----------------------------------------------------------------------
   const A7 = new Device(name, false, { 'Recipes/Bread.md': 'flour\n', 'Recipes/Soup.md': 'water\n', 'Recipes/Cake.md': 'sugar\n' })
   devices.push(A7)

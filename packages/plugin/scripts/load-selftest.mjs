@@ -84,6 +84,7 @@ const obsidian = {
     addRibbonIcon = () => ({ addClass: fn, createSpan: () => ({ setText: fn, toggleClass: fn }) })
     addCommand = (command) => registered.commands.push(command.id)
     registerEvent = fn
+    registerDomEvent = fn
     register = fn
     registerEditorExtension = (extension) => registered.editorExtensions.push(extension)
     registerMarkdownPostProcessor = fn

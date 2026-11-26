@@ -340,6 +340,9 @@ export class Device {
       root: PLUGIN_DIR,
       openLocal: this.locals.open,
       history: () => this.locals.history,
+      clearLocal: async (vaultId) => {
+        await this.locals.clearVault(vaultId)
+      },
       editors: this.editors,
       carried: this.carried,
       timing: {
@@ -769,6 +772,21 @@ export class Device {
    * restart of sync, as signing out and in or a changed setting does - and
    * whatever is typed meanwhile stays in them.
    */
+  /** *Reset this device's sync*, as main.ts's `resetDeviceSync` does once the session is stopped (0.9.29). */
+  async forgetSync(vaultId: string): Promise<void> {
+    await SyncSession.forgetDevice(
+      {
+        adapter: this.pluginAdapter as never,
+        root: PLUGIN_DIR,
+        carried: this.carried,
+        clearLocal: async (id) => {
+          await this.locals.clearVault(id)
+        }
+      },
+      vaultId
+    )
+  }
+
   async shutdown(options: { keepViews?: boolean } = {}): Promise<void> {
     this.backupsController?.closeSessions()
     if (!options.keepViews) for (const view of this.views.splice(0)) view.close()
