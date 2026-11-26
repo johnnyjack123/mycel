@@ -8,6 +8,69 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.29** (2026-11-26, branch `feat/reviews-everywhere`, the user's findings and decisions of
+  the day after 0.9.28) - **notes to compare on every device, the Time Machine's marks, resetting
+  a device's sync, one Obsidian vault per vault of the server, and smaller things.**
+  - **Notes to compare on every device.** A note merged without a base, or with both sides
+    kept, was listed only on the device where its versions met: the review lay in its plugin
+    folder. Nothing required that. The reviews live in the account's settings now, encrypted and
+    signed like the rest of it and never seen by people a note is shared with: every device marks
+    the notes and can put one together, *Apply* or *Done* takes it off everywhere. Each names the
+    device where the versions met, so the window says "This device" only there and that device's
+    name elsewhere (`versionNames`). A later merge on the same device takes its earlier review's
+    place; another device's review of the same note stays beside it. *Apply* checks the review is
+    still there - put together on another device meanwhile, it would merge a second result into
+    the first. Reviews from before move into the settings the first time they are read; one too
+    large to send to every device (3 MB of text), or beyond 500 waiting, stays in the plugin
+    folder. The backup server leaves reviews and marks out of the settings it writes into the
+    decrypted copy.
+  - **No conflict markers.** A three-way merge where both sides changed the same passage wrapped
+    it in `<<<<<<<` markers unless an account-wide setting said otherwise; since "Compare versions"
+    every such note is listed anyway. Both sides now stay one after the other, as a merge without a
+    base keeps them, and the setting is gone. What one side alone changed - a line deleted there
+    too - still merges as before.
+  - **The Time Machine marks the moments before** a merge that kept both versions, "Compare
+    versions" applied, a device joining the vault (and how), the answer when the server had other
+    data, a note's or a folder's share begun or ended - recorded in the account's settings as they
+    happen, their time taken before anything changed, the last 300 kept: a note's past shows its
+    own, a folder's what lay in it and what concerns the whole vault. A merge's review used to be
+    stamped after the merge was written - marked at its time, the merged note would have shown -,
+    and is stamped before now. Opening the Time Machine where notes still wait to be compared says
+    so instead of refusing, as the user decided: a restore keeps both versions, and going back is
+    how a merge gone wrong is undone.
+  - **Reset this device's sync** (This device): signing out kept the device's databases and what
+    it agreed on, so signing in again carried on where it stood. The reset forgets them - the
+    databases, the bases, how the device met the vault - and starts again: the vault copied,
+    compared with the server and the person asked, as on a new device. Files, server and the other
+    devices are not touched; the device stays signed in. Refused while anything written here has
+    not reached the server (`SyncSession.whyNotForget`). Plugin and tests reset through the same
+    `SyncSession.forgetDevice`.
+  - **One Obsidian vault per vault of the server and computer** (invariant 36). The databases are
+    named by the server's vault id alone, and every Obsidian vault on a computer sees the same
+    ones: two syncing the same vault of the server would share copies, outboxes and log positions,
+    and a reset or a deleted vault in one would clear the other's. The first to sync it claims it
+    (`VaultClaims`, in `localStorage`, which all of them share); another one syncs nothing, says
+    which one holds it and offers to take over, and the first stops the moment it hears. Clearing
+    a deleted vault's databases now waits for them to go (`deleteLocalStores`), and only in the
+    vault that holds them.
+  - **Smaller things.** The status bar said "synced 2/16" - notes open of notes synced, read as
+    two of sixteen synced; it says how many notes sync, and the open ones in its tooltip. The
+    vault's id and deleting it on the server shared one row under Account; they are two rows under
+    All devices. A device has a name (This device), its kind until given one, used in lock windows,
+    "Compare versions" and the marks, and an id that tells its reviews from another's.
+
+  Checked in `test:join` (reviews on another device, *Done* there taking them off here, a review
+  from before moving into the settings, two devices' reviews of one note side by side, a later
+  merge replacing the earlier on its device, a review put together while another device merged
+  anew staying, one too large staying local, the names; the marks of a device joining and of
+  each merge on another device; a device forgetting its sync only with everything sent, its
+  databases and records gone, meeting the vault as new and merging nothing twice; the claims of
+  two Obsidian vaults), `test:timemachine` (each kind of mark in a note's, a folder's and the
+  vault's past, their words, the last 300) and `test:merge` (a conflict without markers, a line
+  deleted on one side staying deleted). On a device only: the settings rows, the window when
+  another Obsidian vault holds the vault, a real reset, the hint on opening the Time Machine,
+  the marks on the strip.
+
 - **0.9.28** (2026-11-25, branch `fix/readonly-folders`, found by the user, the cause found with
   them over ssh on their PC) - **nothing waits any more for a folder Windows will not remove, and
   the Time Machine no longer takes its own lock for another device's.** On the user's PC - not the
