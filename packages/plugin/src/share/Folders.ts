@@ -61,6 +61,8 @@ export interface FoldersOptions {
   decideMs: number
   /** A link someone else typed: the notes a note moved in links to go along only through links of this account's. */
   foreignLink?: ForeignLink
+  /** A folder's share begun or ended, worth a mark in the Time Machine at the moment before it (0.9.29). */
+  marked?: (event: { kind: 'shared' | 'share-ended'; at: number; path: string; folder: true }) => void
 }
 
 /** An existing note moved into a shared folder: it goes into the share only once someone said so. */
@@ -1588,6 +1590,7 @@ export class Folders {
     /** Whether the files its notes link outside it go along, as a shared note's do; unchanged when left out. */
     linkedFiles?: boolean
   ): Promise<void> {
+    const at = Date.now()
     const recipientKey = this.sharing.recipient(account, role)
     const folderId = await this.ownFolder(path)
     const opened = await this.ready(folderId)
@@ -1640,6 +1643,7 @@ export class Folders {
     // Shared again to read, with history: the certificate they hold for the current epoch has to stop counting.
     if (wasWriter && role === 'read' && withHistory) await this.rotate(folderId)
     log.info(`${path}: shared with ${account} to ${role}, ${withHistory ? 'with' : 'without'} history`)
+    this.options.marked?.({ kind: 'shared', at, path, folder: true })
   }
 
   /**
@@ -1802,6 +1806,7 @@ export class Folders {
 
   /** The owner ends the share for everyone; each keeps the folder as their own. */
   async end(folderId: string): Promise<void> {
+    const at = Date.now()
     await this.retrying(async () => {
       const state = await this.api.folderState(folderId)
       const notes: Record<string, NoteRotation> = {}
@@ -1813,7 +1818,9 @@ export class Folders {
       await this.api.endFolder(folderId, { notes })
     })
     this.finish(folderId, 'endedAt')
-    log.info(`${this.index.folder(folderId)?.path ?? folderId}: no longer shared`)
+    const path = this.index.folder(folderId)?.path ?? folderId
+    log.info(`${path}: no longer shared`)
+    this.options.marked?.({ kind: 'share-ended', at, path, folder: true })
   }
 
   /** The vault's record of a folder whose share is over, and its notes no longer in it. */
@@ -1878,6 +1885,8 @@ export class Folders {
     const parting = this.parting.get(folderId)
     const folder = this.index.folder(folderId)
     if (parting === 'leave' || !folder?.owner || folder.endedAt || folder.leftAt) return
+    const at = Date.now()
+    this.options.marked?.({ kind: 'share-ended', at, path: folder.path, folder: true })
     this.index.setFolder(folderId, { ...folder, endedAt: Date.now(), updatedAt: Date.now() })
     await this.close(folderId)
     let kept = 0

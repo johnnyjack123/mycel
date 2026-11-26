@@ -1,15 +1,17 @@
 import { TFile, type App, type DataAdapter, type EventRef, type WorkspaceLeaf } from 'obsidian'
 import type { ConnectApi } from '../account/api.js'
 import { Notice, noticeWithAction } from '../notices.js'
-import type { RollbackRecord } from '../sync/AccountSettings.js'
+import type { MarkEvent, RollbackRecord } from '../sync/AccountSettings.js'
 import { LockSeal, lockNonce, VaultLockedError, type HeldLock, type OwnLocks } from '../sync/VaultLock.js'
 import { TimeMachineBar } from './Bar.js'
 import type { EditLocks } from './EditLocks.js'
 import type { ExplorerPolicy } from './ExplorerGuard.js'
 import { PastFiles, PastFilesClosed, type PastVault, type RestoreReport } from './PastFiles.js'
 import { TimeMachineStrip } from './Strip.js'
+import { inFolder } from './Timeline.js'
 import {
   TimeMachineSession,
+  eventMarks,
   recordScope,
   rollbackMarks,
   sameScope,
@@ -97,6 +99,10 @@ export interface ControlHost {
   whenSent(docIds: string[] | 'all', timeoutMs: number): Promise<boolean>
   /** Every rollback and restore of the account, newest first. */
   rollbacks(): RollbackRecord[]
+  /** The events worth a mark (0.9.29), newest first. */
+  events(): MarkEvent[]
+  /** The notes whose two versions wait in "Compare versions". */
+  reviewsWaiting(): Array<{ docId: string; path: string }>
   openOverview(): Promise<void>
   closeOverview(): void
   /** With the sync running and the vault still locked: the rollback to a moment, in its window, which lets go of the lock. */
@@ -239,6 +245,8 @@ export class TimeMachineControl implements PastEditorHost {
       new Notice('Mycel is not connected yet. The Time Machine reads the past from the server, so it opens once the vault syncs.')
       return
     }
+    // Counted while the sync still runs: stopped, it lists none.
+    const waiting = this.waitingToCompare(scope, prepared.now)
     const modal = new StartModal(this.host.app, scopeName(scope), scope.kind === 'note')
     if (!(await modal.ask())) return
     this.opening = true
@@ -252,7 +260,7 @@ export class TimeMachineControl implements PastEditorHost {
         choice: settings.ticks,
         includeBackups: settings.backups,
         fileLimit: this.host.fileLimit(),
-        marks: this.marksFor(scope)
+        marks: this.marksFor(scope, prepared.now)
       })
       if (!(await this.backUp((label) => modal.step(`Backing up on ${label}…`), (question) => modal.goOn(question, 'Show it anyway')))) throw new Cancelled()
       modal.step('Locking the vault on your other devices…')
@@ -282,6 +290,13 @@ export class TimeMachineControl implements PastEditorHost {
       if (scope.kind !== 'note') await this.host.openOverview()
       log.info(`the Time Machine shows ${scopeName(scope)}: the sync is stopped, the vault locked`)
       this.emit()
+      // Not refused: a restore keeps both versions waiting, and going back is how a merge gone wrong is undone (the user, 0.9.29).
+      if (waiting > 0) {
+        new Notice(
+          `${waiting === 1 ? 'A note here still has' : `${waiting} notes here still have`} two versions waiting in "Compare versions". A restore keeps them: comparing afterwards puts what you choose into what the note says then.`,
+          12_000
+        )
+      }
       if (at !== undefined) await this.goToMark(session, at)
     } catch (error) {
       modal.close()
@@ -306,9 +321,25 @@ export class TimeMachineControl implements PastEditorHost {
     }
   }
 
-  /** The moments before the earlier rollbacks of exactly this place, as marks on the strip. */
-  private marksFor(scope: TimeMachineScope): Array<{ at: number; label: string }> {
-    return rollbackMarks(this.host.rollbacks(), scope)
+  /**
+   * The moments before the earlier rollbacks of exactly this place, and before the events
+   * worth finding again in it (0.9.29), as marks on the strip.
+   */
+  private marksFor(scope: TimeMachineScope, now: NowSnapshot): Array<{ at: number; label: string }> {
+    const noteId = scope.kind === 'note' ? (now.notes.find(({ entry }) => entry.path === scope.path)?.docId ?? null) : null
+    return [...rollbackMarks(this.host.rollbacks(), scope), ...eventMarks(this.host.events(), scope, noteId)]
+  }
+
+  /** Notes in what is shown whose two versions still wait in "Compare versions". */
+  private waitingToCompare(scope: TimeMachineScope, now: NowSnapshot): number {
+    const noteId = scope.kind === 'note' ? (now.notes.find(({ entry }) => entry.path === scope.path)?.docId ?? null) : null
+    const docIds = new Set(
+      this.host
+        .reviewsWaiting()
+        .filter((review) => (scope.kind === 'vault' ? true : scope.kind === 'note' ? review.docId === noteId : inFolder(review.path, scope.path)))
+        .map((review) => review.docId)
+    )
+    return docIds.size
   }
 
   /**

@@ -194,6 +194,45 @@ try {
     notices.clear()
   }
   {
+    // The events worth finding again (0.9.29): recorded in the account's settings, marked the moment before.
+    const { eventMarks } = await import('../src/history/TimeMachine.js')
+    const { AccountSettings } = await import('../src/sync/AccountSettings.js')
+    const here = new AccountSettings()
+    here.recordAs('PC')
+    here.addEvent({ kind: 'merged', at: 2_000, docId: 'plan', path: 'Projects/Plan.md' })
+    here.addEvent({ kind: 'compared', at: 3_000, docId: 'plan', path: 'Projects/Plan.md' })
+    here.addEvent({ kind: 'joined', at: 1_000, choice: 'merge' })
+    here.addEvent({ kind: 'recovery', at: 1_500, choice: 'device' })
+    here.addEvent({ kind: 'shared', at: 4_000, path: 'Projects', folder: true })
+    here.addEvent({ kind: 'share-ended', at: 5_000, docId: 'other', path: 'Other.md' })
+    const events = here.events()
+    const labels = (scope: Parameters<typeof eventMarks>[1], noteId: string | null = null) => eventMarks(events, scope, noteId).map((mark) => mark.label)
+    const note = eventMarks(events, { kind: 'note', path: 'Projects/Plan.md' }, 'plan')
+    check(
+      events.length === 6 && events.every((event) => event.device === 'PC') && events[0]?.kind === 'share-ended',
+      'events are kept in the settings, newest first, each with the device it happened on'
+    )
+    check(
+      note.length === 2 && note.every((mark) => mark.label.includes('"Plan"')) && note.some((mark) => mark.at === 1_999 && mark.label.includes('merged on "PC"')),
+      "a note's past marks the moment before its merge and before \"Compare versions\" was applied - its own only",
+      note
+    )
+    check(
+      labels({ kind: 'folder', path: 'Projects' }).length === 5 && labels({ kind: 'folder', path: 'Elsewhere' }).length === 2 && labels({ kind: 'vault' }).length === 6,
+      "a folder's past marks what lay in it, its own share, and what concerns the whole vault - a device joining, the answer to the server's other data",
+      labels({ kind: 'folder', path: 'Projects' })
+    )
+    check(
+      labels({ kind: 'vault' }).some((label) => label === 'before "PC" joined the vault, merging both') &&
+        labels({ kind: 'vault' }).some((label) => label === 'before the folder "Projects" was shared'),
+      'each says what happened, and where',
+      labels({ kind: 'vault' })
+    )
+    for (let n = 0; n < 310; n += 1) here.addEvent({ kind: 'merged', at: 10_000 + n, docId: `d${n}`, path: `N${n}.md` })
+    check(here.events().length === 300 && here.events().at(-1)?.at === 10_010, 'the last 300 are kept, the oldest go', here.events().at(-1))
+    here.destroy()
+  }
+  {
     const { rollbackMarks, recordScope } = await import('../src/history/TimeMachine.js')
     const record = (id: string, folder: string, kind?: 'note') => ({ id, startedAt: 1_000, to: 500, folder, state: 'done' as const, notes: 1, files: 0, ...(kind ? { kind } : {}) })
     const records = [record('v', ''), record('f', 'Projects'), record('s', 'Projects/Sub'), record('n', 'Projects/Plan.md', 'note')]

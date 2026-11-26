@@ -69,6 +69,8 @@ export interface SharingOptions {
   approveFiles?: (docId: string) => void
   /** A note is shared from here: the links it holds that nobody claimed are this account's (`LinkClaims.claimAll`). */
   claimLinks?: (docId: string) => Promise<void>
+  /** A share begun or ended, worth a mark in the Time Machine at the moment before it (0.9.29). */
+  marked?: (event: { kind: 'shared' | 'share-ended'; at: number; docId: string; path: string }) => void
 }
 
 /** A note or a folder of this account's, whose members a new key is sealed to. */
@@ -333,6 +335,7 @@ export class Sharing {
     withAttachments?: boolean,
     landing?: string
   ): Promise<void> {
+    const at = Date.now()
     const entry = this.store.entry(docId)
     if (!entry || entry.deletedAt) throw new Error('This note is not synced yet.')
     if (entry.owner) throw new Error(`Only ${this.nameOf(entry.owner)} can share this note.`)
@@ -401,6 +404,7 @@ export class Sharing {
     log.info(
       `${entry.path}: shared with ${account} to ${role}, ${withHistory ? 'with' : 'without'} history${withAttachments ? ', with its files' : ''}`
     )
+    this.options.marked?.({ kind: 'shared', at, docId, path: entry.path })
   }
 
   /**
@@ -465,6 +469,7 @@ export class Sharing {
 
   /** Takes access away and moves the note to an epoch the person never gets. */
   async revoke(docId: string, account: string): Promise<void> {
+    const at = Date.now()
     const members = await this.api.members(docId)
     const staying = members.members.filter((member) => member.account !== account)
     const rotation = await this.rotationFor(docId, this.keys.nextEpoch(docRoom(docId), members.epoch), staying)
@@ -472,7 +477,10 @@ export class Sharing {
     this.recordRole(docRoom(docId), account, null)
     log.info(`${this.store.entry(docId)?.path ?? docId}: access of ${account} revoked, now epoch ${rotation.epoch}`)
     // Nobody left to see a caret.
-    if (Object.keys(rotation.keys).length === 0) this.store.share(docId, false)
+    if (Object.keys(rotation.keys).length === 0) {
+      this.store.share(docId, false)
+      this.options.marked?.({ kind: 'share-ended', at, docId, path: this.store.entry(docId)?.path ?? docId })
+    }
   }
 
   /** The note's next epoch, its key sealed for `members` - with certificates for those recorded as writers. */
@@ -736,7 +744,10 @@ export class Sharing {
       `${entry.path}: share with ${entry.owner} ended (${kept?.reason ?? 'nothing kept on the server'})${kept?.forkedTo ? ', another device forked it already' : `, ${kept?.log?.frames.length ?? 0} kept change(s)`}`
     )
     if (!kept?.forkedTo) await this.importHistory(docId, target, kept)
+    const at = Date.now()
     const file = await this.store.forkInto(docId, target)
+    // On the note it carries on as: the old one's history ends here.
+    if (!kept?.forkedTo) this.options.marked?.({ kind: 'share-ended', at, docId: target, path: entry.path })
     if (kept && !kept.forkedTo) {
       await this.api.forkDone(docId, target).catch((error: unknown) => {
         log.warn(`reporting the fork of ${docId} failed; it is reported on the next start`, error)

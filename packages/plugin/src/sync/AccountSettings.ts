@@ -108,6 +108,43 @@ const ROLLBACKS_KEPT = 50
 /** `review:<id>`: a note whose two versions wait to be put together, on any device of the account (0.9.29). */
 const REVIEW_KEY = 'review:'
 
+/**
+ * `event:<id>`: something worth finding again in the Time Machine, which marks the moment
+ * before it (0.9.29): a merge that kept two versions, "Compare versions" applied, a device
+ * joining the vault, the answer when the server had other data, a share begun or ended.
+ */
+const EVENT_KEY = 'event:'
+const EVENTS_KEPT = 300
+
+export type MarkKind = 'merged' | 'compared' | 'joined' | 'recovery' | 'shared' | 'share-ended'
+const MARK_KINDS: readonly string[] = ['merged', 'compared', 'joined', 'recovery', 'shared', 'share-ended']
+
+export interface MarkEvent {
+  id: string
+  kind: MarkKind
+  /** Taken before it changed anything: the mark is the moment just before. */
+  at: number
+  /** The device it happened on, by its name then. */
+  device: string
+  docId?: string
+  /** The note's path then - or the folder's, for a folder's share. */
+  path?: string
+  /** A shared folder rather than a note. */
+  folder?: boolean
+  /** A device joining: `merge` or `server`; the server's other data: `device` or `server`. */
+  choice?: string
+}
+
+function markEvent(value: unknown): MarkEvent | null {
+  if (!value || typeof value !== 'object') return null
+  const event = value as Partial<MarkEvent>
+  if (typeof event.id !== 'string' || typeof event.at !== 'number' || typeof event.device !== 'string') return null
+  if (typeof event.kind !== 'string' || !MARK_KINDS.includes(event.kind)) return null
+  for (const text of [event.docId, event.path, event.choice]) if (text !== undefined && typeof text !== 'string') return null
+  if (event.folder !== undefined && typeof event.folder !== 'boolean') return null
+  return event as MarkEvent
+}
+
 /** What the settings hold of a review; its shape is `Review`'s (`Reviews.ts`), checked as it is read. */
 export interface StoredReview {
   id: string
@@ -360,6 +397,33 @@ export class AccountSettings {
 
   deleteReview(id: string): void {
     if (this.map.has(`${REVIEW_KEY}${id}`)) this.put(`${REVIEW_KEY}${id}`, null)
+  }
+
+  /** This device's name, which every event it records carries. */
+  private recorder = 'a device'
+
+  recordAs(device: string): void {
+    this.recorder = device
+  }
+
+  /** Every event worth a mark in the Time Machine, the newest first. */
+  events(): MarkEvent[] {
+    const found: MarkEvent[] = []
+    this.map.forEach((value, key) => {
+      if (!key.startsWith(EVENT_KEY)) return
+      const event = markEvent(value)
+      if (event && key === `${EVENT_KEY}${event.id}`) found.push(event)
+    })
+    return found.sort((a, b) => b.at - a.at)
+  }
+
+  /** Records one, made on this device; the oldest beyond the last few hundred go. */
+  addEvent(event: Omit<MarkEvent, 'id' | 'device'>): void {
+    const id = `${event.at.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    this.doc.transact(() => {
+      this.map.set(`${EVENT_KEY}${id}`, { ...event, id, device: this.recorder } satisfies MarkEvent)
+      for (const old of this.events().slice(EVENTS_KEPT)) this.map.delete(`${EVENT_KEY}${old.id}`)
+    }, 'local')
   }
 
   /** Told whenever a review comes, changes or goes - here or on another device. */

@@ -19,7 +19,7 @@ import { LinkClaims, notePeople, type LinkQuestion } from './share/LinkClaims.js
 import type { ForeignLink } from './share/LinkedNotes.js'
 import { SharedFiles } from './share/SharedFiles.js'
 import { Sharing, type MemberPlace } from './share/Sharing.js'
-import { AccountSettings } from './sync/AccountSettings.js'
+import { AccountSettings, type MarkEvent } from './sync/AccountSettings.js'
 import { AttachmentIndex } from './sync/AttachmentIndex.js'
 import { AttachmentStore, type AttachmentOptions } from './sync/AttachmentStore.js'
 import { BackupStore } from './sync/BackupStore.js'
@@ -250,6 +250,8 @@ export class SyncSession {
     this.settingsStore = settingsStore
     await settingsStore.whenSynced
     if (stopped()) return false
+    // What this device records there - the Time Machine's marks - carries its name.
+    accountSettings.recordAs(host.device().name)
     // In the account's settings, so every device of the account shows them and can put them together (0.9.29).
     const reviews = new ReviewStore(host.adapter, host.root, accountSettings, host.device())
     this.reviews = reviews
@@ -335,7 +337,8 @@ export class SyncSession {
           set: (room, account, role) => accountSettings.setShareRole(room, account, role)
         },
         approveFiles: (docId) => this.sharedFiles?.approve(docId),
-        claimLinks: async (docId) => this.linkClaims?.claimAll(docId)
+        claimLinks: async (docId) => this.linkClaims?.claimAll(docId),
+        marked: (event) => accountSettings.addEvent(event)
       },
       contacts
     )
@@ -356,7 +359,8 @@ export class SyncSession {
         autoAccept: () => host.autoAccept(),
         settleMs: host.timing.folderSettleMs,
         decideMs: host.timing.folderDecideMs,
-        foreignLink: this.foreignLink
+        foreignLink: this.foreignLink,
+        marked: (event) => accountSettings.addEvent(event)
       },
       host.folderPrompts,
       (news) => host.folderNews(news),
@@ -402,7 +406,8 @@ export class SyncSession {
       state,
       backups,
       host: host.joining,
-      leaving: (path) => this.leave(path)
+      leaving: (path) => this.leave(path),
+      marked: (event) => accountSettings.addEvent(event)
     })
 
     // Editors bind as soon as the index is there, not after the whole vault
@@ -416,6 +421,7 @@ export class SyncSession {
     store.onLeave((docId) => void this.sharing?.leave(docId))
     store.onReview((review) => {
       void reviews.add(review).catch((error: unknown) => log.error(`keeping the review of ${review.path} failed`, error))
+      accountSettings.addEvent({ kind: 'merged', at: review.at, docId: review.docId, path: review.path })
       host.reviewed?.(review)
     })
     this.unwatchers.push(
@@ -559,6 +565,11 @@ export class SyncSession {
     await folders.renewFor(account)
     contacts.renewed(account)
     return true
+  }
+
+  /** Something worth a mark in the Time Machine, made on this device - "Compare versions" applied (0.9.29). */
+  mark(event: Omit<MarkEvent, 'id' | 'device'>): void {
+    this.accountSettings?.addEvent(event)
   }
 
   /** History older than the retention folded, here and on the server, and notes deleted before it let go of. */

@@ -111,6 +111,8 @@ export interface JoiningParts {
   host: JoinHost
   /** The delete event of a file this moves to the trash is no delete made here. */
   leaving(path: string): void
+  /** The device joining, worth a mark in the Time Machine: the moment before it is where to go back to (0.9.29). */
+  marked?(event: { kind: 'joined'; at: number; choice: string }): void
 }
 
 const CONCURRENCY = 8
@@ -211,6 +213,7 @@ export class Joining {
     }
     const started: JoinRecord = { at: Date.now(), choice, done: false, ...(backup ? { backup } : {}) }
     await state.setJoin(vaultId, started)
+    this.parts.marked?.({ kind: 'joined', at: started.at, choice })
     return this.apply(started, plan, false)
   }
 

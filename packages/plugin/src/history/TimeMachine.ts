@@ -9,7 +9,8 @@ import {
   type TimesResponse
 } from '@mycel/shared'
 import { bytes, contentHash, fromUtf8 } from '@mycel/shared/crypto'
-import type { RollbackRecord } from '../sync/AccountSettings.js'
+import type { MarkEvent, RollbackRecord } from '../sync/AccountSettings.js'
+import { deviceWords } from '../device.js'
 import type { BackupSource } from '../sync/Rollback.js'
 import type { RoomCrypto } from '../sync/VaultSocket.js'
 import { NoteHistory } from './NoteHistory.js'
@@ -86,6 +87,46 @@ export function rollbackMarks(records: RollbackRecord[], scope: TimeMachineScope
       at: record.startedAt - 1,
       label: `before the ${record.kind === 'note' ? 'restore' : 'rollback'} of ${new Date(record.startedAt).toLocaleString()}`
     }))
+}
+
+function nameOf(path: string): string {
+  const name = path.slice(path.lastIndexOf('/') + 1)
+  return name.endsWith('.md') ? name.slice(0, -3) : name
+}
+
+function eventLabel(event: MarkEvent): string {
+  const name = event.path ? `"${nameOf(event.path)}"` : 'a note'
+  const where = deviceWords(event.device)
+  switch (event.kind) {
+    case 'merged':
+      return `before ${name} was merged on ${where}, both versions kept`
+    case 'compared':
+      return `before "Compare versions" was applied to ${name} on ${where}`
+    case 'joined':
+      return `before ${where} joined the vault, ${event.choice === 'server' ? "taking the server's version" : 'merging both'}`
+    case 'recovery':
+      return `before the answer on ${where} to the server having other data: ${event.choice === 'server' ? "the server's taken" : "the devices' kept"}`
+    case 'shared':
+      return `before ${event.folder ? `the folder ${name}` : name} was shared`
+    case 'share-ended':
+      return `before the share of ${event.folder ? `the folder ${name}` : name} ended`
+  }
+}
+
+/**
+ * The moments before the events worth finding again (0.9.29): a merge that kept two versions,
+ * "Compare versions" applied, a share begun or ended - in a note's past its own, in a folder's
+ * what lay in it then -, and a device joining or the answer when the server had other data,
+ * which concern the whole vault. `noteId`: the note shown, for a note's past.
+ */
+export function eventMarks(events: MarkEvent[], scope: TimeMachineScope, noteId: string | null): Array<{ at: number; label: string }> {
+  const concerns = (event: MarkEvent): boolean => {
+    const vaultWide = event.kind === 'joined' || event.kind === 'recovery'
+    if (scope.kind === 'vault') return true
+    if (scope.kind === 'note') return !vaultWide && !event.folder && event.docId !== undefined && event.docId === noteId
+    return vaultWide || inFolder(event.path, scope.path)
+  }
+  return events.filter(concerns).map((event) => ({ at: event.at - 1, label: eventLabel(event) }))
 }
 
 /** The backup servers, as far as the Time Machine reads them. */

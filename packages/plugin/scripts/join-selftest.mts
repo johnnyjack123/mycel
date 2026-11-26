@@ -229,6 +229,7 @@ try {
 
   // --- merging, as every device did before ----------------------------------------------
   const A6 = new Device(name, false, { 'One.md': 'first\nmerged in\n', 'Two.md': 'second\n', 'Mine.md': 'new on this device\n' })
+  A6.deviceName = 'the sixth device'
   devices.push(A6)
   check(await A6.boot(), 'a device that merges starts')
   const merging = A6.joinPlans[0]
@@ -259,6 +260,17 @@ try {
     await eventually(() => ['One.md', 'Two.md'].every((path) => elsewhere().some((review) => review.path === path && review.deviceId === A6.deviceId))),
     'another device of the account shows the notes to look at too, made on the device where they met',
     elsewhere()
+  )
+  // And the Time Machine marks the moments before (0.9.29): the device joining, and each merge.
+  const marked = (): Array<{ kind: string; path?: string; choice?: string; device: string }> => A1.sync?.accountSettings?.events() ?? []
+  check(
+    await eventually(
+      () =>
+        marked().some((event) => event.kind === 'joined' && event.choice === 'merge' && event.device === A6.deviceName) &&
+        ['One.md', 'Two.md'].every((path) => marked().some((event) => event.kind === 'merged' && event.path === path))
+    ),
+    'every device of the account has the marks: the device joining, merging both, and each note merged',
+    marked()
   )
   const doneElsewhere = elsewhere().find((review) => review.path === 'One.md')
   if (doneElsewhere) await A1.sync?.reviews?.remove(doneElsewhere.id)

@@ -1771,6 +1771,8 @@ export default class MycelPlugin extends Plugin {
         return store.whenIndexSent(Math.max(0, until - Date.now()))
       },
       rollbacks: () => this.rollbackRecords(),
+      events: () => (this.accountSettings ?? this.frozenSettings)?.events() ?? [],
+      reviewsWaiting: () => this.reviews?.pending() ?? [],
       openOverview: () => this.openTimeMachineOverview(),
       closeOverview: () => {
         for (const leaf of this.app.workspace.getLeavesOfType(TIME_MACHINE_VIEW)) leaf.detach()
@@ -2543,7 +2545,9 @@ export default class MycelPlugin extends Plugin {
       async (text) => {
         // Every device shows it: put together on another one meanwhile, applying here would merge a second result into the first.
         if (!reviews.has(review.id)) throw new Error('this note was put together on another of your devices meanwhile')
+        const at = Date.now()
         const outcome = await store.applyReview(review.docId, review.merged, text)
+        this.sync?.mark({ kind: 'compared', at, docId: review.docId, path: store.entry(review.docId)?.path ?? review.path })
         await reviews.remove(review.id)
         return outcome
       },

@@ -86,7 +86,10 @@ export class Recovery {
       choice = await this.options.ask(paths.sort((a, b) => a.localeCompare(b)))
       log.info(`recovery answer: ${choice ?? 'none yet'}`)
       if (!choice || this.stopped) return
-      settings.decideRecovery({ choice, at: Date.now() })
+      const at = Date.now()
+      settings.decideRecovery({ choice, at })
+      // Before anything follows the answer: the Time Machine marks the moment before it (0.9.29).
+      settings.addEvent({ kind: 'recovery', at, choice })
     }
 
     for (const room of notes) {

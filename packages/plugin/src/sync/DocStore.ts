@@ -1065,23 +1065,25 @@ export class DocStore {
         if (!(local === base && (local === this.recentWrite(docId) || this.heldBefore(docId, local)))) {
           await this.backups.write(file.path, 'local', local)
         }
+        const before = Date.now()
         await this.writeFile(docId, file, remote, local === base)
         await this.recordAgreement(docId, file, remote)
         // Without a base, this device's version was only a part of the other
         // one - nothing of it was lost, but the other side's lines came in
         // unasked. Worth a look like any merge of two unrelated versions.
-        if (base === null && local.length > 0) this.review(docId, file.path, 'no-base', local, remote, remote)
+        if (base === null && local.length > 0) this.review(docId, file.path, 'no-base', local, remote, remote, before)
         return
 
       case 'merge': {
         await this.backups.captureBoth(file.path, local, remote)
         await this.backups.write(file.path, 'merged', outcome.text)
+        const before = Date.now()
         this.applyToDocument(handle, outcome.text)
         await this.writeFile(docId, file, outcome.text)
         await this.recordAgreement(docId, file, outcome.text)
         this.announceMerge(file, outcome)
         if (outcome.additiveOnly || outcome.conflicts > 0) {
-          this.review(docId, file.path, outcome.additiveOnly ? 'no-base' : 'conflict', local, remote, outcome.text)
+          this.review(docId, file.path, outcome.additiveOnly ? 'no-base' : 'conflict', local, remote, outcome.text, before)
         }
         return
       }
@@ -1140,7 +1142,8 @@ export class DocStore {
         await this.backups.write(path, 'merged', outcome.text)
         if (file) this.announceMerge(file, outcome)
         if (outcome.additiveOnly || outcome.conflicts > 0) {
-          this.review(docId, path, outcome.additiveOnly ? 'no-base' : 'conflict', local, remote, outcome.text)
+          // The caller writes it into editor and document after this.
+          this.review(docId, path, outcome.additiveOnly ? 'no-base' : 'conflict', local, remote, outcome.text, Date.now())
         }
         return outcome.text
     }
@@ -1152,11 +1155,12 @@ export class DocStore {
     return () => this.reviewListeners.delete(listener)
   }
 
-  private review(docId: string, path: string, kind: ReviewKind, mine: string, theirs: string, merged: string): void {
+  /** `at`: taken before the merge was written - the Time Machine marks the moment before it (0.9.29). */
+  private review(docId: string, path: string, kind: ReviewKind, mine: string, theirs: string, merged: string, at: number): void {
     if (mine === theirs) return
     // An error: not that anything failed, but someone has to look at it.
     log.error(`${path}: two versions kept (${kind}); choose with "Compare versions"`)
-    for (const listener of this.reviewListeners) listener({ docId, path, at: Date.now(), kind, mine, theirs, merged })
+    for (const listener of this.reviewListeners) listener({ docId, path, at, kind, mine, theirs, merged })
   }
 
   /**
