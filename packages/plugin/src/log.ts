@@ -163,6 +163,19 @@ export class Log {
     return text.length > maxChars ? text.slice(text.length - maxChars) : text
   }
 
+  /** Every day of it gone, and what waited to be written: the vault disconnected (0.9.30). Goes on writing afresh. */
+  async clear(): Promise<void> {
+    if (this.timer !== null) clearTimeout(this.timer)
+    this.timer = null
+    this.pending = []
+    await this.writing
+    const files = this.files
+    if (!files || !(await files.exists(this.dir))) return
+    for (const path of (await files.list(this.dir)).files) {
+      if (/connect-\d{4}-\d{2}-\d{2}\.log$/.test(path)) await files.remove(path)
+    }
+  }
+
   /** Stops writing; what is pending is written first. */
   async detach(): Promise<void> {
     await this.flush()

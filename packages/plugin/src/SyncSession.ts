@@ -85,8 +85,6 @@ export interface SyncHost {
   readonly root: string
   readonly openLocal: OpenLocalStore
   history(vaultId: string): HistoryStore
-  /** Every database this device keeps for a vault - its notes, its index and settings, its history - deleted, and waited for. */
-  clearLocal(vaultId: string): Promise<void>
   /** Outlives the session: Obsidian keeps its editors while the sync stops and starts again. */
   readonly editors: EditorSync
   readonly carried: CarriedTexts
@@ -575,28 +573,15 @@ export class SyncSession {
   }
 
   /**
-   * Why this device may not forget the vault's sync now, or null: everything it wrote
-   * reached the server. Forgotten before, an edit only in its databases would be lost.
+   * What this device wrote that has not reached the server, waited for a while, or null: all of
+   * it did. Disconnecting before, it stays in the vault's files and never reaches the other devices.
    */
-  async whyNotForget(timeoutMs: number): Promise<string | null> {
+  async notYetSent(timeoutMs: number): Promise<string | null> {
     const { store, attachments } = this
-    if (!this.started || !store) return 'Mycel is not connected - nothing written here may be lost, so it has to reach the server first.'
-    if (!(await store.whenAllSent(timeoutMs))) return 'Something written on this device has not reached the server yet. Try again once it is connected and the cloud in the status bar shows it is sent.'
-    if ((attachments?.activeTransfers().uploads ?? 0) > 0) return 'Files are still being uploaded. Try again once that is done.'
+    if (!this.started || !store) return 'This device is not connected, so it cannot tell whether everything written here reached the server.'
+    if (!(await store.whenAllSent(timeoutMs))) return 'Something written on this device has not reached the server yet.'
+    if ((attachments?.activeTransfers().uploads ?? 0) > 0) return 'Files are still being uploaded.'
     return null
-  }
-
-  /**
-   * What this device knows of a vault's sync, forgotten - its databases, what it agreed on,
-   * how it met the vault -, never the vault's files nor anything on the server: its next start
-   * meets the vault as a new device would, compares and asks (*Reset this device's sync*,
-   * 0.9.29). Only while no session of the vault runs.
-   */
-  static async forgetDevice(host: Pick<SyncHost, 'adapter' | 'root' | 'carried' | 'clearLocal'>, vaultId: string): Promise<void> {
-    host.carried.take(vaultId)
-    await host.clearLocal(vaultId)
-    await StateStore.forget(host.adapter, host.root)
-    log.info(`this device forgot the sync of the vault ${vaultId}: its next start meets it anew`)
   }
 
   /** History older than the retention folded, here and on the server, and notes deleted before it let go of. */
@@ -710,6 +695,7 @@ export class SyncSession {
     this.trash = null
     this.reviews?.stop()
     this.reviews = null
+    this.history?.close?.()
     this.history = null
   }
 }

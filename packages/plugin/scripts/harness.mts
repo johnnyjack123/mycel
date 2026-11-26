@@ -37,6 +37,7 @@ const { SyncSession, CarriedTexts } = await import('../src/SyncSession.js')
 const { openInviteSession, openPairingSession } = await import('../src/backup/BackupLink.js')
 const { Backups } = await import('../src/backup/Backups.js')
 const { Rollback } = await import('../src/sync/Rollback.js')
+const { forgetDevice } = await import('../src/sync/Disconnect.js')
 const { LockSeal, OwnLocks, lockNonce } = await import('../src/sync/VaultLock.js')
 const { FakeVault, FakeFileManager, FakeMarkdownView, FakeMetadataCache, MemoryLocalStores, noteOf } = await import(
   './stubs/fake-vault.js'
@@ -340,9 +341,6 @@ export class Device {
       root: PLUGIN_DIR,
       openLocal: this.locals.open,
       history: () => this.locals.history,
-      clearLocal: async (vaultId) => {
-        await this.locals.clearVault(vaultId)
-      },
       editors: this.editors,
       carried: this.carried,
       timing: {
@@ -772,9 +770,15 @@ export class Device {
    * restart of sync, as signing out and in or a changed setting does - and
    * whatever is typed meanwhile stays in them.
    */
-  /** *Reset this device's sync*, as main.ts's `resetDeviceSync` does once the session is stopped (0.9.29). */
-  async forgetSync(vaultId: string): Promise<void> {
-    await SyncSession.forgetDevice(
+  /**
+   * *Disconnect this vault*, as main.ts's `finishDisconnect` does once the session is stopped
+   * (0.9.30): signed out, every key of this device gone, everything it kept for syncing forgotten.
+   */
+  async disconnect(vaultId: string, keepCopies = false): Promise<void> {
+    await this.session.signOut()
+    this.unlocked = null
+    for (const key of Array.from(this.secretMap.keys())) if (key.startsWith('mycel:')) this.secretMap.delete(key)
+    await forgetDevice(
       {
         adapter: this.pluginAdapter as never,
         root: PLUGIN_DIR,
@@ -783,7 +787,8 @@ export class Device {
           await this.locals.clearVault(id)
         }
       },
-      vaultId
+      [vaultId],
+      { keepCopies }
     )
   }
 

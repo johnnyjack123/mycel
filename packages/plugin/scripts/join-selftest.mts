@@ -370,7 +370,7 @@ try {
   check(copied(A6).size === 3, 'after a copy of its vault')
   await A6.shutdown()
 
-  // --- Reset this device's sync (0.9.29) -------------------------------------------------------
+  // --- Disconnect this vault (0.9.30) ----------------------------------------------------------
   {
     const vaultId = A1.keys?.vaultId as string
     const notes = (): string =>
@@ -380,24 +380,91 @@ try {
         .sort()
         .map((path) => `${path}=${A1.vault.text(path)}`)
         .join('|')
-    check(await eventually(async () => (await A1.sync?.whyNotForget(1_000)) === null), 'with everything sent, the device may forget')
+    const plugin = A1.pluginAdapter
+    const exists = (path: string): Promise<boolean> => plugin.exists(`${PLUGIN_DIR}/${path}`)
+    // What a device gathers: a safety copy, a note to compare too large for the account's settings, a copy of the Time Machine.
+    const gathered = async (): Promise<void> => {
+      for (const dir of ['backups', 'backups/2026-11-26', 'rollbacks', 'reviews', 'timemachine', 'timemachine/copies']) await plugin.mkdir(`${PLUGIN_DIR}/${dir}`)
+      await plugin.write(`${PLUGIN_DIR}/backups/2026-11-26/Plan.md`, 'a copy\n')
+      await plugin.write(`${PLUGIN_DIR}/rollbacks/before.json`, '{}')
+      await plugin.write(`${PLUGIN_DIR}/reviews/large.json`, '{}')
+      await plugin.write(`${PLUGIN_DIR}/timemachine/copies/1-1`, 'past')
+    }
+    check(await eventually(async () => (await A1.sync?.notYetSent(1_000)) === null), 'with everything sent, nothing is said to be missing')
     const before = notes()
     const asked = A1.joinPlans.length
+    await gathered()
     await A1.shutdown()
-    await A1.forgetSync(vaultId)
+    await A1.disconnect(vaultId)
+    check(!A1.signedIn, 'disconnecting signs out')
     check(
-      !A1.locals.has(`mycel/${vaultId}/idx`) && !(await A1.pluginAdapter.exists(`${PLUGIN_DIR}/joined.json`)) && !(await A1.pluginAdapter.exists(`${PLUGIN_DIR}/state.json`)),
-      'its databases, what it agreed on and how it met the vault are gone - the files of the vault are not',
+      !A1.locals.has(`mycel/${vaultId}/idx`) && !(await exists('joined.json')) && !(await exists('state.json')),
+      'its databases, what it agreed on and how it met the vault are gone',
       before
     )
+    check(
+      !(await exists('backups/2026-11-26/Plan.md')) && !(await exists('rollbacks/before.json')) && !(await exists('reviews/large.json')) && !(await exists('timemachine/copies/1-1')),
+      'and so are the safety copies, the notes to compare kept here alone and the copies of the Time Machine'
+    )
+    check(notes() === before, 'the notes of the vault are not touched', { before, after: notes() })
     A1.joinAnswer = 'merge'
-    check(await A1.boot(), 'it starts again')
+    check(await A1.boot(), 'signed in again, it starts')
     check(A1.joinPlans.length === asked + 1, 'and meets the vault as a new device: compared, and asked', A1.joinPlans.at(-1)?.kind)
     check(
       await eventually(() => notes() === before && !A1.vault.paths().some((path) => path.includes('conflict'))),
       'merging what it has with the server makes nothing twice: every note as before',
       { before, after: notes() }
     )
+
+    // Kept on request; and a journal of the Time Machine keeps its copies whatever is chosen - they put the files back.
+    await gathered()
+    await plugin.write(`${PLUGIN_DIR}/timemachine/journal.jsonl`, '{"t":"start"}\n')
+    await A1.shutdown()
+    await A1.disconnect(vaultId, true)
+    check(
+      (await exists('backups/2026-11-26/Plan.md')) && (await exists('rollbacks/before.json')) && !(await exists('state.json')),
+      'asked to, it keeps the safety copies and forgets the rest'
+    )
+    check((await exists('timemachine/copies/1-1')) && (await exists('timemachine/journal.jsonl')), 'and never the copies a journal of the Time Machine still needs')
+    await plugin.remove(`${PLUGIN_DIR}/timemachine/journal.jsonl`)
+    A1.joinAnswer = 'merge'
+    check(await A1.boot(), 'and signed in again, it syncs once more')
+  }
+  {
+    // The local history lets go of its database when the sync stops, and when someone deletes it: left open, it held
+    // deleting it up - resetting a device waited twenty seconds and failed half done (0.9.29).
+    const { indexedDB: fakeIndexedDb, IDBKeyRange: fakeKeyRange } = await import('fake-indexeddb')
+    const globals = globalThis as unknown as Record<string, unknown>
+    const madeWindow = globals.window === undefined
+    if (madeWindow) globals.window = { setTimeout, clearTimeout }
+    const win = globals.window as Record<string, unknown>
+    const saved = { indexedDB: globals.indexedDB, IDBKeyRange: globals.IDBKeyRange, windowIndexedDB: win.indexedDB }
+    globals.indexedDB = fakeIndexedDb
+    globals.IDBKeyRange = fakeKeyRange
+    win.indexedDB = fakeIndexedDb
+    try {
+      const { indexedDbHistory } = await import('../src/sync/History.js')
+      const { deleteLocalStores } = await import('../src/sync/LocalStores.js')
+      const names = async (): Promise<string[]> => (await fakeIndexedDb.databases()).map((each) => each.name ?? '').sort()
+      const entry = { authorTs: 1, update: bytes(1, 2, 3) }
+      const closedOne = indexedDbHistory('v-closed')
+      closedOne.add('doc:a', entry)
+      check(await eventually(async () => (await closedOne.entries('doc:a')).length === 1), 'the local history keeps a change')
+      closedOne.close?.()
+      let started = Date.now()
+      check((await deleteLocalStores('v-closed')) === 1 && Date.now() - started < 2_000, 'closed with the sync, its database is deleted at once', Date.now() - started)
+      const openOne = indexedDbHistory('v-open')
+      openOne.add('doc:a', entry)
+      check(await eventually(async () => (await openOne.entries('doc:a')).length === 1), 'another keeps one too, and stays open')
+      started = Date.now()
+      check((await deleteLocalStores('v-open')) === 1 && Date.now() - started < 2_000, 'still open, it lets go when its database is deleted', Date.now() - started)
+      check(!(await names()).some((each) => each.startsWith('mycel-history/')), 'and neither is left', await names())
+    } finally {
+      globals.indexedDB = saved.indexedDB
+      globals.IDBKeyRange = saved.IDBKeyRange
+      win.indexedDB = saved.windowIndexedDB
+      if (madeWindow) delete globals.window
+    }
   }
   {
     // One Obsidian vault per vault of the server and computer (0.9.29): the claims they all see.
@@ -411,6 +478,12 @@ try {
     check(copy.claim('v2') === null && work.mine('v2') === false, 'another vault of the server is free for it')
     copy.take('v1')
     check(copy.mine('v1') && !work.mine('v1') && work.holder('v1')?.name === 'Work copy', 'taken over when asked, and the first one hears it no longer holds it')
+    work.claim('v3')
+    check(copy.held().join() === 'v1,v2' && work.held().join() === 'v3', 'each knows the vaults of the server it holds - whose databases are its own to clear', { copy: copy.held(), work: work.held() })
+    work.release('v1')
+    check(copy.mine('v1') && copy.holder('v1') !== null, 'disconnected, it lets go only of its own claims')
+    copy.release('v1')
+    check(copy.holder('v1') === null && work.claim('v1') === null, 'and another Obsidian vault here may then sync it unasked')
   }
 
   // --- another vault ----------------------------------------------------------------------

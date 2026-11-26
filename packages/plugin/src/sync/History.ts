@@ -23,6 +23,12 @@ export interface HistoryStore {
   /** Drops every change made before `before`, in every room. */
   prune(before: number): Promise<void>
   clear(room: string): Promise<void>
+  /**
+   * Lets go of its database once the sync stops; nothing is kept or read after. One in memory holds
+   * nothing open. Left open, it held up deleting the database: resetting a device's sync waited,
+   * then failed half done (0.9.29).
+   */
+  close?(): void
 }
 
 /** FNV-1a over the update, enough to tell two changes apart and see one twice. */
@@ -88,24 +94,44 @@ function request<T>(req: IDBRequest<T>): Promise<T> {
 /** In Obsidian's IndexedDB, one database per vault, next to the notes' own. */
 export function indexedDbHistory(vaultId: string): HistoryStore {
   let opened: Promise<IDBDatabase> | null = null
+  let closed = false
   const database = (): Promise<IDBDatabase> => {
-    opened ??= new Promise((resolve, reject) => {
+    if (closed) return Promise.reject(new Error('the local history was closed'))
+    if (opened) return opened
+    const made = new Promise<IDBDatabase>((resolve, reject) => {
       const open = indexedDB.open(`mycel-history/${vaultId}`, 1)
       open.onupgradeneeded = () => {
         const store = open.result.createObjectStore(STORE, { keyPath: 'key' })
         store.createIndex('room', 'room')
         store.createIndex('authorTs', 'authorTs')
       }
-      open.onsuccess = () => resolve(open.result)
+      open.onsuccess = () => {
+        const db = open.result
+        // Someone deletes it - this device's sync forgotten, the vault deleted on the server -: let go,
+        // as the notes' databases do (lib0's `openDB`), or the deletion waits for this.
+        db.onversionchange = () => {
+          db.close()
+          if (opened === made) opened = null
+        }
+        resolve(db)
+      }
       open.onerror = () => reject(open.error)
     })
-    return opened
+    opened = made
+    return made
   }
   const transaction = async (mode: IDBTransactionMode): Promise<IDBObjectStore> =>
     (await database()).transaction(STORE, mode).objectStore(STORE)
 
   return {
+    close() {
+      closed = true
+      const was = opened
+      opened = null
+      void was?.then((db) => db.close()).catch(() => undefined)
+    },
     add(room, entry) {
+      if (closed) return
       const stored: StoredEntry = { key: `${room}|${entryKey(entry)}`, room, authorTs: entry.authorTs, update: entry.update.slice() }
       void transaction('readwrite')
         .then((store) => request(store.put(stored)))

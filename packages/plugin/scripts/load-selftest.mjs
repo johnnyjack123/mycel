@@ -57,6 +57,8 @@ const obsidian = {
           on: () => ({}),
           onLayoutReady: (callback) => registered.layoutReady.push(callback),
           getActiveFile: () => null,
+          // The note's status is drawn every second, and walks the open views.
+          iterateAllLeaves: fn,
           // The explorer's guard listens on the document and greys with a style of its own.
           containerEl: {
             doc: {
@@ -76,7 +78,7 @@ const obsidian = {
       this.manifest = { id: 'mycel', dir: '.obsidian/plugins/mycel' }
     }
     addStatusBarItem() {
-      return { setText: fn, addClass: fn, removeClass: fn, addEventListener: fn, empty: fn, hide: fn, show: fn, setAttribute: fn, removeAttribute: fn }
+      return { setText: fn, addClass: fn, removeClass: fn, toggleClass: fn, addEventListener: fn, empty: fn, hide: fn, show: fn, setAttribute: fn, removeAttribute: fn }
     }
     registerView = (type) => registered.views.push(type)
     addSettingTab = fn
@@ -356,6 +358,103 @@ if (exported) {
     check(instance.socket === null && instance.opening === false, 'and an unloaded plugin does not start again when called back')
   } catch (error) {
     check(false, 'a start the plugin was unloaded during builds nothing afterwards', error?.stack ?? String(error))
+  }
+
+  // *Disconnect this vault* stopped half way - Obsidian closed meanwhile -: the next start carries it on before
+  // anything syncs (0.9.30). Obsidian keeps a vault's entries in the local storage every vault shares, under a
+  // name of its own; the databases are shared too, and only this vault's go.
+  const savedWindow = { localStorage: globalThis.window.localStorage, indexedDB: globalThis.window.indexedDB }
+  try {
+    registered.layoutReady.length = 0
+    const raw = new Map()
+    globalThis.window.localStorage = {
+      get length() {
+        return raw.size
+      },
+      key: (index) => Array.from(raw.keys())[index] ?? null,
+      getItem: (key) => raw.get(key) ?? null,
+      setItem: (key, value) => void raw.set(key, String(value)),
+      removeItem: (key) => void raw.delete(key)
+    }
+    const databases = ['mycel/vault-x/idx', 'mycel/vault-x/doc-1', 'mycel-history/vault-x', 'mycel/vault-y/idx']
+    const deleted = []
+    globalThis.window.indexedDB = {
+      databases: async () => databases.map((name) => ({ name })),
+      deleteDatabase: (name) => {
+        const request = {}
+        setTimeout(() => {
+          deleted.push(name)
+          request.onsuccess?.()
+        }, 0)
+        return request
+      }
+    }
+    raw.set('this-mycel:master', '"secret"')
+    raw.set('this-mycel:sealed:doc:1', '{}')
+    raw.set('other-mycel:master', '"theirs"')
+    raw.set('mycel-claim:vault-x', JSON.stringify({ id: 'this', name: 'Test vault', at: 1 }))
+    raw.set('mycel-claim:vault-y', JSON.stringify({ id: 'other', name: 'Other vault', at: 1 }))
+    adapterFiles.set('.obsidian/plugins/mycel/state.json', '{}')
+    adapterFiles.set('.obsidian/plugins/mycel/joined.json', '{}')
+    let stored = {
+      serverUrl: 'wss://notes.example.com',
+      username: 'someone',
+      token: 'token',
+      deviceName: 'PC',
+      verboseLog: true,
+      setupShown: true,
+      disconnecting: { keepCopies: false, vaultIds: ['vault-x'] }
+    }
+    const instance = new PluginClass()
+    instance.app.appId = 'this'
+    instance.app.loadLocalStorage = (key) => (raw.has(`this-${key}`) ? JSON.parse(raw.get(`this-${key}`)) : null)
+    instance.app.saveLocalStorage = (key, value) => {
+      if (value === null) raw.delete(`this-${key}`)
+      else raw.set(`this-${key}`, JSON.stringify(value))
+    }
+    instance.loadData = async () => stored
+    instance.saveData = async (data) => {
+      stored = JSON.parse(JSON.stringify(data))
+    }
+    let started = false
+    instance.startSync = async () => {
+      started = true
+    }
+    await instance.onload()
+    for (const callback of registered.layoutReady) await callback()
+    for (let waited = 0; stored.disconnecting && waited < 3_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50))
+    check(
+      stored.disconnecting === null && stored.token === '' && stored.username === '',
+      'a disconnect stopped half way is carried on at the next start, and signs out',
+      stored
+    )
+    check(
+      stored.serverUrl === 'wss://notes.example.com' && stored.deviceName === '' && stored.verboseLog === false && stored.setupShown === true,
+      "this device's settings as new - the server's address kept, and the setup guide not opening by itself again",
+      stored
+    )
+    check(
+      deleted.sort().join() === 'mycel-history/vault-x,mycel/vault-x/doc-1,mycel/vault-x/idx',
+      "the databases of the vault this Obsidian vault held go, another's stay",
+      deleted
+    )
+    check(
+      !raw.has('this-mycel:master') && !raw.has('this-mycel:sealed:doc:1') && raw.has('other-mycel:master'),
+      "this vault's keys leave the local storage, another vault's stay",
+      Array.from(raw.keys())
+    )
+    check(!raw.has('mycel-claim:vault-x') && raw.has('mycel-claim:vault-y'), 'its claim is let go, the other vault keeps its own')
+    check(
+      !adapterFiles.has('.obsidian/plugins/mycel/state.json') && !adapterFiles.has('.obsidian/plugins/mycel/joined.json'),
+      'what it agreed on and how it met the vault are gone'
+    )
+    check(!started, 'and nothing started to sync meanwhile')
+    await instance.onunload()
+  } catch (error) {
+    check(false, 'a disconnect stopped half way is carried on at the next start', error?.stack ?? String(error))
+  } finally {
+    globalThis.window.localStorage = savedWindow.localStorage
+    globalThis.window.indexedDB = savedWindow.indexedDB
   }
 }
 
