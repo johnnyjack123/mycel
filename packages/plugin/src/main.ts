@@ -75,6 +75,8 @@ import { openIndexedDb } from './sync/DocHandle'
 import type { DocStore, DocStoreOptions, NoteSyncState } from './sync/DocStore'
 import { indexedDbHistory } from './sync/History'
 import { deleteLocalStores } from './sync/LocalStores'
+import { forgetDevice, safetyCopiesSize } from './sync/Disconnect'
+import { DisconnectModal } from './DisconnectModal'
 import { VaultClaims, claimKey, memoryClaimStorage, type ClaimHolder, type ClaimStorage } from './sync/VaultClaims'
 import { RecoveryModal } from './history/RecoveryModal'
 import { JoinModal } from './history/JoinModal'
@@ -400,7 +402,8 @@ export default class MycelPlugin extends Plugin {
 
     this.statusBar = this.addStatusBarItem()
     this.statusBar.addEventListener('click', () => {
-      if (this.sync?.joinWaiting) this.joinAgain()
+      if (this.settings.disconnecting) void this.finishDisconnect()
+      else if (this.sync?.joinWaiting) this.joinAgain()
       else if (this.claimedElsewhere && !this.store) void this.askToTakeOver()
     })
     // Another Obsidian vault on this computer took over the vault of the server this one syncs: its window says so here.
@@ -453,6 +456,7 @@ export default class MycelPlugin extends Plugin {
     )
     this.register(notices.handle('share-linked-note', async (data) => this.shareLinkedNote(data)))
     this.register(notices.handle('join-vault', async () => this.joinAgain()))
+    this.register(notices.handle('disconnect-finish', async () => this.finishDisconnect()))
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => this.noteMenu(menu, file)))
     this.registerEvent(
       this.app.workspace.on('editor-menu', (menu, _editor, info) => {
@@ -591,7 +595,9 @@ export default class MycelPlugin extends Plugin {
       this.installExplorerGuard()
       if (!this.unloaded && this.offersSetup()) this.openSetup()
       void this.timeMachine.recoverAtStart().then((free) => {
-        if (free) void this.startSync()
+        // Disconnecting stopped half way - Obsidian closed, a failure -: carried on before anything syncs.
+        if (this.settings.disconnecting) void this.finishDisconnect()
+        else if (free) void this.startSync()
       })
     })
   }
@@ -701,6 +707,12 @@ export default class MycelPlugin extends Plugin {
       if (typeof value === typeof DEFAULT_SETTINGS[key]) (settings as Record<string, unknown>)[key] = value
     }
     if (stored.attachmentDownloadLimitMb === undefined && Platform.isMobile) settings.attachmentDownloadLimitMb = MOBILE_DOWNLOAD_LIMIT_MB
+    const marker = stored.disconnecting as { keepCopies?: unknown; vaultIds?: unknown } | null | undefined
+    if (marker !== null && marker !== undefined) {
+      // Unreadable, it is still a disconnect under way: carried on, keeping what it is unsure of.
+      const vaultIds = Array.isArray(marker.vaultIds) ? marker.vaultIds.filter((id): id is string => typeof id === 'string') : []
+      settings.disconnecting = { keepCopies: marker.keepCopies !== false, vaultIds }
+    }
     this.settings = settings
     if (!settings.deviceId) {
       settings.deviceId = toHex(randomBytes(8))
@@ -1069,7 +1081,7 @@ export default class MycelPlugin extends Plugin {
     const take = await new ConfirmModal(
       this.app,
       'Another vault on this computer syncs this one',
-      `The Obsidian vault "${claimed.holder.name}" on this computer syncs "${this.vaultName()}" on the server. Two Obsidian vaults on one computer would share the copies Mycel keeps of it - what waits to be sent, where each note stands -, and resetting or deleting it in one would clear the other's. Sync it here instead? "${claimed.holder.name}" stops syncing it, and starts again only when taken back there.`,
+      `The Obsidian vault "${claimed.holder.name}" on this computer syncs "${this.vaultName()}" on the server. Two Obsidian vaults on one computer would share the copies Mycel keeps of it - what waits to be sent, where each note stands -, and disconnecting or deleting it in one would clear the other's. Sync it here instead? "${claimed.holder.name}" stops syncing it, and starts again only when taken back there.`,
       'Sync it here instead'
     ).ask()
     if (!take || this.claimedElsewhere !== claimed) return
@@ -1198,33 +1210,141 @@ export default class MycelPlugin extends Plugin {
   }
 
   /**
-   * *Reset this device's sync* (0.9.29): what this device knows of the vault's sync forgotten -
-   * its databases, what it agreed on, how it met the vault -, never the vault's files nor
-   * anything on the server, and signed in it stays. Its next start meets the vault as a new
-   * device would: a copy of the vault, the comparison, the question. Refused while anything
-   * written here has not reached the server: it lies in those databases until then.
+   * *Disconnect this vault* (0.9.30): signed out, and everything this device kept for syncing gone -
+   * the databases of each vault of the server this Obsidian vault holds here, what it agreed on and
+   * how it met the vault, the keys in Obsidian's storage, its claims, its log, notices and settings
+   * (the server's address kept), and the safety copies unless kept. Never a file of the vault, and
+   * nothing on the server, which knows no devices. Signed in again, the device meets the vault as a
+   * new one (invariant 34). What was not sent stays in the files only; the window says so first.
    */
-  async resetDeviceSync(): Promise<void> {
-    if (this.timeMachine.current) throw new Error('Leave the Time Machine first.')
+  async disconnectVault(): Promise<void> {
+    if (this.settings.disconnecting) {
+      await this.finishDisconnect()
+      return
+    }
+    // The past goes out of the files first: forgotten with it there, a sign-in would send it as edits.
+    if (this.timeMachine.current && !(await this.timeMachine.backToNow())) return
+    if (this.timeMachine.blocksSync) throw new Error('The Time Machine has not put every file back yet. Disconnect once they are back.')
+    const vaultIds = new Set(this.claims.held())
+    const current = this.vault?.vaultId
+    if (current && this.claims.mine(current)) vaultIds.add(current)
     const sync = this.sync
-    const vault = this.vault
-    if (!sync || !vault) throw new Error('Mycel is not connected - nothing written here may be lost, so it has to reach the server first.')
-    const before = await sync.whyNotForget(10_000)
-    if (before) throw new Error(before)
-    const go = await new ConfirmModal(
-      this.app,
-      "Reset this device's sync",
-      `This device forgets what it knows of syncing "${this.vaultName()}": its copies of the notes, what it last agreed on with the server, and that it ever connected. The notes and files in this vault stay, and so does everything on the server and on your other devices; you stay signed in. Then it connects as a new device would: it copies this vault into the plugin folder, compares it with the server and asks how to join.`,
-      'Reset'
-    ).ask()
-    if (!go || this.sync !== sync) return
-    // Written meanwhile, while the window asked.
-    const still = await sync.whyNotForget(10_000)
-    if (still) throw new Error(still)
-    await this.stopSync()
-    await SyncSession.forgetDevice(this.syncHost(), vault.vaultId)
-    new Notice("Mycel: this device forgot the vault's sync. It connects again as a new device - compare and choose in the window that opens.", 10_000)
-    await this.startSync()
+    const unsent = sync
+      ? await sync.notYetSent(10_000)
+      : this.settings.token || vaultIds.size > 0
+        ? 'This device is not connected, so it cannot tell whether everything written here reached the server.'
+        : null
+    const choice = await new DisconnectModal(this.app, {
+      vault: this.vaultName(),
+      signedIn: Boolean(this.settings.username),
+      unsent,
+      copies: await safetyCopiesSize(this.app.vault.adapter, this.pluginDir())
+    }).ask()
+    if (!choice || this.settings.disconnecting) return
+    this.settings.disconnecting = { keepCopies: choice.keepCopies, vaultIds: Array.from(vaultIds) }
+    await this.saveData(this.settings)
+    log.info(`disconnecting this vault: ${vaultIds.size} vault(s) of the server held here, the safety copies ${choice.keepCopies ? 'kept' : 'removed'}`)
+    await this.finishDisconnect()
+  }
+
+  private disconnectRunning = false
+
+  /**
+   * Carries a chosen disconnect out - or on, after a failure or a restart: every step can run
+   * again, and its record goes last, with the rest of the settings. Nothing syncs meanwhile.
+   */
+  private async finishDisconnect(): Promise<void> {
+    const marker = this.settings.disconnecting
+    if (!marker || this.disconnectRunning) return
+    this.disconnectRunning = true
+    this.renderStatus()
+    try {
+      await this.stopSync()
+      await this.session.signOut()
+      this.unlocked = null
+      this.forgetSecrets()
+      const vaultIds = Array.from(new Set([...marker.vaultIds, ...this.claims.held()]))
+      await forgetDevice(
+        {
+          adapter: this.app.vault.adapter,
+          root: this.pluginDir(),
+          carried: this.carried,
+          clearLocal: async (vaultId) => {
+            // Taken over by another Obsidian vault here meanwhile: its databases now, not this one's.
+            if (!this.claims.mine(vaultId)) return
+            const cleared = await deleteLocalStores(vaultId)
+            log.info(`cleared ${cleared} local store(s) of ${vaultId}`)
+          }
+        },
+        vaultIds,
+        { keepCopies: marker.keepCopies }
+      )
+      for (const vaultId of vaultIds) this.claims.release(vaultId)
+      this.frozenSettings?.destroy()
+      this.frozenSettings = null
+      this.movedSettings = null
+      this.deletedVault = null
+      this.claimedElsewhere = null
+      notices.clear()
+      await log.clear()
+      this.settings = this.settingsAfterDisconnect()
+      await this.saveData(this.settings)
+      log.verbose = false
+      log.info('disconnected this vault: signed out, and nothing of its sync is left on this device')
+      new Notice('Mycel: this vault is disconnected and you are signed out. Its notes and files are all still here. To sync again, sign in - this device then meets the vault as a new one.', 15_000)
+    } catch (error) {
+      log.error('disconnecting this vault stopped half way; it is carried on at the next start', error)
+      noticeWithAction(
+        `Mycel: disconnecting this vault stopped half way (${error instanceof Error ? error.message : String(error)}). Nothing syncs until it is done; it carries on at the next start, or now.`,
+        0,
+        { label: 'Try again', kind: 'disconnect-finish', data: null }
+      )
+    } finally {
+      this.disconnectRunning = false
+      this.renderStatus()
+      this.settingTab?.refresh()
+    }
+  }
+
+  /** This device's settings as on a new install - the server's address kept, and whether the setup guide opened by itself. */
+  private settingsAfterDisconnect(): MycelSettings {
+    const fresh: MycelSettings = {
+      ...DEFAULT_SETTINGS,
+      backupLastGood: {},
+      serverUrl: this.settings.serverUrl,
+      setupShown: this.settings.setupShown,
+      deviceId: toHex(randomBytes(8))
+    }
+    if (Platform.isMobile) fresh.attachmentDownloadLimitMb = MOBILE_DOWNLOAD_LIMIT_MB
+    return fresh
+  }
+
+  /**
+   * Everything this plugin keeps in Obsidian's storage for this vault (`mycel:…`): the account's,
+   * and each room's sealed keys, ties and epoch floors (`KeyRing`). Obsidian names no format for
+   * its keys, so each is found by how it ends and removed through Obsidian's own call - which reads
+   * and removes this vault's alone.
+   */
+  private forgetSecrets(): void {
+    const names = new Set<string>()
+    try {
+      const storage = window.localStorage
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index)
+        const at = key?.indexOf('mycel:') ?? -1
+        if (key && at >= 0) names.add(key.slice(at))
+      }
+    } catch (error) {
+      log.warn('reading what this vault keeps in local storage failed', error)
+      return
+    }
+    let removed = 0
+    for (const name of names) {
+      if (this.app.loadLocalStorage(name) === null) continue
+      this.app.saveLocalStorage(name, null)
+      removed += 1
+    }
+    log.info(`removed ${removed} entr${removed === 1 ? 'y' : 'ies'} of this vault from local storage`)
   }
 
   /**
@@ -1451,6 +1571,11 @@ export default class MycelPlugin extends Plugin {
   private async startSync(): Promise<void> {
     // Obsidian still calls back an unloaded plugin, `onLayoutReady` included.
     if (this.unloaded || !this.settings.syncEnabled || this.store || this.opening) return
+    // A disconnect not finished: a sign-in in between would meet databases half cleared.
+    if (this.settings.disconnecting) {
+      this.renderStatus()
+      return
+    }
     // The past is in the files: the sync would send it everywhere (`docs/TIMEMACHINE.md`).
     if (this.timeMachine.blocksSync) {
       log.info('the sync stays stopped while the Time Machine shows the past')
@@ -1552,11 +1677,6 @@ export default class MycelPlugin extends Plugin {
       root: this.pluginDir(),
       openLocal: openIndexedDb,
       history: (vaultId) => indexedDbHistory(vaultId),
-      clearLocal: async (vaultId) => {
-        if (!this.claims.mine(vaultId)) throw new Error('another Obsidian vault on this computer syncs this vault: its databases are not this one\'s to clear')
-        const cleared = await deleteLocalStores(vaultId)
-        log.info(`cleared ${cleared} local store(s) of ${vaultId}`)
-      },
       editors: this.editors,
       carried: this.carried,
       get timing(): SyncTiming {
@@ -2799,6 +2919,10 @@ export default class MycelPlugin extends Plugin {
     this.statusBar.removeAttribute('aria-label')
     if (this.timeMachine.current) {
       this.statusBar.setText('Mycel: Time Machine - sync stopped')
+      return
+    }
+    if (this.settings.disconnecting) {
+      this.statusBar.setText(this.disconnectRunning ? 'Mycel: disconnecting this vault…' : 'Mycel: disconnecting not finished - click')
       return
     }
     if (this.deletedVault && !this.store) {

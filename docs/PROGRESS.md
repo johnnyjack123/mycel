@@ -2,9 +2,9 @@
 
 _Last updated: 2026-11-26 · **Phase: the device run before 1.0.0.** 0.9 - hardening and the
 security audit - is built. The user started afresh on 2026-11-13 and is trying everything on
-real devices. Each thing they find or ask for becomes the next patch: 0.9.19 to 0.9.29 so far.
-Current version: **0.9.29** (`latest-build`, CI green on `main`). 1.0.0 follows once everything
-is verified on devices, then publishing, if the user wants it._
+real devices. Each thing they find or ask for becomes the next patch: 0.9.19 to 0.9.30 so far.
+Current version: **0.9.30** (branch `feat/disconnect-vault`; 0.9.29 is `latest-build`).
+1.0.0 follows once everything is verified on devices, then publishing, if the user wants it._
 
 ## Where we are
 
@@ -58,14 +58,14 @@ the user runs the new setup and reports back. Each finding or wish was a version
 | 0.9.27 | 11-24 | Found by the user: a rollback from the Time Machine failed on Windows (EPERM while removing the copies). |
 | 0.9.28 | 11-25 | Found by the user, the cause found with them over ssh: Google Drive made every folder of the PC's vault read-only, Windows refused to remove them, and the start, opening and leaving the Time Machine waited a minute each; the Time Machine took its own lock for another device's. |
 | 0.9.29 | 11-26 | The user's findings and decisions: notes to compare on every device, no conflict markers, the Time Machine's marks, resetting a device's sync, one Obsidian vault per vault of the server, a device's name, the status bar's count, the vault's rows under All devices. |
+| 0.9.30 | 11-26 | Found by the user: the reset waited and failed half done (the local history held its database open). Their decision: *Disconnect this vault* - signed out, nothing of the sync left on the device - instead of the reset. |
 
 **Next:**
-1. The user installs 0.9.29 on both devices - the plugin, and the backup server's image for
-   leaving reviews and marks out of its copy's settings - and tries what it brings ("Still to
-   try on devices", 0.9.29): the reset first, for testing a device's first connection again.
-   0.9.28 was confirmed on the PC on 2026-11-26 (the stuck folder resolved); the read-only
-   attribute is still to be taken off the test vault's folders there (`attrib -r /s /d`, over
-   `ssh pc`, only inside that vault).
+1. The user installs 0.9.30 on both devices (the backup server's image may follow later: it
+   only leaves reviews and marks out of its copy's settings) and tries what it brings ("Still
+   to try on devices", 0.9.30 and 0.9.29): *Disconnect this vault* first - on the device the
+   0.9.29 reset left half done too -, then signing in for a first connection again. The
+   read-only attribute was taken off the PC's test vault on 2026-11-26 and did not come back.
 2. Then on through "Still to try on devices" below.
 3. Findings come first, then 1.0.0. What 1.0.0 still needs besides is the user's call:
    publishing, item 12.
@@ -96,9 +96,17 @@ the user runs the new setup and reports back. Each finding or wish was a version
 ### Still to try on devices
 
 What only a device can show (CLAUDE.md, Testing) and nobody has tried yet, newest first:
+- **0.9.30:**
+  - *Disconnect this vault* on a device: the window (what goes, the box for the safety copies
+    with their size, the warning when something is unsent or the device offline), signed out
+    afterwards, the settings as new with the server's address kept, the plugin folder holding
+    no `state.json`, `base/`, logs; then signing in, and the first connection anew (the window,
+    the copy, merging nothing twice);
+  - IndexedDB deleting the databases at once (no twenty seconds, no "still open"), and Obsidian's
+    local storage losing the vault's `mycel:` entries (`forgetSecrets` finds them by how their
+    names end - Obsidian documents no format);
+  - Obsidian closed during a disconnect: the next start finishes it, nothing syncs meanwhile.
 - **0.9.29:**
-  - *Reset this device's sync* on a device, then its first connection anew (the window, the
-    copy, merging nothing twice), and the reset refused while something is unsent;
   - notes to compare showing on the other device, put together there, gone on both;
   - the name of a device in the window, the list and a lock's window;
   - the marks on the Time Machine's strip, and the hint when notes still wait to be compared;
@@ -427,6 +435,13 @@ How to run the end-to-end suites without touching the user's server is in CLAUDE
   a lock); marks for important events in the Time Machine; a reset for testing a first connection
   again without a new account. Checking whether two Obsidian vaults on one computer get in each
   other's way found that they would, for the same vault of the server: one claims it now.
+- The reset of 0.9.29 failed on the device: it waited and said `mycel-history/…` was still open,
+  since the local history never closed its database. The user decided against a reset that keeps the
+  device signed in: signed in should mean syncing, the switch is the pause, and a vault should be
+  separable without a trace. Built as 0.9.30: *Disconnect this vault*, signing out and clearing
+  everything of the sync on the device, the safety copies kept only when asked, the settings as
+  new but for the server's address. The server knows no devices, so there is nothing to remove
+  there. 0.9.29 is on `main` and `latest-build`; the read-only attribute is off the PC's test vault.
 
 ### 2026-11-25
 - The docs were brought to the phase: this file's head, "Where we are", "Still to try on

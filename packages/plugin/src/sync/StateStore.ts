@@ -82,8 +82,8 @@ export class StateStore {
 
   /**
    * What this device agreed on with every vault, and how it met them - gone, so the next
-   * start meets the vault as a new device would (*Reset this device's sync*, 0.9.29).
-   * Backups, reviews, the log stay. Only while no store is open on it.
+   * start meets the vault as a new device would (*Disconnect this vault*, `sync/Disconnect.ts`).
+   * Only while no store is open on it.
    */
   static async forget(adapter: DataAdapter, root: string): Promise<void> {
     for (const file of [STATE_FILE, ATTACHMENTS_FILE, CLEARED_FILE, UNSENT_FILE, JOINED_FILE]) {

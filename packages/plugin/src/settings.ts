@@ -131,6 +131,11 @@ export interface MycelSettings {
   deviceName: string
   /** Tells this device's records apart from another's of the same note - made once, never shown. */
   deviceId: string
+  /**
+   * *Disconnect this vault* was chosen and is not done yet: written before anything goes, gone with
+   * the rest of these settings at its end. A start that finds it carries it on before anything syncs.
+   */
+  disconnecting: { keepCopies: boolean; vaultIds: string[] } | null
 }
 
 export const DEFAULT_SETTINGS: MycelSettings = {
@@ -150,7 +155,8 @@ export const DEFAULT_SETTINGS: MycelSettings = {
   timeMachineMarks: true,
   setupShown: false,
   deviceName: '',
-  deviceId: ''
+  deviceId: '',
+  disconnecting: null
 }
 
 /** Where a phone starts: its storage and data plan are not a desktop's. */
@@ -1195,19 +1201,19 @@ export class MycelSettingTab extends PluginSettingTab {
         })
       )
 
-    if (settings.username) {
-      new Setting(containerEl)
-        .setName("Reset this device's sync")
-        .setDesc(
-          'Forgets what this device knows of syncing this vault, and connects it again as a new device would: comparing with the server and asking first. The notes here, the server and your other devices are not touched; you stay signed in. Only once everything written here reached the server.'
-        )
-        .addButton((button) =>
-          button
-            .setButtonText('Reset…')
-            .setWarning()
-            .onClick(() => void this.run(() => this.plugin.resetDeviceSync(), button))
-        )
-    }
+    new Setting(containerEl)
+      .setName('Disconnect this vault')
+      .setDesc(
+        settings.username
+          ? "Signs out and removes everything Mycel keeps on this device for syncing - its copies of the notes, what it agreed on with the server, its log and settings. The notes and files of this vault, the server and your other devices are not touched. Signed in again, this device meets the vault as a new one: it compares and asks first."
+          : "Removes everything Mycel still keeps on this device for syncing - its copies of the notes, what it agreed on with the server, its log and settings. The notes and files of this vault are not touched. Signed in again, this device meets the vault as a new one."
+      )
+      .addButton((button) =>
+        button
+          .setButtonText('Disconnect…')
+          .setWarning()
+          .onClick(() => void this.run(() => this.plugin.disconnectVault(), button))
+      )
   }
 
   private shared(containerEl: HTMLElement): void {

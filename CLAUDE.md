@@ -341,18 +341,24 @@ someone's notes. Treat them as rules, not preferences.
     of its id (`accountKeys.vaultId(secret, name, generation)`, `replaces`), so a deleted one can no
     longer be restored next to it. Deleting needs the password (a token alone deletes nothing);
     files on the devices are never touched.
-36. **One Obsidian vault per vault of the server and computer, and a device forgets its sync only
-    once everything it wrote reached the server** (0.9.29). The databases a device keeps for the
-    sync are named by the server's vault id alone (`mycel/<vaultId>/…`, `mycel-history/<vaultId>`),
-    and every Obsidian vault on a computer sees the same ones: two syncing the same vault of the
-    server shared copies, outboxes and log positions, and a reset or a deleted vault in one cleared
-    the other's. The first to sync it claims it in storage all of them see (`VaultClaims`,
+36. **One Obsidian vault per vault of the server and computer, and a disconnect leaves nothing of
+    the sync behind and is carried on until it has** (0.9.29, 0.9.30). The databases a device keeps
+    for the sync are named by the server's vault id alone (`mycel/<vaultId>/…`,
+    `mycel-history/<vaultId>`), and every Obsidian vault on a computer sees the same ones: two
+    syncing the same vault of the server shared copies, outboxes and log positions, and clearing one
+    cleared the other's. The first to sync it claims it in storage all of them see (`VaultClaims`,
     `window.localStorage`); another one syncs nothing and asks before it takes over, and the first
-    stops the moment it hears. Nothing clears databases it does not hold. *Reset this device's
-    sync* (`SyncSession.forgetDevice`) clears the databases and what the device agreed on and how it
-    met the vault - never the vault's files, never the server - and the next start meets the vault
-    as a new device (invariant 34); it is refused while anything is unsent
-    (`SyncSession.whyNotForget`), since until then it lies in those databases alone.
+    stops the moment it hears. Nothing clears databases it does not hold. Every database closes when
+    the sync stops and gives way when someone deletes it: the local history held its own open, and
+    the reset of 0.9.29 waited for it, failed and left the device stopped, half cleared. *Disconnect
+    this vault* (`disconnectVault` in `main.ts`, `sync/Disconnect.ts`) signs out and clears the
+    databases of every vault of the server this Obsidian vault holds, what it agreed on and how it
+    met the vault, the keys in Obsidian's storage, its claims, log, notices and settings (the
+    server's address kept), and the safety copies unless kept - never the vault's files, never the
+    server, which knows no devices; signed in again, the device meets the vault as a new one
+    (invariant 34). Its record (`settings.disconnecting`) is written before anything goes and leaves
+    last, with the settings: a start that finds it finishes it before anything syncs. What was not
+    sent the window says first (`SyncSession.notYetSent`), since from then on it is in the files alone.
 
 ## Architecture
 
@@ -694,9 +700,11 @@ people: whoever runs it can read the vaults on it.
   opens the Time Machine at the moment before it (0.8.16).
 - **The settings are in tabs** - Account, Contacts, Backups, This device, All
   devices; signed out only Account and This device. What concerns the whole vault - its id,
-  deleting it on the server - is under All devices (0.9.29).
+  deleting it on the server - is under All devices (0.9.29). *Sign out* keeps what the device knows
+  of the sync, to carry on where it stood; *Disconnect this vault* (This device, 0.9.30) leaves none
+  of it (invariant 36). Signed in means syncing; the *Sync this vault* switch is the pause.
 - **A device has a name** (0.9.29, This device; its kind until given one, `device.ts`) and an
-  id (`deviceId`, made once): the name is what the other devices call it in a lock's window,
+  id (`deviceId`, made once, and anew by a disconnect): the name is what the other devices call it in a lock's window,
   in "Compare versions" and in the Time Machine's marks; the id tells its reviews from
   another device's. The status bar counts the notes that sync; how many are open right now -
   the rest watched, opened when they change - is in its tooltip: "synced 2/16" read as two of
@@ -956,7 +964,7 @@ covered, and all of it must stay green.
 
 ```bash
 npm run test:merge     # merge/reconcile/identity and the crypto — no server, no DOM
-npm run test:load      # the built bundle imports, onload/start/unload run, Obsidian stubbed; current and versioned
+npm run test:load      # the built bundle imports, onload/start/unload run, a disconnect carried on at the start, Obsidian stubbed; current and versioned
 npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart, a vault deleted and cleared — in-process
 npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay; the merge window in jsdom
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
@@ -964,7 +972,7 @@ npm run test:account   # the account with real devices: signing the other device
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
 npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too, and at once while a read from the server hangs), a plugin folder whose folders refuse to go, the vault lock and the device taking it, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
 npm run test:replace   # every key of an account replaced: the vaults and files written anew, the other device, a contact confirming again, a replacement carried on by another device — in-process server
-npm run test:join      # a device meeting a vault on the server for the first time: what the comparison finds and what merging will make of it, the copy of the vault, "Not now", the server's version, merging, the explorer's marks, notes to compare on every device, carrying on after a restart, resetting a device's sync, one Obsidian vault per vault of the server — in-process server
+npm run test:join      # a device meeting a vault on the server for the first time: what the comparison finds and what merging will make of it, the copy of the vault, "Not now", the server's version, merging, the explorer's marks, notes to compare on every device, carrying on after a restart, disconnecting a vault and meeting it again, the local history giving way to its deletion (fake-indexeddb), one Obsidian vault per vault of the server — in-process server
 npm run test:security  # every attack of the audit (docs/AUDIT.md): the server attacked over HTTP and WebSocket, the plugin's paths, links, folders and gate, the backup task — in-process servers
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by MYCEL_RESTIC (where it lies here: docs/PROGRESS.md)
@@ -1014,7 +1022,8 @@ merge window's layout on a desktop and on a phone (its workings are tested in js
 0.9.26 its rows were looked at in a browser, rendered with the real stylesheet but not Obsidian's, and
 copying a selection from one version relies on Obsidian's window passing its `copy` event on); since 0.9.24 the windows of
 a vault deleted on the server, and IndexedDB listing its databases for clearing them; since 0.9.26 the setup
-guide's live comparison.
+guide's live comparison; since 0.9.30 the disconnect window, and Obsidian's local storage keeping a vault's entries
+under names that end in what the plugin gave them (`forgetSecrets` relies on it; Obsidian documents no format).
 
 ## Gotchas
 

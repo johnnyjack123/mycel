@@ -8,6 +8,37 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.30** (2026-11-26, branch `feat/disconnect-vault`, the user's finding on 0.9.29 and their
+  decision) - **disconnecting a vault, instead of resetting a device's sync.**
+  - **The bug.** *Reset this device's sync* waited about twenty seconds on a device and then said
+    "the database mycel-history/… is still open", leaving the device stopped, signed in, its copies
+    of the notes gone but its records kept. The local history (`indexedDbHistory`) never closed its
+    database - not when the sync stopped, nor when someone asked to delete it, which the notes'
+    databases do (lib0's `openDB`). Deleting it waited for that, timed out, and the reset ended
+    there, before it started the sync again. Every reset on a real device went so; the tests ran
+    with stores in memory. The history now closes with the sync (`HistoryStore.close`) and gives
+    way to a deletion (`onversionchange`). Checked by putting the bug back: with the close taken
+    out, `test:join` fails with the device's very message.
+  - **Disconnect this vault** (This device, also signed out) replaces the reset, as the user asked:
+    signing out and being disconnected had been two states with no use for the one in between, and
+    a vault should be separable from the sync without a trace. It signs out and removes everything
+    the device kept for syncing: the databases of each vault of the server this Obsidian vault
+    holds here (`VaultClaims.held`), what it agreed on and how it met the vault, notes to compare
+    kept on this device alone, the Time Machine's copies (never while a journal needs them), the
+    keys in Obsidian's storage (`forgetSecrets`), its claims, its log and notifications, and its
+    settings - the server's address kept. The safety copies (`backups/`, `rollbacks/`) go too,
+    unless the window's box keeps them; it says how much they hold. Files of the vault, the
+    server and the other devices are not touched; the server knows no devices, so nothing there
+    names this one. What was not sent the window says first - connected, it waits for it a while
+    -, since it then stays in the files alone. Signed in again, the device meets the vault as a new
+    one (invariant 34). Its record is written before anything goes and leaves with the settings at
+    the end (`settings.disconnecting`): a start that finds it carries it on before anything syncs,
+    and a failure says so in the status bar and a notice, with *Try again*. *Sign out* still keeps
+    everything, to carry on where it stood. Checked in `test:join` (disconnecting, signing in
+    again as a new device, the copies kept on request, a journal's copies kept) and `test:load`
+    (the real plugin carrying on a disconnect at its start: only this vault's databases, keys and
+    claim gone, the settings as new, nothing started).
+
 - **0.9.29** (2026-11-26, branch `feat/reviews-everywhere`, the user's findings and decisions of
   the day after 0.9.28) - **notes to compare on every device, the Time Machine's marks, resetting
   a device's sync, one Obsidian vault per vault of the server, and smaller things.**
