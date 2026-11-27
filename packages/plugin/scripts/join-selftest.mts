@@ -370,6 +370,29 @@ try {
   check(copied(A6).size === 3, 'after a copy of its vault')
   await A6.shutdown()
 
+  // --- a note shown in an editor while the device joins (0.9.31) -------------------------------
+  // Merged by the editor's binding instead of the file's reconcile: one that only took the longer
+  // version there was never listed to look at.
+  await A1.vault.userCreate('Open.md','kept open\nwritten on the first device\n')
+  check(await eventually(() => A1.store?.noteState(A1.vault.file('Open.md')) === 'synced'), 'a note written on the first device reached the server')
+  const A8 = new Device(name, false, { 'Open.md': 'kept open\n' })
+  devices.push(A8)
+  const shown = A8.open('Open.md')
+  check(await A8.boot(), 'a device showing a note in an editor while it joins starts')
+  check(A8.joinPlans[0]?.merges.server.join() === 'Open.md', "it was told the server's version holds all of its own", A8.joinPlans[0]?.merges)
+  check(
+    await eventually(() => shown.text() === 'kept open\nwritten on the first device\n'),
+    'the editor took the longer version',
+    shown.text()
+  )
+  check(
+    await eventually(() => A8.reviews.some((review) => review.path === 'Open.md' && review.kind === 'no-base' && review.mine === 'kept open\n')),
+    'and the note is listed to look at, as one merged in its file is',
+    A8.reviews.map((review) => review.path)
+  )
+  A8.close(shown)
+  await A8.shutdown()
+
   // --- Disconnect this vault (0.9.30) ----------------------------------------------------------
   {
     const vaultId = A1.keys?.vaultId as string
