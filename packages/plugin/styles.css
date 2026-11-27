@@ -986,6 +986,7 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
 }
 
 .mycel-merge-list {
+  position: relative;
   max-height: 65vh;
   overflow-y: auto;
   margin: 0 0 1em;
@@ -1062,7 +1063,8 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
   color: var(--text-muted);
 }
 
-/* At the top of its line, also of one that wraps: a button would centre its number. */
+/* At the top of its line, also of one that wraps: a button would centre its number. A line
+   is dragged by it, so a finger on it does not scroll the window. */
 .mycel-merge-num {
   flex: 0 0 2.5em;
   align-self: flex-start;
@@ -1070,6 +1072,7 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
   color: var(--text-faint);
   user-select: none;
   -webkit-user-select: none;
+  touch-action: none;
 }
 
 button.mycel-merge-num {
@@ -1081,16 +1084,12 @@ button.mycel-merge-num {
   box-shadow: none;
   font: inherit;
   color: var(--text-faint);
-  cursor: pointer;
+  cursor: grab;
 }
 
-button.mycel-merge-num:hover:not(:disabled) {
+button.mycel-merge-num:hover {
   color: var(--text-accent);
   background-color: var(--background-modifier-hover);
-}
-
-button.mycel-merge-num:disabled {
-  cursor: default;
 }
 
 .mycel-merge-text {
@@ -1129,25 +1128,7 @@ button.mycel-merge-num:disabled {
   border-radius: 2px;
 }
 
-/* A line both have, taken into a passage by a range across it: fainter than what differs. */
-.mycel-merge-passage .mycel-merge-line.is-both {
-  color: var(--text-muted);
-}
-
-.mycel-merge-passage .mycel-merge-line.is-mine.is-both {
-  background-color: rgba(var(--color-blue-rgb), 0.03);
-}
-
-.mycel-merge-passage .mycel-merge-line.is-theirs.is-both {
-  background-color: rgba(var(--color-purple-rgb), 0.03);
-}
-
-/* Where a range of lines begins. */
-.mycel-merge-line.is-anchor .mycel-merge-num {
-  color: var(--text-on-accent);
-  background-color: var(--interactive-accent);
-}
-
+/* What to do with the lines selected. */
 .mycel-merge-hint {
   margin: 0 0 0.5em;
   color: var(--text-accent);
@@ -1158,9 +1139,75 @@ button.mycel-merge-num:disabled {
   display: none;
 }
 
-/* In the middle already, with its side or alone. */
-.mycel-merge-passage .mycel-merge-line.is-picked {
+.mycel-merge-unselect {
+  margin-left: 0.4em;
+  font-size: var(--font-ui-smaller);
+}
+
+/* In the middle already, wherever it was put. */
+.mycel-merge-line.is-picked {
   opacity: 0.55;
+}
+
+/* Selected, to be dragged together: after the tints of the sides, so it shows over them. */
+.mycel-merge-list .mycel-merge-line.is-selected,
+.mycel-merge-list .mycel-merge-item.is-selected {
+  background-color: var(--text-selection);
+  opacity: 1;
+}
+
+.mycel-merge-line.is-selected .mycel-merge-num,
+.mycel-merge-item.is-selected .mycel-merge-grip {
+  color: var(--text-on-accent);
+  background-color: var(--interactive-accent);
+}
+
+/* Being dragged: where they came from, faint. */
+.mycel-merge-list .mycel-merge-line.is-dragging,
+.mycel-merge-list .mycel-merge-item.is-dragging {
+  opacity: 0.4;
+}
+
+.mycel-merge-list.is-dragging,
+.mycel-merge-list.is-dragging * {
+  cursor: grabbing;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Where the lines dragged go when let go. */
+.mycel-merge-drop {
+  display: none;
+  position: absolute;
+  z-index: 2;
+  height: 2px;
+  border-radius: 1px;
+  background-color: var(--interactive-accent);
+  pointer-events: none;
+}
+
+/* What is being dragged, beside the pointer - over the window, so in the page's body. */
+.mycel-merge-ghost {
+  position: fixed;
+  z-index: var(--layer-tooltip);
+  max-width: 24em;
+  overflow: hidden;
+  padding: 0.2em 0.6em;
+  border: 1px solid var(--interactive-accent);
+  border-radius: var(--radius-s);
+  background-color: var(--background-primary);
+  box-shadow: var(--shadow-s);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.mycel-merge-ghost.is-removing {
+  border-color: var(--text-error);
+  color: var(--text-error);
+  font-family: var(--font-interface);
 }
 
 /* Where this side has no line: the rows below stay level with the other side's. */
@@ -1203,6 +1250,7 @@ button.mycel-merge-num:disabled {
   min-width: 0;
 }
 
+/* The middle of a passage: its lines, or the field written in once clicked into. */
 .mycel-merge-slot {
   flex: 1 0 auto;
   display: block;
@@ -1210,20 +1258,82 @@ button.mycel-merge-num:disabled {
   width: 100%;
   min-height: 40px;
   margin: 0;
-  padding: 0.4em 1.8em 0.4em 0.6em;
-  resize: vertical;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   font-family: var(--font-monospace);
   font-size: 0.85em;
   line-height: 1.5;
+}
+
+textarea.mycel-merge-slot {
+  padding: 0.4em 1.8em 0.4em 0.6em;
+  resize: vertical;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+div.mycel-merge-slot {
+  padding: 0.2em 1.8em 0.2em 0.2em;
+  cursor: text;
 }
 
 .mycel-merge-passage.is-open .mycel-merge-slot {
   border: 1px dashed var(--text-accent);
   background-color: var(--background-modifier-hover);
+}
+
+.mycel-merge-result.is-drop .mycel-merge-slot {
+  border: 1px solid var(--interactive-accent);
+}
+
+.mycel-merge-placeholder {
+  padding: 0.2em 0.4em;
+  color: var(--text-faint);
+  font-family: var(--font-interface);
+}
+
+/* A line of the middle, marked by where it came from: a version, or written by hand. */
+.mycel-merge-item {
+  display: flex;
+  gap: 0.3em;
+  min-width: 0;
+  min-height: 1.5em;
+  border-left: 3px solid var(--background-modifier-border);
+}
+
+.mycel-merge-item.is-from-mine {
+  border-left-color: rgba(var(--color-blue-rgb), 0.6);
+}
+
+.mycel-merge-item.is-from-theirs {
+  border-left-color: rgba(var(--color-purple-rgb), 0.6);
+}
+
+/* What a line of the middle is dragged by; a finger on it does not scroll the window. */
+button.mycel-merge-grip {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  height: 1.5em;
+  padding: 0 2px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: none;
+  box-shadow: none;
+  color: var(--text-faint);
+  cursor: grab;
+  touch-action: none;
+}
+
+button.mycel-merge-grip:hover {
+  color: var(--text-accent);
+  background-color: var(--background-modifier-hover);
+}
+
+.mycel-merge-grip svg {
+  width: 0.9em;
+  height: 0.9em;
 }
 
 .mycel-merge-clear {

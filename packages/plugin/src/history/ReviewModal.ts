@@ -1,12 +1,36 @@
-import { App, Modal, Platform, Setting, setIcon } from 'obsidian'
+import { App, Modal, Setting, setIcon } from 'obsidian'
 import { Notice } from '../notices.js'
 import { busy } from '../busy.js'
 import { lineChanges, lineText, type Row, type SameRun } from '../sync/align.js'
-import { MergeDraft, versionNames, type Review, type Side } from '../sync/Reviews.js'
+import { MergeDraft, versionNames, type Place, type Review, type Side } from '../sync/Reviews.js'
 import { ConfirmModal } from './TimeMachineModals.js'
 
 /** Lines both versions have shown around a passage before the rest of the run folds away. */
 const CONTEXT_LINES = 3
+/** How far a press moves before it is a drag, in pixels. */
+const DRAG_AFTER = 5
+/** How close to the list's top or bottom a drag scrolls it, and how far each frame, in pixels. */
+const SCROLL_EDGE = 40
+const SCROLL_STEP = 14
+
+/** A column of the window: one of the versions, or the note being put together. */
+type Column = Side | 'result'
+
+/** What a drag carries: lines of a version, which it copies into the middle, or lines of the middle, which it moves. */
+type Dragged = { side: Side; lines: number[] } | { ids: number[] }
+
+/** Where a drag goes: a place in the middle, drawn at an edge of `el` - or out of the middle, onto a version. */
+type Target = { place: Place; el: HTMLElement; below: boolean } | { remove: true }
+
+interface Drag {
+  dragged: Dragged
+  ghost: HTMLElement
+  marker: HTMLElement
+  target: Target | null
+  x: number
+  y: number
+  frame: number | null
+}
 
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
@@ -37,14 +61,23 @@ function shown(text: string): string {
   return text.endsWith('\n') ? text.slice(0, -1) : text
 }
 
+function middleOf(el: Element): number {
+  const rect = el.getBoundingClientRect()
+  return rect.top + rect.height / 2
+}
+
 /**
  * The two versions of a note and the note put together from them, as git's merge tools
  * have it (the user, 2026-11-18): this device's version on the left, the other on the
  * right, the result in the middle. Both versions stand whole, line beside line (2026-11-21):
  * what both have on the same rows and already in the middle, lines that resemble each other
  * side by side, a gap opposite a line only one side has. Every passage that differs starts
- * empty and is brought in one at a time - either side, both in the order taken, single lines
- * by their number, a range of them from one number to another (0.9.31), or written by hand.
+ * empty and is brought in one at a time - either side, both in the order taken, or written by
+ * hand. Since 0.9.32 lines are dragged, as cards on a board (the user, 2026-11-27): a version's
+ * lines by their number into the middle, wherever they belong - between lines both have too -,
+ * several selected first with a click each; the middle's by a handle, to elsewhere in it or out
+ * of it onto a side. Pointer events, not the browser's drag and drop, which a finger does not
+ * reliably start: the numbers and handles take no scrolling, the rest of the window does.
  * Whatever is applied replaces the note on every device, as an edit the history can undo; the
  * note is backed up first. *Done* leaves the note as the merge made it.
  */
@@ -52,16 +85,26 @@ export class ReviewModal extends Modal {
   private readonly draft: MergeDraft
   private progressEl: HTMLElement | null = null
   private hintEl: HTMLElement | null = null
-  private rangeButton: HTMLButtonElement | null = null
   private applyButton: HTMLButtonElement | null = null
   private listEl: HTMLElement | null = null
-  private readonly passages: Array<{ el: HTMLElement; render: () => void }> = []
-  /** The column a selection began in: copying takes that version's lines alone. */
+  private readonly passages: Array<{ el: HTMLElement; render: () => void; middle: () => void }> = []
+  /** The column a text selection began in: copying takes that version's lines alone. */
   private selecting: Side | null = null
-  /** The number clicked last: where a range of lines begins. */
-  private anchor: { side: Side; line: number } | null = null
-  /** Every number tapped begins or ends a range - for a phone, which has no Shift. */
-  private ranging = false
+  /** Lines chosen to be dragged together, in one column: a version's by their number, the middle's by their id. */
+  private selected: { column: Column; keys: Set<number> } | null = null
+  /** The line clicked last: where a Shift-click selects from. */
+  private anchor: number | null = null
+  /** A line's number or handle pressed, not yet moved far enough to be a drag. */
+  private press: { column: Column; key: number; x: number; y: number } | null = null
+  private drag: Drag | null = null
+  /** Stops following the pointer after a press. */
+  private unlisten: (() => void) | null = null
+  /** A drag just ended: the click its release makes selects nothing. */
+  private swallowClick = false
+  /** The passage whose middle is a text field right now. */
+  private editing: number | null = null
+  /** The lines of each version in the middle, wherever they were put: marked as taken. */
+  private placedLines: Record<Side, Set<number>> = { mine: new Set(), theirs: new Set() }
 
   constructor(
     app: App,
@@ -86,42 +129,32 @@ export class ReviewModal extends Modal {
     contentEl.empty()
     this.passages.length = 0
     const at = new Date(this.review.at).toLocaleString()
-    const range = Platform.isMobile
-      ? 'with "Range of lines" on, two numbers bring everything from the first to the second as one piece, lines both have included'
-      : 'Shift-click a second one and everything from the first to it comes in as one piece, lines both have included'
     contentEl.createEl('p', {
       cls: 'setting-item-description',
       text: `${
         this.review.kind === 'no-base'
           ? `This note said different things on your devices when they met (${at}), and nothing told which side changed what, so it was merged keeping every line of both.`
           : `This note was changed in the same place on two devices (${at}), and both changes were kept.`
-      } Both versions stand here whole, line beside line; what both have is in the middle already. Put each passage that differs together: Take brings a side in, a line's number brings that line alone - ${range} -, or write it yourself. Or press Done if the note is right as it is.`
+      } Both versions stand here whole, line beside line; what both have is in the middle already. Put each passage that differs together: Take brings a side in. Or drag a line by its number into the middle, to where it belongs - between lines both have too; click numbers first to drag several together (Shift-click: every line between). In the middle, drag a line by its handle to move it, or onto a side to take it out again; click into it to write. Or press Done if the note is right as it is.`
     })
 
     const bar = contentEl.createDiv({ cls: 'mycel-merge-bar' })
     this.progressEl = bar.createSpan({ cls: 'mycel-merge-progress' })
     const all = bar.createDiv({ cls: 'mycel-merge-all' })
-    const allButton = (label: string, run: () => void): HTMLButtonElement => {
-      const button = all.createEl('button', { text: label })
-      button.addEventListener('click', run)
-      return button
+    const allButton = (label: string, run: () => void): void => {
+      all.createEl('button', { text: label }).addEventListener('click', run)
     }
     allButton('Next open passage', () => this.nextOpen())
     allButton(`All from ${this.names.mineWords}`, () => this.everywhere('mine'))
     allButton('All from the other', () => this.everywhere('theirs'))
     allButton('Empty again', () => this.everywhere(null))
-    this.rangeButton = allButton('Range of lines', () => this.setRanging(!this.ranging))
-    this.rangeButton.setAttr('aria-pressed', 'false')
-    this.rangeButton.setAttr(
-      'aria-label',
-      "On: a line's number begins a range and the next one of the same side ends it - everything from the first to the last goes into the middle as one piece. Shift-click does the same."
-    )
     this.hintEl = contentEl.createDiv({ cls: 'mycel-merge-hint' })
 
     const list = contentEl.createDiv({ cls: 'mycel-merge-list' })
     this.listEl = list
     list.addEventListener('pointerdown', (event) => this.startSelecting(event))
     list.addEventListener('copy', (event) => this.copy(event))
+    list.addEventListener('keydown', (event) => this.keyed(event))
     this.renderList()
 
     const buttons = new Setting(contentEl)
@@ -142,13 +175,14 @@ export class ReviewModal extends Modal {
     this.updateProgress()
   }
 
-  /** The three columns, drawn anew when passages were joined or split - where they were scrolled to. */
+  /** The three columns, drawn anew whenever lines went somewhere - where they were scrolled to. */
   private renderList(): void {
     const list = this.listEl
     if (!list) return
     const scrolled = list.scrollTop
     list.empty()
     this.passages.length = 0
+    this.refreshPlaced()
     const head = list.createDiv({ cls: 'mycel-merge-head' })
     head.createDiv({ cls: 'is-mine', text: this.names.mine })
     head.createDiv({ cls: 'is-result', text: 'The note will say' })
@@ -156,23 +190,28 @@ export class ReviewModal extends Modal {
     const runs = this.draft.runs
     let index = 0
     runs.forEach((run, at) => {
-      if (run.same) this.renderSame(list, run, at === 0, at === runs.length - 1)
+      if (run.same) this.renderSame(list, run, at, at === 0, at === runs.length - 1)
       else this.renderPassage(list, index++)
     })
     list.scrollTop = scrolled
-    this.markAnchor()
+    this.showSelection()
     this.updateProgress()
   }
 
+  private refreshPlaced(): void {
+    this.placedLines = { mine: this.draft.placed('mine'), theirs: this.draft.placed('theirs') }
+  }
+
   /** What both versions have, row for row in all three columns; a long run folds its middle away. */
-  private renderSame(parent: HTMLElement, run: SameRun, first: boolean, last: boolean): void {
+  private renderSame(parent: HTMLElement, run: SameRun, runIndex: number, first: boolean, last: boolean): void {
     const group = parent.createDiv({ cls: 'mycel-merge-same' })
     const count = run.mineTo - run.mineFrom
     const row = (k: number): void => {
-      this.line(group, 'mine', run.mineFrom + k)
-      const middle = group.createDiv({ cls: 'mycel-merge-line is-result' })
+      this.line(group, 'mine', run.mineFrom + k).createSpan({ cls: 'mycel-merge-text', text: lineText(this.draft.aligned.mine[run.mineFrom + k] ?? '') })
+      // Where lines dropped between these go: before this one, or after it.
+      const middle = group.createDiv({ cls: 'mycel-merge-line is-result', attr: { 'data-run': String(runIndex), 'data-at': String(k) } })
       middle.createSpan({ cls: 'mycel-merge-text', text: lineText(this.draft.aligned.mine[run.mineFrom + k] ?? '') })
-      this.line(group, 'theirs', run.theirsFrom + k)
+      this.line(group, 'theirs', run.theirsFrom + k).createSpan({ cls: 'mycel-merge-text', text: lineText(this.draft.aligned.theirs[run.theirsFrom + k] ?? '') })
     }
     const above = first ? 0 : CONTEXT_LINES
     const below = last ? 0 : CONTEXT_LINES
@@ -185,101 +224,58 @@ export class ReviewModal extends Modal {
     fold.addEventListener('click', () => {
       group.empty()
       for (let k = 0; k < count; k += 1) row(k)
-      this.markAnchor()
+      this.showSelection()
     })
     for (let k = count - below; k < count; k += 1) row(k)
   }
 
-  /** One line of a version outside the passages: its text, and its number, where a range may begin or end. */
-  private line(parent: HTMLElement, side: Side, index: number): void {
-    const cell = parent.createDiv({ cls: `mycel-merge-line is-${side}` })
-    cell.setAttr('data-line', String(index))
-    this.number(cell, side, index, null, 'Begin or end a range of lines here: everything from its first line to its last goes into the middle as one piece')
-    cell.createSpan({ cls: 'mycel-merge-text', text: lineText(this.draft.lines(side)[index] ?? '') })
-  }
-
-  /** A line's number: alone it takes its line - in a passage -, with Shift or "Range of lines" it begins or ends a range. */
-  private number(cell: HTMLElement, side: Side, line: number, index: number | null, label: string): HTMLButtonElement {
-    const number = cell.createEl('button', { cls: 'mycel-merge-num', text: String(line + 1), attr: { 'aria-label': label } })
-    // Shift held, the browser would select the text between the last click and this one.
-    number.addEventListener('mousedown', (event) => {
-      if (event.shiftKey) event.preventDefault()
+  /** A line of a version, its number to drag it by - into the middle - and to select it with. */
+  private line(parent: HTMLElement, side: Side, line: number): HTMLElement {
+    const cell = parent.createDiv({ cls: `mycel-merge-line is-${side}`, attr: { 'data-line': String(line) } })
+    cell.toggleClass('is-picked', this.placedLines[side].has(line))
+    const number = cell.createEl('button', {
+      cls: 'mycel-merge-num',
+      text: String(line + 1),
+      attr: { 'aria-label': `Line ${line + 1}: drag it into the middle, to where it belongs. A click selects it, to drag several together.` }
     })
-    number.addEventListener('click', (event) => this.numberClicked(side, line, event.shiftKey, index))
-    return number
+    this.handle(number, side, line)
+    return cell
   }
 
-  private numberClicked(side: Side, line: number, shift: boolean, index: number | null): void {
-    const anchor = this.anchor
-    if ((shift || this.ranging) && anchor?.side === side && anchor.line !== line) {
-      this.anchor = null
-      const runs = this.draft.runs
-      const into = this.draft.takeRange(side, anchor.line, line)
-      if (this.draft.runs !== runs) this.renderList()
-      else if (into !== null) this.changed(into)
-      this.markAnchor()
-      return
-    }
-    if (this.ranging) {
-      // A range's first line: nothing is taken before its last one.
-      this.anchor = anchor?.side === side && anchor.line === line ? null : { side, line }
-      this.markAnchor()
-      return
-    }
-    if (index !== null) {
-      this.draft.toggleLine(index, side, line)
-      this.changed(index)
-    }
-    this.anchor = { side, line }
-    this.markAnchor()
-  }
-
-  private setRanging(on: boolean): void {
-    this.ranging = on
-    this.rangeButton?.toggleClass('mod-cta', on)
-    this.rangeButton?.setAttr('aria-pressed', String(on))
-    this.markAnchor()
-  }
-
-  /** Where a range begins, marked, and what to do next said. */
-  private markAnchor(): void {
-    const list = this.listEl
-    const anchor = this.anchor
-    if (list) {
-      for (const el of Array.from(list.querySelectorAll('.mycel-merge-line.is-anchor'))) el.classList.remove('is-anchor')
-      if (anchor) list.querySelector(`.mycel-merge-line.is-${anchor.side}[data-line="${anchor.line}"]`)?.classList.add('is-anchor')
-    }
-    const which = anchor?.side === 'mine' ? this.names.mineWords : 'the other version'
-    let hint = ''
-    if (this.ranging) {
-      hint = anchor
-        ? `Range from line ${anchor.line + 1} of ${which}: now the number of its last line.`
-        : "Range of lines: tap the number of the range's first line."
-    } else if (anchor && !Platform.isMobile) {
-      hint = `Shift-click another number of ${which} to bring everything from line ${anchor.line + 1} to it into the middle as one piece.`
-    }
-    this.hintEl?.setText(hint)
-  }
-
-  /** One passage that differs: each side's way into the middle, its rows, and the middle beside them. */
+  /** One passage that differs, or a place opened between lines both have: each side's way into the middle, its rows, and the middle beside them. */
   private renderPassage(parent: HTMLElement, index: number): void {
     const el = parent.createDiv({ cls: 'mycel-merge-passage' })
+    let middleEl: HTMLElement | null = null
+    const middle = (): void => {
+      if (middleEl) this.renderMiddle(middleEl, el, index)
+    }
     const render = (): void => {
       el.empty()
       const passage = this.draft.passage(index)
       el.toggleClass('is-open', !this.draft.decided(index))
+      el.toggleClass('is-inserted', passage.inserted === true)
+      if (passage.inserted) {
+        // Neither version has a line here: a gap on both sides, as long as the middle.
+        el.setCssStyles({ gridTemplateRows: 'auto' })
+        el.createDiv({ cls: 'mycel-merge-line is-mine is-gap' })
+        middleEl = el.createDiv({ cls: 'mycel-merge-result' })
+        middle()
+        el.createDiv({ cls: 'mycel-merge-line is-theirs is-gap' })
+        return
+      }
       // A row per line, and one more that takes whatever height the middle needs beyond them.
       el.setCssStyles({ gridTemplateRows: `auto repeat(${passage.rows.length}, auto) 1fr` })
       this.takeCell(el, index, 'mine')
-      this.middle(el, index)
+      middleEl = el.createDiv({ cls: 'mycel-merge-result' })
+      middle()
       this.takeCell(el, index, 'theirs')
       passage.rows.forEach((row, at) => {
         const changes = row.paired && row.mine !== null && row.theirs !== null ? lineChanges(lineText(this.draft.aligned.mine[row.mine] ?? ''), lineText(this.draft.aligned.theirs[row.theirs] ?? '')) : null
-        this.passageLine(el, index, 'mine', row, at + 2, changes?.mine ?? null)
-        this.passageLine(el, index, 'theirs', row, at + 2, changes?.theirs ?? null)
+        this.passageLine(el, 'mine', row, at + 2, changes?.mine ?? null)
+        this.passageLine(el, 'theirs', row, at + 2, changes?.theirs ?? null)
       })
     }
-    this.passages.push({ el, render })
+    this.passages.push({ el, render, middle })
     render()
   }
 
@@ -299,79 +295,121 @@ export class ReviewModal extends Modal {
       button.appendText(empty ? 'Take: nothing' : 'Take')
       button.setAttr('aria-label', empty ? 'This side has nothing here: decide the passage that way' : 'Bring this side into the middle, after what is there')
     }
+    // Decided when clicked: text written in the middle meanwhile may have changed what is taken.
     button.addEventListener('click', () => {
-      if (taken) this.draft.remove(index, side)
+      if (this.draft.taken(index, side)) this.draft.remove(index, side)
       else this.draft.take(index, side)
       this.changed(index)
     })
   }
 
-  private middle(el: HTMLElement, index: number): void {
+  /** The middle of a passage: its lines, each with a handle - or, once clicked into, a field to write in. */
+  private renderMiddle(middleEl: HTMLElement, passageEl: HTMLElement, index: number): void {
+    middleEl.empty()
+    middleEl.setAttr('data-passage', String(index))
+    if (this.editing === index) this.writing(middleEl, passageEl, index)
+    else this.slotLines(middleEl, index)
+    if (!this.draft.decided(index)) return
+    const clear = middleEl.createEl('button', { cls: 'clickable-icon mycel-merge-clear', attr: { 'aria-label': 'Empty this passage again' } })
+    setIcon(clear, 'eraser')
+    // Pressed while writing, the field keeps the focus: losing it first drew the middle anew under the click.
+    clear.addEventListener('mousedown', (event) => event.preventDefault())
+    clear.addEventListener('click', () => {
+      this.editing = null
+      this.draft.clear(index)
+      this.clearSelection(false)
+      this.renderList()
+    })
+  }
+
+  private slotLines(middleEl: HTMLElement, index: number): void {
     const slot = this.draft.slots[index]
     if (!slot) return
-    const middle = el.createDiv({ cls: 'mycel-merge-result' })
-    const area = middle.createEl('textarea', {
+    const box = middleEl.createDiv({
       cls: 'mycel-merge-slot',
-      attr: {
-        placeholder: "Empty - bring a side in with Take, a line with its number, or write here",
-        'aria-label': `Passage ${index + 1}: what the note will say`,
-        spellcheck: 'false'
-      }
+      attr: { tabindex: '0', 'aria-label': `Passage ${index + 1}: what the note will say. Click or Enter to write in it.` }
     })
-    area.value = shown(slot.text)
+    if (slot.items.length === 0) box.createDiv({ cls: 'mycel-merge-placeholder', text: 'Empty - Take a side, drag lines here, or click to write' })
+    slot.items.forEach((item, at) => {
+      const row = box.createDiv({
+        cls: `mycel-merge-item ${'typed' in item ? 'is-typed' : `is-from-${item.side}`}`,
+        attr: { 'data-id': String(item.id), 'data-at': String(at) }
+      })
+      const grip = row.createEl('button', {
+        cls: 'mycel-merge-grip',
+        attr: { 'aria-label': 'Drag this line to move it, or onto a side to take it out again. A click selects it, to move several together.' }
+      })
+      setIcon(grip, 'grip-vertical')
+      this.handle(grip, 'result', item.id)
+      row.createSpan({ cls: 'mycel-merge-text', text: lineText(this.draft.itemText(item)) })
+    })
+    box.addEventListener('click', (event) => {
+      if (this.swallowClick || (event.target as Element | null)?.closest?.('.mycel-merge-grip')) return
+      this.startEditing(index)
+    })
+    box.addEventListener('keydown', (event) => {
+      if (event.target !== box || event.key !== 'Enter') return
+      event.preventDefault()
+      this.startEditing(index)
+    })
+  }
+
+  private writing(middleEl: HTMLElement, passageEl: HTMLElement, index: number): void {
+    const area = middleEl.createEl('textarea', {
+      cls: 'mycel-merge-slot',
+      attr: { placeholder: 'Empty - write what the note says here', 'aria-label': `Passage ${index + 1}: what the note will say`, spellcheck: 'false' }
+    })
+    area.value = shown(this.draft.text(index))
     const fit = (): void => {
       area.setCssStyles({ height: 'auto' })
       area.setCssStyles({ height: `${Math.max(area.scrollHeight, 40)}px` })
     }
     area.addEventListener('input', () => {
       this.draft.edit(index, area.value.length > 0 ? `${area.value}\n` : '')
-      el.toggleClass('is-open', !this.draft.decided(index))
+      passageEl.toggleClass('is-open', !this.draft.decided(index))
       fit()
       this.updateProgress()
     })
+    area.addEventListener('blur', () => this.stopEditing(index))
     window.requestAnimationFrame(fit)
-    const joined = this.draft.passage(index).joined === true
-    if (this.draft.decided(index) || joined) {
-      const clear = middle.createEl('button', {
-        cls: 'clickable-icon mycel-merge-clear',
-        attr: { 'aria-label': joined ? 'Empty this passage again, split into the passages it was made of' : 'Empty this passage again' }
-      })
-      setIcon(clear, 'eraser')
-      clear.addEventListener('click', () => {
-        if (joined) {
-          this.draft.split(index)
-          this.renderList()
-          return
-        }
-        this.draft.clear(index)
-        this.changed(index)
-      })
-    }
   }
 
-  /** A line of a passage, or a gap where this side has none; its number takes it alone. */
-  private passageLine(el: HTMLElement, index: number, side: Side, row: Row, gridRow: number, changes: Array<[number, number]> | null): void {
-    const cell = el.createDiv({ cls: `mycel-merge-line is-${side}` })
-    cell.setCssStyles({ gridRow: String(gridRow) })
-    const line = side === 'mine' ? row.mine : row.theirs
-    if (line === null) {
-      cell.addClass('is-gap')
+  private startEditing(index: number): void {
+    if (this.editing !== null && this.editing !== index) this.stopEditing(this.editing)
+    this.clearSelection()
+    this.editing = index
+    this.passages[index]?.middle()
+    const area = this.passages[index]?.el.querySelector('textarea')
+    area?.focus()
+    area?.setSelectionRange(area.value.length, area.value.length)
+  }
+
+  /** Written: the middle shows its lines again. Only it is drawn anew - a button clicked to leave the field must stay where it was pressed. */
+  private stopEditing(index: number): void {
+    if (this.editing !== index) return
+    this.editing = null
+    if (this.draft.tidy()) {
+      this.renderList()
       return
     }
-    cell.setAttr('data-line', String(line))
-    // Both have it, and a range took it into the passage: the range's now, though both have it.
-    cell.toggleClass('is-both', row.same === true)
-    const picked = this.draft.picked(index, side, line)
-    cell.toggleClass('is-picked', picked)
-    const whole = this.draft.taken(index, side)
-    const number = this.number(
-      cell,
-      side,
-      line,
-      index,
-      whole ? 'In the middle with its side' : picked ? 'Take this line out of the middle again, with the range it came in' : 'Bring this line alone into the middle, after what is there'
-    )
-    number.disabled = whole
+    this.refreshPlaced()
+    this.passages[index]?.middle()
+    for (const cell of Array.from(this.listEl?.querySelectorAll<HTMLElement>('.mycel-merge-line[data-line]') ?? [])) {
+      const side: Side = cell.classList.contains('is-mine') ? 'mine' : 'theirs'
+      cell.classList.toggle('is-picked', this.placedLines[side].has(Number(cell.getAttribute('data-line'))))
+    }
+    this.updateProgress()
+  }
+
+  /** A line of a passage, or a gap where this side has none. */
+  private passageLine(el: HTMLElement, side: Side, row: Row, gridRow: number, changes: Array<[number, number]> | null): void {
+    const line = side === 'mine' ? row.mine : row.theirs
+    if (line === null) {
+      el.createDiv({ cls: `mycel-merge-line is-${side} is-gap` }).setCssStyles({ gridRow: String(gridRow) })
+      return
+    }
+    const cell = this.line(el, side, line)
+    cell.setCssStyles({ gridRow: String(gridRow) })
     const text = lineText(this.draft.lines(side)[line] ?? '')
     const textEl = cell.createSpan({ cls: 'mycel-merge-text' })
     if (changes) marked(textEl, text, changes)
@@ -379,9 +417,309 @@ export class ReviewModal extends Modal {
   }
 
   private changed(index: number): void {
+    if (this.selected?.column === 'result') this.clearSelection(false)
+    this.refreshPlaced()
     this.passages[index]?.render()
     this.updateProgress()
-    this.markAnchor()
+    this.showSelection()
+  }
+
+  // --- selecting and dragging lines (0.9.32) ---------------------------------------------------
+
+  /** A line's number or handle: a click selects, a press that moves drags. */
+  private handle(el: HTMLElement, column: Column, key: number): void {
+    el.addEventListener('pointerdown', (event) => this.pressed(event, column, key))
+    // Shift held, the browser would select the text between the last click and this one.
+    el.addEventListener('mousedown', (event) => event.preventDefault())
+    el.addEventListener('click', (event) => {
+      if (this.swallowClick) return
+      this.select(column, key, event.shiftKey)
+      // Focused, Delete reaches the list.
+      el.focus({ preventScroll: true })
+    })
+  }
+
+  private pressed(event: PointerEvent, column: Column, key: number): void {
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+    // A finger's press must not be the start of a text selection either; a mouse's would select text as it moves.
+    if (event.pointerType !== 'touch') event.preventDefault()
+    // Grabbing a line ends writing in the middle.
+    if (this.editing !== null) (this.contentEl.ownerDocument.activeElement as HTMLElement | null)?.blur?.()
+    this.unlisten?.()
+    this.press = { column, key, x: event.clientX, y: event.clientY }
+    const doc = this.contentEl.ownerDocument
+    const move = (moved: PointerEvent): void => this.pointerMoved(moved)
+    const up = (): void => {
+      this.unlisten?.()
+      this.released()
+    }
+    const cancel = (): void => {
+      this.unlisten?.()
+      this.cancelDrag()
+    }
+    doc.addEventListener('pointermove', move)
+    doc.addEventListener('pointerup', up)
+    doc.addEventListener('pointercancel', cancel)
+    this.unlisten = () => {
+      doc.removeEventListener('pointermove', move)
+      doc.removeEventListener('pointerup', up)
+      doc.removeEventListener('pointercancel', cancel)
+      this.unlisten = null
+    }
+  }
+
+  private pointerMoved(event: PointerEvent): void {
+    const drag = this.drag
+    if (drag) {
+      event.preventDefault()
+      drag.x = event.clientX
+      drag.y = event.clientY
+      this.aim()
+      return
+    }
+    const press = this.press
+    if (!press || Math.hypot(event.clientX - press.x, event.clientY - press.y) < DRAG_AFTER) return
+    this.beginDrag(press, event.clientX, event.clientY)
+  }
+
+  /** The line pressed - and every line selected with it, when it is one of them. */
+  private beginDrag(press: { column: Column; key: number }, x: number, y: number): void {
+    const list = this.listEl
+    if (!list) return
+    const selected = this.selected
+    const chosen = selected?.column === press.column && selected.keys.has(press.key) ? [...selected.keys] : [press.key]
+    const dragged: Dragged = press.column === 'result' ? { ids: this.inOrder(chosen) } : { side: press.column, lines: chosen.sort((a, b) => a - b) }
+    const ghost = list.ownerDocument.body.createDiv({ cls: 'mycel-merge-ghost' })
+    const marker = list.createDiv({ cls: 'mycel-merge-drop' })
+    this.drag = { dragged, ghost, marker, target: null, x, y, frame: null }
+    list.addClass('is-dragging')
+    for (const el of this.elementsOf(dragged)) el.classList.add('is-dragging')
+    this.aim()
+    this.scrollWhileDragging()
+  }
+
+  /** Lines of the middle in the order they stand there. */
+  private inOrder(ids: number[]): number[] {
+    const order = this.draft.items().map((item) => item.id)
+    return [...ids].sort((a, b) => order.indexOf(a) - order.indexOf(b))
+  }
+
+  private elementsOf(dragged: Dragged): Element[] {
+    const list = this.listEl
+    if (!list) return []
+    const selectors = 'ids' in dragged ? dragged.ids.map((id) => `.mycel-merge-item[data-id="${id}"]`) : dragged.lines.map((line) => `.mycel-merge-line.is-${dragged.side}[data-line="${line}"]`)
+    return selectors.length > 0 ? Array.from(list.querySelectorAll(selectors.join(','))) : []
+  }
+
+  /** Where the pointer is: what a release there would do, drawn. */
+  private aim(): void {
+    const drag = this.drag
+    const list = this.listEl
+    if (!drag || !list) return
+    drag.ghost.setCssStyles({ left: `${drag.x + 14}px`, top: `${drag.y + 10}px` })
+    const target = this.targetAt(drag.x, drag.y, 'ids' in drag.dragged)
+    // Between columns or rows the last place stays: the marker does not flicker away.
+    if (target !== undefined) drag.target = target
+    for (const el of Array.from(list.querySelectorAll('.mycel-merge-result.is-drop'))) el.classList.remove('is-drop')
+    const aimed = drag.target
+    const removing = aimed !== null && 'remove' in aimed
+    drag.ghost.toggleClass('is-removing', removing)
+    drag.ghost.setText(removing ? 'Take out of the middle' : this.ghostText(drag.dragged))
+    if (!aimed || 'remove' in aimed) {
+      drag.marker.setCssStyles({ display: 'none' })
+      return
+    }
+    const rect = aimed.el.getBoundingClientRect()
+    const box = list.getBoundingClientRect()
+    drag.marker.setCssStyles({
+      display: 'block',
+      top: `${(aimed.below ? rect.bottom : rect.top) - box.top + list.scrollTop - 1}px`,
+      left: `${rect.left - box.left + list.scrollLeft}px`,
+      width: `${rect.width}px`
+    })
+    aimed.el.closest('.mycel-merge-result')?.classList.add('is-drop')
+  }
+
+  private ghostText(dragged: Dragged): string {
+    const count = 'ids' in dragged ? dragged.ids.length : dragged.lines.length
+    if (count !== 1) return `${count} lines`
+    let text = ''
+    if ('ids' in dragged) {
+      const item = this.draft.items().find((each) => each.id === dragged.ids[0])
+      text = item ? lineText(this.draft.itemText(item)) : ''
+    } else {
+      text = lineText(this.draft.lines(dragged.side)[dragged.lines[0] ?? -1] ?? '')
+    }
+    return text.trim().length > 0 ? text : '(empty line)'
+  }
+
+  /**
+   * What lies under the pointer: a place in a passage's middle, between its lines by their
+   * height; one between lines both have - before the line or after it, by which half -; for
+   * lines of the middle, a version, which takes them out. Null outside the list, undefined
+   * where nothing is meant (between columns).
+   */
+  private targetAt(x: number, y: number, fromMiddle: boolean): Target | null | undefined {
+    const list = this.listEl
+    if (!list) return null
+    const doc = list.ownerDocument
+    const hit = typeof doc.elementFromPoint === 'function' ? doc.elementFromPoint(x, y) : null
+    if (!hit || !list.contains(hit)) return null
+    const middle = hit.closest<HTMLElement>('.mycel-merge-result')
+    if (middle) {
+      const passage = Number(middle.getAttribute('data-passage'))
+      const items = Array.from(middle.querySelectorAll<HTMLElement>('.mycel-merge-item'))
+      const last = items[items.length - 1]
+      if (!last) return { place: { passage, at: 0 }, el: middle.querySelector<HTMLElement>('.mycel-merge-slot') ?? middle, below: false }
+      const at = items.findIndex((item) => y < middleOf(item))
+      return at < 0 ? { place: { passage, at: items.length }, el: last, below: true } : { place: { passage, at }, el: items[at] as HTMLElement, below: false }
+    }
+    const shared = hit.closest<HTMLElement>('.mycel-merge-same .mycel-merge-line.is-result')
+    if (shared) {
+      const run = Number(shared.getAttribute('data-run'))
+      const at = Number(shared.getAttribute('data-at'))
+      const below = y >= middleOf(shared)
+      return { place: { run, at: below ? at + 1 : at }, el: shared, below }
+    }
+    if (fromMiddle && hit.closest('.mycel-merge-line.is-mine, .mycel-merge-line.is-theirs, .mycel-merge-take-cell, .mycel-merge-head .is-mine, .mycel-merge-head .is-theirs')) return { remove: true }
+    return undefined
+  }
+
+  /** Near the list's top or bottom edge, a drag scrolls it - the place it aims at moving along. */
+  private scrollWhileDragging(): void {
+    const view = this.listEl?.ownerDocument.defaultView
+    if (!view) return
+    const step = (): void => {
+      const drag = this.drag
+      const list = this.listEl
+      if (!drag || !list) return
+      const box = list.getBoundingClientRect()
+      if (box.height > 0) {
+        const by = drag.y < box.top + SCROLL_EDGE ? -SCROLL_STEP : drag.y > box.bottom - SCROLL_EDGE ? SCROLL_STEP : 0
+        const before = list.scrollTop
+        if (by !== 0) list.scrollTop += by
+        if (list.scrollTop !== before) this.aim()
+      }
+      drag.frame = view.requestAnimationFrame(step)
+    }
+    if (this.drag) this.drag.frame = view.requestAnimationFrame(step)
+  }
+
+  private released(): void {
+    const drag = this.drag
+    this.press = null
+    if (!drag) return
+    // The release makes a click, on the number pressed for a finger: it is not one.
+    this.swallowClick = true
+    window.setTimeout(() => {
+      this.swallowClick = false
+    }, 0)
+    this.endDrag()
+    const target = drag.target
+    const { dragged } = drag
+    if (!target) return
+    if ('remove' in target) {
+      if (!('ids' in dragged)) return
+      this.draft.drop(dragged.ids)
+    } else if ('ids' in dragged) {
+      this.draft.move(dragged.ids, target.place)
+    } else {
+      this.draft.put(dragged.side, dragged.lines, target.place)
+    }
+    this.clearSelection(false)
+    this.renderList()
+  }
+
+  private endDrag(): void {
+    const drag = this.drag
+    if (!drag) return
+    this.drag = null
+    if (drag.frame !== null) this.listEl?.ownerDocument.defaultView?.cancelAnimationFrame(drag.frame)
+    drag.ghost.remove()
+    drag.marker.remove()
+    const list = this.listEl
+    if (!list) return
+    list.removeClass('is-dragging')
+    for (const el of Array.from(list.querySelectorAll('.is-dragging, .is-drop'))) el.classList.remove('is-dragging', 'is-drop')
+  }
+
+  private cancelDrag(): void {
+    this.press = null
+    this.endDrag()
+  }
+
+  /** A click selects a line or lets it go; Shift-click selects every line from the one clicked before. One column at a time. */
+  private select(column: Column, key: number, range: boolean): void {
+    if (this.selected?.column !== column) {
+      this.selected = { column, keys: new Set() }
+      this.anchor = null
+    }
+    const keys = this.selected.keys
+    if (range && this.anchor !== null) {
+      for (const each of this.between(column, this.anchor, key)) keys.add(each)
+    } else if (keys.has(key)) {
+      keys.delete(key)
+    } else {
+      keys.add(key)
+    }
+    this.anchor = key
+    if (keys.size === 0) this.clearSelection(false)
+    this.showSelection()
+  }
+
+  /** Every line from one to the other: a version's by number, the middle's in the order they stand. */
+  private between(column: Column, from: number, to: number): number[] {
+    if (column !== 'result') {
+      const lines: number[] = []
+      for (let line = Math.min(from, to); line <= Math.max(from, to); line += 1) lines.push(line)
+      return lines
+    }
+    const ids = this.draft.items().map((item) => item.id)
+    const a = ids.indexOf(from)
+    const b = ids.indexOf(to)
+    return a < 0 || b < 0 ? [to] : ids.slice(Math.min(a, b), Math.max(a, b) + 1)
+  }
+
+  private clearSelection(show = true): void {
+    this.selected = null
+    this.anchor = null
+    if (show) this.showSelection()
+  }
+
+  /** The lines selected, marked, and what to do with them said. */
+  private showSelection(): void {
+    const list = this.listEl
+    const selected = this.selected
+    if (list) {
+      for (const el of Array.from(list.querySelectorAll('.is-selected'))) el.classList.remove('is-selected')
+      const selectors = selected
+        ? [...selected.keys].map((key) => (selected.column === 'result' ? `.mycel-merge-item[data-id="${key}"]` : `.mycel-merge-line.is-${selected.column}[data-line="${key}"]`))
+        : []
+      if (selectors.length > 0) for (const el of Array.from(list.querySelectorAll(selectors.join(',')))) el.classList.add('is-selected')
+    }
+    const hint = this.hintEl
+    if (!hint) return
+    hint.empty()
+    if (!selected) return
+    const count = plural(selected.keys.size, 'line', 'lines')
+    hint.createSpan({
+      text:
+        selected.column === 'result'
+          ? `${count} of the middle selected: drag one of them to move them all, or onto a side to take them out again (Delete does that too). `
+          : `${count} of ${selected.column === 'mine' ? this.names.mineWords : 'the other version'} selected: drag one of them into the middle, to where they belong. `
+    })
+    hint.createEl('button', { cls: 'mycel-merge-unselect', text: 'Unselect' }).addEventListener('click', () => this.clearSelection())
+  }
+
+  /** Delete or Backspace takes the middle's selected lines out of it. */
+  private keyed(event: KeyboardEvent): void {
+    const selected = this.selected
+    if (!selected || selected.column !== 'result' || (event.key !== 'Delete' && event.key !== 'Backspace')) return
+    if ((event.target as Element | null)?.closest?.('textarea')) return
+    event.preventDefault()
+    this.draft.drop([...selected.keys])
+    this.clearSelection(false)
+    this.renderList()
   }
 
   /** A selection starting in one version stays in it: the other columns let go of the pointer's drag. */
@@ -410,16 +748,12 @@ export class ReviewModal extends Modal {
   }
 
   private everywhere(side: Side | null): void {
-    if (!side) {
-      // Every passage empty, and joined ones split again.
-      this.draft.reset()
-      this.anchor = null
-      this.renderList()
-      return
-    }
-    this.draft.takeAll(side)
-    for (const each of this.passages) each.render()
-    this.updateProgress()
+    this.editing = null
+    this.clearSelection(false)
+    // Either way, the places opened between lines both have go.
+    if (side) this.draft.takeAll(side)
+    else this.draft.reset()
+    this.renderList()
   }
 
   private nextOpen(): void {
@@ -430,11 +764,11 @@ export class ReviewModal extends Modal {
       return
     }
     el.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    el.querySelector('textarea')?.focus({ preventScroll: true })
+    el.querySelector<HTMLElement>('.mycel-merge-slot')?.focus({ preventScroll: true })
   }
 
   private updateProgress(): void {
-    const total = this.draft.slots.length
+    const total = this.draft.total
     const open = this.draft.open
     this.progressEl?.setText(open === 0 ? `All ${plural(total, 'passage', 'passages')} decided` : `${open} of ${plural(total, 'passage', 'passages')} still open`)
     this.progressEl?.toggleClass('is-open', open > 0)
@@ -472,6 +806,8 @@ export class ReviewModal extends Modal {
   }
 
   onClose(): void {
+    this.unlisten?.()
+    this.cancelDrag()
     this.contentEl.empty()
     this.passages.length = 0
     this.listEl = null
