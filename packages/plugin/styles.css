@@ -1129,6 +1129,35 @@ button.mycel-merge-num:disabled {
   border-radius: 2px;
 }
 
+/* A line both have, taken into a passage by a range across it: fainter than what differs. */
+.mycel-merge-passage .mycel-merge-line.is-both {
+  color: var(--text-muted);
+}
+
+.mycel-merge-passage .mycel-merge-line.is-mine.is-both {
+  background-color: rgba(var(--color-blue-rgb), 0.03);
+}
+
+.mycel-merge-passage .mycel-merge-line.is-theirs.is-both {
+  background-color: rgba(var(--color-purple-rgb), 0.03);
+}
+
+/* Where a range of lines begins. */
+.mycel-merge-line.is-anchor .mycel-merge-num {
+  color: var(--text-on-accent);
+  background-color: var(--interactive-accent);
+}
+
+.mycel-merge-hint {
+  margin: 0 0 0.5em;
+  color: var(--text-accent);
+  font-size: var(--font-ui-small);
+}
+
+.mycel-merge-hint:empty {
+  display: none;
+}
+
 /* In the middle already, with its side or alone. */
 .mycel-merge-passage .mycel-merge-line.is-picked {
   opacity: 0.55;

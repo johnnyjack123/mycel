@@ -1,4 +1,4 @@
-import { App, Modal, Setting, setIcon } from 'obsidian'
+import { App, Modal, Platform, Setting, setIcon } from 'obsidian'
 import { Notice } from '../notices.js'
 import { busy } from '../busy.js'
 import { lineChanges, lineText, type Row, type SameRun } from '../sync/align.js'
@@ -44,18 +44,24 @@ function shown(text: string): string {
  * what both have on the same rows and already in the middle, lines that resemble each other
  * side by side, a gap opposite a line only one side has. Every passage that differs starts
  * empty and is brought in one at a time - either side, both in the order taken, single lines
- * by their number, or written by hand. Whatever is applied replaces the note on every device,
- * as an edit the history can undo; the note is backed up first. *Done* leaves the note as the
- * merge made it.
+ * by their number, a range of them from one number to another (0.9.31), or written by hand.
+ * Whatever is applied replaces the note on every device, as an edit the history can undo; the
+ * note is backed up first. *Done* leaves the note as the merge made it.
  */
 export class ReviewModal extends Modal {
   private readonly draft: MergeDraft
   private progressEl: HTMLElement | null = null
+  private hintEl: HTMLElement | null = null
+  private rangeButton: HTMLButtonElement | null = null
   private applyButton: HTMLButtonElement | null = null
   private listEl: HTMLElement | null = null
   private readonly passages: Array<{ el: HTMLElement; render: () => void }> = []
   /** The column a selection began in: copying takes that version's lines alone. */
   private selecting: Side | null = null
+  /** The number clicked last: where a range of lines begins. */
+  private anchor: { side: Side; line: number } | null = null
+  /** Every number tapped begins or ends a range - for a phone, which has no Shift. */
+  private ranging = false
 
   constructor(
     app: App,
@@ -80,42 +86,43 @@ export class ReviewModal extends Modal {
     contentEl.empty()
     this.passages.length = 0
     const at = new Date(this.review.at).toLocaleString()
+    const range = Platform.isMobile
+      ? 'with "Range of lines" on, two numbers bring everything from the first to the second as one piece, lines both have included'
+      : 'Shift-click a second one and everything from the first to it comes in as one piece, lines both have included'
     contentEl.createEl('p', {
       cls: 'setting-item-description',
       text: `${
         this.review.kind === 'no-base'
           ? `This note said different things on your devices when they met (${at}), and nothing told which side changed what, so it was merged keeping every line of both.`
           : `This note was changed in the same place on two devices (${at}), and both changes were kept.`
-      } Both versions stand here whole, line beside line; what both have is in the middle already. Put each passage that differs together: Take brings a side in, a line's number brings that line alone, or write it yourself. Or press Done if the note is right as it is.`
+      } Both versions stand here whole, line beside line; what both have is in the middle already. Put each passage that differs together: Take brings a side in, a line's number brings that line alone - ${range} -, or write it yourself. Or press Done if the note is right as it is.`
     })
 
     const bar = contentEl.createDiv({ cls: 'mycel-merge-bar' })
     this.progressEl = bar.createSpan({ cls: 'mycel-merge-progress' })
     const all = bar.createDiv({ cls: 'mycel-merge-all' })
-    const allButton = (label: string, run: () => void): void => {
+    const allButton = (label: string, run: () => void): HTMLButtonElement => {
       const button = all.createEl('button', { text: label })
       button.addEventListener('click', run)
+      return button
     }
     allButton('Next open passage', () => this.nextOpen())
     allButton(`All from ${this.names.mineWords}`, () => this.everywhere('mine'))
     allButton('All from the other', () => this.everywhere('theirs'))
     allButton('Empty again', () => this.everywhere(null))
+    this.rangeButton = allButton('Range of lines', () => this.setRanging(!this.ranging))
+    this.rangeButton.setAttr('aria-pressed', 'false')
+    this.rangeButton.setAttr(
+      'aria-label',
+      "On: a line's number begins a range and the next one of the same side ends it - everything from the first to the last goes into the middle as one piece. Shift-click does the same."
+    )
+    this.hintEl = contentEl.createDiv({ cls: 'mycel-merge-hint' })
 
     const list = contentEl.createDiv({ cls: 'mycel-merge-list' })
     this.listEl = list
     list.addEventListener('pointerdown', (event) => this.startSelecting(event))
     list.addEventListener('copy', (event) => this.copy(event))
-    const head = list.createDiv({ cls: 'mycel-merge-head' })
-    head.createDiv({ cls: 'is-mine', text: this.names.mine })
-    head.createDiv({ cls: 'is-result', text: 'The note will say' })
-    head.createDiv({ cls: 'is-theirs', text: this.names.theirs })
-
-    const runs = this.draft.aligned.runs
-    let index = 0
-    runs.forEach((run, at) => {
-      if (run.same) this.renderSame(list, run, at === 0, at === runs.length - 1)
-      else this.renderPassage(list, index++)
-    })
+    this.renderList()
 
     const buttons = new Setting(contentEl)
     buttons
@@ -132,6 +139,28 @@ export class ReviewModal extends Modal {
           .setTooltip('The note stays as it is now; its mark in the file explorer and "Compare versions" go away')
           .onClick(() => void busy(button, () => this.keep()))
       )
+    this.updateProgress()
+  }
+
+  /** The three columns, drawn anew when passages were joined or split - where they were scrolled to. */
+  private renderList(): void {
+    const list = this.listEl
+    if (!list) return
+    const scrolled = list.scrollTop
+    list.empty()
+    this.passages.length = 0
+    const head = list.createDiv({ cls: 'mycel-merge-head' })
+    head.createDiv({ cls: 'is-mine', text: this.names.mine })
+    head.createDiv({ cls: 'is-result', text: 'The note will say' })
+    head.createDiv({ cls: 'is-theirs', text: this.names.theirs })
+    const runs = this.draft.runs
+    let index = 0
+    runs.forEach((run, at) => {
+      if (run.same) this.renderSame(list, run, at === 0, at === runs.length - 1)
+      else this.renderPassage(list, index++)
+    })
+    list.scrollTop = scrolled
+    this.markAnchor()
     this.updateProgress()
   }
 
@@ -156,15 +185,80 @@ export class ReviewModal extends Modal {
     fold.addEventListener('click', () => {
       group.empty()
       for (let k = 0; k < count; k += 1) row(k)
+      this.markAnchor()
     })
     for (let k = count - below; k < count; k += 1) row(k)
   }
 
-  /** One line of a version outside the passages: its number and its text. */
+  /** One line of a version outside the passages: its text, and its number, where a range may begin or end. */
   private line(parent: HTMLElement, side: Side, index: number): void {
     const cell = parent.createDiv({ cls: `mycel-merge-line is-${side}` })
-    cell.createSpan({ cls: 'mycel-merge-num', text: String(index + 1) })
+    cell.setAttr('data-line', String(index))
+    this.number(cell, side, index, null, 'Begin or end a range of lines here: everything from its first line to its last goes into the middle as one piece')
     cell.createSpan({ cls: 'mycel-merge-text', text: lineText(this.draft.lines(side)[index] ?? '') })
+  }
+
+  /** A line's number: alone it takes its line - in a passage -, with Shift or "Range of lines" it begins or ends a range. */
+  private number(cell: HTMLElement, side: Side, line: number, index: number | null, label: string): HTMLButtonElement {
+    const number = cell.createEl('button', { cls: 'mycel-merge-num', text: String(line + 1), attr: { 'aria-label': label } })
+    // Shift held, the browser would select the text between the last click and this one.
+    number.addEventListener('mousedown', (event) => {
+      if (event.shiftKey) event.preventDefault()
+    })
+    number.addEventListener('click', (event) => this.numberClicked(side, line, event.shiftKey, index))
+    return number
+  }
+
+  private numberClicked(side: Side, line: number, shift: boolean, index: number | null): void {
+    const anchor = this.anchor
+    if ((shift || this.ranging) && anchor?.side === side && anchor.line !== line) {
+      this.anchor = null
+      const runs = this.draft.runs
+      const into = this.draft.takeRange(side, anchor.line, line)
+      if (this.draft.runs !== runs) this.renderList()
+      else if (into !== null) this.changed(into)
+      this.markAnchor()
+      return
+    }
+    if (this.ranging) {
+      // A range's first line: nothing is taken before its last one.
+      this.anchor = anchor?.side === side && anchor.line === line ? null : { side, line }
+      this.markAnchor()
+      return
+    }
+    if (index !== null) {
+      this.draft.toggleLine(index, side, line)
+      this.changed(index)
+    }
+    this.anchor = { side, line }
+    this.markAnchor()
+  }
+
+  private setRanging(on: boolean): void {
+    this.ranging = on
+    this.rangeButton?.toggleClass('mod-cta', on)
+    this.rangeButton?.setAttr('aria-pressed', String(on))
+    this.markAnchor()
+  }
+
+  /** Where a range begins, marked, and what to do next said. */
+  private markAnchor(): void {
+    const list = this.listEl
+    const anchor = this.anchor
+    if (list) {
+      for (const el of Array.from(list.querySelectorAll('.mycel-merge-line.is-anchor'))) el.classList.remove('is-anchor')
+      if (anchor) list.querySelector(`.mycel-merge-line.is-${anchor.side}[data-line="${anchor.line}"]`)?.classList.add('is-anchor')
+    }
+    const which = anchor?.side === 'mine' ? this.names.mineWords : 'the other version'
+    let hint = ''
+    if (this.ranging) {
+      hint = anchor
+        ? `Range from line ${anchor.line + 1} of ${which}: now the number of its last line.`
+        : "Range of lines: tap the number of the range's first line."
+    } else if (anchor && !Platform.isMobile) {
+      hint = `Shift-click another number of ${which} to bring everything from line ${anchor.line + 1} to it into the middle as one piece.`
+    }
+    this.hintEl?.setText(hint)
   }
 
   /** One passage that differs: each side's way into the middle, its rows, and the middle beside them. */
@@ -236,10 +330,19 @@ export class ReviewModal extends Modal {
       this.updateProgress()
     })
     window.requestAnimationFrame(fit)
-    if (this.draft.decided(index)) {
-      const clear = middle.createEl('button', { cls: 'clickable-icon mycel-merge-clear', attr: { 'aria-label': 'Empty this passage again' } })
+    const joined = this.draft.passage(index).joined === true
+    if (this.draft.decided(index) || joined) {
+      const clear = middle.createEl('button', {
+        cls: 'clickable-icon mycel-merge-clear',
+        attr: { 'aria-label': joined ? 'Empty this passage again, split into the passages it was made of' : 'Empty this passage again' }
+      })
       setIcon(clear, 'eraser')
       clear.addEventListener('click', () => {
+        if (joined) {
+          this.draft.split(index)
+          this.renderList()
+          return
+        }
         this.draft.clear(index)
         this.changed(index)
       })
@@ -255,19 +358,20 @@ export class ReviewModal extends Modal {
       cell.addClass('is-gap')
       return
     }
+    cell.setAttr('data-line', String(line))
+    // Both have it, and a range took it into the passage: the range's now, though both have it.
+    cell.toggleClass('is-both', row.same === true)
     const picked = this.draft.picked(index, side, line)
     cell.toggleClass('is-picked', picked)
     const whole = this.draft.taken(index, side)
-    const number = cell.createEl('button', {
-      cls: 'mycel-merge-num',
-      text: String(line + 1),
-      attr: { 'aria-label': whole ? 'In the middle with its side' : picked ? 'Take this line out of the middle again' : 'Bring this line alone into the middle, after what is there' }
-    })
+    const number = this.number(
+      cell,
+      side,
+      line,
+      index,
+      whole ? 'In the middle with its side' : picked ? 'Take this line out of the middle again, with the range it came in' : 'Bring this line alone into the middle, after what is there'
+    )
     number.disabled = whole
-    number.addEventListener('click', () => {
-      this.draft.toggleLine(index, side, line)
-      this.changed(index)
-    })
     const text = lineText(this.draft.lines(side)[line] ?? '')
     const textEl = cell.createSpan({ cls: 'mycel-merge-text' })
     if (changes) marked(textEl, text, changes)
@@ -277,6 +381,7 @@ export class ReviewModal extends Modal {
   private changed(index: number): void {
     this.passages[index]?.render()
     this.updateProgress()
+    this.markAnchor()
   }
 
   /** A selection starting in one version stays in it: the other columns let go of the pointer's drag. */
@@ -305,8 +410,14 @@ export class ReviewModal extends Modal {
   }
 
   private everywhere(side: Side | null): void {
-    if (side) this.draft.takeAll(side)
-    else this.draft.slots.forEach((_slot, index) => this.draft.clear(index))
+    if (!side) {
+      // Every passage empty, and joined ones split again.
+      this.draft.reset()
+      this.anchor = null
+      this.renderList()
+      return
+    }
+    this.draft.takeAll(side)
     for (const each of this.passages) each.render()
     this.updateProgress()
   }

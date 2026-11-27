@@ -1128,6 +1128,86 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   )
 }
 
+// --- a range of lines across what both have, passages joined (0.9.31) ---------------------------
+{
+  const { MergeDraft } = await import('../src/sync/Reviews.js')
+  // The user's case (2026-11-26): a block written in the same place on each device, both cut apart
+  // by the lines both have between their parts - "---" and an empty line.
+  const head = 'Gleicher Stand\n\nAuf beiden Seiten:\n\n---\ncontent content\ncontent content\n\n---\n\n'
+  const block = (device: string): string => `${device}:\n\n---\ncontent content ${device}\ncontent content ${device}\n\n---\n`
+  const mine = `${head}${block('PC')}\ngleicher text, selbe Zeile\ngleicher Text, andere Zeile\n`
+  const theirs = `${head}${block('Laptop')}\ngleicher text, selbe Zeile\n\ngleicher Text, andere Zeile\n`
+  const draft = new MergeDraft(mine, theirs)
+  const first = draft.result()
+  check(draft.slots.length === 3, 'the two blocks stand as passages cut apart by the lines both have, as the window showed them', draft.passages)
+  // Lines 11 to 17 as the window numbers them.
+  const into = draft.takeRange('mine', 10, 16)
+  check(
+    draft.slots.length === 2 &&
+      into === 0 &&
+      draft.passage(0).joined === true &&
+      draft.slots[0]?.text === block('PC') &&
+      draft.passage(0).rows.filter((row) => row.same).length === 4,
+    "a range of one side across the lines both have makes one passage of all it touches, and comes into it as one piece - this device's whole block",
+    { slots: draft.slots, rows: draft.passage(0).rows }
+  )
+  draft.takeRange('theirs', 16, 10)
+  check(
+    draft.slots.length === 2 && draft.slots[0]?.text === block('PC') + block('Laptop'),
+    "the other side's whole block goes under it - either way round the range was clicked",
+    draft.slots[0]
+  )
+  check(
+    draft.result() === `${head}${block('PC')}${block('Laptop')}\ngleicher text, selbe Zeile\ngleicher Text, andere Zeile\n` && draft.open === 1,
+    'the note has both blocks whole, one under the other; the passage after them is still open',
+    draft.result()
+  )
+  draft.split(0)
+  check(draft.slots.length === 3 && draft.open === 3 && draft.result() === first, 'split again, the passages are as first laid out, each empty', draft.result())
+
+  // What the passages held before stays; the first line taken alone is in the range now.
+  draft.take(0, 'theirs')
+  draft.toggleLine(1, 'mine', 13)
+  draft.takeRange('mine', 13, 10)
+  check(
+    draft.slots.length === 2 && draft.slots[0]?.text === 'Laptop:\nPC:\n\n---\ncontent content PC\n',
+    'what the joined passages held stays in front, and a line taken alone before is not taken twice',
+    draft.slots[0]
+  )
+  draft.toggleLine(0, 'mine', 12)
+  check(draft.slots[0]?.text === 'Laptop:\n', "a line's number inside a range takes the whole range out again", draft.slots[0])
+  draft.reset()
+  check(draft.slots.length === 3 && draft.open === 3 && draft.result() === first, '"Empty again" splits every joined passage and empties it', draft.result())
+
+  draft.edit(0, 'by hand\n')
+  draft.takeRange('mine', 10, 14)
+  check(
+    draft.slots[0]?.edited === true && draft.slots[0]?.text === 'by hand\nPC:\n\n---\ncontent content PC\ncontent content PC\n',
+    'text written by hand stays, and the range comes after it',
+    draft.slots[0]
+  )
+  draft.takeAll('mine')
+  check(draft.result() === mine, "everything from this device, joined passages and all, gives this device's version", draft.result())
+  draft.takeAll('theirs')
+  check(draft.result() === theirs, 'and from the other, the other version', draft.result())
+
+  const only = new MergeDraft(mine, theirs)
+  only.takeRange('mine', 11, 12)
+  check(
+    only.slots.length === 4 && only.result() === first && only.decided(1),
+    'a range of lines both have alone becomes a passage of its own, the lines in it as before',
+    only.result()
+  )
+  const inside = new MergeDraft(mine, theirs)
+  inside.toggleLine(1, 'theirs', 13)
+  inside.takeRange('theirs', 13, 14)
+  check(
+    inside.slots.length === 3 && inside.slots[1]?.picks.length === 1 && inside.slots[1]?.text === 'content content Laptop\ncontent content Laptop\n',
+    'a range inside one passage joins nothing',
+    inside.slots[1]
+  )
+}
+
 // --- emptying the trash ------------------------------------------------------------------
 {
   const { Trash } = await import('../src/sync/Trash.js')

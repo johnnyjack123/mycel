@@ -548,6 +548,83 @@ check(
   button(third.contentEl, 'Done')?.click()
   await delay(20)
   check(done.join() === 'r1' && Modal.open.length === 0, 'Done takes the note off the list as it is')
+
+  // A range of lines, across what both have (0.9.31): the user's two blocks, one under the other.
+  const head = 'Gleicher Stand\n\nAuf beiden Seiten:\n\n---\ncontent content\ncontent content\n\n---\n\n'
+  const block = (device: string): string => `${device}:\n\n---\ncontent content ${device}\ncontent content ${device}\n\n---\n`
+  const blocks = {
+    ...review,
+    id: 'r2',
+    mine: `${head}${block('PC')}\ngleicher text, selbe Zeile\ngleicher Text, andere Zeile\n`,
+    theirs: `${head}${block('Laptop')}\ngleicher text, selbe Zeile\n\ngleicher Text, andere Zeile\n`
+  }
+  const rangeWindow = (applied: string[]): InstanceType<typeof ReviewModal> => {
+    const modal = new ReviewModal({} as never, blocks, async (text) => {
+      applied.push(text)
+      return 'applied'
+    }, async () => undefined)
+    modal.open()
+    return modal
+  }
+  /** The number of a line of a side, wherever it stands - in a passage or among the lines both have. */
+  const numberOf = (modal: InstanceType<typeof ReviewModal>, side: 'mine' | 'theirs', line: number): HTMLButtonElement | undefined =>
+    Array.from(modal.contentEl.querySelectorAll<HTMLButtonElement>(`.mycel-merge-line.is-${side} .mycel-merge-num`)).find((each) => each.textContent === String(line))
+  const press = (el: HTMLElement | undefined, shiftKey = false): void => {
+    el?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, shiftKey }))
+  }
+  const hint = (modal: InstanceType<typeof ReviewModal>): string => modal.contentEl.querySelector('.mycel-merge-hint')?.textContent ?? ''
+  const middleOf = (modal: InstanceType<typeof ReviewModal>, at: number): string | undefined =>
+    modal.contentEl.querySelectorAll<HTMLElement>('.mycel-merge-passage')[at]?.querySelector('textarea')?.value
+  /** As the middle shows a text: the break ending its last line is the field's end. */
+  const shown = (text: string): string => (text.endsWith('\n') ? text.slice(0, -1) : text)
+
+  const shifted: string[] = []
+  const shift = rangeWindow(shifted)
+  check(passages(shift).length === 3 && progress(shift) === '3 of 3 passages still open', 'the two blocks stand as three passages', progress(shift))
+  press(numberOf(shift, 'mine', 11))
+  check(
+    hint(shift).includes('Shift-click') && shift.contentEl.querySelector('.mycel-merge-line.is-mine.is-anchor')?.getAttribute('data-line') === '10',
+    "a number clicked takes its line and marks where a range would begin, the hint saying how",
+    hint(shift)
+  )
+  press(numberOf(shift, 'mine', 17), true)
+  check(
+    passages(shift).length === 2 && middleOf(shift, 0) === shown(block('PC')) && passages(shift)[0]?.querySelectorAll('.mycel-merge-line.is-both').length === 8,
+    "a number Shift-clicked among the lines both have brings everything from the first one to it, one passage now - this device's whole block",
+    { passages: passages(shift).length, middle: middleOf(shift, 0) }
+  )
+  press(numberOf(shift, 'theirs', 11))
+  press(numberOf(shift, 'theirs', 17), true)
+  check(middleOf(shift, 0) === shown(block('PC') + block('Laptop')), "and the other's whole block under it", middleOf(shift, 0))
+  passages(shift)[1]?.querySelector<HTMLButtonElement>('.mycel-merge-take-cell.is-mine .mycel-merge-take')?.click()
+  button(shift.contentEl, 'Apply')?.click()
+  await delay(20)
+  check(
+    shifted.join() === `${head}${block('PC')}${block('Laptop')}\ngleicher text, selbe Zeile\ngleicher Text, andere Zeile\n`,
+    'Apply writes both blocks whole, one under the other',
+    shifted
+  )
+
+  // On a phone: "Range of lines", and two numbers tapped.
+  const tapped: string[] = []
+  const tap = rangeWindow(tapped)
+  const rangeToggle = button(tap.contentEl, 'Range of lines')
+  rangeToggle?.click()
+  press(numberOf(tap, 'mine', 11))
+  check(
+    rangeToggle?.getAttribute('aria-pressed') === 'true' && middleOf(tap, 0) === '' && hint(tap).includes('now the number of its last line'),
+    'with "Range of lines" on, the first number only begins the range',
+    { middle: middleOf(tap, 0), hint: hint(tap) }
+  )
+  press(numberOf(tap, 'mine', 17))
+  check(passages(tap).length === 2 && middleOf(tap, 0) === shown(block('PC')), 'and the second one ends it', middleOf(tap, 0))
+  passages(tap)[0]?.querySelector<HTMLButtonElement>('.mycel-merge-clear')?.click()
+  check(passages(tap).length === 3 && progress(tap) === '3 of 3 passages still open', 'emptied, the joined passage splits into the passages it was made of', progress(tap))
+  press(numberOf(tap, 'theirs', 14))
+  press(numberOf(tap, 'theirs', 12))
+  button(tap.contentEl, 'Empty again')?.click()
+  check(passages(tap).length === 3 && progress(tap) === '3 of 3 passages still open' && hint(tap).includes("range's first line"), '"Empty again" splits and empties every passage', progress(tap))
+  tap.close()
 }
 
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)
