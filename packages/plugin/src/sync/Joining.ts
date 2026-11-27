@@ -252,6 +252,9 @@ export class Joining {
       ;({ taken, trashed } = outcome)
       notTaken.push(...outcome.notTaken)
     }
+    // What the choice recorded - the server's versions taken for bases - on the disk before the join counts as done: a
+    // crash in between left files without a base, kept twice (audit 2, L5).
+    await state.flush()
     await state.setJoin(vaultId, { ...record, done: true })
     if (record.choice === 'here') {
       if (notTaken.length > 0) log.warn(`joining: ${notTaken.length} not overwritten on the server, merged instead: ${notTaken.join(', ')}`)
@@ -354,7 +357,8 @@ export class Joining {
     const ownNote = (path: string): string | null => {
       const docId = index.docIdForPath(path)
       const entry = docId ? index.entry(docId) : undefined
-      return docId && entry && !entry.deletedAt && !entry.owner && !entry.folder ? docId : null
+      // Not a note this account shares with others either: overwritten, what they wrote in it went for them too (L5).
+      return docId && entry && !entry.deletedAt && !entry.owner && !entry.folder && !entry.shared ? docId : null
     }
     const ownFile = (path: string): string | null => {
       const fileId = attachmentIndex.idForPath(path)
@@ -418,7 +422,9 @@ export class Joining {
   private async compare(): Promise<JoinPlan> {
     const { app, store, attachments, index, attachmentIndex, host } = this.parts
     const notesHere = app.vault.getMarkdownFiles().filter((file) => !store.isExcluded(file.path))
-    const filesHere = app.vault.getFiles().filter((file) => file.extension !== 'md' && !attachments.isExcluded(file.path))
+    // A file larger than the server takes never syncs: it is no file of the vault on the server's side, and taking the
+    // server's version trashed it as only this vault's (audit 2, L7).
+    const filesHere = app.vault.getFiles().filter((file) => file.extension !== 'md' && !attachments.isExcluded(file.path) && !attachments.staysLocal(file.stat.size))
     // What the start would pull, and nothing else: an entry no file will be made for is not "there".
     const notesThere = new Map<string, string>()
     for (const { docId, entry } of index.live()) {

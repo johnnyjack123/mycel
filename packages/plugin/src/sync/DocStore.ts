@@ -1596,6 +1596,13 @@ export class DocStore {
   async acceptShare(share: AcceptedShare, folder: string): Promise<TFile | null> {
     if (!this.ready) return null
     let path = this.index.pathFor(share.docId)
+    // An id this index knows as someone else's - a note of this account's own in the trash, or another owner's - is
+    // never taken over: adopted, a share the server named took the place of a deleted note of one's own (audit 2, L4).
+    const known = this.index.entry(share.docId)
+    if (known && known.owner !== share.owner) {
+      log.error(`a share of ${share.docId.slice(0, 8)} names an id this vault knows as ${known.owner ? 'another owner\'s' : 'its own'}; not taken`)
+      return null
+    }
     if (!path) {
       path = this.freePath(folder, share.title)
       this.index.adopt(share.docId, path, { shared: true, owner: share.owner, role: share.role })

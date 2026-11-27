@@ -4,8 +4,8 @@ import {
   docRoom,
   folderRoom,
   isNotePath,
+  portablePathProblem,
   roomKind,
-  vaultPathProblem,
   roomSubject,
   snapshotAad,
   type FolderNotice,
@@ -555,7 +555,7 @@ export class Folders {
       if (this.pending.has(docId) || this.asking.has(docId)) continue
       // Written by anyone who may write in the folder: a path that climbs out
       // of it, names something hidden or is no note would put their text anywhere here.
-      if (!isNotePath(entry.path)) {
+      if (!isNotePath(entry.path) || portablePathProblem(entry.path) !== null) {
         this.refusePath(folderId, docId, entry.path)
         continue
       }
@@ -630,7 +630,7 @@ export class Folders {
     const key = `${folderId}:${docId}:${String(path)}`
     if (this.refused.has(key)) return
     this.refused.add(key)
-    log.error(`a shared folder names a note at ${JSON.stringify(String(path))}: ${vaultPathProblem(path) ?? 'not a note'}; left out`)
+    log.error(`a shared folder names a note at ${JSON.stringify(String(path))}: ${portablePathProblem(path) ?? 'not a note'}; left out`)
   }
 
   /** The folder names a note of this vault's that is not in it: left alone, and said once. */

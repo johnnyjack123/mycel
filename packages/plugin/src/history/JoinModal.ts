@@ -304,7 +304,7 @@ export class JoinModal extends Modal {
     new Setting(containerEl)
       .setName('Overwrite the server with this vault')
       .setDesc(
-        `The server becomes what this vault has${what ? `: ${what}` : ''}. Your other devices follow; what was changed on them since stays. What the server had stays restorable from the trash and the Time Machine. Notes others shared with you and shared folders are merged as ever. For when the server's state went wrong.`
+        `The server becomes what this vault has${what ? `: ${what}` : ''}. Your other devices follow; what was changed on them since stays. What the server had stays restorable from the trash and the Time Machine. Shared notes - yours with others, or others' with you - and shared folders are merged as ever. For when the server's state went wrong.`
       )
       .addButton((button) =>
         button

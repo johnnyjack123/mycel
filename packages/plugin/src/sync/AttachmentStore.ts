@@ -1007,6 +1007,11 @@ export class AttachmentStore {
     if (file instanceof TFile && entry.hash !== known.hash) await this.takeIn(fileId, file, file.path)
   }
 
+  /** Whether a file of this size stays on this device: larger than the server takes. */
+  staysLocal(size: number): boolean {
+    return size > this.options.maxFileBytes
+  }
+
   /** Whether this device leaves a file of this size on the server rather than download it: above its limit (10 MB on a phone). */
   leavesOnServer(size: number): boolean {
     const limit = this.options.downloadLimitBytes

@@ -1,5 +1,5 @@
 import { Notice } from '../notices.js'
-import { folderRoom, isFilePath, vaultPathProblem, type AttachmentEntry, type FolderFile, type FolderWrite, type VaultFolder } from '@mycel/shared'
+import { folderRoom, isFilePath, portablePathProblem, type AttachmentEntry, type FolderFile, type FolderWrite, type VaultFolder } from '@mycel/shared'
 import { deriveFileId, type Bytes } from '@mycel/shared/crypto'
 import type { ConnectApi } from '../account/api.js'
 import type { SharedBase } from '../sync/AttachmentIndex.js'
@@ -138,7 +138,7 @@ export class FolderFiles {
     const key = `${folderId}:${file}:${String(path)}`
     if (this.refused.has(key)) return
     this.refused.add(key)
-    log.error(`a shared folder names a file at ${JSON.stringify(String(path))}: ${vaultPathProblem(path) ?? 'not a file'}; left out`)
+    log.error(`a shared folder names a file at ${JSON.stringify(String(path))}: ${portablePathProblem(path) ?? 'not a file'}; left out`)
   }
 
   /** Every file of this vault's own inside a folder that is not in it yet - when the folder is first shared. */
@@ -187,7 +187,7 @@ export class FolderFiles {
     const { mount, write, room, waits } = context
     // Written by anyone who may write in the folder: a path that climbs out of
     // it or names something hidden would put their file anywhere here.
-    if (!isFilePath(listed.path)) {
+    if (!isFilePath(listed.path) || portablePathProblem(listed.path) !== null) {
       this.refusePath(folderId, file, listed.path)
       return
     }

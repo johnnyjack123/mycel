@@ -77,18 +77,25 @@ export class BackupStore {
     const made = new Set<string>()
     const ensureAll = (dir: string): Promise<void> => makePluginFolder(this.adapter, this.root, dir, made)
     progress(0, paths.length)
-    for (const [done, path] of paths.entries()) {
-      const data = await read(path)
-      if (data === null) {
+    try {
+      for (const [done, path] of paths.entries()) {
+        const data = await read(path)
+        if (data === null) {
+          progress(done + 1, paths.length)
+          continue
+        }
+        const target = `${folder}/${path}`
+        await ensureAll(target.slice(0, target.lastIndexOf('/')))
+        await this.adapter.writeBinary(target, data)
+        const stat = await this.adapter.stat(target)
+        if (!stat || stat.size !== data.byteLength) throw new Error(`${path} was not copied whole`)
         progress(done + 1, paths.length)
-        continue
       }
-      const target = `${folder}/${path}`
-      await ensureAll(target.slice(0, target.lastIndexOf('/')))
-      await this.adapter.writeBinary(target, data)
-      const stat = await this.adapter.stat(target)
-      if (!stat || stat.size !== data.byteLength) throw new Error(`${path} was not copied whole`)
-      progress(done + 1, paths.length)
+    } catch (error) {
+      // A copy cut short - a full disk, most likely - goes again: left, every try added another, and a full phone
+      // could no longer save a note (audit 2, L6).
+      await emptyFolder(this.adapter, folder, true).catch(() => undefined)
+      throw error
     }
     // Even an empty vault leaves its folder: the window names it.
     await ensureAll(folder)
