@@ -792,6 +792,33 @@ try {
     check(A2.vault.text('Welcome.md') === 'hello, changed\n' && A1.vault.text('Welcome.md') === 'hello, changed\n', 'and the past it showed is no edit anywhere')
   }
 
+  // --- a mark right after a tick that says the same: the tick goes, never one that differs (0.9.33) ---------
+  {
+    const shapeOf = (session: Session): string[] => session.positions.map((position) => position.mark ?? (position.tick ? 'tick' : 'now'))
+    const close = async (opened: Awaited<ReturnType<typeof open>>): Promise<void> => {
+      await opened.session.restore()
+      opened.stop()
+      await opened.files.finish()
+      await opened.lock.release()
+      A1.ownLocks.delete(opened.sealed)
+      check(await A1.boot(), 'the sync starts again')
+    }
+    const alike = await open(A1, { kind: 'note', path: 'Welcome.md' }, [{ at: T, label: 'before the restore of then' }])
+    check(
+      JSON.stringify(shapeOf(alike.session)) === JSON.stringify(['before the restore of then', 'now']),
+      "a restore's mark after a version that says the same: that version is not shown twice, the mark stays",
+      shapeOf(alike.session)
+    )
+    await close(alike)
+    const differs = await open(A1, { kind: 'note', path: 'Welcome.md' }, [{ at: typedUntil + 1_000, label: 'before a merge' }])
+    check(
+      JSON.stringify(shapeOf(differs.session)) === JSON.stringify(['tick', 'before a merge', 'now']),
+      'a mark after a version that says something else: both stay',
+      shapeOf(differs.session)
+    )
+    await close(differs)
+  }
+
   // --- a folder's past --------------------------------------------------------------------------------
   {
     const before = snapshot(A1)
@@ -801,6 +828,14 @@ try {
       opened.session.positions.some((position) => position.at === T && position.mark === 'before the rollback of then'),
       "the moment before an earlier rollback is a place on the strip, whatever the ticks (0.8.15)",
       opened.session.positions.map((position) => [position.at - T, position.mark ?? null])
+    )
+    // The folder's notes were made shortly before the moment, and its tick shows them until just before the next change,
+    // after the moment: the same state right after the mark. The tick before shows the folder empty, and stays.
+    const shape = opened.session.positions.map((position) => position.mark ?? (position.tick ? 'tick' : 'now'))
+    check(
+      JSON.stringify(shape) === JSON.stringify(['tick', 'before the rollback of then', 'now']),
+      "the folder's tick right after the mark says the same - its notes compared - and is not shown twice; the empty folder before stays (0.9.33)",
+      opened.session.positions.map((position) => [position.at - T, position.mark ?? (position.tick ? 'tick' : 'now')])
     )
     const purpose = await opened.prepared.seal.open(opened.sealed)
     check(purpose?.scope?.kind === 'folder' && purpose.scope.path === 'Projects', 'the lock tells the other devices what it covers, sealed', purpose)

@@ -23,7 +23,12 @@ export class StartModal extends Modal {
   constructor(
     app: App,
     private readonly what: string,
-    private readonly note: boolean
+    private readonly note: boolean,
+    /**
+     * Opened to undo a rollback or restore: what it was ("the restore of …"). That undoing goes
+     * through the Time Machine, and where it lands, was not said (the user, 2026-11-27).
+     */
+    private readonly undoing: { what: string; restore: boolean } | null = null
   ) {
     super(app)
   }
@@ -38,9 +43,17 @@ export class StartModal extends Modal {
 
   onOpen(): void {
     const { contentEl } = this
-    this.titleEl.setText(`Time Machine: ${this.what}`)
+    const undoing = this.undoing
+    if (undoing) {
+      this.titleEl.setText(`Undo ${undoing.what}`)
+      contentEl.createEl('p', {
+        text: `Undoing goes through the Time Machine: it opens and goes straight to the moment before ${undoing.what}, showing ${this.what} as it was then. Look whether that is right; then "Restore this version" in the bar at the top takes the ${undoing.restore ? 'restore' : 'rollback'} back, backed up first like every restore - or "Abort" leaves everything as it is now.`
+      })
+    } else {
+      this.titleEl.setText(`Time Machine: ${this.what}`)
+    }
     contentEl.createEl('p', {
-      text: `${this.note ? 'The note' : 'Your files'} will show ${this.what} as it was at the moment you choose - in the normal editor${this.note ? '' : ' and the explorer'}, read-only.`
+      text: `${this.note ? 'The note' : 'Your files'} will show ${this.what} as it was at the moment ${undoing ? 'before it' : 'you choose'} - in the normal editor${this.note ? '' : ' and the explorer'}, read-only.`
     })
     const list = contentEl.createEl('ul')
     list.createEl('li', { text: 'A backup comes first - at once when nothing changed since the last one.' })
@@ -231,22 +244,38 @@ export class RestoreFailedModal extends Modal {
   }
 }
 
-/** A backup was made that lies on this device alone (`docs/TIMEMACHINE.md`, V4). */
+/**
+ * A backup was made that lies on this device alone (`docs/TIMEMACHINE.md`, V4). Without a backup
+ * server that is all there is, and the window says so: told only "nowhere else", it read as if
+ * something should have happened that did not (the user, 2026-11-27).
+ */
 export class LocalOnlyModal extends Modal {
   constructor(
     app: App,
     private readonly what: string,
     private readonly where: string,
     private readonly days: number,
-    private readonly why: string
+    /** Why the backup server does not have it too; null: no backup server is set up. */
+    private readonly why: string | null
   ) {
     super(app)
   }
 
   onOpen(): void {
     const { contentEl } = this
-    this.titleEl.setText('This backup is only on this device')
-    contentEl.createEl('p', { text: `${this.what} lies in ${this.where}, in the plugin folder - and nowhere else: ${this.why}.` })
+    if (this.why === null) {
+      this.titleEl.setText('Backed up on this device')
+      contentEl.createEl('p', {
+        text: `No backup server is set up for this vault, so ${this.what.charAt(0).toLowerCase()}${this.what.slice(1)} was backed up on this device only, as every backup is without one. Nothing went wrong. It lies in ${this.where}, in the plugin folder.`
+      })
+      contentEl.createEl('p', {
+        cls: 'setting-item-description',
+        text: 'A backup server would keep a copy elsewhere too, so that losing this device loses nothing: Settings → Mycel → Backups.'
+      })
+    } else {
+      this.titleEl.setText('This backup is only on this device')
+      contentEl.createEl('p', { text: `${this.what} lies in ${this.where}, in the plugin folder - and nowhere else: ${this.why}.` })
+    }
     contentEl.createEl('p', {
       text:
         this.days > 0

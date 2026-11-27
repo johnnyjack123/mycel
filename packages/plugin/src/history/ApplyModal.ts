@@ -215,7 +215,7 @@ export class ApplyModal extends Modal {
       text:
         servers.length > 0
           ? `Before anything changes, ${servers.map((server) => server.label).join(', ')} make${servers.length === 1 ? 's' : ''} a fresh backup, each checked, and a copy of everything that changes goes into the plugin's folder. If a backup fails, nothing changes unless you say so.`
-          : "No backup server is connected: before anything changes, only a copy of everything that changes goes into the plugin's folder."
+          : "No backup server is set up for this vault, so before anything changes a copy of everything that changes goes into the plugin's folder on this device - that is all there is to do without one. A backup server (Settings → Mycel → Backups) would keep a copy elsewhere too."
     })
     new Setting(contentEl)
       .addButton((button) => button.setButtonText('Cancel').onClick(() => this.close()))
@@ -275,7 +275,7 @@ export class ApplyModal extends Modal {
           ? `${this.where.replace(/^the /, 'The ')} is back to ${when(plan.to)}.`
           : `${this.where.replace(/^the /, 'The ')} is rolled back to ${when(plan.to)}, with ${outcome.problems.length} problem(s) - see the window or the log.`,
         10_000,
-        { label: 'Undo…', kind: 'rollback-undo', data: outcome.record.id, again: true }
+        { label: 'Undo in the Time Machine…', kind: 'rollback-undo', data: outcome.record.id, again: true }
       )
       this.go({ kind: 'done', outcome })
       this.release()
@@ -309,7 +309,7 @@ export class ApplyModal extends Modal {
     }
     contentEl.createEl('p', {
       cls: 'setting-item-description',
-      text: `What changed, as it was before, was copied into ${outcome.copy}; the copy goes once the backup server is found to hold the same. To undo the rollback: Rollbacks in Connect (the bell), Undo… - it opens the Time Machine at the moment before it, and Restore this version there takes it back.`
+      text: `What changed, as it was before, was copied into ${outcome.copy}; the copy goes once the backup server is found to hold the same. To undo the rollback: Rollbacks in the notification center (the bell), "Undo in the Time Machine…" - it opens the Time Machine at the moment before it, and Restore this version there takes it back.`
     })
     new Setting(contentEl).addButton((button) => button.setButtonText('Close').setCta().onClick(() => this.close()))
   }

@@ -2082,7 +2082,7 @@ export default class MycelPlugin extends Plugin {
               'The copy of everything the rollback changed',
               outcome.copy,
               this.shared().backupRetentionDays,
-              this.backupsOf() ? 'the backup server did not hold the same' : 'there is no backup server'
+              this.backupsOf() ? 'the backup server did not hold the same' : null
             ).open()
           }
         }),
@@ -2090,7 +2090,7 @@ export default class MycelPlugin extends Plugin {
     ).open()
   }
 
-  private localOnly(what: string, why: string): void {
+  private localOnly(what: string, why: string | null): void {
     new LocalOnlyModal(this.app, what, `${this.pluginDir()}/backups`, this.shared().backupRetentionDays, why).open()
   }
 
@@ -2134,7 +2134,7 @@ export default class MycelPlugin extends Plugin {
       throw error
     }
     settings?.setRollback({ ...record, folder: store.entry(docId)?.path ?? record.folder, state: 'done', finishedAt: Date.now() })
-    if (!backedUp) this.localOnly('What the note said before', this.backupsOf() ? 'the backup server did not back up first' : 'there is no backup server')
+    if (!backedUp) this.localOnly('What the note said before', this.backupsOf() ? 'the backup server did not back up first' : null)
     return { text: message, undo: record.id }
   }
 
@@ -2496,7 +2496,7 @@ export default class MycelPlugin extends Plugin {
         const now = Date.now()
         const ids = [...news.batch.docIds.map((note) => note.docId), ...news.batch.files.map((file) => file.file)]
         const byRollback = ids.length > 0 && ids.every((id) => (this.trashedByRollback.get(id) ?? 0) > now)
-        if (byRollback) new Notice(`${said} The rollback did it - Undo… under Rollbacks in Connect (the bell) takes it back.`, 10_000)
+        if (byRollback) new Notice(`${said} The rollback did it - "Undo in the Time Machine…" under Rollbacks in the notification center (the bell) takes it back.`, 10_000)
         else noticeWithAction(said, 15_000, { label: 'Undo', kind: 'folder-undelete', data: news.batch })
         return
       }
