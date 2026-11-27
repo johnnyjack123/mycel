@@ -24,6 +24,50 @@ behaviour outside the code (Obsidian, Windows, a library).
 Attackers as in `docs/AUDIT.md`: *anyone*, an *account*, a *contact*, a *member* (reader or writer)
 of a share, the *server*, a *paired* person (backup server).
 
+## What became of it (0.9.33, branch `fix/audit2`, 2026-11-27)
+
+Every reproduction was run once more before anything was fixed, and each attack worked. After the
+fixes each script ends without a `FAIL`; together they are `npm run test:audit2`
+(`scripts/test-audit2.mjs`), in CI after the backup self-test. Scripts whose attack now stops earlier
+than it used to - a code refused, a replacement stopped - were adjusted to say so as a check.
+
+| # | Fixed how |
+|---|---|
+| C1 | A snapshot id must be restic's hex (`snapshotId`, in `Restic` and `BackupService.repository`), and `--` ends restic's options before it. |
+| C2 | The account's public keys are derived from its private keys at every unlock (`publicKeyOf`); a bundle naming others is logged. |
+| C3 | Relay frames are parsed by type (`parse`), and a listener that throws closes only its connection (`guarded`). |
+| H1 | *Replace all keys* seals only to accounts given the note or its folder (`recipient`), skips former holders, stops at a member nobody gave it to. |
+| H2 | Once anyone else could write in a note (`AccountSettings.othersMayHaveWritten`, kept after the role goes), sharing again claims no link and approves no file. |
+| H3 | A file never agreed on where someone else's written note lies is set aside as `Name (own copy).md`, outside a shared folder (`setAsideFor`); duplicates of different owners or folders are moved apart, not merged. |
+| H4 | A frame no key of its epoch opens is an empty change - only where that key opens something else of the epoch; otherwise the replacement stops, nothing changed (a wrong tie would have emptied a history). |
+| H5 | Presence at most 64 KiB, 30 a second after a burst of 500; a connection more than 64 MiB behind is closed (it catches up from the log); 48 connections per account. **Left:** logs are still read whole per request (`logResponse`, `GET /times`). |
+| M1 | Files above the device's download limit are "left on the server" (`JoinPlan.heldBack`), never deleted by overwriting. |
+| M2 | An unsent edit counts as a change here: the note is kept against a delete elsewhere, and sent. |
+| M3 | Attempts are taken before they are checked (`AddressGuard.begin`/`end`): a burst is no more than one by one. |
+| M4 | Keys someone sends are looked up as own entries only (`own`). |
+| M5 | The network check before reading a backup back too; `s3://host`, `s3:host:port`, IPv4 in hex IPv6; a name that does not resolve is refused; only restic's schemes are cloud locations. |
+| M6 | A compacted log counts only if its snapshot reaches the frame the cache followed; otherwise it is a divergence, which holds the retention. **Left:** withheld blobs and newly unreadable frames are not counted toward the hold. |
+| M7 | Starting points and rewrites within the quota; unfinished uploads counted, at most 32 per vault, gone after a day untouched. |
+| M8 | An epoch jumps by at most 1024; a share with history at most 4096 epochs, its keys counted against the quota. |
+| M9 | An own note's epoch is read under a folder's key only when the index has it there (for the room's epoch and later; earlier ones are its past); held back, never dropped. |
+| M10 | A frame below the highest epoch applied in its room is dropped (`RoomCursor.lastEpoch`; reset when another log is read from its start). |
+| M11 | `Sharing.renewFor` skips rooms not given to that account. **Left:** `contact-replaced` is still the server's unsigned word - it can only make a contact confirm again. |
+| M12 | The replacement's rings get the index's folders; every epoch keeps the tie it was read under, the current one must match the index. |
+| L1 | Retention counts from the later of a delete and this device first seeing it (`StateStore.seenDeleted`). |
+| L2 | Folder entries are read only as objects with a path (`entryOf`). |
+| L3 | A room someone else made, still empty, goes to the folder whose writer makes a note of it (`unused`, `dropRoom`). |
+| L4 | A share naming an id the index knows as another's is refused. |
+| L5 | Overwriting leaves notes this account shares to the merge; the state is flushed before the join counts as done. |
+| L6 | A vault copy cut short is removed. **Left:** free space is not checked first - the plugin cannot ask for it. |
+| L7 | Files larger than the server takes are left out of the comparison. |
+| L8 | Room names checked before they become cache files; one invitation pairs one vault; pax headers at most 1 MiB; snapshots tagged by vault and forgotten by that tag. **Left:** idle sessions, `checkTask` outside the queue, a pairing replaced on the sync server's word, `GOOGLE_APPLICATION_CREDENTIALS`. |
+| L9 | Access asked again before a subscriber is added; no restore once a deleted vault's time is up; at most 100 vaults per account. **Left:** `user remove` drops `deletedVaults` (their ids could be taken again by someone who learned them); owner REST routes do not ask `deletedVaults`. |
+| L10 | Paths a shared folder names must also hold on Windows (`portablePathProblem`); the epoch floor counts sealed keys only once their signature holds. **Left:** case-only and NFC/NFD collisions. |
+
+**Known and left, besides those above:** a new device catching up from zero cannot tell a note's past
+ties from forged ones - a malicious server and a folder's writer together could slip text into history
+it reads for the first time (M9 holds for the epoch the room is in, M10 for later frames).
+
 ## Summary
 
 | # | Severity | Where | Who | What | Status |

@@ -8,9 +8,25 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
-- **0.9.33** (not built yet, branch `fix/cosmetics`; the user's findings on 0.9.32 and the wish of
-  2026-11-13) - **overwriting the server with this vault; the timeline, the backup and undo windows
-  clearer.**
+- **0.9.33** (2026-11-27, branches `fix/cosmetics` and `fix/audit2`; the user's findings on 0.9.32,
+  the wish of 2026-11-13, and the second audit) - **the second audit's findings fixed; overwriting the
+  server with this vault; the timeline, the backup and undo windows clearer.**
+  - **The second audit** (`docs/AUDIT2.md`, asked for by the user before 1.0.0): a fresh agent attacked
+    the project from every role and found 3 critical, 5 high, 12 medium and 10 low findings, a
+    reproduction script for each serious one. Every reproduction was run again here before the fixes,
+    and each worked. Critical: a person paired with a backup server ran any command on it (a snapshot
+    id taken by restic for an option); a malicious server could read what contacts share (the device
+    took its own public keys from the server's copy of the account); one relay message ended the sync
+    server. High: *Replace all keys* sealed a private note's keys to any contact the server listed;
+    sharing again sent a writer's linked file of this vault; a private note made offline merged into
+    someone else's shared note; one unreadable frame stopped *Replace all keys* for good; presence
+    could exhaust the server's memory. All fixed, the mediums and most lows too - each and what was
+    left is in `docs/AUDIT2.md`, "What became of it". The scripts are `npm run test:audit2` now, in CI.
+    Found along the way: the fix of H4 alone would have let a wrong folder tie empty a note's whole
+    history during a replacement - only an epoch whose key opens something else drops what does not
+    open; and the fix of H3 first set a writer's own new note in a folder aside again and again - it
+    holds only against a note already written. Checked by every suite, `test:folders` and
+    `test:replace` among them.
   - **Overwrite the server with this vault** - the other direction of taking the server's version,
     for when the server's state went wrong: a third choice in the window of a device meeting the
     vault (invariant 34), for another state of the vault, another vault, or the same state when the

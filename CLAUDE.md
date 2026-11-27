@@ -34,7 +34,8 @@ is **`docs/PHASE8.md`** (decided 2026-11-03, built from 0.9.0 to 0.9.18). **The 
 the device run before 1.0.0.** The user tries everything on real devices, and what they find
 becomes the next patch. `docs/PROGRESS.md` says what is still to try.
 The security audit (0.9.8) and its residual risks closed in 0.9.9 - every finding, its fix,
-its check, and what is known and not fixed - is **`docs/AUDIT.md`**.
+its check, and what is known and not fixed - is **`docs/AUDIT.md`**; the second audit before 1.0.0 (0.9.33),
+its findings and what became of each, **`docs/AUDIT2.md`**.
 Licence: AGPL-3.0-or-later (`LICENSE.md`, the user, 2026-11-03).
 
 ## Non-negotiable invariants
@@ -287,7 +288,9 @@ someone's notes. Treat them as rules, not preferences.
     made on a device (0.9.20).
 32. **Only what this account decided goes out, and only a room's owner seals its
     keys.** The server's lists decide nothing alone: a key is sealed only to a member
-    this account recorded giving the note or folder to (`recordRole`, `memberKeys`),
+    this account recorded giving the note or folder to (`recordRole`, `memberKeys` - and every
+    other place that seals: *Replace all keys*, `renewFor`; the second audit found both without it),
+    and the account's own public keys are derived from its private ones, never the server's copy,
     a folder's share covers only notes this vault's index has in it (`ownNotesIn`), a
     note is written under a folder's key only when the index has it in that folder
     (`tieAgrees`), a key is taken only when the room's owner sealed it (`openSealed`),
@@ -313,7 +316,12 @@ someone's notes. Treat them as rules, not preferences.
     note back had new text written under a key someone revoked still holds. The
     owner's device moves the room past it (`catchUpEpoch`, a jump the server accepts,
     `isLaterEpoch`); everyone else waits. Every new epoch is `KeyRing.nextEpoch` -
-    past the server's and past the floor -, never the server's plus one.
+    past the server's and past the floor -, never the server's plus one. A sealed key raises the
+    floor only once its signature held (a server naming epoch 2^53 blocked a room for good), and a
+    frame below the highest epoch applied in its room is dropped (`RoomCursor.lastEpoch`, 0.9.33): an
+    honest server never stores one, and stored, someone removed went on writing under the key they kept.
+    An own note is read under a folder's key, for the epoch it is in and later, only when the index has
+    it in that folder - as it is written (audit 2, M9).
 34. **A device new to a vault on the server touches nothing before the person chose, and
     takes nothing of the server's over its own without a copy of the whole vault.** A device
     that never agreed with the vault - a new one, another server, another vault name - has no
@@ -991,6 +999,7 @@ npm run test:timemachine # the past in one device's files, put back byte for byt
 npm run test:replace   # every key of an account replaced: the vaults and files written anew, the other device, a contact confirming again, a replacement carried on by another device — in-process server
 npm run test:join      # a device meeting a vault on the server for the first time: what the comparison finds and what merging will make of it, the copy of the vault, "Not now", the server's version, merging, overwriting the server with this vault, the explorer's marks, a note open in an editor while joining, notes to compare on every device, carrying on after a restart, disconnecting a vault and meeting it again, the local history giving way to its deletion (fake-indexeddb), one Obsidian vault per vault of the server — in-process server
 npm run test:security  # every attack of the audit (docs/AUDIT.md): the server attacked over HTTP and WebSocket, the plugin's paths, links, folders and gate, the backup task — in-process servers
+npm run test:audit2    # every attack of the second audit (docs/AUDIT2.md), a script each, one after another — servers of their own; MYCEL_RESTIC for the backup server's
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by MYCEL_RESTIC (where it lies here: docs/PROGRESS.md)
 npm run bench          # what a first sync, a restart, typing and a catch-up cost (docs/PERFORMANCE.md) — servers of its own

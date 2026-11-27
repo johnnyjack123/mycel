@@ -2,8 +2,8 @@
 
 _Last updated: 2026-11-27 · **Phase: the device run before 1.0.0.** 0.9 - hardening and the
 security audit - is built. The user started afresh on 2026-11-13 and is trying everything on
-real devices. Each thing they find or ask for becomes the next patch: 0.9.19 to 0.9.32 so far.
-Current version: **0.9.32** (branch `feat/merge-drag`; 0.9.31 is `latest-build`).
+real devices. Each thing they find or ask for becomes the next patch: 0.9.19 to 0.9.33 so far.
+Current version: **0.9.33** (branch `fix/audit2`, which holds `fix/cosmetics`; 0.9.32 is `latest-build`).
 1.0.0 follows once everything is verified on devices, then publishing, if the user wants it._
 
 ## Where we are
@@ -61,15 +61,14 @@ the user runs the new setup and reports back. Each finding or wish was a version
 | 0.9.30 | 11-26 | Found by the user: the reset waited and failed half done (the local history held its database open). Their decision: *Disconnect this vault* - signed out, nothing of the sync left on the device - instead of the reset. |
 | 0.9.31 | 11-27 | Found by the user: a note one side only added to was not always listed to compare (one open in an editor while its device joined). Their decision: a range of lines in "Compare versions", across what both have. |
 | 0.9.32 | 11-27 | Found by the user: the range worked but was unintuitive. Their design: lines dragged in "Compare versions", as cards on a board - anywhere in the middle, several at once. |
+| 0.9.33 | 11-27 | The user's findings around a rollback and a restore, *Overwrite the server with this vault* (their wish of 11-13), and the second audit: 3 critical, 5 high, 12 medium, 10 low findings, fixed (`docs/AUDIT2.md`). |
 
 **Next:**
-1. **The second audit** (the user, 2026-11-27): a fresh agent, in a worktree of its own, tests
-   the whole project for what could expose someone's notes or lose data - attacking it, putting
-   it into strange situations, trying to break and exploit it - and reports each finding with a
-   reproduction; it fixes nothing. No more features are planned for 1.0.0 (the user: "von meiner
-   Seite für v1.0 ready").
-2. The findings fixed with the user, then everything since 0.9.32 (branch `fix/cosmetics`) built
-   as 0.9.33 and tried on the devices ("Still to try on devices").
+1. The user installs 0.9.33 (a **server update** this time: the server's and the backup
+server's fixes of the second audit) and tries what it brings ("Still to try on devices"). No more
+   features are planned for 1.0.0 (the user: "von meiner Seite für v1.0 ready").
+2. The second audit (`docs/AUDIT2.md`) is done and fixed: what is left of it is listed there under
+   "What became of it" - the user decides whether any of it waits for 1.0.0.
 3. Then 1.0.0. What it needs besides is the user's call: publishing, item 12 (a release tagged
    `x.y.z`, the README, the Docker images still private).
 
@@ -246,8 +245,9 @@ Ordered by the user on 2026-10-14; the table is in CLAUDE.md, Conventions.
 
 ## In flight / half-finished
 
-- **`fix/cosmetics`** (2026-11-27, pushed, not merged, no version yet - the user: no build needed
-  at once). Everything of 0.9.33 in the CHANGELOG: *Overwrite the server with this vault*, a mark
+- **`fix/audit2`** (2026-11-27), which holds **`fix/cosmetics`**: 0.9.33, to merge once CI is green.
+  Before the audit's fixes, `fix/cosmetics` held (pushed, not merged, no version - the user: no build
+  needed at once): Everything of 0.9.33 in the CHANGELOG: *Overwrite the server with this vault*, a mark
   not shown twice beside a tick alike, the windows of a backup on this device alone and of undo,
   the hint line of "Compare versions" and the Time Machine's legend. Every suite it touches is
   green (merge, load, sync, join, timemachine, rollback). To go out with the second audit's
@@ -442,6 +442,14 @@ How to run the end-to-end suites without touching the user's server is in CLAUDE
 ## Log
 
 ### 2026-11-27
+- The second audit came back: 3 critical, 5 high, 12 medium, 10 low (`docs/AUDIT2.md`). Every
+  reproduction was run again before anything was fixed; each attack worked. The three critical ones
+  explained to the user (the backup server running a paired person's command; a server choosing the
+  key friend codes vouch for; a relay message ending the server). Their decisions: H3 as proposed (the
+  local note set aside, the shared one beside it), and M9 to M12 before 1.0.0 too - "eine cleane
+  Version". All fixed on `fix/audit2`, what is left listed in the audit; the scripts are
+  `test:audit2`. Two of my own fixes needed fixing: H4 alone let a wrong tie empty a history, H3 set
+  a writer's new note aside endlessly (`test:folders` found it).
 - 0.9.32 tried on the PC: dragging looks very good; two cosmetic findings, and three around a
   rollback and a restore there (the window without a backup server, a restore's mark beside the
   same version, undo not saying it goes through the Time Machine). The user asked for these and

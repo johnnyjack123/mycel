@@ -112,6 +112,13 @@ jobs:
       - name: Backup self-test
         run: npm run test:backup
 
+      # Every attack of the second audit (docs/AUDIT2.md), each script against servers of its
+      # own: a FAIL means one works again. After restic is installed, for the backup server's.
+      - name: Second audit self-test
+        run: npm run test:audit2
+        env:
+          MYCEL_RESTIC: restic
+
       # The end-to-end self-tests need a live server that lets them create
       # accounts, so start one and wait for it.
       - name: Start the sync server
