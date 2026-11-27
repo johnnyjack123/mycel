@@ -8,6 +8,33 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.31** (2026-11-27, branch `feat/merge-ranges`, the user's findings on 0.9.30 and their
+  decision) - **a note open while its device joined is listed too; a range of lines in "Compare
+  versions".**
+  - **The bug.** A note that differed only by text the other side added - one version holding all
+    of the other - should be marked in the explorer and listed in "Compare versions" like every
+    note merged without a base, and was not always, as the user found. A note shown in an editor
+    when its device joined is merged by the editor's binding (`resolveEditorEdits`), not by the
+    file's reconcile; where the editor's version was the shorter one, the note took the longer one
+    there and no review was made - the one branch without it. Now it makes one, as the file's
+    does. Whether that was the user's case is not known for certain: the device was not reachable
+    to read its log. Checked in `test:join` (a device joining with such a note open in an editor),
+    the new check seen failing without the fix, and nothing else.
+  - **A range of lines** (the user's case: a block `PC: --- … ---` written in the same place on
+    each device). The window lays out the lines both versions have on the same rows, `---` and the
+    empty lines too, and those cut each block into passages; neither block could be put under the
+    other whole. A line's number clicked, then another one of the same side Shift-clicked - or,
+    without Shift on a phone, two numbers tapped with *Range of lines* on - brings everything from
+    the first to the last into the middle as one piece, lines both have included. Where the range
+    reaches past its passage, everything it touches becomes one passage (`MergeDraft.takeRange`):
+    what the passages held stays in front, the lines both have in it are the range's from then on,
+    shown fainter. The numbers of lines both have begin or end a range too. The passage's eraser
+    splits it again into the passages it was made of, *Empty again* splits all of them. The first
+    number is marked, and a line under the buttons says what comes next. Checked in `test:merge`
+    (the user's two blocks, one under the other; splitting; earlier choices, text written by hand,
+    a range inside one passage, *All from*) and `test:sync` (Shift-click, *Range of lines*, the
+    eraser and *Empty again* in the window, in jsdom).
+
 - **0.9.30** (2026-11-26, branch `feat/disconnect-vault`, the user's finding on 0.9.29 and their
   decision) - **disconnecting a vault, instead of resetting a device's sync.**
   - **The bug.** *Reset this device's sync* waited about twenty seconds on a device and then said

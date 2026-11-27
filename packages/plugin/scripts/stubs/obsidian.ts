@@ -88,6 +88,9 @@ export function installDomHelpers(): void {
   }
 }
 
+/** A desktop, as the tests run. */
+export const Platform = { isMobile: false, isDesktop: true }
+
 export function setIcon(el: HTMLElement, icon: string): void {
   el.setAttribute('data-icon', icon)
 }

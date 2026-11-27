@@ -1136,6 +1136,10 @@ export class DocStore {
         return local
       case 'adopt-remote':
         if (local !== base) await this.backups.write(path, 'local', local)
+        // As `applyOutcome` for a file: without a base, the editor's version was only a part of the
+        // other one, whose lines came in unasked. Left out here, a note open while its device joined
+        // was the one such note not listed to look at (0.9.31).
+        if (base === null && local.length > 0) this.review(docId, path, 'no-base', local, remote, remote, Date.now())
         return remote
       case 'merge':
         await this.backups.captureBoth(path, local, remote)

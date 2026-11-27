@@ -1,6 +1,6 @@
 import type { DataAdapter } from 'obsidian'
 import { lineDiff } from '@mycel/shared'
-import { alignVersions, type Aligned, type Passage } from './align.js'
+import { alignVersions, type Aligned, type Passage, type Row, type Run, type SameRun, type Span } from './align.js'
 import { log } from '../log.js'
 
 // A note that differed on two devices with nothing to tell which side changed
@@ -69,11 +69,14 @@ export function joinParts(parts: string[]): string {
   return text
 }
 
-/** What a passage's place in the result took: a side's lines there, or one line of a side. */
+/** What a passage's place in the result took: a side's lines there, or some lines of a side in one piece. */
 export interface Picked {
   side: Side
-  /** The line's index in that version; null for every line the side has in the passage. */
-  line: number | null
+  /**
+   * Lines [from, to) of that version: one taken by its number, or a range of them (0.9.31). Null
+   * for every line the side has in the passage.
+   */
+  lines: { from: number; to: number } | null
 }
 
 /** A differing passage's place in the result: what was taken into it, in order, or written there by hand. */
@@ -84,24 +87,69 @@ export interface Slot {
   edited: boolean
 }
 
+function emptySlot(): Slot {
+  return { picks: [], text: '', edited: false }
+}
+
+function start(span: Span, side: Side): number {
+  return side === 'mine' ? span.mineFrom : span.theirsFrom
+}
+
+function end(span: Span, side: Side): number {
+  return side === 'mine' ? span.mineTo : span.theirsTo
+}
+
+function passagesOf(runs: Run[]): Passage[] {
+  return runs.filter((run): run is Passage => !run.same)
+}
+
+/** A place between two lines of one side, inside a run both have: the same place on the other side. */
+function across(run: SameRun, side: Side, line: number): { mine: number; theirs: number } {
+  const offset = line - start(run, side)
+  return { mine: run.mineFrom + offset, theirs: run.theirsFrom + offset }
+}
+
+/** Runs both have that meet again - a joined passage split - are one. */
+function mergeSame(runs: Run[]): Run[] {
+  const merged: Run[] = []
+  for (const run of runs) {
+    const last = merged[merged.length - 1]
+    if (last?.same && run.same) {
+      merged[merged.length - 1] = { same: true, mineFrom: last.mineFrom, mineTo: run.mineTo, theirsFrom: last.theirsFrom, theirsTo: run.theirsTo }
+    } else {
+      merged.push(run)
+    }
+  }
+  return merged
+}
+
 /**
  * The note being put together in "Compare versions", as git's merge tools do (the user,
  * 2026-11-18): what both versions have stands as it is, and each passage that differs
  * starts empty - this device's lines, the other's, both in the order taken, single lines of
  * either, or text of one's own go into it, one passage at a time. The passages are as fine
  * as the two versions allow (`alignVersions`, 2026-11-21): a stretch only one side has is
- * one of its own.
+ * one of its own. A range of lines taken across them joins them (`takeRange`, 0.9.31).
  */
 export class MergeDraft {
+  /** The two versions as laid out first. */
   readonly aligned: Aligned
+  /** How they stand now: `aligned`'s runs, with passages joined where a range was taken across them. */
+  runs: Run[] = []
   /** The passages that differ, in order; one slot each. */
-  readonly passages: Passage[]
-  readonly slots: Slot[]
+  passages: Passage[] = []
+  slots: Slot[] = []
 
   constructor(mine: string, theirs: string) {
     this.aligned = alignVersions(mine, theirs)
-    this.passages = this.aligned.runs.filter((run): run is Passage => !run.same)
-    this.slots = this.passages.map(() => ({ picks: [], text: '', edited: false }))
+    this.reset()
+  }
+
+  /** Every passage empty, and as first laid out: joined ones split again. */
+  reset(): void {
+    this.runs = [...this.aligned.runs]
+    this.passages = passagesOf(this.runs)
+    this.slots = this.passages.map(() => emptySlot())
   }
 
   passage(index: number): Passage {
@@ -115,18 +163,16 @@ export class MergeDraft {
   /** Every line a side has in the passage, as it stands there. */
   sideText(index: number, side: Side): string {
     const passage = this.passage(index)
-    return side === 'mine'
-      ? this.aligned.mine.slice(passage.mineFrom, passage.mineTo).join('')
-      : this.aligned.theirs.slice(passage.theirsFrom, passage.theirsTo).join('')
+    return this.lines(side).slice(start(passage, side), end(passage, side)).join('')
   }
 
   private holds(index: number, side: Side, line: number): boolean {
     const passage = this.passage(index)
-    return side === 'mine' ? line >= passage.mineFrom && line < passage.mineTo : line >= passage.theirsFrom && line < passage.theirsTo
+    return line >= start(passage, side) && line < end(passage, side)
   }
 
   private pickText(index: number, pick: Picked): string {
-    return pick.line === null ? this.sideText(index, pick.side) : (this.lines(pick.side)[pick.line] ?? '')
+    return pick.lines === null ? this.sideText(index, pick.side) : this.lines(pick.side).slice(pick.lines.from, pick.lines.to).join('')
   }
 
   private rebuild(index: number): void {
@@ -157,35 +203,145 @@ export class MergeDraft {
 
   /** Whether every line of a side is in the passage's place. */
   taken(index: number, side: Side): boolean {
-    return this.slots[index]?.picks.some((pick) => pick.side === side && pick.line === null) ?? false
+    return this.slots[index]?.picks.some((pick) => pick.side === side && pick.lines === null) ?? false
   }
 
-  /** Whether a line of a side is in the passage's place, alone or with its side. */
+  /** The pick that holds a line of a side, alone or in a range. */
+  private pickOf(index: number, side: Side, line: number): Picked | undefined {
+    return this.slots[index]?.picks.find((pick) => pick.side === side && pick.lines !== null && line >= pick.lines.from && line < pick.lines.to)
+  }
+
+  /** Whether a line of a side is in the passage's place, alone, in a range or with its side. */
   picked(index: number, side: Side, line: number): boolean {
-    return this.taken(index, side) || (this.slots[index]?.picks.some((pick) => pick.side === side && pick.line === line) ?? false)
+    return this.taken(index, side) || this.pickOf(index, side, line) !== undefined
   }
 
-  /** Every line of a side, after what is there; single lines of that side taken before go into it. */
+  /** Every line of a side, after what is there; lines of that side taken before go into it. */
   take(index: number, side: Side): void {
     const slot = this.slots[index]
     if (!slot || this.taken(index, side)) return
     this.drop(index, slot.picks.filter((pick) => pick.side === side))
-    this.add(index, { side, line: null })
+    this.add(index, { side, lines: null })
   }
 
-  /** Takes a side out again, its single lines too. */
+  /** Takes a side out again, its single lines and ranges too. */
   remove(index: number, side: Side): void {
     const slot = this.slots[index]
     if (slot) this.drop(index, slot.picks.filter((pick) => pick.side === side))
   }
 
-  /** One line of a side, after what is there - or out again. Nothing while the whole side is taken. */
+  /** One line of a side, after what is there - or out again, with the range it came in. Nothing while the whole side is taken. */
   toggleLine(index: number, side: Side, line: number): void {
     const slot = this.slots[index]
     if (!slot || this.taken(index, side) || !this.holds(index, side, line)) return
-    const there = slot.picks.find((pick) => pick.side === side && pick.line === line)
+    const there = this.pickOf(index, side, line)
     if (there) this.drop(index, [there])
-    else this.add(index, { side, line })
+    else this.add(index, { side, lines: { from: line, to: line + 1 } })
+  }
+
+  /**
+   * The lines from `first` to `last` of a side, either way round, after what is there, as one
+   * piece (0.9.31). A range reaching past its passage, over lines both have, makes one passage of
+   * everything it touches: two blocks written in the same place on two devices were cut apart by
+   * the lines both have between them (`---`, an empty line), and could not be put one under the
+   * other. What those passages held stays in the joined one; the lines both had between them are
+   * the range's from then on. Returns the passage it went into.
+   */
+  takeRange(side: Side, first: number, last: number): number | null {
+    const from = Math.max(0, Math.min(first, last))
+    const to = Math.min(this.lines(side).length, Math.max(first, last) + 1)
+    if (from >= to) return null
+    const a = this.runAt(side, from)
+    const b = this.runAt(side, to - 1)
+    if (a < 0 || b < 0) return null
+    const only = this.runs[a]
+    const index = a === b && only && !only.same ? this.passages.indexOf(only) : this.join(side, from, to, a, b)
+    const slot = this.slots[index]
+    if (!slot || this.taken(index, side)) return index
+    // Lines of it taken before - its first one, by its number - are in it now.
+    this.drop(index, slot.picks.filter((pick) => pick.side === side && pick.lines !== null && pick.lines.from >= from && pick.lines.to <= to))
+    this.add(index, { side, lines: { from, to } })
+    return index
+  }
+
+  private runAt(side: Side, line: number): number {
+    return this.runs.findIndex((run) => line >= start(run, side) && line < end(run, side))
+  }
+
+  /** Runs `a` to `b` as one passage; a run both have at either end is cut where the range begins or ends. */
+  private join(side: Side, from: number, to: number, a: number, b: number): number {
+    const first = this.runs[a] as Run
+    const last = this.runs[b] as Run
+    const begin = first.same ? across(first, side, from) : { mine: first.mineFrom, theirs: first.theirsFrom }
+    const finish = last.same ? across(last, side, to) : { mine: last.mineTo, theirs: last.theirsTo }
+    const rows: Row[] = []
+    const picks: Picked[] = []
+    const texts: string[] = []
+    let edited = false
+    for (const run of this.runs.slice(a, b + 1)) {
+      if (run.same) {
+        const mineFrom = Math.max(run.mineFrom, begin.mine)
+        const mineTo = Math.min(run.mineTo, finish.mine)
+        for (let line = mineFrom; line < mineTo; line += 1) rows.push({ mine: line, theirs: run.theirsFrom + (line - run.mineFrom), paired: false, same: true })
+        continue
+      }
+      rows.push(...run.rows)
+      const slot = this.slots[this.passages.indexOf(run)]
+      if (!slot) continue
+      for (const pick of slot.picks) {
+        // A passage's whole side is only a range of the joined one.
+        const lines = pick.lines ?? { from: start(run, pick.side), to: end(run, pick.side) }
+        if (lines.to > lines.from) picks.push({ side: pick.side, lines })
+      }
+      edited ||= slot.edited
+      texts.push(slot.text)
+    }
+    const joined: Passage = { same: false, joined: true, mineFrom: begin.mine, mineTo: finish.mine, theirsFrom: begin.theirs, theirsTo: finish.theirs, rows }
+    const pieces: Run[] = []
+    if (first.same && begin.mine > first.mineFrom) {
+      pieces.push({ same: true, mineFrom: first.mineFrom, mineTo: begin.mine, theirsFrom: first.theirsFrom, theirsTo: begin.theirs })
+    }
+    pieces.push(joined)
+    if (last.same && finish.mine < last.mineTo) {
+      pieces.push({ same: true, mineFrom: finish.mine, mineTo: last.mineTo, theirsFrom: finish.theirs, theirsTo: last.theirsTo })
+    }
+    const slots = this.slotsByPassage()
+    slots.set(joined, { picks, text: joinParts(texts), edited })
+    this.restructure([...this.runs.slice(0, a), ...pieces, ...this.runs.slice(b + 1)], slots)
+    const index = this.passages.indexOf(joined)
+    this.rebuild(index)
+    return index
+  }
+
+  /** A passage a range made, split again into the passages it was made of - each empty, as first laid out. */
+  split(index: number): void {
+    const passage = this.passages[index]
+    if (!passage?.joined) return
+    const pieces: Run[] = []
+    for (const run of this.aligned.runs) {
+      if (run.same) {
+        const mineFrom = Math.max(run.mineFrom, passage.mineFrom)
+        const mineTo = Math.min(run.mineTo, passage.mineTo)
+        if (mineTo > mineFrom) {
+          pieces.push({ same: true, mineFrom, mineTo, theirsFrom: run.theirsFrom + (mineFrom - run.mineFrom), theirsTo: run.theirsFrom + (mineTo - run.mineFrom) })
+        }
+      } else if (run.mineFrom >= passage.mineFrom && run.mineTo <= passage.mineTo && run.theirsFrom >= passage.theirsFrom && run.theirsTo <= passage.theirsTo) {
+        pieces.push(run)
+      }
+    }
+    const at = this.runs.indexOf(passage)
+    this.restructure([...this.runs.slice(0, at), ...pieces, ...this.runs.slice(at + 1)], this.slotsByPassage())
+  }
+
+  private slotsByPassage(): Map<Passage, Slot> {
+    return new Map(this.passages.map((passage, at) => [passage, this.slots[at] ?? emptySlot()]))
+  }
+
+  /** New runs; each passage keeps its slot, a new one starts empty. */
+  private restructure(runs: Run[], slots: Map<Passage, Slot>): void {
+    this.runs = mergeSame(runs)
+    this.passages = passagesOf(this.runs)
+    this.slots = this.passages.map((passage) => slots.get(passage) ?? emptySlot())
   }
 
   edit(index: number, text: string): void {
@@ -228,9 +384,7 @@ export class MergeDraft {
    */
   result(): string {
     let next = 0
-    return joinParts(
-      this.aligned.runs.map((run) => (run.same ? this.aligned.mine.slice(run.mineFrom, run.mineTo).join('') : (this.slots[next++]?.text ?? '')))
-    )
+    return joinParts(this.runs.map((run) => (run.same ? this.aligned.mine.slice(run.mineFrom, run.mineTo).join('') : (this.slots[next++]?.text ?? ''))))
   }
 }
 
