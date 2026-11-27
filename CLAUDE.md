@@ -526,12 +526,17 @@ beside line (0.9.26, `sync/align.ts`): what both have on the same rows in all th
 columns, lines that resemble each other paired with their changes marked, a gap
 opposite a line only one side has; a stretch only one side has is a passage of its
 own. Every passage that differs starts empty in the middle until a side is taken
-into it - both in the order taken, single lines by their number, or a range from one
-number to another Shift-clicked (*Range of lines* on a phone) - or it is written by hand;
-*Apply* asks before leaving an empty one out. A range reaching over lines both have makes one
-passage of everything it touches (0.9.31, `MergeDraft.takeRange`): two blocks written in the
-same place were cut apart by the `---` and empty lines both had, and could not be put one under
-the other; the eraser splits such a passage again. `DocStore.applyReview`
+into it - both in the order taken - or lines are dragged there, or it is written by hand;
+*Apply* asks before leaving an empty one out. Lines are dragged as cards on a board (0.9.32,
+the user's design): a version's by their number, copied into the middle anywhere - a click
+selects several, Shift-click every line between -, the middle's by a handle, moved or dragged
+out onto a version. The middle is a list of lines (`Slot.items`: a version's line by its number,
+or one written by hand). Let go between two lines both have, they open a place of their own
+there (`Passage.inserted`, gone once empty): two blocks written in the same place were cut apart
+by the `---` and empty lines both had, and could not be put one under the other. The lines both
+have stay fixed in the middle. Pointer events, not the browser's drag and drop; the numbers and
+handles take no scrolling. (0.9.31's range of lines, joining passages, was unintuitive and
+went.) `DocStore.applyReview`
 backs up, then applies the result as an edit — merged three ways into the note if it
 changed since. Taking the other side, then this one, everywhere keeps exactly the
 lines the merge kept (checked in `test:merge`); the passages being finer than the
@@ -970,7 +975,7 @@ covered, and all of it must stay green.
 npm run test:merge     # merge/reconcile/identity and the crypto — no server, no DOM
 npm run test:load      # the built bundle imports, onload/start/unload run, a disconnect carried on at the start, Obsidian stubbed; current and versioned
 npm run test:rooms     # accounts, access, epochs, sharing, compaction, restart, a vault deleted and cleared — in-process
-npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay; the merge window in jsdom, its ranges of lines too
+npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-process relay; the merge window in jsdom, lines dragged in it too
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA, a vault deleted on the server — in-process server
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
@@ -1028,8 +1033,9 @@ copying a selection from one version relies on Obsidian's window passing its `co
 a vault deleted on the server, and IndexedDB listing its databases for clearing them; since 0.9.26 the setup
 guide's live comparison; since 0.9.30 the disconnect window, and Obsidian's local storage keeping a vault's entries
 under names that end in what the plugin gave them (`forgetSecrets` relies on it; Obsidian documents no format);
-since 0.9.31 a range of lines in the merge window - Shift-click in Obsidian's window, *Range of lines* on a phone,
-where the lines both have show no numbers.
+since 0.9.32 dragging lines in the merge window in Obsidian's own window and with a finger on a phone, where
+the lines both have show no numbers (in jsdom the hit test is told what lies under the pointer; a headless Edge
+driven over the DevTools protocol showed it with a real mouse and a finger, but made no click from a tap).
 
 ## Gotchas
 

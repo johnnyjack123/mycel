@@ -8,6 +8,42 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.32** (2026-11-27, branch `feat/merge-drag`, the user's finding on 0.9.31 and their
+  decision) - **lines dragged in "Compare versions", as cards on a board.**
+  - **Why.** The range of 0.9.31 worked on the device but was, in the user's words, unintuitive
+    and hard to follow: the second click rebuilt the window - passages joined - without showing
+    beforehand what would happen. Their idea: every line dragged on its own, several selected and
+    moved at once, anywhere in the middle, between lines already there too. *Take* stays.
+  - **How it works now.** A version's lines are dragged by their number into the middle and copied
+    there - the version stays as it was, its lines in the middle marked. A click on a number selects
+    the line (no longer takes it), Shift-click every line from the one clicked before; dragging one
+    selected line carries all of them, in their version's order. The middle is a list of lines
+    (`MergeDraft`: `Slot.items`, each a version's line by its number or one written by hand), each
+    with a handle: dragged within the middle it moves, onto a version it goes out (Delete does that
+    for the selected ones). A line marks where they would go, the place's middle is lit, and a label
+    by the pointer says what is carried; near the list's edge it scrolls. Let go between two lines
+    both have, a place of their own opens there (`Passage.inserted`, `MergeDraft.put`): a gap on both
+    sides, no passage to decide, gone again once empty - which is how the user's two blocks go one
+    under the other: this device's block taken, the other's lines 11 to 17 dragged below its closing
+    `---`. Clicked into, the middle is a field to write in as before; lines left as they were keep
+    where they came from (`edit` diffs the text against the lines), so *Give back* still takes them
+    out. Pointer events, not the browser's drag and drop, which a finger does not reliably start: the
+    numbers and handles take no scrolling (`touch-action: none`), the rest of the window does.
+    *Range of lines*, Shift-click ranges that join passages, and splitting with the eraser are gone.
+  - **Checked** in `test:merge` (the user's two blocks; putting lines before, after and between
+    lines both have, at the top and at the bottom; a place reused from above and below; moving
+    within and between passages, several at once, before one of themselves; a place going once
+    empty; text written by hand keeping its lines' origin; *All from*, *Empty again*) and `test:sync`
+    (in jsdom, with the hit test told what lies under the pointer: a click selects and lets go,
+    Shift-click selects the seven lines, dragging carries them with its label and line, the place
+    opened, Apply; a handle moving a line, onto a version taking it out, Delete; writing in the
+    middle; the eraser, the last line dragged out and *Empty again* closing a place). And looked at
+    in a headless Edge driven over the DevTools protocol, the real stylesheet with Obsidian's
+    variables stood in for: the two blocks dragged with a real mouse, a line moved and dragged out,
+    the middle written in, Apply; at a phone's width with a finger, a line dragged into the middle.
+    That a tap selects could not be seen there - the emulation made no click from a tap on any
+    button, *Take* included.
+
 - **0.9.31** (2026-11-27, branch `feat/merge-ranges`, the user's findings on 0.9.30 and their
   decision) - **a note open while its device joined is listed too; a range of lines in "Compare
   versions".**

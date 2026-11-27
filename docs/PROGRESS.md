@@ -2,8 +2,8 @@
 
 _Last updated: 2026-11-27 · **Phase: the device run before 1.0.0.** 0.9 - hardening and the
 security audit - is built. The user started afresh on 2026-11-13 and is trying everything on
-real devices. Each thing they find or ask for becomes the next patch: 0.9.19 to 0.9.31 so far.
-Current version: **0.9.31** (branch `feat/merge-ranges`; 0.9.30 is `latest-build`).
+real devices. Each thing they find or ask for becomes the next patch: 0.9.19 to 0.9.32 so far.
+Current version: **0.9.32** (branch `feat/merge-drag`; 0.9.31 is `latest-build`).
 1.0.0 follows once everything is verified on devices, then publishing, if the user wants it._
 
 ## Where we are
@@ -60,12 +60,13 @@ the user runs the new setup and reports back. Each finding or wish was a version
 | 0.9.29 | 11-26 | The user's findings and decisions: notes to compare on every device, no conflict markers, the Time Machine's marks, resetting a device's sync, one Obsidian vault per vault of the server, a device's name, the status bar's count, the vault's rows under All devices. |
 | 0.9.30 | 11-26 | Found by the user: the reset waited and failed half done (the local history held its database open). Their decision: *Disconnect this vault* - signed out, nothing of the sync left on the device - instead of the reset. |
 | 0.9.31 | 11-27 | Found by the user: a note one side only added to was not always listed to compare (one open in an editor while its device joined). Their decision: a range of lines in "Compare versions", across what both have. |
+| 0.9.32 | 11-27 | Found by the user: the range worked but was unintuitive. Their design: lines dragged in "Compare versions", as cards on a board - anywhere in the middle, several at once. |
 
 **Next:**
-1. The user installs 0.9.31 on both devices (no server update; the backup server's image of
+1. The user installs 0.9.32 on both devices (no server update; the backup server's image of
    0.9.29 may follow later: it only leaves reviews and marks out of its copy's settings) and tries
-   what it brings ("Still to try on devices", 0.9.31): the PC is back on the evening of
-   2026-11-27. *Disconnect this vault* worked on a device (2026-11-26). The read-only attribute
+   what it brings ("Still to try on devices", 0.9.32 and the rest of 0.9.31): the PC is back on
+   the evening of 2026-11-27. *Disconnect this vault* worked on a device (2026-11-26). The read-only attribute
    was taken off the PC's test vault on 2026-11-26 and did not come back.
 2. Then on through "Still to try on devices" below.
 3. Findings come first, then 1.0.0. What 1.0.0 still needs besides is the user's call:
@@ -95,18 +96,26 @@ the user runs the new setup and reports back. Each finding or wish was a version
 - 0.9.24's deletion through the CLI was tried; the question it raised became 0.9.25.
 - *Disconnect this vault* of 0.9.30 "seems to work well" (2026-11-27), and a note merged on
   meeting again was put together in "Compare versions" - which found what became 0.9.31.
+- The range of lines of 0.9.31 worked with Shift-click (2026-11-27), but was unintuitive and
+  hard to follow - which became 0.9.32.
 
 ### Still to try on devices
 
 What only a device can show (CLAUDE.md, Testing) and nobody has tried yet, newest first:
-- **0.9.31:**
-  - a note only one side added to, open in an editor on the device that joins and shorter there:
-    marked in the explorer and listed in "Compare versions" afterwards (on the PC: if not, its log
-    says `editor held text the note did not; adopt-remote … base none` for the note);
-  - a range of lines in "Compare versions": a number clicked, then another Shift-clicked - the
-    user's two blocks put one under the other whole -; *Range of lines* on a phone; the first
-    number marked and the line under the buttons; the lines both have in a joined passage shown
-    fainter; the eraser splitting it again; whether it is intuitive (the user was unsure).
+- **0.9.32:** "Compare versions" with lines dragged, in Obsidian's own window:
+  - a number dragged into the middle, the line drawn where it goes, the label by the pointer, the
+    list scrolling at its edge; a click selecting, Shift-click every line between, several
+    dragged at once; the user's two blocks: this device's taken, the other's lines 11 to 17
+    dragged below its closing `---`;
+  - a line of the middle moved by its handle, dragged onto a version to take it out, Delete;
+    clicking into the middle to write and leaving it; the eraser; *Empty again*;
+  - on a phone: dragging by the number with a finger while the rest still scrolls, a tap
+    selecting (not seen in the emulation: it made no click from a tap on any button);
+  - whether it is intuitive now.
+- **0.9.31:** a note only one side added to, open in an editor on the device that joins and
+  shorter there: marked in the explorer and listed in "Compare versions" afterwards (on the PC:
+  if not, its log says `editor held text the note did not; adopt-remote … base none` for the
+  note). (The range of lines of 0.9.31 is replaced by 0.9.32.)
 - **0.9.30:**
   - *Disconnect this vault* on a device: the window (what goes, the box for the safety copies
     with their size, the warning when something is unsent or the device offline), signed out
@@ -437,6 +446,14 @@ How to run the end-to-end suites without touching the user's server is in CLAUDE
 ## Log
 
 ### 2026-11-27
+- The user tried 0.9.31's range of lines: it works with Shift, but is unintuitive and hard to
+  follow. Their idea, agreed: lines dragged as cards on a board - each on its own or several
+  selected, anywhere in the middle, between lines already there too; *Take* stays. Settled with
+  them: a click on a number only selects now (taking a single line is dragging it); lines both
+  have stay fixed in the middle, things go between them (striking one out offered, not asked
+  for). Built as 0.9.32: the middle a list of lines, lines put between lines both have opening a
+  place of their own; pointer events, the numbers and handles taking no scrolling. Looked at in a
+  headless Edge driven over the DevTools protocol (the Chrome extension was not connected).
 - 0.9.30 seemed to work well on a device. The user's findings after it, built as 0.9.31: a note
   one side only added to should be marked and listed like any merged without a base - the code
   meant it to be, but a note open in an editor while its device joined, shorter there, was not
