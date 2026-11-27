@@ -55,6 +55,15 @@ const LOCKED = 11
 const INCOMPLETE = 3
 
 /** What goes to restic: nothing of the backup server's own environment that names a repository. */
+/**
+ * A snapshot id as restic writes it, and nothing else: one a device sent beginning with `-` was an
+ * option to restic, and `--password-command=…` ran any command on the backup server (audit 2, C1).
+ */
+export function snapshotId(id: unknown): string {
+  if (typeof id !== 'string' || !/^[0-9a-f]{8,64}$/.test(id)) throw new Error('that is not a snapshot of this backup server')
+  return id
+}
+
 function environment(repo: ResticRepo, cacheDir: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(process.env)) {
@@ -224,21 +233,24 @@ export class Restic {
     await this.ok(repo, ['check', ...(readData ? [`--read-data-subset=${readData}`] : [])])
   }
 
-  async ls(repo: ResticRepo, snapshotId: string): Promise<LsEntry[]> {
-    const stdout = await this.ok(repo, ['ls', '--json', snapshotId])
+  async ls(repo: ResticRepo, id: string): Promise<LsEntry[]> {
+    const stdout = await this.ok(repo, ['ls', '--json', '--', snapshotId(id)])
     return jsonLines<{ struct_type?: string; path?: string; type?: string; size?: number }>(stdout.toString('utf8'))
       .filter((line) => line.struct_type === 'node' && typeof line.path === 'string')
       .map((line) => ({ path: line.path as string, type: line.type ?? '', size: line.size }))
   }
 
   /** One file of a snapshot, whole. Only for small ones: the check reads notes back this way. */
-  async dump(repo: ResticRepo, snapshotId: string, path: string): Promise<Buffer> {
-    return this.ok(repo, ['dump', snapshotId, path])
+  async dump(repo: ResticRepo, id: string, path: string): Promise<Buffer> {
+    return this.ok(repo, ['dump', '--', snapshotId(id), path])
   }
 
   /** One file of a snapshot, as a stream - a files snapshot's tar, read back whole for the weekly check. */
-  async dumpTo(repo: ResticRepo, snapshotId: string, path: string, sink: (chunk: Buffer) => Promise<void>): Promise<void> {
-    const child = spawn(this.binary, ['dump', snapshotId, path], {
+  async dumpTo(repo: ResticRepo, id: string, path: string, sink: (chunk: Buffer) => Promise<void>): Promise<void> {
+    // As every start of restic (`run`): reading a backup back reached the backup server's own network unchecked (audit 2, M5).
+    const refused = await networkProblem(repo.repository, repo.env, this.allowHosts, this.resolve)
+    if (refused) throw new ResticError(null, '', refused)
+    const child = spawn(this.binary, ['dump', '--', snapshotId(id), path], {
       env: environment(repo, this.cacheDir),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true

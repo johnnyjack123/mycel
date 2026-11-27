@@ -14,7 +14,7 @@ import { backupRouteKeys, newBackupSecret, toBase64 } from '@mycel/shared/crypto
 import { fetchSettings, readConfig, repositoryOf, writable, type VaultConfig, type VaultFolders } from './config.js'
 import { VaultKeys } from './keys.js'
 import { log } from './log.js'
-import type { Restic } from './restic.js'
+import { snapshotId, type Restic } from './restic.js'
 import { vaultFolder } from './layout.js'
 import { listBackup, readBackup, snapshotAt, snapshotTimes } from './restore.js'
 import { runBackup, type Destination, type RunControl, type RunReport } from './run.js'
@@ -409,6 +409,9 @@ export class BackupService {
     const { destinations, folder } = await this.repositories(vaultId)
     const destination = destinations.find((candidate) => candidate.id === ref?.destination)
     if (!destination || typeof ref.notes?.id !== 'string') throw new Error('that is not a backup of this vault')
+    // Ids, never options: restic took one beginning with `-` for one (audit 2, C1).
+    snapshotId(ref.notes.id)
+    if (ref.files !== undefined && ref.files !== null) snapshotId(ref.files.id)
     // The folder is this backup server's to know, whatever the device sent.
     return { destination, ref: { ...ref, folder } }
   }

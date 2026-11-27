@@ -169,6 +169,10 @@ class VaultConnection implements RoomClient {
   close(code: number, reason: string): void {
     this.ws.close(code, reason)
   }
+
+  backlog(): number {
+    return this.ws.bufferedAmount
+  }
 }
 
 /**
@@ -179,7 +183,8 @@ export function setupVaultConnection(ws: WebSocket, account: string, vaultId: st
   ws.binaryType = 'arraybuffer'
   const connection = new VaultConnection(ws, account, vaultId)
   const queue = serializer()
-  hub.attach(connection)
+  // Closed at once when the account has too many open (audit 2, H5).
+  if (!hub.attach(connection)) return
   const stopHeartbeat = heartbeat(ws, () => hub.detach(connection))
 
   ws.on('message', (raw: unknown) => {

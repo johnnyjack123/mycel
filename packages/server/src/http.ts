@@ -264,21 +264,25 @@ export function createHttpApp(
   ): Promise<T | undefined> {
     const address = request.ip
     return paced(async () => {
-      if (guard.blocked(address)) {
+      // Taken before the attempt is looked at: a burst at once is no more attempts than one by one (audit 2, M3).
+      if (!guard.begin(address)) {
         await reply.code(429).send({ error: 'too many attempts; try again later' })
         return undefined
       }
+      let failed = false
       try {
         const result = await task()
         if (result === null) {
-          guard.failed(address)
+          failed = true
           await reply.code(401).send({ error: refusal })
           return undefined
         }
         return result
       } catch (error) {
-        if (error instanceof AccountError && error.status >= 400 && error.status < 500) guard.failed(address)
+        if (error instanceof AccountError && error.status >= 400 && error.status < 500 && error.status !== 429) failed = true
         throw error
+      } finally {
+        guard.end(address, failed)
       }
     }, options.paceMs)
   }
@@ -332,13 +336,14 @@ export function createHttpApp(
         if (!account || sessionOf(account) !== challenge.gen) throw new AccountError(401, 'sign in again')
         // Only someone who knew the password gets here, so wrong codes can be
         // counted per account - six digits are not much to guess.
-        if (codeGuard.blocked(account.accountId)) throw new AccountError(429, 'too many wrong codes; try again later')
-        const right = await accounts.checkTotp(account.accountId, body.code, now())
-        if (right === null) return session(account.accountId)
-        if (!right) {
-          codeGuard.failed(account.accountId)
-          return null
+        if (!codeGuard.begin(account.accountId)) throw new AccountError(429, 'too many wrong codes; try again later')
+        let right: boolean | null | undefined
+        try {
+          right = await accounts.checkTotp(account.accountId, body.code, now())
+        } finally {
+          codeGuard.end(account.accountId, right === false)
         }
+        if (right === false) return null
         return session(account.accountId)
       },
       'wrong code'
@@ -431,13 +436,17 @@ export function createHttpApp(
         const keeping = Boolean(found?.totp) && body.totpCode !== undefined
         // Codes to keep the second factor are counted like those signing in:
         // a block leaves turning it off, which the recovery code allows anyway.
-        if (found && keeping && codeGuard.blocked(found.accountId)) throw new AccountError(429, 'too many wrong codes; try again later')
+        const counted = found && keeping ? found.accountId : null
+        if (counted && !codeGuard.begin(counted)) throw new AccountError(429, 'too many wrong codes; try again later')
         let account: StoredAccount | null
+        let wrongCode = false
         try {
           account = await accounts.recover(body, now())
         } catch (error) {
-          if (found && keeping && error instanceof AccountError && error.status === 401) codeGuard.failed(found.accountId)
+          wrongCode = error instanceof AccountError && error.status === 401
           throw error
+        } finally {
+          if (counted) codeGuard.end(counted, wrongCode)
         }
         if (!account) return null
         hub.disconnect(account.accountId)

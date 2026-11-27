@@ -99,6 +99,8 @@ export interface RoomClient {
   sendChanged(room: string, headSeq: number): void
   /** Ends the connection; the device learns why from the close code. */
   close(code: number, reason: string): void
+  /** Bytes sent to the connection and not yet taken by it; absent: none known. */
+  backlog?(): number
 }
 
 export { HubError }
@@ -123,6 +125,21 @@ export interface RoomHubOptions {
 }
 
 const IDLE_CLOSE_MS = 30_000
+// One account must not take the server's memory (audit 2, H5): a hundred sockets of its own,
+// ninety-nine never reading, and 32 MiB of presence copied to each was some 3 GiB at once.
+/** Presence says where a caret is: a few hundred bytes, sealed. */
+const AWARENESS_MAX_BYTES = 64 * 1024
+/** Presence messages a connection may send per second, after a burst of `AWARENESS_BURST`; more are dropped. */
+const AWARENESS_PER_SECOND = 30
+const AWARENESS_BURST = 500
+/** A connection this far behind gets no presence. */
+const AWARENESS_BACKLOG_MAX = 1024 * 1024
+/** A connection this far behind on what others write is closed; it catches up from the log when it comes back. */
+const FANOUT_BACKLOG_MAX = 64 * 1024 * 1024
+/** Connections of one account at once - every device of it, each reconnecting now and then. */
+const CONNECTIONS_PER_ACCOUNT = 48
+const CLOSE_TOO_FAR_BEHIND = 4408
+const CLOSE_TOO_MANY = 4429
 const ROLES: readonly ShareRole[] = ['read', 'write']
 const SEALED_MAX = 4_096
 /**
@@ -435,8 +452,25 @@ export class RoomHub {
 
   // --- connections -------------------------------------------------------------
 
-  attach(client: RoomClient): void {
+  /** False: the account has as many connections open as it may; this one is closed. */
+  attach(client: RoomClient): boolean {
+    let open = 0
+    for (const other of this.clients) if (other.account === client.account) open += 1
+    if (open >= CONNECTIONS_PER_ACCOUNT) {
+      client.close(CLOSE_TOO_MANY, 'too many connections of this account')
+      return false
+    }
     this.clients.add(client)
+    return true
+  }
+
+  /** What others write goes to a connection only while it keeps up; far behind, it is closed and catches up from the log. */
+  private fanOut(client: RoomClient, send: () => void): void {
+    if ((client.backlog?.() ?? 0) > FANOUT_BACKLOG_MAX) {
+      client.close(CLOSE_TOO_FAR_BEHIND, 'too far behind')
+      return
+    }
+    send()
   }
 
   detach(client: RoomClient): void {
@@ -744,16 +778,34 @@ export class RoomHub {
       console.info(`[mycel] ${room}: #${frame.seq} ${data.length}B -> ${open.subscribers.size - 1} peer(s)`)
     }
     client.sendAck(room, ref, frame.seq)
-    for (const subscriber of open.subscribers) if (subscriber !== client) subscriber.sendFrame(room, frame)
+    for (const subscriber of open.subscribers) if (subscriber !== client) this.fanOut(subscriber, () => subscriber.sendFrame(room, frame))
     this.tellWatchers(open, frame.seq)
   }
 
   awareness(client: RoomClient, room: string, epoch: number, data: Uint8Array): void {
+    if (data.length > AWARENESS_MAX_BYTES || !this.awarenessAllowed(client)) return
     const open = this.rooms.get(room)
     if (!open || !open.subscribers.has(client)) return
     for (const subscriber of open.subscribers) {
-      if (subscriber !== client) subscriber.sendAwareness(room, epoch, data)
+      if (subscriber !== client && (subscriber.backlog?.() ?? 0) <= AWARENESS_BACKLOG_MAX) subscriber.sendAwareness(room, epoch, data)
     }
+  }
+
+  private readonly awarenessSent = new WeakMap<RoomClient, { tokens: number; at: number }>()
+
+  /**
+   * `AWARENESS_PER_SECOND` presence messages a second from one connection, with room for a burst:
+   * a device coming online announces itself in every shared note it holds open at once.
+   */
+  private awarenessAllowed(client: RoomClient): boolean {
+    const now = Date.now()
+    const sent = this.awarenessSent.get(client) ?? { tokens: AWARENESS_BURST, at: now }
+    sent.tokens = Math.min(AWARENESS_BURST, sent.tokens + ((now - sent.at) / 1000) * AWARENESS_PER_SECOND)
+    sent.at = now
+    this.awarenessSent.set(client, sent)
+    if (sent.tokens < 1) return false
+    sent.tokens -= 1
+    return true
   }
 
   // --- sharing -----------------------------------------------------------------

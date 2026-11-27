@@ -51,7 +51,8 @@ const KEEP_RULES = ['last', 'hourly', 'daily', 'weekly', 'monthly', 'yearly'] as
 /** restic's own name for a local repository, or a Windows drive - everything else with a scheme is remote. */
 export function isRemote(location: string): boolean {
   if (/^local:/i.test(location) || /^[a-z]:[\\/]/i.test(location)) return false
-  return /^[a-z][a-z0-9+.-]*:/i.test(location)
+  // restic's own backends only: it reads any other scheme as a local path (audit 2, M5).
+  return /^(?:s3|b2|rest|sftp|azure|gs|swift|rclone):/i.test(location)
 }
 
 function keepOf(value: unknown): KeepPolicy | undefined {

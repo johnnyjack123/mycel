@@ -29,6 +29,8 @@ export async function paced<T>(task: () => Promise<T>, paceMs = PACE_MS): Promis
 interface Attempts {
   failures: number[]
   blockedUntil: number
+  /** Attempts taken (`begin`) and not answered yet. */
+  pending: number
 }
 
 export class AddressGuard {
@@ -45,8 +47,30 @@ export class AddressGuard {
     return Boolean(record && record.blockedUntil > now)
   }
 
+  /**
+   * Takes one of the attempts left before the block, before its answer is known. Checked first and
+   * counted only once answered, a burst sent at once was checked in full: 99 two-factor codes, the
+   * right one among them (audit 2, M3). False: none left now.
+   */
+  begin(address: string, now = Date.now()): boolean {
+    const record = this.records.get(address) ?? { failures: [], blockedUntil: 0, pending: 0 }
+    if (record.blockedUntil > now) return false
+    record.failures = record.failures.filter((at) => now - at < this.windowMs)
+    if (record.failures.length + record.pending >= this.maxFailures) return false
+    record.pending += 1
+    this.records.set(address, record)
+    return true
+  }
+
+  /** The attempt `begin` took was answered: a failure counts, anything else gives it back. */
+  end(address: string, failed: boolean, now = Date.now()): void {
+    const record = this.records.get(address)
+    if (record) record.pending = Math.max(0, record.pending - 1)
+    if (failed) this.failed(address, now)
+  }
+
   failed(address: string, now = Date.now()): void {
-    const record = this.records.get(address) ?? { failures: [], blockedUntil: 0 }
+    const record = this.records.get(address) ?? { failures: [], blockedUntil: 0, pending: 0 }
     record.failures = record.failures.filter((at) => now - at < this.windowMs)
     record.failures.push(now)
     if (record.failures.length >= this.maxFailures) {
@@ -57,7 +81,7 @@ export class AddressGuard {
     // Forget addresses that have been quiet, so the map cannot grow forever.
     if (this.records.size > 10_000) {
       for (const [key, value] of this.records) {
-        if (value.blockedUntil < now && value.failures.every((at) => now - at >= this.windowMs)) this.records.delete(key)
+        if (value.pending === 0 && value.blockedUntil < now && value.failures.every((at) => now - at >= this.windowMs)) this.records.delete(key)
       }
     }
   }
