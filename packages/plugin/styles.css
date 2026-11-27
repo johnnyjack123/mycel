@@ -524,19 +524,49 @@ body.mycel-tm-active .workspace-tabs.mycel-tm-beside-strip > .workspace-tab-cont
   box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
 }
 
-/* What the colors on the timeline mean, in the bar above. */
+/* What the lines of the timeline mean: a group of its own in the bar, set off from its text
+   (0.9.32; at the end of the text's second line it went under). Each swatch is drawn as its
+   line on the timeline is. */
 .mycel-tm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25em 0.9em;
+  padding: 0.25em 0.7em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background-color: var(--background-primary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.mycel-tm-legend-name {
+  color: var(--text-faint);
+  font-weight: 600;
+}
+
+.mycel-tm-legend-item {
   display: inline-flex;
   align-items: center;
-  gap: 0.3em;
-  color: var(--text-muted);
+  gap: 0.4em;
+  white-space: nowrap;
 }
 
 .mycel-tm-legend-swatch {
   display: inline-block;
-  width: 14px;
+  width: 18px;
   height: 3px;
   border-radius: 1px;
+}
+
+.mycel-tm-legend-swatch.is-tick {
+  background-color: var(--text-faint);
+}
+
+.mycel-tm-legend-swatch.is-current {
+  height: 6px;
+  border-radius: 3px;
+  background-color: var(--interactive-accent);
 }
 
 .mycel-tm-legend-swatch.is-mark {
@@ -1128,20 +1158,41 @@ button.mycel-merge-num:hover {
   border-radius: 2px;
 }
 
-/* What to do with the lines selected. */
+/* How to drag, or what to do with the lines selected: always there and as high as with its
+   button, so selecting does not push the list down. */
 .mycel-merge-hint {
-  margin: 0 0 0.5em;
-  color: var(--text-accent);
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  min-height: 2em;
+  margin: 0 0 0.4em;
+  color: var(--text-muted);
   font-size: var(--font-ui-small);
+  line-height: 1.35;
 }
 
-.mycel-merge-hint:empty {
-  display: none;
+.mycel-merge-hint > span {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
-.mycel-merge-unselect {
-  margin-left: 0.4em;
+.mycel-merge-hint.is-selection {
+  color: var(--text-accent);
+}
+
+/* Beside the text, never under it: a row more would push the list down again. */
+button.mycel-merge-unselect {
+  flex: none;
+  height: 1.8em;
+  padding: 0 0.7em;
   font-size: var(--font-ui-smaller);
+}
+
+/* A narrower window: room for two lines (a phone's three are further down). */
+@media (max-width: 1000px) {
+  .mycel-merge-hint {
+    min-height: 2.7em;
+  }
 }
 
 /* In the middle already, wherever it was put. */
@@ -1355,6 +1406,11 @@ button.mycel-merge-grip:hover {
 @media (max-width: 700px) {
   .mycel-merge-head {
     display: none;
+  }
+
+  /* Three lines on a phone, whether it says how to drag or what is selected. */
+  .mycel-merge-hint {
+    min-height: 4.05em;
   }
 
   .mycel-merge-same {

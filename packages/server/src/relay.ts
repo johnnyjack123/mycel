@@ -54,12 +54,49 @@ function send(endpoint: Endpoint, frame: RelayFrame): void {
   if (endpoint.ws.readyState === endpoint.ws.OPEN) endpoint.ws.send(JSON.stringify(frame))
 }
 
+/** What a close may say; anything longer is dropped. */
+const REASON_MAX = 200
+
+/**
+ * A frame from either end, its fields of the types they claim: a `d` that was an object with a
+ * `toString` of its own made `String(frame.d)` throw in the listener, and one message from any
+ * account ended the server (audit 2, C3).
+ */
 function parse(data: unknown): RelayFrame | null {
+  let frame: unknown
   try {
-    const frame = JSON.parse(String(data)) as RelayFrame
-    return frame && typeof frame === 'object' && typeof frame.t === 'string' ? frame : null
+    frame = JSON.parse(String(data))
   } catch {
     return null
+  }
+  if (!frame || typeof frame !== 'object' || Array.isArray(frame)) return null
+  const raw = frame as Record<string, unknown>
+  switch (raw.t) {
+    case 'register':
+      return typeof raw.token === 'string' ? { t: 'register', token: raw.token } : null
+    case 'unregister':
+      return typeof raw.route === 'string' ? { t: 'unregister', route: raw.route } : null
+    case 'open':
+      return typeof raw.route === 'string' ? { t: 'open', route: raw.route, ref: typeof raw.ref === 'number' && Number.isSafeInteger(raw.ref) ? raw.ref : 0 } : null
+    case 'data':
+      return typeof raw.s === 'number' && typeof raw.d === 'string' ? { t: 'data', s: raw.s, d: raw.d } : null
+    case 'close':
+      if (typeof raw.s !== 'number') return null
+      return typeof raw.reason === 'string' && raw.reason.length <= REASON_MAX ? { t: 'close', s: raw.s, reason: raw.reason } : { t: 'close', s: raw.s }
+    default:
+      return null
+  }
+}
+
+/** A listener that throws ends the process: whatever slips past `parse` closes only its own connection. */
+function guarded(ws: WebSocket, handle: (data: unknown) => void): (data: unknown) => void {
+  return (data) => {
+    try {
+      handle(data)
+    } catch (error) {
+      console.error('relay: a message could not be handled; the connection is closed', error)
+      ws.close(4400, 'bad message')
+    }
   }
 }
 
@@ -100,13 +137,16 @@ export class Relay {
     // A backup server waits for devices for hours with nothing to say; behind a
     // reverse proxy its connection went every minute, and with it every route.
     const stopHeartbeat = heartbeat(ws, () => this.drop(endpoint), this.limits.pingMs)
-    ws.on('message', (data) => {
-      const frame = parse(data)
-      if (!frame) return
-      if (frame.t === 'register') this.register(endpoint, frame.token)
-      else if (frame.t === 'unregister') this.unregister(endpoint, frame.route)
-      else if (frame.t === 'data' || frame.t === 'close') this.fromBackup(endpoint, frame)
-    })
+    ws.on(
+      'message',
+      guarded(ws, (data) => {
+        const frame = parse(data)
+        if (!frame) return
+        if (frame.t === 'register') this.register(endpoint, frame.token)
+        else if (frame.t === 'unregister') this.unregister(endpoint, frame.route)
+        else if (frame.t === 'data' || frame.t === 'close') this.fromBackup(endpoint, frame)
+      })
+    )
     ws.on('close', () => {
       clearTimeout(timer)
       stopHeartbeat()
@@ -124,12 +164,15 @@ export class Relay {
     }
     own.add(endpoint)
     const stopHeartbeat = heartbeat(ws, () => this.drop(endpoint), this.limits.pingMs)
-    ws.on('message', (data) => {
-      const frame = parse(data)
-      if (!frame) return
-      if (frame.t === 'open') this.open(endpoint, frame.route, frame.ref)
-      else if (frame.t === 'data' || frame.t === 'close') this.fromDevice(endpoint, frame)
-    })
+    ws.on(
+      'message',
+      guarded(ws, (data) => {
+        const frame = parse(data)
+        if (!frame) return
+        if (frame.t === 'open') this.open(endpoint, frame.route, frame.ref)
+        else if (frame.t === 'data' || frame.t === 'close') this.fromDevice(endpoint, frame)
+      })
+    )
     ws.on('close', () => {
       stopHeartbeat()
       this.drop(endpoint)
@@ -207,14 +250,14 @@ export class Relay {
     const session = this.sessions.get(frame.s)
     if (!session || session.device !== device) return
     if (frame.t === 'close') this.end(frame.s, session, frame.reason)
-    else send(session.backup, { t: 'data', s: frame.s, d: String(frame.d) })
+    else send(session.backup, { t: 'data', s: frame.s, d: frame.d })
   }
 
   private fromBackup(backup: Endpoint, frame: Extract<RelayFrame, { t: 'data' | 'close' }>): void {
     const session = this.sessions.get(frame.s)
     if (!session || session.backup !== backup) return
     if (frame.t === 'close') this.end(frame.s, session, frame.reason)
-    else send(session.device, { t: 'data', s: frame.s, d: String(frame.d) })
+    else send(session.device, { t: 'data', s: frame.s, d: frame.d })
   }
 
   private end(id: number, session: Session, reason?: string): void {

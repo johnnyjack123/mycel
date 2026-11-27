@@ -41,6 +41,8 @@ const NOTE_GAP_MS = MINUTE_MS
 // Files above this are fetched when opened, not in the background.
 const BACKGROUND_FILE_MAX = 2 * 1024 * 1024
 const AT_ONCE = 4
+// Notes whose histories are read to tell a mark's moment alike the tick before it (`alike`).
+const ALIKE_NOTES_MAX = 12
 
 export function gapOf(choice: TickChoice, scope: TimeMachineScope): number {
   switch (choice) {
@@ -103,7 +105,7 @@ function eventLabel(event: MarkEvent): string {
     case 'compared':
       return `before "Compare versions" was applied to ${name} on ${where}`
     case 'joined':
-      return `before ${where} joined the vault, ${event.choice === 'server' ? "taking the server's version" : 'merging both'}`
+      return `before ${where} joined the vault, ${event.choice === 'server' ? "taking the server's version" : event.choice === 'here' ? 'overwriting the server with its own' : 'merging both'}`
     case 'recovery':
       return `before the answer on ${where} to the server having other data: ${event.choice === 'server' ? "the server's taken" : "the devices' kept"}`
     case 'shared':
@@ -354,10 +356,74 @@ export class TimeMachineSession {
       else positions.push({ at: mark.at, tick: { at: mark.at, from: mark.at, last: mark.at, changed: 0 }, mark: mark.label })
     }
     positions.sort((a, b) => a.at - b.at)
+    await this.dropRepeats(positions)
     if (this.options.includeBackups && this.source.backups && this.reach > 0) positions.unshift(...(await this.backupPositions(this.source.backups, this.reach)))
     positions.push({ at: Number.POSITIVE_INFINITY, tick: null })
     this.positions = positions
     this.place = positions.length - 1
+  }
+
+  /**
+   * A mark - before a rollback, a restore, a merge - often sits right beside a tick with nothing
+   * changed between them: the same state twice in a row, the ticks' own rule broken (the user,
+   * 2026-11-27, a restore's mark after the version before it). A folder's tick shows its state
+   * until shortly after its last change, so there the same state may follow the mark too. The tick
+   * goes then, the mark saying more - but only once the two are found alike (`alike`); anything
+   * that cannot be told keeps both.
+   */
+  private async dropRepeats(positions: Position[]): Promise<void> {
+    const plain = (position: Position | undefined): position is Position => position !== undefined && position.mark === undefined && !position.backup && position.tick !== null
+    const gone = new Set<Position>()
+    for (let i = 0; i < positions.length; i += 1) {
+      const mark = positions[i] as Position
+      if (mark.mark === undefined) continue
+      for (const beside of [positions[i - 1], positions[i + 1]]) {
+        if (!plain(beside) || gone.has(beside)) continue
+        try {
+          if (await this.alike(Math.min(beside.at, mark.at), Math.max(beside.at, mark.at))) gone.add(beside)
+        } catch (error) {
+          log.warn('comparing two moments of the timeline failed; both stay', error)
+        }
+      }
+    }
+    if (gone.size === 0) return
+    const kept = positions.filter((position) => !gone.has(position))
+    positions.splice(0, positions.length, ...kept)
+  }
+
+  /**
+   * Whether the scope says the same at two moments, `a` before `b`. A note: its text at each. A
+   * folder or the vault: every path the same note or file - a file of the same content - and the
+   * text of every note the server took a change of after `a`, which may have been written between
+   * the two by its author's clock (a device's own changes keep theirs, however late they arrive).
+   * Beyond `ALIKE_NOTES_MAX` such notes, they count as not alike: reading every history only to
+   * hide a tick is not worth the wait.
+   */
+  private async alike(a: number, b: number): Promise<boolean> {
+    if (this.scope.kind === 'note') {
+      const docId = this.noteId
+      if (!docId) return false
+      const history = await this.historyOf(docId)
+      return history.reaches(a) && history.textAtTime(a) === history.textAtTime(b)
+    }
+    const timeline = this.timeline
+    if (!timeline) return false
+    const then = this.historyTargets(a)
+    const later = this.historyTargets(b)
+    if (then.size !== later.size) return false
+    const notes: string[] = []
+    for (const [path, target] of later) {
+      const other = then.get(path)
+      if (!other || other.kind !== target.kind || other.id !== target.id) return false
+      if (other.kind === 'file' && target.kind === 'file' && other.hash !== target.hash) return false
+      if (target.kind === 'note' && timeline.editedAfter(target.id, a)) notes.push(target.id)
+    }
+    if (notes.length > ALIKE_NOTES_MAX) return false
+    for (const docId of notes) {
+      const history = await this.historyOf(docId)
+      if (!history.reaches(a) || history.textAtTime(a) !== history.textAtTime(b)) return false
+    }
+    return true
   }
 
   private async backupPositions(backups: TimeMachineBackups, before: number): Promise<Position[]> {

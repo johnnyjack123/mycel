@@ -771,6 +771,31 @@ export class DocStore {
     })
   }
 
+  /**
+   * This vault's version over the server's (joining, "Overwrite the server", 0.9.33): the server's
+   * text taken for the base file and note last agreed on, so the start finds the file changed here
+   * and sends it as an edit - merged three ways against that base, so what another device writes
+   * meanwhile stays. The server's text is backed up first (invariant 2); the history keeps it too.
+   * False while the server's copy is not known: the note is merged then, as ever.
+   */
+  async serverAsBase(path: string): Promise<boolean> {
+    const docId = this.index.docIdForPath(path)
+    const file = this.app.vault.getAbstractFileByPath(path)
+    if (!docId || !(file instanceof TFile)) return false
+    return this.withLock(docId, async () => {
+      if (this.stopped || !this.exists(file)) return false
+      const handle = await this.handleFor(docId)
+      if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs))) return false
+      const text = handle.text()
+      if (text.length > 0) await this.backups.write(path, 'remote', text)
+      await this.state.setBaseText(docId, text)
+      // Not as agreed in time or size: the start reads the file, and finds it changed.
+      this.state.set(docId, { path, mtime: 0, size: -1 })
+      log.info(`${path}: this vault's version goes over the server's, the server's ${text.length} chars backed up`)
+      return true
+    })
+  }
+
   private forget(docId: string): void {
     this.state.forget(docId)
     this.agreed.delete(docId)
@@ -999,8 +1024,42 @@ export class DocStore {
     // document went on from that text, so that is where file and document
     // last agreed - whatever base was recorded before.
     const base = this.heldBefore(docId, local) ? local : await this.baseFor(docId)
+    // Someone else's note where this device holds a file it never agreed on: two notes, never one. Merged
+    // without a base, the file's text went into their document - a private note of the person's, made on a
+    // device that was offline while another of theirs accepted the share at that path (audit 2, H3).
+    // A note never written yet is this device's own new one in their folder - a writer's: it seeds as ever.
+    const theirs = this.index.entry(docId)
+    if (base === null && theirs?.owner && !handle.pristine) {
+      await this.setAsideFor(docId, file, local, remote, theirs.folder ?? null)
+      return
+    }
     const outcome = reconcile({ base, local, remote, pristine: handle.pristine })
     await this.applyOutcome(docId, file, handle, local, remote, base, outcome)
+  }
+
+  /** The file goes to a name of its own, a note of this account's; someone else's note takes its place. */
+  private async setAsideFor(docId: string, file: TFile, local: string, remote: string, folder: string | null): Promise<void> {
+    await this.backups.write(file.path, 'local', local)
+    const target = this.asidePath(file.path, folder)
+    await this.ensureFolder(parentOf(target))
+    await this.app.vault.create(target, local)
+    await this.writeFile(docId, file, remote, true)
+    await this.recordAgreement(docId, file, remote)
+    log.warn(`${file.path}: a note of this vault lay where a note someone shared is; kept as ${target}, nothing of it went to them`)
+    new Notice(`A note of yours lay where a note shared with you is: yours is now "${target}", and nothing of it went to them.`, 15_000)
+  }
+
+  /**
+   * A free name beside `path` for a note of this account's that stood in another's way - outside the shared folder
+   * `folder` when it lies in one: inside, it would be the folder's, shared with everyone in it.
+   */
+  private asidePath(path: string, folder: string | null = null): string {
+    const root = folder ? this.index.folder(folder)?.path : undefined
+    const placed = root && (path === root || path.startsWith(`${root}/`)) ? `${parentOf(root) ? `${parentOf(root)}/` : ''}${path.slice(path.lastIndexOf('/') + 1)}` : path
+    const stem = placed.endsWith('.md') ? placed.slice(0, -3) : placed
+    let candidate = `${stem} (own copy).md`
+    for (let n = 2; this.app.vault.getAbstractFileByPath(candidate) || this.index.docIdForPath(candidate); n += 1) candidate = `${stem} (own copy ${n}).md`
+    return candidate
   }
 
   /**
@@ -1256,6 +1315,7 @@ export class DocStore {
         await this.dropHandle(docId)
       }
       this.index.markDeleted(docId)
+      this.state.seenDeleted(docId)
       this.forget(docId)
     })
     this.told({ kind: 'deleted', docId, path })
@@ -1310,7 +1370,19 @@ export class DocStore {
    * looks exactly like sync being broken.
    */
   private async mergeDuplicates(): Promise<void> {
-    for (const { path, docIds } of this.index.duplicatePaths()) {
+    for (const duplicate of this.index.duplicatePaths()) {
+      const { path } = duplicate
+      // Notes of different people - or of different shared folders - at one path are different notes: folded
+      // together, one's text went into another's document (audit 2, H3). The group of the id every device
+      // sorts first keeps the path; every other moves aside, to a name of its own, the same on every device.
+      const placeOf = (docId: string): string => {
+        const entry = this.index.entry(docId)
+        return `${entry?.owner ?? ''}|${entry?.folder ?? ''}`
+      }
+      const keeping = placeOf(duplicate.docIds[0] as string)
+      for (const other of duplicate.docIds.filter((docId) => placeOf(docId) !== keeping)) await this.moveAside(other, path)
+      const docIds = duplicate.docIds.filter((docId) => placeOf(docId) === keeping)
+      if (docIds.length < 2) continue
       const [winnerId, ...losers] = docIds as [string, ...string[]]
       await this.withLock(winnerId, async () => {
         const winner = await this.handleFor(winnerId)
@@ -1334,9 +1406,29 @@ export class DocStore {
     }
   }
 
+  /** A note out of another's way at `path`: renamed to a name of its own, its file along with it where this device has it. */
+  private async moveAside(docId: string, path: string): Promise<void> {
+    await this.withLock(docId, async () => {
+      if (this.index.pathFor(docId) !== path) return
+      // Outside any shared folder one of them lies in.
+      const folder = this.index.entry(docId)?.folder ?? this.index.entry(this.index.docIdForPath(path) ?? '')?.folder ?? null
+      const target = this.asidePath(path, folder)
+      const agreed = this.state.get(docId)?.path === path
+      this.index.rename(docId, target)
+      const file = this.app.vault.getAbstractFileByPath(path)
+      if (agreed && file instanceof TFile && this.exists(file)) {
+        await this.ensureFolder(parentOf(target))
+        await this.app.vault.rename(file, target)
+      }
+      log.warn(`${path}: two notes of different people lay here; ${docId.slice(0, 8)} moved to ${target}`)
+    })
+  }
+
   private async applyRemoteDeletes(): Promise<void> {
     for (const { docId, entry } of this.index.deleted()) {
       if (this.stopped) return
+      // Its retention counts from here at the latest (L1).
+      this.state.seenDeleted(docId)
       if (!this.state.get(docId)) continue
       if (entry.forkedTo) {
         // Another device ended the share and carries the note on; what this
@@ -1361,7 +1453,11 @@ export class DocStore {
     }
     const local = await this.app.vault.read(file)
     const base = await this.state.baseText(docId)
-    if (base === null || local !== base) {
+    // An edit made here and not sent yet is a change here too: a device offline agrees with its own document
+    // at once, so its file looked unchanged, the note went to the trash and the edit stayed in its outbox for
+    // good (audit 2, M2).
+    const unsent = this.state.namedUnsent(docId) || !this.socket.isSettled(docRoom(docId))
+    if (base === null || local !== base || unsent) {
       // Changed here after this device last agreed with the document. A
       // delete elsewhere does not get to discard that, so the note stays -
       // for every device.
@@ -1500,6 +1596,13 @@ export class DocStore {
   async acceptShare(share: AcceptedShare, folder: string): Promise<TFile | null> {
     if (!this.ready) return null
     let path = this.index.pathFor(share.docId)
+    // An id this index knows as someone else's - a note of this account's own in the trash, or another owner's - is
+    // never taken over: adopted, a share the server named took the place of a deleted note of one's own (audit 2, L4).
+    const known = this.index.entry(share.docId)
+    if (known && known.owner !== share.owner) {
+      log.error(`a share of ${share.docId.slice(0, 8)} names an id this vault knows as ${known.owner ? 'another owner\'s' : 'its own'}; not taken`)
+      return null
+    }
     if (!path) {
       path = this.freePath(folder, share.title)
       this.index.adopt(share.docId, path, { shared: true, owner: share.owner, role: share.role })
@@ -1619,16 +1722,21 @@ export class DocStore {
   deletedNotes(since: number): DeletedNote[] {
     return this.index
       .deleted()
-      .filter(({ entry }) => this.isTrashed(entry) && (entry.deletedAt as number) >= since)
+      .filter(({ docId, entry }) => this.isTrashed(entry) && this.deletedSince(docId, entry) >= since)
       .map(({ docId, entry }) => ({ docId, path: entry.path, deletedAt: entry.deletedAt as number }))
       .sort((a, b) => b.deletedAt - a.deletedAt)
+  }
+
+  /** When the retention of a deleted note begins: its delete, or this device first seeing it, whichever is later (`StateStore.seenDeleted`). */
+  private deletedSince(docId: string, entry: IndexEntry): number {
+    return Math.max(entry.deletedAt as number, this.state.seenDeleted(docId))
   }
 
   /** Deleted before `before`: what the server may let go of. */
   expiredDeleted(before: number): DeletedNote[] {
     return this.index
       .deleted()
-      .filter(({ entry }) => this.isTrashed(entry) && (entry.deletedAt as number) < before)
+      .filter(({ docId, entry }) => this.isTrashed(entry) && this.deletedSince(docId, entry) < before)
       .map(({ docId, entry }) => ({ docId, path: entry.path, deletedAt: entry.deletedAt as number }))
   }
 
@@ -1669,6 +1777,7 @@ export class DocStore {
       this.index.markPurged(docId)
     })
     this.state.markCleared(docId)
+    this.state.forgetDeleted(docId)
   }
 
   /**

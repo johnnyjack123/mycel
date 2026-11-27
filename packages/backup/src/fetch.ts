@@ -66,7 +66,8 @@ function sameTies(cached: CachedRoom, entry: BackupRoom): boolean {
 export async function fetchRooms(client: SyncClient, cache: Cache, accountId: string, verifyAll: boolean): Promise<RoomsFetched> {
   // A shared folder's own room says where its notes are; the vault index says
   // that for this vault, and the folder's keys are asked for with its notes.
-  const listed = (await client.rooms()).rooms.filter((entry) => roomKind(entry.room) !== 'fld')
+  // A room's name becomes a file of the cache: only names as rooms have them (audit 2, L8: `doc:../../x`).
+  const listed = (await client.rooms()).rooms.filter((entry) => roomKind(entry.room) !== 'fld' && /^(?:doc|idx|set):[0-9a-f]{32}$/.test(entry.room))
   const result: RoomsFetched = { listed: listed.length, fetched: 0, diverged: [], held: [] }
   const seen = new Set(listed.map((entry) => entry.room))
 
@@ -145,6 +146,9 @@ async function fetchRoom(
       result.diverged.push(entry.room)
       return fromLog(entry, await client.log(entry.room), keys)
     }
+    // Compacted only if a snapshot reaches the frame the cache followed (invariant 19): short of it - an empty log, say -
+    // the log is another one, and taken quietly it emptied the note in every backup the retention kept (audit 2, M6).
+    if (!partial.snapshot || partial.snapshot.uptoSeq < last.seq) result.diverged.push(entry.room)
     return fromLog(entry, partial, keys)
   }
   return fromLog(entry, await client.log(entry.room), keys)

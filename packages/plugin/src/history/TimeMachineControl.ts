@@ -224,8 +224,11 @@ export class TimeMachineControl implements PastEditorHost {
 
   // --- opening ----------------------------------------------------------------------
 
-  /** Opens the Time Machine for `scope`; `at`: at that mark on its timeline - the moment before an earlier rollback. */
-  async open(scope: TimeMachineScope, at?: number): Promise<void> {
+  /**
+   * Opens the Time Machine for `scope`; `at`: at that mark on its timeline - the moment before an
+   * earlier rollback, which `undoing` names when the Time Machine is opened to undo it.
+   */
+  async open(scope: TimeMachineScope, at?: number, undoing: { what: string; restore: boolean } | null = null): Promise<void> {
     if (this.session) {
       if (this.shows(scope)) {
         if (scope.kind !== 'note') await this.host.openOverview()
@@ -247,7 +250,7 @@ export class TimeMachineControl implements PastEditorHost {
     }
     // Counted while the sync still runs: stopped, it lists none.
     const waiting = this.waitingToCompare(scope, prepared.now)
-    const modal = new StartModal(this.host.app, scopeName(scope), scope.kind === 'note')
+    const modal = new StartModal(this.host.app, scopeName(scope), scope.kind === 'note', undoing)
     if (!(await modal.ask())) return
     this.opening = true
     let stopped = false
@@ -401,7 +404,11 @@ export class TimeMachineControl implements PastEditorHost {
    * version* there undoes it.
    */
   async openBefore(record: RollbackRecord): Promise<void> {
-    await this.open(recordScope(record), record.startedAt - 1)
+    const restore = record.kind === 'note'
+    await this.open(recordScope(record), record.startedAt - 1, {
+      what: `the ${restore ? 'restore' : 'rollback'} of ${new Date(record.startedAt).toLocaleString()}`,
+      restore
+    })
   }
 
   private async goToMark(session: TimeMachineSession, at: number): Promise<void> {
@@ -677,7 +684,7 @@ export class TimeMachineControl implements PastEditorHost {
       await this.afterRestore(docIds)
     }
     if (!restored) return
-    if (restored.undo) noticeWithAction(restored.text, 8_000, { label: 'Undo…', kind: 'rollback-undo', data: restored.undo, again: true })
+    if (restored.undo) noticeWithAction(restored.text, 8_000, { label: 'Undo in the Time Machine…', kind: 'rollback-undo', data: restored.undo, again: true })
     else new Notice(restored.text, 8_000)
   }
 

@@ -17,6 +17,10 @@ import { appendDurable, ensureDir, syncDir, writeDurable } from './durable.js'
 
 const CHUNK_CIPHER = BLOB_CHUNK_BYTES + BLOB_CHUNK_OVERHEAD
 const UPLOADS = '.upload'
+// Uploads under way were never counted nor cleared: any account filled the disk past its quota with uploads it never
+// finished (audit 2, M7). They count now, at most so many at once per vault, and one untouched for a day goes.
+const UPLOADS_MAX = 32
+const UPLOAD_STALE_MS = 24 * 60 * 60 * 1000
 
 export class BlobError extends Error {
   constructor(
@@ -191,6 +195,7 @@ export class BlobStore {
       }
       if (!pending) {
         if (index !== 0) throw new BlobError(409, 'the upload has to start over')
+        if ((await this.openUploads(uploads)) >= UPLOADS_MAX) throw new BlobError(429, 'too many uploads under way')
         await ensureDir(uploads)
         await writeFile(partPath, new Uint8Array(0))
         await writeDurable(metaPath, JSON.stringify({ count, startedAt: Date.now() } satisfies UploadMeta))
@@ -224,6 +229,19 @@ export class BlobStore {
       await this.addUsage(account, size)
       return { complete: true, count, received: count, size }
     })
+  }
+
+  /** Uploads under way in a folder, those untouched for a day let go of first. */
+  private async openUploads(uploads: string): Promise<number> {
+    let open = 0
+    for (const name of await list(uploads)) {
+      const id = name.slice(0, -'.json'.length)
+      if (!name.endsWith('.json') || !isHexId(id)) continue
+      const touchedAt = await this.uploadTouched(uploads, id)
+      if (touchedAt === null || Date.now() - touchedAt > UPLOAD_STALE_MS) await this.dropUpload(uploads, id)
+      else open += 1
+    }
+    return open
   }
 
   private async dropUpload(uploads: string, id: string): Promise<void> {
@@ -366,6 +384,9 @@ export class BlobStore {
         if (!name.endsWith('.json')) continue
         const meta = await readJson<BlobMeta>(join(this.dir(account, vault), name))
         total += meta?.size ?? 0
+      }
+      for (const name of await list(join(this.dir(account, vault), UPLOADS))) {
+        if (isHexId(name)) total += (await sizeOf(join(this.dir(account, vault), UPLOADS, name))) ?? 0
       }
     }
     return total

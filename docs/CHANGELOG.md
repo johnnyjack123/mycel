@@ -8,6 +8,64 @@ the suite run, the new checks seen failing (and nothing else), the fix restored.
 
 ## 0.9 - hardening (from 2026-11-03, spec `docs/PHASE8.md`)
 
+- **0.9.33** (2026-11-27, branches `fix/cosmetics` and `fix/audit2`; the user's findings on 0.9.32,
+  the wish of 2026-11-13, and the second audit) - **the second audit's findings fixed; overwriting the
+  server with this vault; the timeline, the backup and undo windows clearer.**
+  - **The second audit** (`docs/AUDIT2.md`, asked for by the user before 1.0.0): a fresh agent attacked
+    the project from every role and found 3 critical, 5 high, 12 medium and 10 low findings, a
+    reproduction script for each serious one. Every reproduction was run again here before the fixes,
+    and each worked. Critical: a person paired with a backup server ran any command on it (a snapshot
+    id taken by restic for an option); a malicious server could read what contacts share (the device
+    took its own public keys from the server's copy of the account); one relay message ended the sync
+    server. High: *Replace all keys* sealed a private note's keys to any contact the server listed;
+    sharing again sent a writer's linked file of this vault; a private note made offline merged into
+    someone else's shared note; one unreadable frame stopped *Replace all keys* for good; presence
+    could exhaust the server's memory. All fixed, the mediums and most lows too - each and what was
+    left is in `docs/AUDIT2.md`, "What became of it". The scripts are `npm run test:audit2` now, in CI.
+    Found along the way: the fix of H4 alone would have let a wrong folder tie empty a note's whole
+    history during a replacement - only an epoch whose key opens something else drops what does not
+    open; and the fix of H3 first set a writer's own new note in a folder aside again and again - it
+    holds only against a note already written. Checked by every suite, `test:folders` and
+    `test:replace` among them.
+  - **Overwrite the server with this vault** - the other direction of taking the server's version,
+    for when the server's state went wrong: a third choice in the window of a device meeting the
+    vault (invariant 34), for another state of the vault, another vault, or the same state when the
+    server has more; asked again before it is done. A device that synced before reaches it through
+    *Disconnect this vault*. What differs goes up in this vault's version as an edit made here: the
+    server's text or file is taken for the base both last agreed on (`DocStore.serverAsBase`,
+    `AttachmentStore.serverAsBase`), the server's text backed up first, and the start sends this
+    vault's against it - three ways, so what another device writes meanwhile stays; a file's new
+    version names the server's as the one it replaced. What only the server has is deleted there as a
+    delete made here: restorable from the trash and the history, and carried out on the other devices
+    only where nothing changed since. Notes and files someone else shared, and those of shared
+    folders, are merged as ever. An empty vault never overwrites the server. The Time Machine marks
+    the moment before. Checked in `test:join` (a device overwriting: what goes up, what is deleted
+    and in the trash, the file's version naming the one it replaced, the backup of the server's text,
+    the other device following, nothing merged or pulled down on the device itself, the mark).
+  - **The same state twice on the timeline** (found by the user): the mark of a restore came right
+    after the version before it, which said the same. The ticks never repeat a state, but the marks
+    were added beside them unchecked. Now a plain tick beside a mark goes when the two are found
+    alike (`TimeMachineSession.dropRepeats`): a note's text at both moments compared; for a folder
+    or the vault every path, every file's content, and the text of each note the server took a
+    change of after the earlier moment - by its author's clock it may lie between (more than twelve
+    such notes: both stay). A folder's tick shows its state until shortly after its last change, so
+    there the repeat may follow the mark - the case `test:timemachine` met. Checked in
+    `test:timemachine`: a restore's mark after a version alike (the version goes), one after a version
+    that differs (both stay), a folder's tick after its mark alike (it goes, the empty folder before
+    stays).
+  - **"This backup is only on this device"** read, without a backup server, as if something had
+    failed. Without one it now says "Backed up on this device": none is set up, so every backup is on
+    this device only, nothing went wrong, and where to set one up; the rollback's window says the same
+    before. With a backup server that did not hold the same, it says so as before.
+  - **Undo of a rollback or restore** did not say that it goes through the Time Machine and lands at
+    the moment before. The button is *Undo in the Time Machine…*, and the window that opens it says
+    so: it goes straight to the moment before, *Restore this version* takes it back, *Abort* leaves
+    everything as it is.
+  - **Cosmetics** (on 0.9.32): the line under the buttons of "Compare versions" is always there and as
+    high as it gets, so selecting no longer pushes the list down (measured in a headless Edge from
+    360 to 1200 px); the Time Machine's legend is a group of its own in the bar, each kind of line
+    drawn as on the timeline, instead of the end of the text's second line.
+
 - **0.9.32** (2026-11-27, branch `feat/merge-drag`, the user's finding on 0.9.31 and their
   decision) - **lines dragged in "Compare versions", as cards on a board.**
   - **Why.** The range of 0.9.31 worked on the device but was, in the user's words, unintuitive

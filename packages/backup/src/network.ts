@@ -30,9 +30,13 @@ export function hostsOf(location: string, env: Record<string, string> = {}): str
     case 'rest':
       add(urlHost(rest))
       break
-    case 's3':
-      add(/^https?:\/\//i.test(rest) ? urlHost(rest) : rest.split('/')[0])
+    case 's3': {
+      // `s3:host/bucket`, `s3:host:port/bucket`, `s3://host/bucket`, `s3:http(s)://host:port/bucket` -
+      // all of which restic dials; the two in between were read as no host, or with the port (audit 2, M5).
+      if (/^https?:\/\//i.test(rest)) add(urlHost(rest))
+      else add(urlHost(`http://${rest.replace(/^\/\//, '').split('/')[0] ?? ''}`))
       break
+    }
     case 'sftp':
       if (rest.startsWith('//')) add(urlHost(`sftp:${rest}`))
       else {
@@ -76,8 +80,15 @@ export function isInternalAddress(address: string): boolean {
   }
   if (isIP(ip) !== 6) return false
   if (ip === '::' || ip === '::1') return true
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(ip)
+  const mapped = /^::(?:ffff:)?(\d+\.\d+\.\d+\.\d+)$/.exec(ip)
   if (mapped) return isInternalAddress(mapped[1] as string)
+  // An IPv4 address inside IPv6 written in hex, as `new URL` writes `[::ffff:169.254.169.254]` (audit 2, M5).
+  const hex = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(ip)
+  if (hex) {
+    const high = parseInt(hex[1] as string, 16)
+    const low = parseInt(hex[2] as string, 16)
+    return isInternalAddress(`${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`)
+  }
   const first = parseInt(ip.split(':')[0] || '0', 16)
   return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xff00) === 0xff00
 }
@@ -95,8 +106,9 @@ export function allowedHosts(value: string | undefined): Set<string> {
 /**
  * Why restic must not reach a location from here, or null: a host it names is,
  * or resolves to, an address in the backup server's own network that the
- * operator did not allow. A name that does not resolve is left to restic, which
- * says so.
+ * operator did not allow - or does not resolve here, so that cannot be told:
+ * left to restic, a name it resolved differently a moment later went through
+ * (audit 2, M5). Without a name service the cloud is out of reach anyway.
  */
 export async function networkProblem(
   location: string,
@@ -110,7 +122,7 @@ export async function networkProblem(
     try {
       addresses = isIP(host) ? [host] : await resolve(host)
     } catch {
-      continue
+      return `${host} could not be resolved here, so whether it lies in the backup server's own network cannot be told`
     }
     const internal = addresses.find(isInternalAddress)
     if (internal) {

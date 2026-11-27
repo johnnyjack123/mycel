@@ -44,6 +44,23 @@ export function vaultPathProblem(path: unknown): string | null {
   return null
 }
 
+/**
+ * A path someone else wrote - in a shared folder's document -, also as Windows takes it: a name ending in a dot or
+ * space, one with `<>:"|?*`, or a device name (`CON.png`) is another file there, or none - `note.md.` written into
+ * `note.md` (audit 2, L10). Only for such paths: a vault on macOS or Linux may hold such names itself, and the gate
+ * never refuses what a vault holds (invariant 31).
+ */
+export function portablePathProblem(path: unknown): string | null {
+  const problem = vaultPathProblem(path)
+  if (problem !== null) return problem
+  for (const segment of (path as string).split('/')) {
+    if (/[<>:"|?*]/.test(segment)) return 'a character Windows takes for something else'
+    if (/[. ]$/.test(segment)) return 'a name ending in a dot or a space'
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(..*)?$/i.test(segment)) return 'a name Windows keeps for a device'
+  }
+  return null
+}
+
 export function isVaultPath(path: unknown): path is string {
   return vaultPathProblem(path) === null
 }

@@ -146,6 +146,16 @@ export class AccountError extends Error {
 }
 
 const HEX_ID = /^[0-9a-f]{32}$/
+const VAULTS_PER_ACCOUNT = 100
+
+/**
+ * A record's own entry under a key someone sent, or nothing. `replaces: "__proto__"` found
+ * `Object.prototype` in `deletedVaults`, and setting a field on it changed every object of the process -
+ * every deleted vault refused when restored, until a restart (audit 2, M4).
+ */
+export function own<T>(record: Record<string, T> | undefined, key: unknown): T | undefined {
+  return typeof key === 'string' && record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined
+}
 
 export function isAccountId(value: unknown): value is string {
   return typeof value === 'string' && HEX_ID.test(value)
@@ -203,8 +213,10 @@ function recoveryOf(record: unknown, now: number): StoredRecovery {
 }
 
 /** Why a deleted vault cannot be taken back by `by` now; null when it can. */
-export function restoreRefusal(deleted: StoredDeletedVault, by: 'owner' | 'admin'): string | null {
+export function restoreRefusal(deleted: StoredDeletedVault, by: 'owner' | 'admin', now = Date.now()): string | null {
   if (deleted.purgedAt !== undefined || !deleted.wrappedKey) return 'its data is gone already'
+  // Its time up, the sweep may be clearing it this moment: restored meanwhile, a vault came back whose data was gone (audit 2, L9).
+  if (deleted.purgeAt <= now) return 'its data is being deleted'
   if (deleted.replacedBy) return 'a vault was made anew in its place'
   if (deleted.keysReplaced) return "the account's keys were replaced since; nothing opens what it holds"
   if (deleted.by === 'admin' && by === 'owner') return "the server's admin deleted it; only the admin takes it back"
@@ -417,8 +429,10 @@ export class AccountStore {
       for (const other of Object.values(data.accounts)) {
         if (other.accountId !== accountId && (other.vaults[vaultId] || other.deletedVaults?.[vaultId])) throw new AccountError(409, 'that vault id is taken')
       }
+      // A bound on what one account keeps in memory and on the disk for its vaults (audit 2, L9).
+      if (Object.keys(account.vaults).length >= VAULTS_PER_ACCOUNT) throw new AccountError(409, `an account keeps at most ${VAULTS_PER_ACCOUNT} vaults`)
       account.vaults[vaultId] = { sealedName: sealedName as string, wrappedKey: wrappedKey as string, createdAt: Date.now() }
-      const replaced = typeof replaces === 'string' ? account.deletedVaults?.[replaces] : undefined
+      const replaced = own(account.deletedVaults, replaces)
       if (replaced && !replaced.replacedBy) replaced.replacedBy = vaultId
       return { vaultId, sealedName: sealedName as string, wrappedKey: wrappedKey as string }
     })
@@ -477,7 +491,7 @@ export class AccountStore {
     return this.update((data) => {
       const account = data.accounts[accountId]
       if (!account) throw new AccountError(by === 'admin' ? 404 : 401, 'unknown account')
-      const deleted = typeof vaultId === 'string' ? account.deletedVaults?.[vaultId] : undefined
+      const deleted = isAccountId(vaultId) ? own(account.deletedVaults, vaultId) : undefined
       if (!deleted) throw new AccountError(404, 'no such deleted vault')
       const why = restoreRefusal(deleted, by)
       if (why) throw new AccountError(409, why)
@@ -685,7 +699,7 @@ export class AccountStore {
     return this.update((data) => {
       const account = data.accounts[accountId]
       if (!account) throw new AccountError(401, 'unknown account')
-      const key = typeof id === 'string' ? account.backupKeys?.[id] : undefined
+      const key = own(account.backupKeys, id)
       if (key && account.backupKeys) {
         delete data.backupLogins[key.hash]
         delete account.backupKeys[id as string]
@@ -701,13 +715,13 @@ export class AccountStore {
     const data = await this.load()
     const found = data.backupLogins[loginHash(key)]
     const account = found ? data.accounts[found.account] : undefined
-    const stored = found ? account?.backupKeys?.[found.id] : undefined
+    const stored = found ? own(account?.backupKeys, found.id) : undefined
     return account && stored && found ? { account, id: found.id, key: stored } : null
   }
 
   async touchBackupKey(accountId: string, id: string, now = Date.now()): Promise<void> {
     await this.update((data) => {
-      const key = data.accounts[accountId]?.backupKeys?.[id]
+      const key = own(data.accounts[accountId]?.backupKeys, id)
       if (key) key.lastUsedAt = now
     })
   }

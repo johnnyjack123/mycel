@@ -1,5 +1,6 @@
 import { App, Modal, Setting, setIcon } from 'obsidian'
 import type { JoinChoice, JoinPlan, JoinResult, JoinSide, JoinStage } from '../sync/Joining'
+import { ConfirmModal } from './TimeMachineModals.js'
 
 /** What the window says about where things are. */
 export interface JoinModalInfo {
@@ -41,6 +42,8 @@ export class JoinModal extends Modal {
   private result: JoinResult | null = null
   private stage: { stage: JoinStage; done: number; total: number } | null = null
   private resolve: ((choice: JoinChoice) => void) | null = null
+  /** What was chosen here, for the words while it is carried out. */
+  private chosen: JoinChoice | null = null
   private shown = false
   /** Closed by the person while nothing was asked: not opened again for progress alone. */
   private dismissed = false
@@ -111,6 +114,7 @@ export class JoinModal extends Modal {
     const resolve = this.resolve
     if (!resolve) return
     this.resolve = null
+    this.chosen = choice
     resolve(choice)
     if (choice === 'later') {
       this.result = null
@@ -156,6 +160,11 @@ export class JoinModal extends Modal {
     } else if (stage === 'backup') {
       this.titleEl.setText('Copying this vault')
       contentEl.createEl('p', { text: `A copy of every file of this vault, before anything is changed, into ${this.info.backupFolder}.` })
+    } else if (this.chosen === 'here') {
+      this.titleEl.setText('Overwriting the server with this vault')
+      contentEl.createEl('p', {
+        text: "Notes and files that differ go up in this vault's version, the server's backed up first; what only the server has is deleted there."
+      })
     } else {
       this.titleEl.setText("Taking the server's version")
       contentEl.createEl('p', { text: 'Notes and files that differ take the server\'s version; what only this vault has goes to the trash.' })
@@ -260,6 +269,7 @@ export class JoinModal extends Modal {
             .setWarning()
             .onClick(() => this.pick('server'))
         )
+      this.overwriteChoice(choices, plan)
     } else {
       const label = plan.kind === 'upload' ? 'Upload' : plan.kind === 'download' ? 'Download' : 'Connect'
       new Setting(choices).addButton((button) =>
@@ -268,11 +278,50 @@ export class JoinModal extends Modal {
           .setCta()
           .onClick(() => this.pick('merge'))
       )
+      // The same state, but the server has more: what it has besides may be what went wrong.
+      if (plan.kind === 'same' && plan.notes.onlyThere.length + plan.files.onlyThere.length > 0) this.overwriteChoice(choices, plan)
     }
     new Setting(choices)
       .setName('Not now')
       .setDesc('Nothing syncs on this device until you choose. The command "Mycel: Compare this vault with the server…" brings this back.')
       .addButton((button) => button.setButtonText('Not now').onClick(() => this.pick('later')))
+  }
+
+  /**
+   * The other direction of taking the server's version (the user, 2026-11-13; built 0.9.33): for
+   * when the server's state went wrong. Asked again before: it changes the vault for every device.
+   */
+  private overwriteChoice(containerEl: HTMLElement, plan: JoinPlan): void {
+    const { notes, files } = plan
+    const differ = notes.different.length + notes.unknown.length + files.different.length
+    const gone = notes.onlyThere.length + files.onlyThere.length
+    const what = [
+      differ > 0 ? `${count(differ, 'note or file that differs takes', 'notes and files that differ take')} this vault's version` : '',
+      gone > 0 ? `${count(gone, 'note or file', 'notes and files')} only the server has ${gone === 1 ? 'is' : 'are'} deleted there` : ''
+    ]
+      .filter(Boolean)
+      .join(', and ')
+    new Setting(containerEl)
+      .setName('Overwrite the server with this vault')
+      .setDesc(
+        `The server becomes what this vault has${what ? `: ${what}` : ''}. Your other devices follow; what was changed on them since stays. What the server had stays restorable from the trash and the Time Machine. Shared notes - yours with others, or others' with you - and shared folders are merged as ever. For when the server's state went wrong.`
+      )
+      .addButton((button) =>
+        button
+          .setButtonText('Overwrite the server')
+          .setWarning()
+          .onClick(() => void this.confirmOverwrite(what))
+      )
+  }
+
+  private async confirmOverwrite(what: string): Promise<void> {
+    const sure = await new ConfirmModal(
+      this.app,
+      'Overwrite the server with this vault?',
+      `${what ? `${what.charAt(0).toUpperCase()}${what.slice(1)}. ` : ''}This changes the vault for all your devices, not only this one. A copy of this vault is made first, and what the server had stays restorable from the trash and the Time Machine.`,
+      'Overwrite the server'
+    ).ask()
+    if (sure) this.pick('here')
   }
 
   private table(containerEl: HTMLElement, plan: JoinPlan): void {
@@ -367,6 +416,7 @@ export class JoinModal extends Modal {
     group('Not compared: the server did not answer in time', notes.unknown)
     group('Only in this vault', [...notes.onlyHere, ...files.onlyHere])
     group('Only on the server', [...notes.onlyThere, ...files.onlyThere])
+    group('Left on the server - larger than this device downloads, never deleted from here', plan.heldBack)
   }
 
   private renderResult(result: JoinResult): void {
@@ -392,6 +442,10 @@ export class JoinModal extends Modal {
       contentEl.createEl('p', {
         text: `This vault took the server's state: ${count(result.taken, 'note or file', 'notes and files')} took the server's version, ${result.trashed} only this vault had went to the trash. What only the server has comes down now.`
       })
+    } else if (result.choice === 'here') {
+      contentEl.createEl('p', {
+        text: `The server takes this vault's state: ${count(result.taken, 'note or file goes', 'notes and files go')} up in this vault's version, and ${count(result.trashed, 'note or file', 'notes and files')} only the server had ${result.trashed === 1 ? 'was' : 'were'} deleted there - restorable from the trash. Your other devices follow as they sync.`
+      })
     } else {
       contentEl.createEl('p', { text: 'The sync runs now. A large vault takes a while; keep Obsidian open.' })
       if (result.merging > 0) {
@@ -402,7 +456,10 @@ export class JoinModal extends Modal {
     }
     if (result.notTaken.length > 0) {
       contentEl.createEl('p', {
-        text: "For these the server's version could not be had in time; they are merged instead, keeping both sides:"
+        text:
+          result.choice === 'here'
+            ? 'These are merged as ever instead, keeping both sides - shared with you, in a shared folder, or the server did not answer in time:'
+            : "For these the server's version could not be had in time; they are merged instead, keeping both sides:"
       })
       const list = contentEl.createEl('ul', { cls: 'mycel-join-list' })
       for (const path of result.notTaken) list.createEl('li', { text: path })

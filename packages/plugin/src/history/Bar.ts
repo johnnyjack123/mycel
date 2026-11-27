@@ -63,7 +63,8 @@ export class TimeMachineBar {
     const line = text.createDiv({ cls: 'mycel-tm-bar-line2' })
     this.moment = line.createSpan({ cls: 'mycel-tm-bar-moment' })
     this.detail = line.createSpan({ cls: 'mycel-tm-bar-detail' })
-    this.legend = line.createSpan()
+    // A group of its own beside the text: at the end of its second line it went under in it (the user, 2026-11-27).
+    this.legend = this.el.createDiv({ cls: 'mycel-tm-legend', attr: { 'aria-label': 'What the lines of the timeline mean' } })
     this.buttons = this.el.createDiv({ cls: 'mycel-tm-bar-buttons' })
     if (overview) {
       const list = this.buttons.createEl('button', { cls: 'clickable-icon', attr: { 'aria-label': 'What differs from now' } })
@@ -81,13 +82,22 @@ export class TimeMachineBar {
     this.moment.setText(state.moment)
     this.detail.setText([state.detail, state.busy ?? state.progress ?? ''].filter(Boolean).join(' · '))
     this.legend.empty()
-    const swatch = (cls: string, text: string): void => {
-      const item = this.legend.createSpan({ cls: 'mycel-tm-legend' })
+    this.legend.createSpan({ cls: 'mycel-tm-legend-name', text: 'Timeline' })
+    const swatch = (cls: string, text: string, tip: string): void => {
+      const item = this.legend.createSpan({ cls: 'mycel-tm-legend-item', attr: { 'aria-label': tip } })
       item.createSpan({ cls: `mycel-tm-legend-swatch ${cls}` })
       item.appendText(text)
     }
-    if (state.legend.marks) swatch('is-mark', 'before an earlier rollback or restore')
-    if (state.legend.backups) swatch('is-backup', 'a backup')
+    swatch('is-tick', 'a version', 'A moment of the history; a wider gap where a new day begins')
+    swatch('is-current', 'shown', 'The moment shown in the files now')
+    if (state.legend.marks) {
+      swatch(
+        'is-mark',
+        'before an event',
+        'The moment before a rollback or restore, a merge that kept two versions, "Compare versions" applied, a device joining, the server having other data, or a share begun or ended. Pointing at it on the timeline says which.'
+      )
+    }
+    if (state.legend.backups) swatch('is-backup', 'a backup', 'A backup on the backup server, further back than the history reaches')
     this.buttons.querySelectorAll('.mycel-tm-bar-action').forEach((el) => el.remove())
     const marks = this.buttons.createEl('button', { cls: 'mycel-tm-bar-action', text: state.marks ? 'Changes: shown' : 'Changes: hidden' })
     marks.toggleClass('is-active', state.marks)

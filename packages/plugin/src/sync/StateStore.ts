@@ -37,7 +37,8 @@ export interface AttachmentState extends FileState {
  */
 export interface JoinRecord {
   at: number
-  choice: 'merge' | 'server' | 'before'
+  /** `here`: this vault overwrote the server (0.9.33). */
+  choice: 'merge' | 'server' | 'here' | 'before'
   done: boolean
   /** The copy of the whole vault made before anything was changed. */
   backup?: string
@@ -48,6 +49,7 @@ const ATTACHMENTS_FILE = 'attachments.json'
 const CLEARED_FILE = 'cleared.json'
 const UNSENT_FILE = 'unsent.json'
 const JOINED_FILE = 'joined.json'
+const TOMBSTONES_FILE = 'tombstones.json'
 const BASE_DIR = 'base'
 const SAVE_DEBOUNCE_MS = 1_000
 
@@ -67,6 +69,8 @@ export class StateStore {
   private unsentUnknown = false
   /** By vault id. */
   private readonly joins = new Map<string, JoinRecord>()
+  /** When this device first saw each deleted note or file (`seenDeleted`). */
+  private readonly tombstones = new Map<string, number>()
   private saveTimer: number | null = null
   private writes: Promise<void> = Promise.resolve()
   private closed = false
@@ -86,7 +90,7 @@ export class StateStore {
    * Only while no store is open on it.
    */
   static async forget(adapter: DataAdapter, root: string): Promise<void> {
-    for (const file of [STATE_FILE, ATTACHMENTS_FILE, CLEARED_FILE, UNSENT_FILE, JOINED_FILE]) {
+    for (const file of [STATE_FILE, ATTACHMENTS_FILE, CLEARED_FILE, UNSENT_FILE, JOINED_FILE, TOMBSTONES_FILE]) {
       const path = `${root}/${file}`
       if (await adapter.exists(path)) await adapter.remove(path)
     }
@@ -138,6 +142,16 @@ export class StateStore {
         log.error(`the local state file ${name} is unreadable, starting fresh`, error)
       }
     }
+    const tombstones = this.path(TOMBSTONES_FILE)
+    if (await this.adapter.exists(tombstones)) {
+      try {
+        const parsed = JSON.parse(await this.adapter.read(tombstones)) as Record<string, unknown>
+        for (const [id, at] of Object.entries(parsed)) if (typeof at === 'number') this.tombstones.set(id, at)
+      } catch (error) {
+        // Unread, every delete counts as seen now: what goes is let go of later, never sooner.
+        log.error(`the local state file ${TOMBSTONES_FILE} is unreadable, starting fresh`, error)
+      }
+    }
     const joined = this.path(JOINED_FILE)
     if (await this.adapter.exists(joined)) {
       try {
@@ -169,8 +183,31 @@ export class StateStore {
     return this.writes
   }
 
+  /**
+   * When this device first saw a note or file deleted - now, the first time it is asked. A delete's own
+   * time is the deleting device's clock: one running 45 days behind had every other device purge the
+   * note at its next pass, out of every trash (audit 2, L1). The retention counts from the later of the two.
+   */
+  seenDeleted(id: string, now = Date.now()): number {
+    const seen = this.tombstones.get(id)
+    if (seen !== undefined) return seen
+    this.tombstones.set(id, now)
+    this.scheduleSave()
+    return now
+  }
+
+  /** A note or file purged, or back: its first sight no longer matters. */
+  forgetDeleted(id: string): void {
+    if (this.tombstones.delete(id)) this.scheduleSave()
+  }
+
   isUnsent(docId: string): boolean {
     return this.unsentUnknown || this.unsent.has(docId)
+  }
+
+  /** Whether the note is named in the list of unsent notes - not merely possibly unsent, the list being unreadable. */
+  namedUnsent(docId: string): boolean {
+    return this.unsent.has(docId)
   }
 
   /**
@@ -281,6 +318,7 @@ export class StateStore {
         await this.adapter.write(this.path(ATTACHMENTS_FILE), JSON.stringify(Object.fromEntries(this.attachments)))
         await this.adapter.write(this.path(CLEARED_FILE), JSON.stringify(Array.from(this.cleared)))
         await this.adapter.write(this.path(UNSENT_FILE), JSON.stringify(Array.from(this.unsent)))
+        await this.adapter.write(this.path(TOMBSTONES_FILE), JSON.stringify(Object.fromEntries(this.tombstones)))
       })
       .catch((error) => {
         log.error('writing the local state failed', error)

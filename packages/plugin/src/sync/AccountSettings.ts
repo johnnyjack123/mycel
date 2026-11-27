@@ -38,6 +38,8 @@ export interface RecoveryDecision {
 
 const RECOVERY_KEY = 'recovery'
 const ROLE_KEY = 'role:'
+/** A room someone was ever given to write in: kept after their role goes (audit 2, H2). */
+const WRITTEN_KEY = 'written:'
 const EPOCH_KEY = 'epoch:'
 const LINK_ASKED_KEY = 'linkAsked:'
 
@@ -250,6 +252,19 @@ export class AccountSettings {
 
   setShareRole(room: string, account: string, role: ShareRole | null): void {
     this.put(`${ROLE_KEY}${room}|${account}`, role)
+    if (role === 'write') this.put(`${WRITTEN_KEY}${room}`, true)
+  }
+
+  /**
+   * Whether anyone but this account may have written in a room: someone was given it to write in,
+   * now or before. What it holds is then not this account's word alone - a link in it nobody claimed
+   * may be theirs (audit 2, H2).
+   */
+  othersMayHaveWritten(room: string): boolean {
+    if (this.map.get(`${WRITTEN_KEY}${room}`) === true) return true
+    const prefix = `${ROLE_KEY}${room}|`
+    for (const [key, value] of this.map.entries()) if (key.startsWith(prefix) && value === 'write') return true
+    return false
   }
 
   /**

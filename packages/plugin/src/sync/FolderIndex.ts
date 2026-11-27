@@ -17,6 +17,14 @@ function live(entry: FolderNote): FolderNote {
   return rest
 }
 
+/**
+ * An entry as anyone in the folder may have written it: only an object with a path is one. A `null` a writer set
+ * made every pass of every device - the owner's too - throw on `entry.path` (audit 2, L2).
+ */
+function entryOf<T extends { path: string }>(value: unknown): T | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && typeof (value as { path?: unknown }).path === 'string' ? (value as T) : undefined
+}
+
 /** The write that set an entry as this document has it. */
 function writeOf<T>(map: Y.Map<T>, key: string): FolderWrite | undefined {
   const item = map._map.get(key)
@@ -48,7 +56,7 @@ export class FolderIndex {
   // --- files ---------------------------------------------------------------------
 
   file(fileId: string): FolderFile | undefined {
-    return this.files.get(fileId)
+    return entryOf<FolderFile>(this.files.get(fileId))
   }
 
   hasFile(fileId: string): boolean {
@@ -58,7 +66,10 @@ export class FolderIndex {
   /** Every file entry, deleted and left included. */
   allFiles(): Array<{ fileId: string; entry: FolderFile }> {
     const found: Array<{ fileId: string; entry: FolderFile }> = []
-    this.files.forEach((entry, fileId) => found.push({ fileId, entry }))
+    this.files.forEach((value, fileId) => {
+      const entry = entryOf<FolderFile>(value)
+      if (entry) found.push({ fileId, entry })
+    })
     return found
   }
 
@@ -77,25 +88,25 @@ export class FolderIndex {
   }
 
   renameFile(fileId: string, path: string, by: string): void {
-    const current = this.files.get(fileId)
+    const current = entryOf<FolderFile>(this.files.get(fileId))
     if (!current || current.deletedAt || current.leftAt || current.path === path) return
     this.doc.transact(() => this.files.set(fileId, { ...current, path, updatedAt: Date.now(), by }), FOLDER_ORIGIN)
   }
 
   markFileDeleted(fileId: string, by: string): void {
-    const current = this.files.get(fileId)
+    const current = entryOf<FolderFile>(this.files.get(fileId))
     if (!current || current.deletedAt || current.leftAt) return
     this.doc.transact(() => this.files.set(fileId, { ...current, deletedAt: Date.now(), updatedAt: Date.now(), by }), FOLDER_ORIGIN)
   }
 
   markFileLeft(fileId: string, by: string): void {
-    const current = this.files.get(fileId)
+    const current = entryOf<FolderFile>(this.files.get(fileId))
     if (!current || current.leftAt) return
     this.doc.transact(() => this.files.set(fileId, { ...current, leftAt: Date.now(), updatedAt: Date.now(), by }), FOLDER_ORIGIN)
   }
 
   reviveFile(fileId: string, path: string, by: string): void {
-    const current = this.files.get(fileId)
+    const current = entryOf<FolderFile>(this.files.get(fileId))
     if (!current) return
     this.setFile(fileId, { ...current, path, updatedAt: Date.now(), by })
   }
@@ -125,13 +136,13 @@ export class FolderIndex {
     this.byPath.clear()
     // Sorted, so when two notes claim one path every device takes the same one.
     for (const docId of Array.from(this.notes.keys()).sort()) {
-      const entry = this.notes.get(docId)
+      const entry = entryOf<FolderNote>(this.notes.get(docId))
       if (entry && !entry.deletedAt && !entry.leftAt && !this.byPath.has(entry.path)) this.byPath.set(entry.path, docId)
     }
   }
 
   note(docId: string): FolderNote | undefined {
-    return this.notes.get(docId)
+    return entryOf<FolderNote>(this.notes.get(docId))
   }
 
   has(docId: string): boolean {
@@ -145,8 +156,9 @@ export class FolderIndex {
   /** Every note in the folder now. */
   live(): Array<{ docId: string; entry: FolderNote }> {
     const found: Array<{ docId: string; entry: FolderNote }> = []
-    this.notes.forEach((entry, docId) => {
-      if (!entry.deletedAt && !entry.leftAt) found.push({ docId, entry })
+    this.notes.forEach((value, docId) => {
+      const entry = entryOf<FolderNote>(value)
+      if (entry && !entry.deletedAt && !entry.leftAt) found.push({ docId, entry })
     })
     return found
   }
@@ -154,7 +166,10 @@ export class FolderIndex {
   /** Every entry, deleted and left included. */
   all(): Array<{ docId: string; entry: FolderNote }> {
     const found: Array<{ docId: string; entry: FolderNote }> = []
-    this.notes.forEach((entry, docId) => found.push({ docId, entry }))
+    this.notes.forEach((value, docId) => {
+      const entry = entryOf<FolderNote>(value)
+      if (entry) found.push({ docId, entry })
+    })
     return found
   }
 
@@ -171,33 +186,33 @@ export class FolderIndex {
 
   /** A note comes into the folder - new, or moved in - or back, live. */
   add(docId: string, path: string, by: string): void {
-    const current = this.notes.get(docId)
+    const current = entryOf<FolderNote>(this.notes.get(docId))
     if (current && !current.deletedAt && !current.leftAt && current.path === path) return
     this.set(docId, { path, updatedAt: Date.now(), by })
   }
 
   rename(docId: string, path: string, by: string): void {
-    const current = this.notes.get(docId)
+    const current = entryOf<FolderNote>(this.notes.get(docId))
     if (!current || current.deletedAt || current.leftAt || current.path === path) return
     this.set(docId, { ...live(current), path, updatedAt: Date.now(), by })
   }
 
   /** Deleted for everyone in the folder. */
   markDeleted(docId: string, by: string): void {
-    const current = this.notes.get(docId)
+    const current = entryOf<FolderNote>(this.notes.get(docId))
     if (!current || current.deletedAt || current.leftAt) return
     this.set(docId, { ...current, deletedAt: Date.now(), updatedAt: Date.now(), by })
   }
 
   /** Its owner took it out of the folder: everyone else keeps it as their own. */
   markLeft(docId: string, by: string): void {
-    const current = this.notes.get(docId)
+    const current = entryOf<FolderNote>(this.notes.get(docId))
     if (!current || current.leftAt) return
     this.set(docId, { ...current, leftAt: Date.now(), updatedAt: Date.now(), by })
   }
 
   revive(docId: string, path: string, by: string): void {
-    const current = this.notes.get(docId)
+    const current = entryOf<FolderNote>(this.notes.get(docId))
     this.set(docId, { ...(current ? live(current) : {}), path, updatedAt: Date.now(), by })
   }
 

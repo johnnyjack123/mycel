@@ -43,6 +43,9 @@ export interface TarEntry {
 /** Takes one entry's content, chunk by chunk; `null` ends it. */
 export type TarSink = (chunk: Buffer | null) => void | Promise<void>
 
+/** The most a pax header may hold: a long path and a few fields. */
+const PAX_MAX = 1024 * 1024
+
 export class TarReader {
   private pending: Buffer<ArrayBufferLike> = Buffer.alloc(0)
   private state: 'header' | 'pax' | 'data' | 'pad' | 'done' = 'header'
@@ -74,6 +77,8 @@ export class TarReader {
         this.remaining = size
         this.padding = size % BLOCK === 0 ? 0 : BLOCK - (size % BLOCK)
         if (type === 'x') {
+          // A path, as pax says it, is short: a header of any size was held in memory whole (audit 2, L8).
+          if (size > PAX_MAX) throw new Error(`a pax header of ${size} bytes`)
           this.pax = []
           this.state = 'pax'
         } else {

@@ -34,7 +34,8 @@ is **`docs/PHASE8.md`** (decided 2026-11-03, built from 0.9.0 to 0.9.18). **The 
 the device run before 1.0.0.** The user tries everything on real devices, and what they find
 becomes the next patch. `docs/PROGRESS.md` says what is still to try.
 The security audit (0.9.8) and its residual risks closed in 0.9.9 - every finding, its fix,
-its check, and what is known and not fixed - is **`docs/AUDIT.md`**.
+its check, and what is known and not fixed - is **`docs/AUDIT.md`**; the second audit before 1.0.0 (0.9.33),
+its findings and what became of each, **`docs/AUDIT2.md`**.
 Licence: AGPL-3.0-or-later (`LICENSE.md`, the user, 2026-11-03).
 
 ## Non-negotiable invariants
@@ -287,7 +288,9 @@ someone's notes. Treat them as rules, not preferences.
     made on a device (0.9.20).
 32. **Only what this account decided goes out, and only a room's owner seals its
     keys.** The server's lists decide nothing alone: a key is sealed only to a member
-    this account recorded giving the note or folder to (`recordRole`, `memberKeys`),
+    this account recorded giving the note or folder to (`recordRole`, `memberKeys` - and every
+    other place that seals: *Replace all keys*, `renewFor`; the second audit found both without it),
+    and the account's own public keys are derived from its private ones, never the server's copy,
     a folder's share covers only notes this vault's index has in it (`ownNotesIn`), a
     note is written under a folder's key only when the index has it in that folder
     (`tieAgrees`), a key is taken only when the room's owner sealed it (`openSealed`),
@@ -313,22 +316,35 @@ someone's notes. Treat them as rules, not preferences.
     note back had new text written under a key someone revoked still holds. The
     owner's device moves the room past it (`catchUpEpoch`, a jump the server accepts,
     `isLaterEpoch`); everyone else waits. Every new epoch is `KeyRing.nextEpoch` -
-    past the server's and past the floor -, never the server's plus one.
+    past the server's and past the floor -, never the server's plus one. A sealed key raises the
+    floor only once its signature held (a server naming epoch 2^53 blocked a room for good), and a
+    frame below the highest epoch applied in its room is dropped (`RoomCursor.lastEpoch`, 0.9.33): an
+    honest server never stores one, and stored, someone removed went on writing under the key they kept.
+    An own note is read under a folder's key, for the epoch it is in and later, only when the index has
+    it in that folder - as it is written (audit 2, M9).
 34. **A device new to a vault on the server touches nothing before the person chose, and
     takes nothing of the server's over its own without a copy of the whole vault.** A device
     that never agreed with the vault - a new one, another server, another vault name - has no
     base: merging can only keep both sides, and an older copy of the vault brought back every
     line and every note deleted since. `Joining` (`sync/Joining.ts`, 0.9.19) compares path by
     path once the index arrived and before the store starts (`SyncSession.start`), says what it
-    found and asks: merge both, take the server's version, or not now. Nothing is written into a
+    found and asks: merge both, take the server's version, overwrite the server with this vault
+    (0.9.33, asked twice), or not now. Nothing is written into a
     file before the start (`DocStore.writeToFile` waits for it): the notes read to compare wrote
     their merge into the files and on to the server. A copy of every file goes into the plugin's
     `backups/` first, whatever is chosen. Taking the server's version writes over what both have
     (`takeServerText`, `takeServerVersion` - their backup is that copy, not the server as in
     invariant 23) and trashes only what this vault alone has, its delete events dropped
-    (`SyncSession.leaving`): trashing a note or file the server has is a delete for everyone. A
-    device that synced before - by its record (`joined.json`) or by anything it agreed on - is
-    never asked, and one that stopped while carrying out a choice carries it on unasked.
+    (`SyncSession.leaving`): trashing a note or file the server has is a delete for everyone.
+    Overwriting the server never writes the server's state away directly: the server's text or
+    file becomes the base both last agreed on (`serverAsBase`, the server's text backed up
+    first), so the start sends this vault's as an edit made here - three ways, what others write
+    meanwhile kept, a file's version naming the one it replaced -, and what only the server has
+    gets a tombstone, as a delete made here would: restorable, and carried out elsewhere only
+    where nothing changed. Others' shared notes and shared folders are merged as ever, and an
+    empty vault never overwrites anything. A device that synced before - by its record
+    (`joined.json`) or by anything it agreed on - is never asked (*Disconnect this vault* makes it
+    new again), and one that stopped while carrying out a choice carries it on unasked.
 35. **A vault deleted on the server is never made anew unasked, its id never taken again, and
     only its record of deletion lets the server clear it** (0.9.24). Deleting moves it from the
     account's `vaults` to `deletedVaults` - every check of access asks `vaults` - and closes its
@@ -979,10 +995,11 @@ npm run test:sync      # the editor binding in real CodeMirror, jsdom, in-proces
 npm run test:recovery  # a server that lost its data, one restored from a backup, cleaning up blobs — in-process server
 npm run test:account   # the account with real devices: signing the other devices out, the recovery code, 2FA, a vault deleted on the server — in-process server
 npm run test:rollback  # rolling a vault or folder back from the history, the gate, undoing it, swaps on other devices, the Time Machine's timeline — in-process server
-npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too, and at once while a read from the server hangs), a plugin folder whose folders refuse to go, the vault lock and the device taking it, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices — in-process server
+npm run test:timemachine # the past in one device's files, put back byte for byte (after a crash too, and at once while a read from the server hangs), a plugin folder whose folders refuse to go, the vault lock and the device taking it, a restore under it keeping what was written after it, a lock ended while a device was away, the editor read-only with its bar, a synced file's time, the notices, a mark's moment not shown twice beside a tick alike — in-process server
 npm run test:replace   # every key of an account replaced: the vaults and files written anew, the other device, a contact confirming again, a replacement carried on by another device — in-process server
-npm run test:join      # a device meeting a vault on the server for the first time: what the comparison finds and what merging will make of it, the copy of the vault, "Not now", the server's version, merging, the explorer's marks, a note open in an editor while joining, notes to compare on every device, carrying on after a restart, disconnecting a vault and meeting it again, the local history giving way to its deletion (fake-indexeddb), one Obsidian vault per vault of the server — in-process server
+npm run test:join      # a device meeting a vault on the server for the first time: what the comparison finds and what merging will make of it, the copy of the vault, "Not now", the server's version, merging, overwriting the server with this vault, the explorer's marks, a note open in an editor while joining, notes to compare on every device, carrying on after a restart, disconnecting a vault and meeting it again, the local history giving way to its deletion (fake-indexeddb), one Obsidian vault per vault of the server — in-process server
 npm run test:security  # every attack of the audit (docs/AUDIT.md): the server attacked over HTTP and WebSocket, the plugin's paths, links, folders and gate, the backup task — in-process servers
+npm run test:audit2    # every attack of the second audit (docs/AUDIT2.md), a script each, one after another — servers of their own; MYCEL_RESTIC for the backup server's
 npm run test:backup    # the backup server's run with real devices and a real restic — in-process server
                        # restic on the PATH or named by MYCEL_RESTIC (where it lies here: docs/PROGRESS.md)
 npm run bench          # what a first sync, a restart, typing and a catch-up cost (docs/PERFORMANCE.md) — servers of its own
@@ -1035,7 +1052,9 @@ guide's live comparison; since 0.9.30 the disconnect window, and Obsidian's loca
 under names that end in what the plugin gave them (`forgetSecrets` relies on it; Obsidian documents no format);
 since 0.9.32 dragging lines in the merge window in Obsidian's own window and with a finger on a phone, where
 the lines both have show no numbers (in jsdom the hit test is told what lies under the pointer; a headless Edge
-driven over the DevTools protocol showed it with a real mouse and a finger, but made no click from a tap).
+driven over the DevTools protocol showed it with a real mouse and a finger, but made no click from a tap); since 0.9.33
+*Overwrite the server with this vault* in the joining window and its second question, the windows of a backup on this
+device alone, and *Undo in the Time Machine…* landing at the moment before.
 
 ## Gotchas
 

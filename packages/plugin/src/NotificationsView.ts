@@ -175,7 +175,7 @@ export class NotificationsView extends ItemView {
   private renderRollbacks(el: HTMLElement): void {
     el.createEl('p', {
       cls: 'mycel-notices-quiet',
-      text: 'Every rollback and every note restored from the Time Machine, on any of your devices - kept, the last 50. Undo… opens the Time Machine at the moment before it; Restore this version there takes it back, backed up first like every restore.'
+      text: 'Every rollback and every note restored from the Time Machine, on any of your devices - kept, the last 50. "Undo in the Time Machine…" opens the Time Machine and goes straight to the moment before it; Restore this version there takes it back, backed up first like every restore.'
     })
     const records = this.host.rollbacks()
     if (records.length === 0) {
@@ -191,8 +191,8 @@ export class NotificationsView extends ItemView {
       const changed = [plural(record.notes, 'note'), plural(record.files, 'file')].filter(Boolean).join(' and ') || 'nothing'
       const state = record.state === 'done' ? '' : record.state === 'failed' ? ` - with problems: ${record.error ?? ''}` : ' - it broke off, or still runs'
       body.createDiv({ cls: 'mycel-notices-time', text: `${when(record.startedAt)} · ${record.kind === 'note' ? 'restored' : `${changed} changed`}${state}` })
-      const button = body.createEl('button', { cls: 'mycel-notices-action', text: 'Undo…' })
-      button.setAttr('aria-label', 'Opens the Time Machine at the moment before it')
+      const button = body.createEl('button', { cls: 'mycel-notices-action', text: 'Undo in the Time Machine…' })
+      button.setAttr('aria-label', 'Opens the Time Machine at the moment before it; Restore this version there takes it back')
       button.onclick = () => this.host.undo(record)
     }
   }

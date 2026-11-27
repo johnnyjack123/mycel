@@ -2,8 +2,8 @@
 
 _Last updated: 2026-11-27 · **Phase: the device run before 1.0.0.** 0.9 - hardening and the
 security audit - is built. The user started afresh on 2026-11-13 and is trying everything on
-real devices. Each thing they find or ask for becomes the next patch: 0.9.19 to 0.9.32 so far.
-Current version: **0.9.32** (branch `feat/merge-drag`; 0.9.31 is `latest-build`).
+real devices. Each thing they find or ask for becomes the next patch: 0.9.19 to 0.9.33 so far.
+Current version: **0.9.33** (branch `fix/audit2`, which holds `fix/cosmetics`; 0.9.32 is `latest-build`).
 1.0.0 follows once everything is verified on devices, then publishing, if the user wants it._
 
 ## Where we are
@@ -61,20 +61,16 @@ the user runs the new setup and reports back. Each finding or wish was a version
 | 0.9.30 | 11-26 | Found by the user: the reset waited and failed half done (the local history held its database open). Their decision: *Disconnect this vault* - signed out, nothing of the sync left on the device - instead of the reset. |
 | 0.9.31 | 11-27 | Found by the user: a note one side only added to was not always listed to compare (one open in an editor while its device joined). Their decision: a range of lines in "Compare versions", across what both have. |
 | 0.9.32 | 11-27 | Found by the user: the range worked but was unintuitive. Their design: lines dragged in "Compare versions", as cards on a board - anywhere in the middle, several at once. |
+| 0.9.33 | 11-27 | The user's findings around a rollback and a restore, *Overwrite the server with this vault* (their wish of 11-13), and the second audit: 3 critical, 5 high, 12 medium, 10 low findings, fixed (`docs/AUDIT2.md`). |
 
 **Next:**
-1. The user installs 0.9.32 on both devices (no server update; the backup server's image of
-   0.9.29 may follow later: it only leaves reviews and marks out of its copy's settings) and tries
-   what it brings ("Still to try on devices", 0.9.32 and the rest of 0.9.31): the PC is back on
-   the evening of 2026-11-27. *Disconnect this vault* worked on a device (2026-11-26). The read-only attribute
-   was taken off the PC's test vault on 2026-11-26 and did not come back.
-2. Then on through "Still to try on devices" below.
-3. Findings come first, then 1.0.0. What 1.0.0 still needs besides is the user's call:
-   publishing, item 12.
-4. **Wanted, to be built only once the user says so** (2026-11-13): the other direction of the
-   joining choice, *overwrite the server with this vault*, for when something went wrong. What
-   differs takes this vault's version. What only the server has is deleted there, restorable
-   from the trash and the history. The other devices follow. Not started.
+1. The user installs 0.9.33 (a **server update** this time: the server's and the backup
+server's fixes of the second audit) and tries what it brings ("Still to try on devices"). No more
+   features are planned for 1.0.0 (the user: "von meiner Seite für v1.0 ready").
+2. The second audit (`docs/AUDIT2.md`) is done and fixed: what is left of it is listed there under
+   "What became of it" - the user decides whether any of it waits for 1.0.0.
+3. Then 1.0.0. What it needs besides is the user's call: publishing, item 12 (a release tagged
+   `x.y.z`, the README, the Docker images still private).
 
 ### Confirmed on devices
 
@@ -98,34 +94,30 @@ the user runs the new setup and reports back. Each finding or wish was a version
   meeting again was put together in "Compare versions" - which found what became 0.9.31.
 - The range of lines of 0.9.31 worked with Shift-click (2026-11-27), but was unintuitive and
   hard to follow - which became 0.9.32.
+- Lines dragged in "Compare versions" of 0.9.32 "sieht jetzt wirklich schon sehr gut aus"
+  (2026-11-27); two cosmetic findings became part of 0.9.33.
+- A rollback and a restore from the Time Machine on the PC (0.9.32, 2026-11-27) - the three
+  findings around them (the window without a backup server, a mark beside the same state, undo
+  not saying where it goes) became part of 0.9.33. *Disconnect this vault* and *Replace all keys*
+  tried too (2026-11-27), and shared notes and folders with a second account long before.
 
 ### Still to try on devices
 
 What only a device can show (CLAUDE.md, Testing) and nobody has tried yet, newest first:
-- **0.9.32:** "Compare versions" with lines dragged, in Obsidian's own window:
-  - a number dragged into the middle, the line drawn where it goes, the label by the pointer, the
-    list scrolling at its edge; a click selecting, Shift-click every line between, several
-    dragged at once; the user's two blocks: this device's taken, the other's lines 11 to 17
-    dragged below its closing `---`;
-  - a line of the middle moved by its handle, dragged onto a version to take it out, Delete;
-    clicking into the middle to write and leaving it; the eraser; *Empty again*;
-  - on a phone: dragging by the number with a finger while the rest still scrolls, a tap
-    selecting (not seen in the emulation: it made no click from a tap on any button);
-  - whether it is intuitive now.
+- **0.9.33** (once built): *Overwrite the server with this vault* in the joining window (a
+  device after *Disconnect this vault*), its second question, and the other device following;
+  "Backed up on this device" after a rollback or restore without a backup server; *Undo in the
+  Time Machine…* and its window, landing at the moment before; a restore's mark no longer beside
+  the same version; the legend in the bar; the line under the buttons of "Compare versions" not
+  moving.
+- **0.9.32:** on a phone, dragging by the number with a finger while the rest still scrolls, and
+  a tap selecting (not seen in the emulation: it made no click from a tap on any button).
 - **0.9.31:** a note only one side added to, open in an editor on the device that joins and
   shorter there: marked in the explorer and listed in "Compare versions" afterwards (on the PC:
   if not, its log says `editor held text the note did not; adopt-remote … base none` for the
   note). (The range of lines of 0.9.31 is replaced by 0.9.32.)
-- **0.9.30:**
-  - *Disconnect this vault* on a device: the window (what goes, the box for the safety copies
-    with their size, the warning when something is unsent or the device offline), signed out
-    afterwards, the settings as new with the server's address kept, the plugin folder holding
-    no `state.json`, `base/`, logs; then signing in, and the first connection anew (the window,
-    the copy, merging nothing twice);
-  - IndexedDB deleting the databases at once (no twenty seconds, no "still open"), and Obsidian's
-    local storage losing the vault's `mycel:` entries (`forgetSecrets` finds them by how their
-    names end - Obsidian documents no format);
-  - Obsidian closed during a disconnect: the next start finishes it, nothing syncs meanwhile.
+- **0.9.30** (*Disconnect this vault* itself tried, 2026-11-27): Obsidian closed during a
+  disconnect - the next start finishes it, nothing syncs meanwhile.
 - **0.9.29:**
   - notes to compare showing on the other device, put together there, gone on both;
   - the name of a device in the window, the list and a lock's window;
@@ -135,12 +127,10 @@ What only a device can show (CLAUDE.md, Testing) and nobody has tried yet, newes
   - the status bar's count and tooltip; the vault's rows under All devices; no *Conflict markers*.
 - **0.9.28:**
   - on the PC with its read-only `timemachine\copies`: a start connecting within seconds of
-    `loaded`, opening and aborting the Time Machine at once, no second window beside its own;
-  - a restore and a rollback from the Time Machine there;
+    `loaded`, opening and aborting the Time Machine at once, no second window beside its own (a
+    restore and a rollback there worked, 2026-11-27);
   - on a device whose folders may go, `timemachine/` and old backups cleared as before.
-- **0.9.27:**
-  - a rollback from the Time Machine on Windows (the user's case);
-  - Obsidian restarted while the past is shown.
+- **0.9.27:** Obsidian restarted while the past is shown (the rollback on Windows worked).
 - **0.9.26:**
   - "Compare versions" on a phone (the passages one below the other);
   - copying a selection from one version in Obsidian;
@@ -150,9 +140,11 @@ What only a device can show (CLAUDE.md, Testing) and nobody has tried yet, newes
   - the window on every device: *Take it back*, *Upload this vault anew*, *Connect to another
     vault*, *Not now*.
 - **0.9.22:** the explorer's marks of notes to look at, and *Done* taking them off.
-- **0.9.19, the joining cases on real vaults:**
-  - the first device (*Upload*), an empty vault (*Download*), a copy of the same state
-    (*Connect*);
+- **0.9.19, the joining window on real vaults** - what a device shows when it meets the vault on
+  the server for the first time (a new device, or one after *Disconnect this vault*). Merging both
+  after a disconnect is tried; the other cases are covered by `test:join` and come up on a device
+  only when it happens:
+  - an empty vault (*Download*), a copy of the same state (*Connect*);
   - an older copy (*Take the server's version*), another vault;
   - *Not now* and the status bar bringing it back;
   - the copy in `.obsidian/plugins/mycel/backups/`.
@@ -170,10 +162,6 @@ What only a device can show (CLAUDE.md, Testing) and nobody has tried yet, newes
   - the server behind the proxy with `MYCEL_TRUST_PROXY`.
 - **0.9.4/0.9.5:** a writer made a reader and back. Each moves the note to a new epoch, and the
   log should show no "not signed by someone who may write here".
-- **0.9.6:** *Replace all keys* on a test account:
-  - its notice while the vault is written anew;
-  - a contact's notice and the new friend code;
-  - the backup server invited again.
 - **0.9.1:** how long a push takes on the Pi's SD card with a sync per frame (not measured).
 - **0.8.16:** a device offline while the lock is lifted; the bars under a lock; typing after
   lifting it.
@@ -257,7 +245,15 @@ Ordered by the user on 2026-10-14; the table is in CLAUDE.md, Conventions.
 
 ## In flight / half-finished
 
-Nothing. Every branch on the remote is merged into `main`, except `debug/start-race`. It holds
+- **`fix/audit2`** (2026-11-27), which holds **`fix/cosmetics`**: 0.9.33, to merge once CI is green.
+  Before the audit's fixes, `fix/cosmetics` held (pushed, not merged, no version - the user: no build
+  needed at once): Everything of 0.9.33 in the CHANGELOG: *Overwrite the server with this vault*, a mark
+  not shown twice beside a tick alike, the windows of a backup on this device alone and of undo,
+  the hint line of "Compare versions" and the Time Machine's legend. Every suite it touches is
+  green (merge, load, sync, join, timemachine, rollback). To go out with the second audit's
+  fixes as 0.9.33.
+
+Besides it, every branch on the remote is merged into `main`, except `debug/start-race`. It holds
 only temporary logging from chasing a CI failure of 0.9.6 (CHANGELOG), and it can go. Deleting
 the merged branches is the user's call.
 
@@ -446,6 +442,22 @@ How to run the end-to-end suites without touching the user's server is in CLAUDE
 ## Log
 
 ### 2026-11-27
+- The second audit came back: 3 critical, 5 high, 12 medium, 10 low (`docs/AUDIT2.md`). Every
+  reproduction was run again before anything was fixed; each attack worked. The three critical ones
+  explained to the user (the backup server running a paired person's command; a server choosing the
+  key friend codes vouch for; a relay message ending the server). Their decisions: H3 as proposed (the
+  local note set aside, the shared one beside it), and M9 to M12 before 1.0.0 too - "eine cleane
+  Version". All fixed on `fix/audit2`, what is left listed in the audit; the scripts are
+  `test:audit2`. Two of my own fixes needed fixing: H4 alone let a wrong tie empty a history, H3 set
+  a writer's new note aside endlessly (`test:folders` found it).
+- 0.9.32 tried on the PC: dragging looks very good; two cosmetic findings, and three around a
+  rollback and a restore there (the window without a backup server, a restore's mark beside the
+  same version, undo not saying it goes through the Time Machine). The user asked for these and
+  for *Overwrite the server with this vault* before the second audit - "von meiner Seite für v1.0
+  ready". Built on `fix/cosmetics` as 0.9.33, not yet versioned. The window of a device meeting the
+  vault was explained to them again: tried with merging after a disconnect, the rest left to
+  `test:join` unless it comes up. Then the second audit was started: a fresh agent, a worktree of
+  its own, finding and reproducing, fixing nothing.
 - The user tried 0.9.31's range of lines: it works with Shift, but is unintuitive and hard to
   follow. Their idea, agreed: lines dragged as cards on a board - each on its own or several
   selected, anywhere in the middle, between lines already there too; *Take* stays. Settled with
