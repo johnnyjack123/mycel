@@ -992,23 +992,23 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   draft.take(0, 'theirs')
   draft.take(0, 'mine')
   check(
-    draft.slots[0]?.text === 'changed there\nchanged here\n' && draft.open === 1,
+    draft.text(0) === 'changed there\nchanged here\n' && draft.open === 1,
     'a passage takes both sides, in the order taken',
     draft.slots[0]
   )
   draft.remove(0, 'theirs')
-  check(draft.slots[0]?.text === 'changed here\n' && draft.decided(0), 'and gives one back again', draft.slots[0])
+  check(draft.text(0) === 'changed here\n' && draft.decided(0), 'and gives one back again', draft.slots[0])
   draft.take(1, 'theirs')
   check(
-    draft.decided(1) && draft.slots[1]?.text === '' && draft.result() === 'title\nshared line\nchanged here\nkept\n',
+    draft.decided(1) && draft.text(1) === '' && draft.result() === 'title\nshared line\nchanged here\nkept\n',
     'taking a side that has nothing there decides the passage too: it stays empty',
     draft.result()
   )
   draft.edit(0, 'written by hand\n')
   draft.take(0, 'theirs')
-  check(draft.slots[0]?.text === 'written by hand\nchanged there\n', 'text written by hand stays, and what is taken next comes after it', draft.slots[0])
+  check(draft.text(0) === 'written by hand\nchanged there\n', 'text written by hand stays, and what is taken next comes after it', draft.slots[0])
   draft.remove(0, 'theirs')
-  check(draft.slots[0]?.text === 'written by hand\n', 'giving that back takes out only what was taken', draft.slots[0])
+  check(draft.text(0) === 'written by hand\n', 'giving that back takes out only what was taken', draft.slots[0])
   draft.takeAll('mine')
   check(draft.result() === mine, "everything from this device gives this device's version", draft.result())
   draft.takeAll('theirs')
@@ -1088,29 +1088,32 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
 
   const draft = new MergeDraft(mine, theirs)
   check(draft.slots.length === 3 && draft.result() === 'Zeile 1\n', 'three passages to decide, the line both have already in the result', draft.result())
-  draft.toggleLine(1, 'theirs', 1)
-  draft.toggleLine(1, 'mine', 2)
+  draft.put('theirs', [1], { passage: 1, at: 0 })
+  draft.put('mine', [2], { passage: 1, at: 1 })
   check(
-    draft.slots[1]?.text === 'Zeile 2\nZeile 2 geändert\n' && draft.picked(1, 'mine', 2) && draft.decided(1),
-    'single lines of either side go into the middle, in the order taken',
+    draft.text(1) === 'Zeile 2\nZeile 2 geändert\n' && draft.placed('mine').has(2) && draft.decided(1),
+    'single lines of either side go into the middle, where they are put',
     draft.slots[1]
   )
-  draft.toggleLine(1, 'theirs', 1)
-  check(draft.slots[1]?.text === 'Zeile 2 geändert\n' && !draft.picked(1, 'theirs', 1), 'and come out again', draft.slots[1])
-  draft.toggleLine(1, 'mine', 3)
-  check(draft.slots[1]?.text === 'Zeile 2 geändert\n', 'a line of another passage is not taken into this one', draft.slots[1])
-  draft.take(1, 'mine')
-  draft.toggleLine(1, 'mine', 2)
+  draft.drop([draft.slots[1]?.items[0]?.id ?? -1])
+  check(draft.text(1) === 'Zeile 2 geändert\n' && !draft.placed('theirs').has(1), 'and come out again', draft.slots[1])
+  draft.put('mine', [3], { passage: 1, at: 0 })
   check(
-    draft.slots[1]?.picks.length === 1 && draft.slots[1]?.text === 'Zeile 2 geändert\n' && draft.taken(1, 'mine'),
-    'taking the whole side takes in its single lines; a line of it cannot be taken apart from it then',
+    draft.text(1) === 'neu darunter\nZeile 2 geändert\n',
+    "a line of another passage goes where it is put too - the version's last line, without a break, gets one in front of another",
+    draft.text(1)
+  )
+  draft.take(1, 'mine')
+  check(
+    draft.slots[1]?.items.length === 2 && draft.text(1) === 'neu darunter\nZeile 2 geändert\n' && draft.taken(1, 'mine'),
+    "taking the whole side takes in its lines put there before, not twice; another passage's line stays",
     draft.slots[1]
   )
   draft.edit(0, 'by hand\n')
-  draft.toggleLine(0, 'mine', 1)
-  check(draft.slots[0]?.text === 'by hand\nneu dazwischen\n', 'a single line goes after text written by hand', draft.slots[0])
-  draft.toggleLine(0, 'mine', 1)
-  check(draft.slots[0]?.text === 'by hand\n', 'and only it comes out again', draft.slots[0])
+  draft.put('mine', [1], { passage: 0, at: 1 })
+  check(draft.text(0) === 'by hand\nneu dazwischen\n', 'a single line goes after text written by hand', draft.slots[0])
+  draft.drop([draft.slots[0]?.items[1]?.id ?? -1])
+  check(draft.text(0) === 'by hand\n', 'and only it comes out again', draft.slots[0])
   draft.takeAll('mine')
   check(draft.result() === mine, "everything from this device gives this device's version, its last line without a break as it was", draft.result())
 
@@ -1128,84 +1131,90 @@ async function rejects(task: () => Promise<unknown>): Promise<boolean> {
   )
 }
 
-// --- a range of lines across what both have, passages joined (0.9.31) ---------------------------
+// --- lines put anywhere in the middle, as cards on a board (0.9.32) ------------------------------
 {
   const { MergeDraft } = await import('../src/sync/Reviews.js')
+  const { lineText } = await import('../src/sync/align.js')
   // The user's case (2026-11-26): a block written in the same place on each device, both cut apart
-  // by the lines both have between their parts - "---" and an empty line.
+  // by the lines both have between their parts - "---" and an empty line. Wanted: both blocks whole,
+  // one under the other.
   const head = 'Gleicher Stand\n\nAuf beiden Seiten:\n\n---\ncontent content\ncontent content\n\n---\n\n'
   const block = (device: string): string => `${device}:\n\n---\ncontent content ${device}\ncontent content ${device}\n\n---\n`
   const mine = `${head}${block('PC')}\ngleicher text, selbe Zeile\ngleicher Text, andere Zeile\n`
   const theirs = `${head}${block('Laptop')}\ngleicher text, selbe Zeile\n\ngleicher Text, andere Zeile\n`
   const draft = new MergeDraft(mine, theirs)
   const first = draft.result()
-  check(draft.slots.length === 3, 'the two blocks stand as passages cut apart by the lines both have, as the window showed them', draft.passages)
-  // Lines 11 to 17 as the window numbers them.
-  const into = draft.takeRange('mine', 10, 16)
+  check(draft.slots.length === 3 && draft.total === 3, 'the two blocks stand as passages cut apart by the lines both have, as the window shows them', draft.passages)
+  // Runs: what both have up to "PC:", "PC:", the "---" between, the content, the closing "---" and on.
+  const closing = draft.runs.findIndex((run) => run.same && run.mineFrom === 15)
+  check(closing === 4 && draft.runs[closing]?.mineTo === 19, 'the closing "---" of the block (line 17) is the second line of a run both have', draft.runs[closing])
+  draft.take(0, 'mine')
+  draft.take(1, 'mine')
+  // Lines 11 to 17 of the other version, as the window numbers them, put after line 17.
+  draft.put('theirs', [16, 10, 11, 12, 13, 14, 15], { run: closing, at: 2 })
+  const opened = draft.passages.findIndex((passage) => passage.inserted === true)
   check(
-    draft.slots.length === 2 &&
-      into === 0 &&
-      draft.passage(0).joined === true &&
-      draft.slots[0]?.text === block('PC') &&
-      draft.passage(0).rows.filter((row) => row.same).length === 4,
-    "a range of one side across the lines both have makes one passage of all it touches, and comes into it as one piece - this device's whole block",
-    { slots: draft.slots, rows: draft.passage(0).rows }
-  )
-  draft.takeRange('theirs', 16, 10)
-  check(
-    draft.slots.length === 2 && draft.slots[0]?.text === block('PC') + block('Laptop'),
-    "the other side's whole block goes under it - either way round the range was clicked",
-    draft.slots[0]
+    draft.slots.length === 4 && opened === 2 && draft.text(opened) === block('Laptop') && draft.passage(opened).mineFrom === 17 && draft.total === 3,
+    "lines put between two lines both have open a place of their own there, in their version's order - not a passage to decide",
+    { passages: draft.passages, text: draft.text(opened) }
   )
   check(
     draft.result() === `${head}${block('PC')}${block('Laptop')}\ngleicher text, selbe Zeile\ngleicher Text, andere Zeile\n` && draft.open === 1,
-    'the note has both blocks whole, one under the other; the passage after them is still open',
+    "the note has both blocks whole, one under the other - this device's through Take, the other's put after it; the passage after them is still open",
     draft.result()
   )
-  draft.split(0)
-  check(draft.slots.length === 3 && draft.open === 3 && draft.result() === first, 'split again, the passages are as first laid out, each empty', draft.result())
 
-  // What the passages held before stays; the first line taken alone is in the range now.
-  draft.take(0, 'theirs')
-  draft.toggleLine(1, 'mine', 13)
-  draft.takeRange('mine', 13, 10)
+  // The place opened takes more lines: at its start from above it, at its end from below it.
+  draft.put('mine', [0], { run: closing, at: 2 })
+  draft.put('mine', [2], { run: draft.runs.findIndex((run) => !run.same && run.inserted === true) + 1, at: 0 })
+  const lines = (index: number): string[] => (draft.slots[index]?.items ?? []).map((item) => lineText(draft.itemText(item)))
   check(
-    draft.slots.length === 2 && draft.slots[0]?.text === 'Laptop:\nPC:\n\n---\ncontent content PC\n',
-    'what the joined passages held stays in front, and a line taken alone before is not taken twice',
-    draft.slots[0]
+    draft.slots.length === 4 && lines(opened)[0] === 'Gleicher Stand' && lines(opened).at(-1) === 'Auf beiden Seiten:',
+    'more lines at the same place go into the place opened there, not into a second one',
+    lines(opened)
   )
-  draft.toggleLine(0, 'mine', 12)
-  check(draft.slots[0]?.text === 'Laptop:\n', "a line's number inside a range takes the whole range out again", draft.slots[0])
-  draft.reset()
-  check(draft.slots.length === 3 && draft.open === 3 && draft.result() === first, '"Empty again" splits every joined passage and empties it', draft.result())
+  const ids = (index: number): number[] => (draft.slots[index]?.items ?? []).map((item) => item.id)
+  const [top, laptop] = ids(opened)
+  draft.move([top ?? -1], { passage: opened, at: 3 })
+  check(lines(opened).slice(0, 3).join('|') === 'Laptop:||Gleicher Stand', 'a line of the middle moves within its place', lines(opened))
+  draft.move([laptop ?? -1, top ?? -1], { passage: opened, at: 2 })
+  check(
+    lines(opened).slice(0, 3).join('|') === '|Laptop:|Gleicher Stand',
+    'several move together in the order they stood; put before one of themselves, they go before the next that stays',
+    lines(opened)
+  )
+  draft.move([laptop ?? -1], { passage: 0, at: 0 })
+  check(lines(0).join('|') === 'Laptop:|PC:' && !lines(opened).includes('Laptop:'), 'and into another passage', { zero: lines(0), opened: lines(opened) })
+  draft.drop(ids(opened))
+  check(
+    draft.slots.length === 3 && draft.runs.length === draft.aligned.runs.length && draft.passages.every((passage) => !passage.inserted),
+    'emptied, the place opened goes again, and the lines both have around it are one run as before',
+    draft.runs
+  )
+  draft.drop(ids(0).slice(0, 1))
+  check(draft.text(0) === 'PC:\n' && draft.placed('theirs').size === 0, 'a line taken out of the middle is no longer marked in its version', draft.placed('theirs'))
 
-  draft.edit(0, 'by hand\n')
-  draft.takeRange('mine', 10, 14)
-  check(
-    draft.slots[0]?.edited === true && draft.slots[0]?.text === 'by hand\nPC:\n\n---\ncontent content PC\ncontent content PC\n',
-    'text written by hand stays, and the range comes after it',
-    draft.slots[0]
-  )
+  // Written by hand: what stays as it was keeps where it came from.
+  draft.edit(0, 'by hand\nPC:\n')
+  check(draft.taken(0, 'mine') && draft.placed('mine').has(10), "a line kept while writing is still the version's", draft.slots[0])
+  draft.remove(0, 'mine')
+  check(draft.text(0) === 'by hand\n' && draft.decided(0), 'giving the side back takes it out of the text written, the rest stays', draft.text(0))
+  draft.clear(0)
+  check(!draft.decided(0) && draft.open === 2, 'the eraser empties it again', draft.slots[0])
+
+  draft.put('theirs', [10], { run: 0, at: 0 })
+  check(draft.slots.length === 4 && draft.text(0) === 'Laptop:\n' && draft.result().startsWith('Laptop:\nGleicher Stand\n'), 'a line put above the first line opens a place at the top', draft.result())
+  draft.clear(0)
+  check(draft.slots.length === 3 && draft.result() === `${head}\n---\ncontent content PC\ncontent content PC\n\n---\n\ngleicher text, selbe Zeile\ngleicher Text, andere Zeile\n`, 'the eraser empties a place opened, and it goes', draft.result())
+  draft.put('mine', [5], { run: draft.runs.length - 1, at: 1 })
+  check(draft.result().endsWith('gleicher Text, andere Zeile\ncontent content\n'), 'and one below the last line at the bottom', draft.result())
   draft.takeAll('mine')
-  check(draft.result() === mine, "everything from this device, joined passages and all, gives this device's version", draft.result())
+  check(draft.result() === mine && draft.slots.length === 3, "everything from this device gives this device's version - the places opened gone", draft.result())
   draft.takeAll('theirs')
   check(draft.result() === theirs, 'and from the other, the other version', draft.result())
-
-  const only = new MergeDraft(mine, theirs)
-  only.takeRange('mine', 11, 12)
-  check(
-    only.slots.length === 4 && only.result() === first && only.decided(1),
-    'a range of lines both have alone becomes a passage of its own, the lines in it as before',
-    only.result()
-  )
-  const inside = new MergeDraft(mine, theirs)
-  inside.toggleLine(1, 'theirs', 13)
-  inside.takeRange('theirs', 13, 14)
-  check(
-    inside.slots.length === 3 && inside.slots[1]?.picks.length === 1 && inside.slots[1]?.text === 'content content Laptop\ncontent content Laptop\n',
-    'a range inside one passage joins nothing',
-    inside.slots[1]
-  )
+  draft.put('mine', [5], { run: 0, at: 3 })
+  draft.reset()
+  check(draft.slots.length === 3 && draft.open === 3 && draft.result() === first, '"Empty again" empties every passage and closes every place opened', draft.result())
 }
 
 // --- emptying the trash ------------------------------------------------------------------

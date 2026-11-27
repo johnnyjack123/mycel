@@ -437,12 +437,41 @@ check(
   const progress = (modal: InstanceType<typeof ReviewModal>): string => modal.contentEl.querySelector('.mycel-merge-progress')?.textContent ?? ''
   const texts = (root: Element, selector: string): string[] => Array.from(root.querySelectorAll(selector)).map((el) => el.textContent ?? '')
 
+  const middleLines = (root: Element | undefined): string[] => (root ? texts(root, '.mycel-merge-item .mycel-merge-text') : [])
+
+  // jsdom lays nothing out: every line and line of the middle gets a row of its own, 20 pixels
+  // high, in the order it stands, and the window's hit test is told what lies under the pointer.
+  let under: Element | null = null
+  ;(document as unknown as { elementFromPoint: (x: number, y: number) => Element | null }).elementFromPoint = () => under
+  const layOut = (root: Element): void => {
+    Array.from(root.querySelectorAll<HTMLElement>('.mycel-merge-line, .mycel-merge-item, .mycel-merge-slot')).forEach((el, at) => {
+      const top = at * 20
+      el.getBoundingClientRect = () => ({ top, bottom: top + 20, left: 0, right: 100, width: 100, height: 20, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+    })
+  }
+  const pointer = (type: string, target: EventTarget, y: number): void => {
+    target.dispatchEvent(new window.PointerEvent(type, { bubbles: true, cancelable: true, clientX: 50, clientY: y, button: 0, pointerType: 'mouse' }))
+  }
+  /** Presses `from`, moves onto `onto` - its upper or lower half - and lets go there. */
+  const dragTo = async (modal: InstanceType<typeof ReviewModal>, from: Element | null | undefined, onto: Element | null | undefined, half: 'upper' | 'lower' = 'upper', release = true): Promise<void> => {
+    if (!from || !onto) throw new Error('nothing to drag, or nowhere to')
+    layOut(modal.contentEl)
+    const y = onto.getBoundingClientRect().top + (half === 'upper' ? 5 : 15)
+    pointer('pointerdown', from, 0)
+    under = onto
+    pointer('pointermove', document, y)
+    if (!release) return
+    pointer('pointerup', document, y)
+    // The click a release makes is swallowed until then.
+    await delay(5)
+  }
+
   const applied: string[] = []
   const dismissed: string[] = []
   const modal = opened(applied, dismissed)
   const rows = passages(modal)
   check(
-    rows.length === 1 && rows[0]?.classList.contains('is-open') === true && (rows[0]?.querySelector('textarea')?.value ?? null) === '' && progress(modal) === '1 of 1 passage still open',
+    rows.length === 1 && rows[0]?.classList.contains('is-open') === true && rows[0]?.querySelector('.mycel-merge-placeholder') !== null && progress(modal) === '1 of 1 passage still open',
     'the window opens with each passage that differs empty in the middle',
     { rows: rows.length, progress: progress(modal) }
   )
@@ -466,32 +495,82 @@ check(
   const take = (side: 'mine' | 'theirs'): void => passages(modal)[0]?.querySelector<HTMLButtonElement>(`.mycel-merge-take-cell.is-${side} .mycel-merge-take`)?.click()
   take('theirs')
   take('mine')
-  const area = (): HTMLTextAreaElement | null => passages(modal)[0]?.querySelector('textarea') ?? null
   check(
-    area()?.value === '- Brot\n- Milch\n- Eier' && !passages(modal)[0]?.classList.contains('is-open') && progress(modal) === 'All 1 passage decided',
-    'Take brings each side into the middle, in the order taken',
-    { value: area()?.value, progress: progress(modal) }
+    middleLines(passages(modal)[0]).join('|') === '- Brot|- Milch|- Eier' && !passages(modal)[0]?.classList.contains('is-open') && progress(modal) === 'All 1 passage decided',
+    'Take brings each side into the middle, in the order taken, a line each',
+    { middle: middleLines(passages(modal)[0]), progress: progress(modal) }
   )
-  const textarea = area() as HTMLTextAreaElement
-  textarea.value = '- Brot\n- Milch\n- Hafermilch'
-  textarea.dispatchEvent(new window.Event('input'))
+  passages(modal)[0]?.querySelector<HTMLElement>('.mycel-merge-item .mycel-merge-text')?.click()
+  const textarea = passages(modal)[0]?.querySelector('textarea')
+  check(textarea?.value === '- Brot\n- Milch\n- Eier', 'clicked into, the middle becomes a field to write in, holding its lines', textarea?.value)
+  if (textarea) {
+    textarea.value = '- Brot\n- Milch\n- Hafermilch'
+    textarea.dispatchEvent(new window.Event('input'))
+    textarea.dispatchEvent(new window.FocusEvent('blur'))
+  }
+  check(
+    middleLines(passages(modal)[0]).join('|') === '- Brot|- Milch|- Hafermilch' && passages(modal)[0]?.querySelector('.mycel-merge-item.is-typed .mycel-merge-text')?.textContent === '- Hafermilch',
+    'left, it shows its lines again - the one written by hand marked as such',
+    middleLines(passages(modal)[0])
+  )
   button(modal.contentEl, 'Apply')?.click()
   await delay(20)
   check(applied.join() === '# Einkauf\n- Brot\n- Milch\n- Hafermilch\nend\n' && Modal.open.length === 0, 'what is written in the middle by hand is what Apply writes', applied)
 
-  // Single lines by their number, from either side.
+  // Lines dragged by their number, from either side, to where they belong (0.9.32).
   const picked: string[] = []
   const lined = opened(picked, [])
   const number = (side: 'mine' | 'theirs', text: string): HTMLButtonElement | undefined =>
-    Array.from(passages(lined)[0]?.querySelectorAll<HTMLButtonElement>(`.mycel-merge-line.is-${side} .mycel-merge-num`) ?? []).find((each) => each.textContent === text)
+    Array.from(lined.contentEl.querySelectorAll<HTMLButtonElement>(`.mycel-merge-line.is-${side} .mycel-merge-num`)).find((each) => each.textContent === text)
+  const hint = (modal: InstanceType<typeof ReviewModal>): string => modal.contentEl.querySelector('.mycel-merge-hint')?.textContent ?? ''
   number('theirs', '2')?.click()
-  number('mine', '3')?.click()
-  const linedArea = passages(lined)[0]?.querySelector('textarea')
   check(
-    linedArea?.value === '- Brot\n- Eier' && passages(lined)[0]?.querySelectorAll('.mycel-merge-line.is-picked').length === 2 && progress(lined) === 'All 1 passage decided',
-    "a line's number brings that line alone into the middle, marked as taken",
-    linedArea?.value
+    number('theirs', '2')?.closest('.mycel-merge-line')?.classList.contains('is-selected') === true &&
+      middleLines(passages(lined)[0]).length === 0 &&
+      hint(lined).includes('1 line of the other version selected'),
+    "a line's number clicked selects the line - nothing goes into the middle yet",
+    hint(lined)
   )
+  number('theirs', '2')?.click()
+  check(lined.contentEl.querySelectorAll('.is-selected').length === 0 && hint(lined) === '', 'clicked again, it is let go', hint(lined))
+  await dragTo(lined, number('theirs', '2'), passages(lined)[0]?.querySelector('.mycel-merge-slot'))
+  check(
+    middleLines(passages(lined)[0]).join() === '- Brot' && progress(lined) === 'All 1 passage decided' && lined.contentEl.querySelector('.mycel-merge-ghost, .mycel-merge-drop') === null && document.querySelector('.mycel-merge-ghost') === null,
+    'a number dragged into an empty middle brings its line there; nothing of the drag is left behind',
+    middleLines(passages(lined)[0])
+  )
+  await dragTo(lined, number('mine', '3'), passages(lined)[0]?.querySelector('.mycel-merge-item'), 'upper')
+  check(middleLines(passages(lined)[0]).join('|') === '- Eier|- Brot', "let go over a line's upper half, it goes before that line", middleLines(passages(lined)[0]))
+  await dragTo(lined, number('mine', '2'), passages(lined)[0]?.querySelectorAll('.mycel-merge-item')[1], 'lower')
+  check(
+    middleLines(passages(lined)[0]).join('|') === '- Eier|- Brot|- Milch' && passages(lined)[0]?.querySelectorAll('.mycel-merge-line.is-picked').length === 3,
+    'over its lower half, after it; every line in the middle is marked in its version',
+    middleLines(passages(lined)[0])
+  )
+  // Lines of the middle, by their handle: moved, and out again.
+  const grip = (modal: InstanceType<typeof ReviewModal>, text: string): HTMLButtonElement | null | undefined =>
+    Array.from(modal.contentEl.querySelectorAll('.mycel-merge-item'))
+      .find((item) => item.querySelector('.mycel-merge-text')?.textContent === text)
+      ?.querySelector<HTMLButtonElement>('.mycel-merge-grip')
+  await dragTo(lined, grip(lined, '- Eier'), passages(lined)[0]?.querySelectorAll('.mycel-merge-item')[2], 'lower')
+  check(middleLines(passages(lined)[0]).join('|') === '- Brot|- Milch|- Eier', 'a line of the middle dragged by its handle moves', middleLines(passages(lined)[0]))
+  await dragTo(lined, grip(lined, '- Milch'), number('mine', '2')?.closest('.mycel-merge-line'), 'upper', false)
+  check(
+    document.querySelector('.mycel-merge-ghost')?.textContent === 'Take out of the middle' && document.querySelector('.mycel-merge-ghost')?.classList.contains('is-removing') === true,
+    'held over a version, it says it is taken out',
+    document.querySelector('.mycel-merge-ghost')?.textContent
+  )
+  pointer('pointerup', document, 5)
+  await delay(5)
+  check(
+    middleLines(passages(lined)[0]).join('|') === '- Brot|- Eier' && number('mine', '2')?.closest('.mycel-merge-line')?.classList.contains('is-picked') === false,
+    'let go there, it is out of the middle and no longer marked in its version',
+    middleLines(passages(lined)[0])
+  )
+  grip(lined, '- Eier')?.click()
+  lined.contentEl.querySelector('.mycel-merge-list')?.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }))
+  check(middleLines(passages(lined)[0]).join('|') === '- Brot', 'a line of the middle selected, Delete takes it out', middleLines(passages(lined)[0]))
+  await dragTo(lined, number('mine', '3'), passages(lined)[0]?.querySelector('.mycel-merge-item'), 'lower')
 
   // Copying from one side gives that side's lines alone, without numbers or the other columns.
   const passageEl = passages(lined)[0] as HTMLElement
@@ -549,7 +628,8 @@ check(
   await delay(20)
   check(done.join() === 'r1' && Modal.open.length === 0, 'Done takes the note off the list as it is')
 
-  // A range of lines, across what both have (0.9.31): the user's two blocks, one under the other.
+  // The user's two blocks (2026-11-26), one under the other: this device's taken, the other's
+  // lines 11 to 17 selected and dragged below this device's closing "---" (0.9.32).
   const head = 'Gleicher Stand\n\nAuf beiden Seiten:\n\n---\ncontent content\ncontent content\n\n---\n\n'
   const block = (device: string): string => `${device}:\n\n---\ncontent content ${device}\ncontent content ${device}\n\n---\n`
   const blocks = {
@@ -558,7 +638,7 @@ check(
     mine: `${head}${block('PC')}\ngleicher text, selbe Zeile\ngleicher Text, andere Zeile\n`,
     theirs: `${head}${block('Laptop')}\ngleicher text, selbe Zeile\n\ngleicher Text, andere Zeile\n`
   }
-  const rangeWindow = (applied: string[]): InstanceType<typeof ReviewModal> => {
+  const blockWindow = (applied: string[]): InstanceType<typeof ReviewModal> => {
     const modal = new ReviewModal({} as never, blocks, async (text) => {
       applied.push(text)
       return 'applied'
@@ -569,62 +649,81 @@ check(
   /** The number of a line of a side, wherever it stands - in a passage or among the lines both have. */
   const numberOf = (modal: InstanceType<typeof ReviewModal>, side: 'mine' | 'theirs', line: number): HTMLButtonElement | undefined =>
     Array.from(modal.contentEl.querySelectorAll<HTMLButtonElement>(`.mycel-merge-line.is-${side} .mycel-merge-num`)).find((each) => each.textContent === String(line))
+  /** The middle's copy of a line both have, by this device's number for it. */
+  const sharedMiddle = (modal: InstanceType<typeof ReviewModal>, line: number): Element | null | undefined =>
+    numberOf(modal, 'mine', line)?.closest('.mycel-merge-line')?.nextElementSibling
   const press = (el: HTMLElement | undefined, shiftKey = false): void => {
     el?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, shiftKey }))
   }
-  const hint = (modal: InstanceType<typeof ReviewModal>): string => modal.contentEl.querySelector('.mycel-merge-hint')?.textContent ?? ''
-  const middleOf = (modal: InstanceType<typeof ReviewModal>, at: number): string | undefined =>
-    modal.contentEl.querySelectorAll<HTMLElement>('.mycel-merge-passage')[at]?.querySelector('textarea')?.value
-  /** As the middle shows a text: the break ending its last line is the field's end. */
-  const shown = (text: string): string => (text.endsWith('\n') ? text.slice(0, -1) : text)
 
-  const shifted: string[] = []
-  const shift = rangeWindow(shifted)
-  check(passages(shift).length === 3 && progress(shift) === '3 of 3 passages still open', 'the two blocks stand as three passages', progress(shift))
-  press(numberOf(shift, 'mine', 11))
+  const stacked: string[] = []
+  const board = blockWindow(stacked)
+  check(passages(board).length === 3 && progress(board) === '3 of 3 passages still open', 'the two blocks stand as three passages', progress(board))
+  passages(board)[0]?.querySelector<HTMLButtonElement>('.mycel-merge-take-cell.is-mine .mycel-merge-take')?.click()
+  passages(board)[1]?.querySelector<HTMLButtonElement>('.mycel-merge-take-cell.is-mine .mycel-merge-take')?.click()
+  press(numberOf(board, 'theirs', 11))
+  press(numberOf(board, 'theirs', 17), true)
   check(
-    hint(shift).includes('Shift-click') && shift.contentEl.querySelector('.mycel-merge-line.is-mine.is-anchor')?.getAttribute('data-line') === '10',
-    "a number clicked takes its line and marks where a range would begin, the hint saying how",
-    hint(shift)
+    board.contentEl.querySelectorAll('.mycel-merge-line.is-theirs.is-selected').length === 7 && hint(board).includes('7 lines of the other version selected'),
+    'a number clicked and another Shift-clicked select every line between, the lines both have too',
+    hint(board)
   )
-  press(numberOf(shift, 'mine', 17), true)
+  await dragTo(board, numberOf(board, 'theirs', 14), sharedMiddle(board, 17), 'lower', false)
+  const marker = board.contentEl.querySelector<HTMLElement>('.mycel-merge-drop')
   check(
-    passages(shift).length === 2 && middleOf(shift, 0) === shown(block('PC')) && passages(shift)[0]?.querySelectorAll('.mycel-merge-line.is-both').length === 8,
-    "a number Shift-clicked among the lines both have brings everything from the first one to it, one passage now - this device's whole block",
-    { passages: passages(shift).length, middle: middleOf(shift, 0) }
+    document.querySelector('.mycel-merge-ghost')?.textContent === '7 lines' &&
+      marker?.style.display === 'block' &&
+      board.contentEl.querySelectorAll('.mycel-merge-line.is-theirs.is-dragging').length === 7,
+    'dragging one of them carries all seven, a line drawn where they would go',
+    { ghost: document.querySelector('.mycel-merge-ghost')?.textContent, marker: marker?.style.display }
   )
-  press(numberOf(shift, 'theirs', 11))
-  press(numberOf(shift, 'theirs', 17), true)
-  check(middleOf(shift, 0) === shown(block('PC') + block('Laptop')), "and the other's whole block under it", middleOf(shift, 0))
-  passages(shift)[1]?.querySelector<HTMLButtonElement>('.mycel-merge-take-cell.is-mine .mycel-merge-take')?.click()
-  button(shift.contentEl, 'Apply')?.click()
+  pointer('pointerup', document, 0)
+  await delay(5)
+  const inserted = board.contentEl.querySelector('.mycel-merge-passage.is-inserted')
+  check(
+    passages(board).length === 4 &&
+      middleLines(inserted ?? undefined).join('|') === block('Laptop').slice(0, -1).split('\n').join('|') &&
+      inserted?.previousElementSibling?.classList.contains('mycel-merge-same') === true &&
+      progress(board) === '1 of 3 passages still open' &&
+      board.contentEl.querySelectorAll('.is-selected').length === 0,
+    "let go after the closing \"---\", a place of their own opens there, with the other's whole block - no passage to decide",
+    { middle: middleLines(inserted ?? undefined), progress: progress(board) }
+  )
+  passages(board)[3]?.querySelector<HTMLButtonElement>('.mycel-merge-take-cell.is-mine .mycel-merge-take')?.click()
+  button(board.contentEl, 'Apply')?.click()
   await delay(20)
   check(
-    shifted.join() === `${head}${block('PC')}${block('Laptop')}\ngleicher text, selbe Zeile\ngleicher Text, andere Zeile\n`,
+    stacked.join() === `${head}${block('PC')}${block('Laptop')}\ngleicher text, selbe Zeile\ngleicher Text, andere Zeile\n`,
     'Apply writes both blocks whole, one under the other',
-    shifted
+    stacked
   )
 
-  // On a phone: "Range of lines", and two numbers tapped.
-  const tapped: string[] = []
-  const tap = rangeWindow(tapped)
-  const rangeToggle = button(tap.contentEl, 'Range of lines')
-  rangeToggle?.click()
-  press(numberOf(tap, 'mine', 11))
+  // A place opened goes again: emptied by the eraser, by dragging its lines out, by "Empty again".
+  const undone = blockWindow([])
+  await dragTo(undone, numberOf(undone, 'theirs', 11), sharedMiddle(undone, 17), 'lower')
+  check(passages(undone).length === 4, 'a line dragged between lines both have opens a place', passages(undone).length)
+  undone.contentEl.querySelector<HTMLButtonElement>('.mycel-merge-passage.is-inserted .mycel-merge-clear')?.click()
+  check(passages(undone).length === 3 && progress(undone) === '3 of 3 passages still open', 'the eraser empties it, and it goes', progress(undone))
+  // The lines both have at the top fold away but for the last few; shown, the first one is there.
+  undone.contentEl.querySelector<HTMLButtonElement>('.mycel-merge-fold')?.click()
+  await dragTo(undone, numberOf(undone, 'theirs', 11), sharedMiddle(undone, 1), 'upper')
+  const top = undone.contentEl.querySelector('.mycel-merge-passage.is-inserted')
   check(
-    rangeToggle?.getAttribute('aria-pressed') === 'true' && middleOf(tap, 0) === '' && hint(tap).includes('now the number of its last line'),
-    'with "Range of lines" on, the first number only begins the range',
-    { middle: middleOf(tap, 0), hint: hint(tap) }
+    top !== null && top.previousElementSibling?.classList.contains('mycel-merge-head') === true,
+    'one let go over the upper half of the first line opens a place at the very top',
+    top?.previousElementSibling?.className
   )
-  press(numberOf(tap, 'mine', 17))
-  check(passages(tap).length === 2 && middleOf(tap, 0) === shown(block('PC')), 'and the second one ends it', middleOf(tap, 0))
-  passages(tap)[0]?.querySelector<HTMLButtonElement>('.mycel-merge-clear')?.click()
-  check(passages(tap).length === 3 && progress(tap) === '3 of 3 passages still open', 'emptied, the joined passage splits into the passages it was made of', progress(tap))
-  press(numberOf(tap, 'theirs', 14))
-  press(numberOf(tap, 'theirs', 12))
-  button(tap.contentEl, 'Empty again')?.click()
-  check(passages(tap).length === 3 && progress(tap) === '3 of 3 passages still open' && hint(tap).includes("range's first line"), '"Empty again" splits and empties every passage', progress(tap))
-  tap.close()
+  await dragTo(undone, grip(undone, 'Laptop:'), passages(undone)[1]?.querySelector('.mycel-merge-slot'))
+  check(
+    passages(undone).length === 3 && middleLines(passages(undone)[0]).join() === 'Laptop:' && undone.contentEl.querySelector('.is-inserted') === null,
+    'its last line dragged into a passage, the place goes',
+    middleLines(passages(undone)[0])
+  )
+  await dragTo(undone, numberOf(undone, 'mine', 14), sharedMiddle(undone, 9), 'lower')
+  check(passages(undone).length === 4, 'one let go between two lines both have opens a place there', passages(undone).length)
+  button(undone.contentEl, 'Empty again')?.click()
+  check(passages(undone).length === 3 && progress(undone) === '3 of 3 passages still open', '"Empty again" empties every passage and closes every place opened', progress(undone))
+  undone.close()
 }
 
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED: ${failures.join(', ')}`)

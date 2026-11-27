@@ -1,6 +1,6 @@
 import type { DataAdapter } from 'obsidian'
-import { lineDiff } from '@mycel/shared'
-import { alignVersions, type Aligned, type Passage, type Row, type Run, type SameRun, type Span } from './align.js'
+import { lineDiff, listDiff, splitLines } from '@mycel/shared'
+import { alignVersions, lineText, type Aligned, type Passage, type Run, type Span } from './align.js'
 import { log } from '../log.js'
 
 // A note that differed on two devices with nothing to tell which side changed
@@ -69,26 +69,29 @@ export function joinParts(parts: string[]): string {
   return text
 }
 
-/** What a passage's place in the result took: a side's lines there, or some lines of a side in one piece. */
-export interface Picked {
-  side: Side
-  /**
-   * Lines [from, to) of that version: one taken by its number, or a range of them (0.9.31). Null
-   * for every line the side has in the passage.
-   */
-  lines: { from: number; to: number } | null
+/**
+ * A line of the middle: one of a version's, by its number there, or one written by hand. Each has
+ * an id of its own, so the window can select and move it while others come and go around it.
+ */
+export type Item = { id: number; side: Side; line: number } | { id: number; typed: string }
+
+/** A differing passage's place in the result: its lines, in order. */
+export interface Slot {
+  items: Item[]
+  /** Written into by hand: decided, even when it was emptied that way. */
+  edited: boolean
+  /** Sides taken that have nothing in the passage: decided, empty. */
+  emptyTaken: Side[]
 }
 
-/** A differing passage's place in the result: what was taken into it, in order, or written there by hand. */
-export interface Slot {
-  picks: Picked[]
-  text: string
-  /** Written into by hand: taking more adds to that text instead of building it anew. */
-  edited: boolean
-}
+/**
+ * Where lines go in the middle (0.9.32): into a passage's place, before its `at`-th line - or
+ * between the lines of a run both have, before its `at`-th line (`at` its length: after its last).
+ */
+export type Place = { passage: number; at: number } | { run: number; at: number }
 
 function emptySlot(): Slot {
-  return { picks: [], text: '', edited: false }
+  return { items: [], edited: false, emptyTaken: [] }
 }
 
 function start(span: Span, side: Side): number {
@@ -103,13 +106,7 @@ function passagesOf(runs: Run[]): Passage[] {
   return runs.filter((run): run is Passage => !run.same)
 }
 
-/** A place between two lines of one side, inside a run both have: the same place on the other side. */
-function across(run: SameRun, side: Side, line: number): { mine: number; theirs: number } {
-  const offset = line - start(run, side)
-  return { mine: run.mineFrom + offset, theirs: run.theirsFrom + offset }
-}
-
-/** Runs both have that meet again - a joined passage split - are one. */
+/** Runs both have that meet again - a place between them gone - are one. */
 function mergeSame(runs: Run[]): Run[] {
   const merged: Run[] = []
   for (const run of runs) {
@@ -126,26 +123,30 @@ function mergeSame(runs: Run[]): Run[] {
 /**
  * The note being put together in "Compare versions", as git's merge tools do (the user,
  * 2026-11-18): what both versions have stands as it is, and each passage that differs
- * starts empty - this device's lines, the other's, both in the order taken, single lines of
- * either, or text of one's own go into it, one passage at a time. The passages are as fine
- * as the two versions allow (`alignVersions`, 2026-11-21): a stretch only one side has is
- * one of its own. A range of lines taken across them joins them (`takeRange`, 0.9.31).
+ * starts empty - this device's lines, the other's, both in the order taken, or text of one's
+ * own go into it. The passages are as fine as the two versions allow (`alignVersions`,
+ * 2026-11-21): a stretch only one side has is one of its own. Since 0.9.32 the middle is a list
+ * of lines, as on a board of cards (the user, 2026-11-27): lines of either version go into it
+ * anywhere - between lines both have too, where a place of their own opens (`inserted`) - and
+ * move about in it. A range of lines taken by Shift-click joined passages before (0.9.31), and
+ * was hard to follow: the window changed under the click.
  */
 export class MergeDraft {
   /** The two versions as laid out first. */
   readonly aligned: Aligned
-  /** How they stand now: `aligned`'s runs, with passages joined where a range was taken across them. */
+  /** How they stand now: `aligned`'s runs, with places opened between lines both have. */
   runs: Run[] = []
-  /** The passages that differ, in order; one slot each. */
+  /** The passages, in order - those that differ and the places opened; one slot each. */
   passages: Passage[] = []
   slots: Slot[] = []
+  private nextId = 1
 
   constructor(mine: string, theirs: string) {
     this.aligned = alignVersions(mine, theirs)
     this.reset()
   }
 
-  /** Every passage empty, and as first laid out: joined ones split again. */
+  /** Every passage empty, and the places opened between lines both have gone. */
   reset(): void {
     this.runs = [...this.aligned.runs]
     this.passages = passagesOf(this.runs)
@@ -160,177 +161,213 @@ export class MergeDraft {
     return side === 'mine' ? this.aligned.mine : this.aligned.theirs
   }
 
+  /** The numbers of the lines a side has in the passage. */
+  sideLines(index: number, side: Side): number[] {
+    const passage = this.passage(index)
+    const lines: number[] = []
+    for (let line = start(passage, side); line < end(passage, side); line += 1) lines.push(line)
+    return lines
+  }
+
   /** Every line a side has in the passage, as it stands there. */
   sideText(index: number, side: Side): string {
     const passage = this.passage(index)
     return this.lines(side).slice(start(passage, side), end(passage, side)).join('')
   }
 
-  private holds(index: number, side: Side, line: number): boolean {
-    const passage = this.passage(index)
-    return line >= start(passage, side) && line < end(passage, side)
+  /** A line of the middle as the note will have it, with its break where it has one. */
+  itemText(item: Item): string {
+    return 'typed' in item ? `${item.typed}\n` : (this.lines(item.side)[item.line] ?? '')
   }
 
-  private pickText(index: number, pick: Picked): string {
-    return pick.lines === null ? this.sideText(index, pick.side) : this.lines(pick.side).slice(pick.lines.from, pick.lines.to).join('')
+  /** What a passage's place says. */
+  text(index: number): string {
+    return joinParts((this.slots[index]?.items ?? []).map((item) => this.itemText(item)))
   }
 
-  private rebuild(index: number): void {
-    const slot = this.slots[index]
-    if (slot && !slot.edited) slot.text = joinParts(slot.picks.map((pick) => this.pickText(index, pick)))
+  private item(side: Side, line: number): Item {
+    return { id: this.nextId++, side, line }
   }
 
-  /** Takes picks out; from text written by hand only where each still stands as taken. */
-  private drop(index: number, gone: Picked[]): void {
-    const slot = this.slots[index]
-    if (!slot || gone.length === 0) return
-    slot.picks = slot.picks.filter((pick) => !gone.includes(pick))
-    if (!slot.edited) return this.rebuild(index)
-    for (const pick of gone) {
-      const text = this.pickText(index, pick)
-      const at = text.length > 0 ? slot.text.indexOf(text) : -1
-      if (at >= 0) slot.text = slot.text.slice(0, at) + slot.text.slice(at + text.length)
+  /** The lines of a version that are in the middle, wherever they were put. */
+  placed(side: Side): Set<number> {
+    const lines = new Set<number>()
+    for (const slot of this.slots) {
+      for (const item of slot.items) if (!('typed' in item) && item.side === side) lines.add(item.line)
     }
+    return lines
   }
 
-  private add(index: number, pick: Picked): void {
+  /** Takes a side's own lines of the passage out of its place, wherever in it they stand. */
+  private dropSide(index: number, side: Side): void {
     const slot = this.slots[index]
     if (!slot) return
-    slot.picks.push(pick)
-    if (slot.edited) slot.text = joinParts([slot.text, this.pickText(index, pick)])
-    else this.rebuild(index)
+    const own = new Set(this.sideLines(index, side))
+    slot.items = slot.items.filter((item) => 'typed' in item || item.side !== side || !own.has(item.line))
   }
 
-  /** Whether every line of a side is in the passage's place. */
+  /** Whether every line of a side is in the passage's place - for a side with none there, whether it was taken as nothing. */
   taken(index: number, side: Side): boolean {
-    return this.slots[index]?.picks.some((pick) => pick.side === side && pick.lines === null) ?? false
+    const slot = this.slots[index]
+    if (!slot) return false
+    const lines = this.sideLines(index, side)
+    if (lines.length === 0) return slot.emptyTaken.includes(side)
+    const held = new Set(slot.items.flatMap((item) => ('typed' in item || item.side !== side ? [] : [item.line])))
+    return lines.every((line) => held.has(line))
   }
 
-  /** The pick that holds a line of a side, alone or in a range. */
-  private pickOf(index: number, side: Side, line: number): Picked | undefined {
-    return this.slots[index]?.picks.find((pick) => pick.side === side && pick.lines !== null && line >= pick.lines.from && line < pick.lines.to)
-  }
-
-  /** Whether a line of a side is in the passage's place, alone, in a range or with its side. */
-  picked(index: number, side: Side, line: number): boolean {
-    return this.taken(index, side) || this.pickOf(index, side, line) !== undefined
-  }
-
-  /** Every line of a side, after what is there; lines of that side taken before go into it. */
+  /** Every line of a side, after what is there; lines of it put there before go into it, in its order. */
   take(index: number, side: Side): void {
     const slot = this.slots[index]
     if (!slot || this.taken(index, side)) return
-    this.drop(index, slot.picks.filter((pick) => pick.side === side))
-    this.add(index, { side, lines: null })
+    const lines = this.sideLines(index, side)
+    if (lines.length === 0) {
+      slot.emptyTaken.push(side)
+      return
+    }
+    this.dropSide(index, side)
+    slot.items.push(...lines.map((line) => this.item(side, line)))
   }
 
-  /** Takes a side out again, its single lines and ranges too. */
+  /** Takes a side out again: its lines of the passage, wherever in the place they stand. */
   remove(index: number, side: Side): void {
     const slot = this.slots[index]
-    if (slot) this.drop(index, slot.picks.filter((pick) => pick.side === side))
-  }
-
-  /** One line of a side, after what is there - or out again, with the range it came in. Nothing while the whole side is taken. */
-  toggleLine(index: number, side: Side, line: number): void {
-    const slot = this.slots[index]
-    if (!slot || this.taken(index, side) || !this.holds(index, side, line)) return
-    const there = this.pickOf(index, side, line)
-    if (there) this.drop(index, [there])
-    else this.add(index, { side, lines: { from: line, to: line + 1 } })
+    if (!slot) return
+    slot.emptyTaken = slot.emptyTaken.filter((each) => each !== side)
+    this.dropSide(index, side)
   }
 
   /**
-   * The lines from `first` to `last` of a side, either way round, after what is there, as one
-   * piece (0.9.31). A range reaching past its passage, over lines both have, makes one passage of
-   * everything it touches: two blocks written in the same place on two devices were cut apart by
-   * the lines both have between them (`---`, an empty line), and could not be put one under the
-   * other. What those passages held stays in the joined one; the lines both had between them are
-   * the range's from then on. Returns the passage it went into.
+   * The place's text, written by hand. Lines that stay as they were keep where they came from,
+   * so giving a side back still takes them out, and the version still marks them as in the middle.
    */
-  takeRange(side: Side, first: number, last: number): number | null {
-    const from = Math.max(0, Math.min(first, last))
-    const to = Math.min(this.lines(side).length, Math.max(first, last) + 1)
-    if (from >= to) return null
-    const a = this.runAt(side, from)
-    const b = this.runAt(side, to - 1)
-    if (a < 0 || b < 0) return null
-    const only = this.runs[a]
-    const index = a === b && only && !only.same ? this.passages.indexOf(only) : this.join(side, from, to, a, b)
+  edit(index: number, text: string): void {
     const slot = this.slots[index]
-    if (!slot || this.taken(index, side)) return index
-    // Lines of it taken before - its first one, by its number - are in it now.
-    this.drop(index, slot.picks.filter((pick) => pick.side === side && pick.lines !== null && pick.lines.from >= from && pick.lines.to <= to))
-    this.add(index, { side, lines: { from, to } })
-    return index
+    if (!slot) return
+    const lines = splitLines(text).map(lineText)
+    const before = slot.items.map((item) => lineText(this.itemText(item)))
+    const items: Item[] = []
+    for (const hunk of listDiff(before, lines)) {
+      if (hunk.type === 'equal') items.push(...slot.items.slice(hunk.aStart, hunk.aEnd))
+      else for (const line of lines.slice(hunk.bStart, hunk.bEnd)) items.push({ id: this.nextId++, typed: line })
+    }
+    slot.items = items
+    slot.edited = true
   }
 
-  private runAt(side: Side, line: number): number {
-    return this.runs.findIndex((run) => line >= start(run, side) && line < end(run, side))
+  clear(index: number): void {
+    const slot = this.slots[index]
+    if (!slot) return
+    slot.items = []
+    slot.edited = false
+    slot.emptyTaken = []
+    this.tidy()
   }
 
-  /** Runs `a` to `b` as one passage; a run both have at either end is cut where the range begins or ends. */
-  private join(side: Side, from: number, to: number, a: number, b: number): number {
-    const first = this.runs[a] as Run
-    const last = this.runs[b] as Run
-    const begin = first.same ? across(first, side, from) : { mine: first.mineFrom, theirs: first.theirsFrom }
-    const finish = last.same ? across(last, side, to) : { mine: last.mineTo, theirs: last.theirsTo }
-    const rows: Row[] = []
-    const picks: Picked[] = []
-    const texts: string[] = []
-    let edited = false
-    for (const run of this.runs.slice(a, b + 1)) {
-      if (run.same) {
-        const mineFrom = Math.max(run.mineFrom, begin.mine)
-        const mineTo = Math.min(run.mineTo, finish.mine)
-        for (let line = mineFrom; line < mineTo; line += 1) rows.push({ mine: line, theirs: run.theirsFrom + (line - run.mineFrom), paired: false, same: true })
-        continue
-      }
-      rows.push(...run.rows)
+  /** Lines of a version into the middle at a place, in their order there (0.9.32). The version keeps them. */
+  put(side: Side, lines: number[], place: Place): void {
+    const count = this.lines(side).length
+    const chosen = [...new Set(lines)].filter((line) => line >= 0 && line < count).sort((a, b) => a - b)
+    if (chosen.length === 0) return
+    const target = this.resolve(place)
+    if (!target) return
+    this.insert(target, chosen.map((line) => this.item(side, line)))
+    this.tidy()
+  }
+
+  /** Lines of the middle to another place in it, in the order they stood. */
+  move(ids: number[], place: Place): void {
+    const moving = new Set(ids)
+    const items = this.slots.flatMap((slot) => slot.items.filter((item) => moving.has(item.id)))
+    if (items.length === 0) return
+    const target = this.resolve(place)
+    if (!target) return
+    // Put before a line that moves itself, they go before the next one that stays.
+    let before = target.before
+    if (before && moving.has(before.id)) {
+      const from = target.slot.items.indexOf(before)
+      before = target.slot.items.slice(from).find((item) => !moving.has(item.id)) ?? null
+    }
+    for (const slot of this.slots) slot.items = slot.items.filter((item) => !moving.has(item.id))
+    this.insert({ slot: target.slot, before }, items)
+    this.tidy()
+  }
+
+  /** Lines out of the middle again. */
+  drop(ids: number[]): void {
+    const gone = new Set(ids)
+    for (const slot of this.slots) slot.items = slot.items.filter((item) => !gone.has(item.id))
+    this.tidy()
+  }
+
+  /** Where a line of the middle stands: its passage and its place in it. */
+  find(id: number): { index: number; at: number } | null {
+    for (let index = 0; index < this.slots.length; index += 1) {
+      const at = this.slots[index]?.items.findIndex((item) => item.id === id) ?? -1
+      if (at >= 0) return { index, at }
+    }
+    return null
+  }
+
+  /** Every line of the middle, in the order the note will have them. */
+  items(): Item[] {
+    return this.slots.flatMap((slot) => slot.items)
+  }
+
+  private insert(target: { slot: Slot; before: Item | null }, items: Item[]): void {
+    const at = target.before ? target.slot.items.indexOf(target.before) : -1
+    if (at < 0) target.slot.items.push(...items)
+    else target.slot.items.splice(at, 0, ...items)
+  }
+
+  /**
+   * The slot a place names, and the line there to go before (none: at its end). Between lines
+   * both have, a place opened there before takes them - at its end, coming from below it, at its
+   * start from above -, or a new one opens.
+   */
+  private resolve(place: Place): { slot: Slot; before: Item | null } | null {
+    if ('passage' in place) {
+      const slot = this.slots[place.passage]
+      return slot ? { slot, before: slot.items[place.at] ?? null } : null
+    }
+    const run = this.runs[place.run]
+    if (!run) return null
+    if (!run.same) {
       const slot = this.slots[this.passages.indexOf(run)]
-      if (!slot) continue
-      for (const pick of slot.picks) {
-        // A passage's whole side is only a range of the joined one.
-        const lines = pick.lines ?? { from: start(run, pick.side), to: end(run, pick.side) }
-        if (lines.to > lines.from) picks.push({ side: pick.side, lines })
-      }
-      edited ||= slot.edited
-      texts.push(slot.text)
+      return slot ? { slot, before: slot.items[place.at] ?? null } : null
     }
-    const joined: Passage = { same: false, joined: true, mineFrom: begin.mine, mineTo: finish.mine, theirsFrom: begin.theirs, theirsTo: finish.theirs, rows }
+    const length = run.mineTo - run.mineFrom
+    const at = Math.max(0, Math.min(length, place.at))
+    const above = this.runs[place.run - 1]
+    if (at === 0 && above && !above.same && above.inserted) {
+      const slot = this.slots[this.passages.indexOf(above)]
+      if (slot) return { slot, before: null }
+    }
+    const below = this.runs[place.run + 1]
+    if (at === length && below && !below.same && below.inserted) {
+      const slot = this.slots[this.passages.indexOf(below)]
+      if (slot) return { slot, before: slot.items[0] ?? null }
+    }
+    const mine = run.mineFrom + at
+    const theirs = run.theirsFrom + at
+    const opened: Passage = { same: false, inserted: true, mineFrom: mine, mineTo: mine, theirsFrom: theirs, theirsTo: theirs, rows: [] }
     const pieces: Run[] = []
-    if (first.same && begin.mine > first.mineFrom) {
-      pieces.push({ same: true, mineFrom: first.mineFrom, mineTo: begin.mine, theirsFrom: first.theirsFrom, theirsTo: begin.theirs })
-    }
-    pieces.push(joined)
-    if (last.same && finish.mine < last.mineTo) {
-      pieces.push({ same: true, mineFrom: finish.mine, mineTo: last.mineTo, theirsFrom: finish.theirs, theirsTo: last.theirsTo })
-    }
+    if (at > 0) pieces.push({ same: true, mineFrom: run.mineFrom, mineTo: mine, theirsFrom: run.theirsFrom, theirsTo: theirs })
+    pieces.push(opened)
+    if (at < length) pieces.push({ same: true, mineFrom: mine, mineTo: run.mineTo, theirsFrom: theirs, theirsTo: run.theirsTo })
+    const slot = emptySlot()
     const slots = this.slotsByPassage()
-    slots.set(joined, { picks, text: joinParts(texts), edited })
-    this.restructure([...this.runs.slice(0, a), ...pieces, ...this.runs.slice(b + 1)], slots)
-    const index = this.passages.indexOf(joined)
-    this.rebuild(index)
-    return index
+    slots.set(opened, slot)
+    this.restructure([...this.runs.slice(0, place.run), ...pieces, ...this.runs.slice(place.run + 1)], slots)
+    return { slot, before: null }
   }
 
-  /** A passage a range made, split again into the passages it was made of - each empty, as first laid out. */
-  split(index: number): void {
-    const passage = this.passages[index]
-    if (!passage?.joined) return
-    const pieces: Run[] = []
-    for (const run of this.aligned.runs) {
-      if (run.same) {
-        const mineFrom = Math.max(run.mineFrom, passage.mineFrom)
-        const mineTo = Math.min(run.mineTo, passage.mineTo)
-        if (mineTo > mineFrom) {
-          pieces.push({ same: true, mineFrom, mineTo, theirsFrom: run.theirsFrom + (mineFrom - run.mineFrom), theirsTo: run.theirsFrom + (mineTo - run.mineFrom) })
-        }
-      } else if (run.mineFrom >= passage.mineFrom && run.mineTo <= passage.mineTo && run.theirsFrom >= passage.theirsFrom && run.theirsTo <= passage.theirsTo) {
-        pieces.push(run)
-      }
-    }
-    const at = this.runs.indexOf(passage)
-    this.restructure([...this.runs.slice(0, at), ...pieces, ...this.runs.slice(at + 1)], this.slotsByPassage())
+  /** A place opened between lines both have goes again once nothing is in it; says whether one went. */
+  tidy(): boolean {
+    const runs = this.runs.filter((run) => run.same || !run.inserted || (this.slots[this.passages.indexOf(run)]?.items.length ?? 0) > 0)
+    if (runs.length === this.runs.length) return false
+    this.restructure(runs, this.slotsByPassage())
+    return true
   }
 
   private slotsByPassage(): Map<Passage, Slot> {
@@ -344,33 +381,21 @@ export class MergeDraft {
     this.slots = this.passages.map((passage) => slots.get(passage) ?? emptySlot())
   }
 
-  edit(index: number, text: string): void {
-    const slot = this.slots[index]
-    if (!slot) return
-    slot.text = text
-    slot.edited = true
-  }
-
-  clear(index: number): void {
-    const slot = this.slots[index]
-    if (!slot) return
-    slot.picks = []
-    slot.text = ''
-    slot.edited = false
-  }
-
-  /** Every passage from one side alone. */
+  /** Every passage from one side alone - the places opened between lines both have gone. */
   takeAll(side: Side): void {
-    this.slots.forEach((_slot, index) => {
-      this.clear(index)
-      this.take(index, side)
-    })
+    this.reset()
+    this.slots.forEach((_slot, index) => this.take(index, side))
   }
 
-  /** Something was taken into it or written there - nothing taken from an empty side counts too. */
+  /** Something is in it or was written there - nothing taken from an empty side counts too. */
   decided(index: number): boolean {
     const slot = this.slots[index]
-    return slot !== undefined && (slot.picks.length > 0 || slot.edited)
+    return slot !== undefined && (slot.items.length > 0 || slot.edited || slot.emptyTaken.length > 0)
+  }
+
+  /** The passages that differ - not the places opened between lines both have. */
+  get total(): number {
+    return this.passages.filter((passage) => !passage.inserted).length
   }
 
   /** Passages nothing was decided for yet. */
@@ -384,7 +409,7 @@ export class MergeDraft {
    */
   result(): string {
     let next = 0
-    return joinParts(this.runs.map((run) => (run.same ? this.aligned.mine.slice(run.mineFrom, run.mineTo).join('') : (this.slots[next++]?.text ?? ''))))
+    return joinParts(this.runs.map((run) => (run.same ? this.aligned.mine.slice(run.mineFrom, run.mineTo).join('') : this.text(next++))))
   }
 }
 

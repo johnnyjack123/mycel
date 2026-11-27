@@ -11,8 +11,6 @@ export interface Row {
   theirs: number | null
   /** The two lines resemble each other - one is the other, changed - so what changed is marked. */
   paired: boolean
-  /** A line both versions have, inside a passage a range of lines made (`MergeDraft.takeRange`). */
-  same?: true
 }
 
 /** Lines of each version, [from, to); for a passage only one side has, the other's range is empty, at its place. */
@@ -32,8 +30,11 @@ export interface SameRun extends Span {
 export interface Passage extends Span {
   same: false
   rows: Row[]
-  /** Made of several, and the lines both have between them, by a range of lines taken across them (0.9.31). */
-  joined?: true
+  /**
+   * A place opened between lines both have, for lines put there (`MergeDraft.put`, 0.9.32): neither
+   * version has a line in it, and it goes again once nothing is in it.
+   */
+  inserted?: true
 }
 
 export type Run = SameRun | Passage
