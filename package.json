@@ -1,6 +1,6 @@
 {
   "name": "mycel",
-  "version": "0.9.30",
+  "version": "0.9.31",
   "private": true,
   "type": "module",
   "description": "End-to-end encrypted CRDT (Yjs) synchronization and live collaboration for Obsidian vaults.",

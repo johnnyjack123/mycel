@@ -1,16 +1,16 @@
 # Progress
 
-_Last updated: 2026-11-26 · **Phase: the device run before 1.0.0.** 0.9 - hardening and the
+_Last updated: 2026-11-27 · **Phase: the device run before 1.0.0.** 0.9 - hardening and the
 security audit - is built. The user started afresh on 2026-11-13 and is trying everything on
-real devices. Each thing they find or ask for becomes the next patch: 0.9.19 to 0.9.30 so far.
-Current version: **0.9.30** (branch `feat/disconnect-vault`; 0.9.29 is `latest-build`).
+real devices. Each thing they find or ask for becomes the next patch: 0.9.19 to 0.9.31 so far.
+Current version: **0.9.31** (branch `feat/merge-ranges`; 0.9.30 is `latest-build`).
 1.0.0 follows once everything is verified on devices, then publishing, if the user wants it._
 
 ## Where we are
 
 Monorepo (`npm` workspaces): `packages/shared`, `packages/server`, `packages/plugin`,
 `packages/backup`. **Read `CLAUDE.md` first.** It has:
-- 35 invariants, each from a real bug or a risk the user named;
+- 36 invariants, each from a real bug or a risk the user named;
 - the architecture;
 - the roadmap to 1.0.0;
 - the conventions: a branch per milestone, push after every commit, a version for every change
@@ -59,13 +59,14 @@ the user runs the new setup and reports back. Each finding or wish was a version
 | 0.9.28 | 11-25 | Found by the user, the cause found with them over ssh: Google Drive made every folder of the PC's vault read-only, Windows refused to remove them, and the start, opening and leaving the Time Machine waited a minute each; the Time Machine took its own lock for another device's. |
 | 0.9.29 | 11-26 | The user's findings and decisions: notes to compare on every device, no conflict markers, the Time Machine's marks, resetting a device's sync, one Obsidian vault per vault of the server, a device's name, the status bar's count, the vault's rows under All devices. |
 | 0.9.30 | 11-26 | Found by the user: the reset waited and failed half done (the local history held its database open). Their decision: *Disconnect this vault* - signed out, nothing of the sync left on the device - instead of the reset. |
+| 0.9.31 | 11-27 | Found by the user: a note one side only added to was not always listed to compare (one open in an editor while its device joined). Their decision: a range of lines in "Compare versions", across what both have. |
 
 **Next:**
-1. The user installs 0.9.30 on both devices (the backup server's image may follow later: it
-   only leaves reviews and marks out of its copy's settings) and tries what it brings ("Still
-   to try on devices", 0.9.30 and 0.9.29): *Disconnect this vault* first - on the device the
-   0.9.29 reset left half done too -, then signing in for a first connection again. The
-   read-only attribute was taken off the PC's test vault on 2026-11-26 and did not come back.
+1. The user installs 0.9.31 on both devices (no server update; the backup server's image of
+   0.9.29 may follow later: it only leaves reviews and marks out of its copy's settings) and tries
+   what it brings ("Still to try on devices", 0.9.31): the PC is back on the evening of
+   2026-11-27. *Disconnect this vault* worked on a device (2026-11-26). The read-only attribute
+   was taken off the PC's test vault on 2026-11-26 and did not come back.
 2. Then on through "Still to try on devices" below.
 3. Findings come first, then 1.0.0. What 1.0.0 still needs besides is the user's call:
    publishing, item 12.
@@ -92,10 +93,20 @@ the user runs the new setup and reports back. Each finding or wish was a version
 - "Compare versions" of 0.9.26: the user called it much better, and a note merged with it went
   well (2026-11-24).
 - 0.9.24's deletion through the CLI was tried; the question it raised became 0.9.25.
+- *Disconnect this vault* of 0.9.30 "seems to work well" (2026-11-27), and a note merged on
+  meeting again was put together in "Compare versions" - which found what became 0.9.31.
 
 ### Still to try on devices
 
 What only a device can show (CLAUDE.md, Testing) and nobody has tried yet, newest first:
+- **0.9.31:**
+  - a note only one side added to, open in an editor on the device that joins and shorter there:
+    marked in the explorer and listed in "Compare versions" afterwards (on the PC: if not, its log
+    says `editor held text the note did not; adopt-remote … base none` for the note);
+  - a range of lines in "Compare versions": a number clicked, then another Shift-clicked - the
+    user's two blocks put one under the other whole -; *Range of lines* on a phone; the first
+    number marked and the line under the buttons; the lines both have in a joined passage shown
+    fainter; the eraser splitting it again; whether it is intuitive (the user was unsure).
 - **0.9.30:**
   - *Disconnect this vault* on a device: the window (what goes, the box for the safety copies
     with their size, the warning when something is unsent or the device offline), signed out
@@ -424,6 +435,17 @@ How to run the end-to-end suites without touching the user's server is in CLAUDE
 ---
 
 ## Log
+
+### 2026-11-27
+- 0.9.30 seemed to work well on a device. The user's findings after it, built as 0.9.31: a note
+  one side only added to should be marked and listed like any merged without a base - the code
+  meant it to be, but a note open in an editor while its device joined, shorter there, was not
+  (the editor's binding lacked the review; the user's own case could not be checked, the PC being
+  off). And "Compare versions" could not put two blocks written in the same place one under the
+  other: the lines both have (`---`, empty lines) cut them into passages. Proposed and agreed: a
+  range of lines, from one number to another Shift-clicked, or with *Range of lines* on a phone,
+  joining what it touches into one passage. Rejected: git's rule of joining passages separated by
+  lines without letters or digits - each block's closing `---` would still stand once, after both.
 
 ### 2026-11-26
 - 0.9.28 confirmed on the PC: fast again, and the stuck read-only folder of the Time Machine
