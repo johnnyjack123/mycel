@@ -48,12 +48,14 @@ try {
   check(await phone.boot(), 'signed in again, the phone joins')
   const plan = phone.joinPlans.at(-1)
   console.log('      plan:', JSON.stringify({ kind: plan?.kind, notes: plan?.notes, files: plan?.files }))
+  // Fixed (0.9.33): a file above this device's download limit is left on the server, not "only the server's".
   check(
-    plan?.kind === 'same' && plan.files.onlyThere.includes('Scans/contract.pdf'),
-    'the comparison calls it the same state, the server having more: the large PDF counts as "only the server has" - the case where the window offers to overwrite'
+    plan !== undefined && !plan.files.onlyThere.includes('Scans/contract.pdf') && plan.heldBack.includes('Scans/contract.pdf'),
+    'EXPECTED SAFE: the comparison names the large PDF as left on the server, not as only the server has',
+    plan?.heldBack
   )
   const result = phone.joinResults.at(-1)
-  check(result?.ok === true && result.choice === 'here' && result.trashed === 1, 'overwriting deletes it on the server', result)
+  check(result?.ok === true && result.trashed === 0, 'EXPECTED SAFE: overwriting deletes nothing the phone only left on the server', result)
 
   // The desktop, which has the file and never deleted it, loses it too.
   const gone = await eventually(() => desktop.vault.bytes('Scans/contract.pdf') === undefined, 10_000)

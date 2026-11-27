@@ -792,6 +792,7 @@ export class AttachmentStore {
     const entry = this.index.entry(fileId)
     await this.withLock(fileId, async () => {
       this.index.markDeleted(fileId)
+      this.state.seenDeleted(fileId)
       this.state.forgetAttachment(fileId)
     })
     log.info(`${path}: attachment deleted here`)
@@ -859,6 +860,8 @@ export class AttachmentStore {
   private async applyDeletes(): Promise<void> {
     for (const { fileId } of this.index.deleted()) {
       if (this.stopped) return
+      // Its retention counts from here at the latest (L1).
+      this.state.seenDeleted(fileId)
       const known = this.state.attachment(fileId)
       if (!known) continue
       await this.guarded(fileId, known.size, () => this.applyDelete(fileId)).catch((error: unknown) => this.failed(error))
@@ -1002,6 +1005,12 @@ export class AttachmentStore {
       file = this.app.vault.getAbstractFileByPath(this.state.attachment(fileId)?.path ?? '')
     }
     if (file instanceof TFile && entry.hash !== known.hash) await this.takeIn(fileId, file, file.path)
+  }
+
+  /** Whether this device leaves a file of this size on the server rather than download it: above its limit (10 MB on a phone). */
+  leavesOnServer(size: number): boolean {
+    const limit = this.options.downloadLimitBytes
+    return limit !== null && size > limit
   }
 
   private async pullMissing(): Promise<void> {
@@ -1156,6 +1165,7 @@ export class AttachmentStore {
   /** A shared folder's file deleted for everyone: deleted here as a delete from another device is (`applyDelete`). */
   deleteFromFolder(fileId: string): void {
     this.index.markDeleted(fileId)
+    this.state.seenDeleted(fileId)
   }
 
   /** A shared folder's file renamed there: the index moves it, and the file follows (`followRenames`). */
@@ -1276,7 +1286,7 @@ export class AttachmentStore {
   deletedFiles(since: number): DeletedFile[] {
     return this.index
       .deleted()
-      .filter(({ entry }) => !entry.purgedAt && (entry.deletedAt as number) >= since)
+      .filter(({ fileId, entry }) => !entry.purgedAt && Math.max(entry.deletedAt as number, this.state.seenDeleted(fileId)) >= since)
       .map(({ fileId, entry }) => ({ fileId, path: entry.path, deletedAt: entry.deletedAt as number, size: entry.size }))
       .sort((a, b) => b.deletedAt - a.deletedAt)
   }
@@ -1446,6 +1456,7 @@ export class AttachmentStore {
         if (!(await this.stillHolds(file, read))) throw new Error(`${entry.path} changed meanwhile; try again`)
       }
       this.index.markDeleted(fileId)
+      this.state.seenDeleted(fileId)
       this.state.forgetAttachment(fileId)
       // Its delete event then finds nothing left to do.
       if (file instanceof TFile) await this.app.fileManager.trashFile(file)
@@ -1537,7 +1548,8 @@ export class AttachmentStore {
     for (const { entry } of this.index.live()) needed.add(entry.hash)
     for (const { fileId, entry } of this.index.deleted()) {
       if (entry.purgedAt) continue
-      if ((entry.deletedAt as number) >= cutoff) needed.add(entry.hash)
+      // From the later of the delete and this device first seeing it: a deleting device's clock behind purged at once (audit 2, L1).
+      if (Math.max(entry.deletedAt as number, this.state.seenDeleted(fileId)) >= cutoff) needed.add(entry.hash)
       else expiredFiles.push({ fileId, hash: entry.hash })
     }
     const expiredVersions: AttachmentVersion[] = []

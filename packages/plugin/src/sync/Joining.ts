@@ -68,6 +68,12 @@ export interface JoinPlan {
   /** The notes that differ, by what merging them makes of them. */
   merges: JoinMerges
   files: JoinSide
+  /**
+   * Files only the server has that this device leaves there - larger than it downloads. Neither missing
+   * here nor anything to overwrite: counted as only the server's, a phone overwriting the server deleted
+   * every large file everywhere (audit 2, M1).
+   */
+  heldBack: string[]
   /** What the copy made first holds: every file of this vault. */
   backup: { files: number; bytes: number }
 }
@@ -439,7 +445,12 @@ export class Joining {
       else files.onlyHere.push(file.path)
     }
     const filePaths = new Set(filesHere.map((file) => file.path))
-    for (const path of filesThere.keys()) if (!filePaths.has(path)) files.onlyThere.push(path)
+    const heldBack: string[] = []
+    for (const [path, entry] of filesThere) {
+      if (filePaths.has(path)) continue
+      if (attachments.leavesOnServer(entry.size)) heldBack.push(path)
+      else files.onlyThere.push(path)
+    }
 
     const total = notesBoth.length + filesBoth.length
     let done = 0
@@ -477,6 +488,7 @@ export class Joining {
       tick()
     }
     for (const list of [notes, files, merges]) for (const paths of Object.values(list)) paths.sort()
+    heldBack.sort()
 
     const here = notesHere.length + filesHere.length
     const there = notesThere.size + filesThere.size
@@ -500,6 +512,7 @@ export class Joining {
       notes,
       merges,
       files,
+      heldBack,
       backup: { files: everything.length, bytes: everything.reduce((sum, file) => sum + file.stat.size, 0) }
     }
   }

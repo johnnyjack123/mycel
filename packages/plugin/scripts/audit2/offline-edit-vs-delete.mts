@@ -57,9 +57,9 @@ try {
   ws.close()
   await delay(4_000)
   const item = desk.trash?.list().find((candidate) => candidate.id === docId)
-  check(item !== undefined, 'the note is in the trash on the desktop')
+  // Fixed (0.9.33): the laptop's edit wins over the delete and brings the note back everywhere; restored by hand only if not.
   if (item) await desk.trash?.restore(item)
-  check(await eventually(() => desk.vault.text('Trip.md') !== undefined, 10_000), 'restored from the trash')
+  check(await eventually(() => desk.vault.text('Trip.md') !== undefined, 10_000), 'the note is back on the desktop - brought back by the edit, or restored from the trash')
   console.log('      restored text:', JSON.stringify(desk.vault.text('Trip.md')))
   check(
     (desk.vault.text('Trip.md') ?? '').includes('day two'),

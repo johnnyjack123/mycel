@@ -416,6 +416,7 @@ export class JoinModal extends Modal {
     group('Not compared: the server did not answer in time', notes.unknown)
     group('Only in this vault', [...notes.onlyHere, ...files.onlyHere])
     group('Only on the server', [...notes.onlyThere, ...files.onlyThere])
+    group('Left on the server - larger than this device downloads, never deleted from here', plan.heldBack)
   }
 
   private renderResult(result: JoinResult): void {
