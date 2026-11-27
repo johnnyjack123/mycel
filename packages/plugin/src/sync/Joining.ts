@@ -15,8 +15,9 @@ import { log } from '../log.js'
 // a file. Merging can then only keep both sides (invariant 3): safe, and often a mess - an
 // older copy of the vault brings back every line and every note deleted since. So before
 // anything of the vault is touched, the two are compared path by path, and the person
-// chooses (invariant 34): merge both, or take the server's state - after a copy of every
-// file of this vault in the plugin's folder, whatever is chosen.
+// chooses (invariant 34): merge both, take the server's state, or - when the server's state
+// went wrong - overwrite the server with this vault (0.9.33) - after a copy of every file of
+// this vault in the plugin's folder, whatever is chosen.
 
 /** What the comparison makes of the two; the window words its options by it. */
 export type JoinKind =
@@ -33,7 +34,8 @@ export type JoinKind =
   /** Hardly a path in common: another vault, or one Obsidian has just made. */
   | 'unrelated'
 
-export type JoinChoice = 'merge' | 'server' | 'later'
+/** `here`: this vault overwrites the server (0.9.33). */
+export type JoinChoice = 'merge' | 'server' | 'here' | 'later'
 export type JoinStage = 'compare' | 'backup' | 'apply'
 
 /** Paths of notes or of files, by how the two sides hold them. */
@@ -73,14 +75,17 @@ export interface JoinPlan {
 export type JoinResult =
   | {
       ok: true
-      choice: 'merge' | 'server'
+      choice: 'merge' | 'server' | 'here'
       /** The folder the copy of the vault went to; null for a vault that had nothing. */
       backup: string | null
-      /** Notes and files that took the server's version. */
+      /** Notes and files that took the server's version - overwriting the server: whose version here goes over the server's. */
       taken: number
-      /** Notes and files only this vault had, moved to the trash. */
+      /** Notes and files only this vault had, moved to the trash - overwriting the server: only the server had, deleted there. */
       trashed: number
-      /** Notes and files the server's version could not be had for: merged, as ever. */
+      /**
+       * Notes and files the server's version could not be had for - overwriting the server, also
+       * those someone else shared or a shared folder holds: merged, as ever.
+       */
       notTaken: string[]
       /** Notes that differed and are merged as the sync reaches them, each marked in the explorer until looked at. */
       merging: number
@@ -191,12 +196,17 @@ export class Joining {
       this.parts.host.skipped?.('empty')
       return true
     }
-    const choice = await this.parts.host.ask(plan)
+    let choice = await this.parts.host.ask(plan)
     if (this.stopped) return false
     if (choice === 'later') {
       log.info('joining the vault: not now')
       this.postponed = true
       return false
+    }
+    // An empty vault over the server would delete all of it there: never offered, never done.
+    if (choice === 'here' && plan.kind === 'download') {
+      log.warn('joining: an empty vault does not overwrite the server; merged instead')
+      choice = 'merge'
     }
     let backup: string | null = null
     if (plan.backup.files > 0) {
@@ -230,23 +240,28 @@ export class Joining {
     let taken = 0
     let trashed = 0
     const notTaken: string[] = []
-    if (record.choice === 'server') {
-      const outcome = await this.takeServers(plan)
+    if (record.choice === 'server' || record.choice === 'here') {
+      const outcome = record.choice === 'server' ? await this.takeServers(plan) : await this.overwriteServer(plan)
       if (this.stopped) return false
       ;({ taken, trashed } = outcome)
       notTaken.push(...outcome.notTaken)
     }
     await state.setJoin(vaultId, { ...record, done: true })
-    if (notTaken.length > 0) log.warn(`joining: the server's version could not be had for ${notTaken.length}, merged instead: ${notTaken.join(', ')}`)
-    log.info(`joined the vault: ${record.choice}, ${taken} taken from the server, ${trashed} to the trash`)
+    if (record.choice === 'here') {
+      if (notTaken.length > 0) log.warn(`joining: ${notTaken.length} not overwritten on the server, merged instead: ${notTaken.join(', ')}`)
+      log.info(`joined the vault: overwriting the server, ${taken} go up in this vault's version, ${trashed} deleted on the server`)
+    } else {
+      if (notTaken.length > 0) log.warn(`joining: the server's version could not be had for ${notTaken.length}, merged instead: ${notTaken.join(', ')}`)
+      log.info(`joined the vault: ${record.choice}, ${taken} taken from the server, ${trashed} to the trash`)
+    }
     host.finished({
       ok: true,
-      choice: record.choice === 'server' ? 'server' : 'merge',
+      choice: record.choice === 'server' || record.choice === 'here' ? record.choice : 'merge',
       backup: record.backup ?? null,
       taken,
       trashed,
       notTaken: notTaken.slice(0, NAMED_MAX),
-      merging: record.choice === 'server' ? 0 : plan.notes.different.length + plan.notes.unknown.length,
+      merging: record.choice === 'merge' ? plan.notes.different.length + plan.notes.unknown.length : 0,
       resumed
     })
     return true
@@ -300,6 +315,84 @@ export class Joining {
           log.warn(`${path}: moving it to the trash failed; it stays and goes up`, error)
           notTaken.push(path)
         }
+      }
+      tick()
+    }
+    return { taken, trashed, notTaken: notTaken.sort() }
+  }
+
+  /**
+   * The server becomes this vault (the user's wish of 2026-11-13, built 0.9.33: for when the
+   * server's state went wrong). What differs takes this vault's version as an edit made here: the
+   * server's is taken for the base both last agreed on, backed up first, and the start sends this
+   * vault's against it - three ways, so what another device writes meanwhile stays. What only the
+   * server has is deleted there as a delete made here: restorable from the trash and the history,
+   * and carried out on the other devices only where nothing changed since. Notes and files someone
+   * else shared and those of shared folders are merged as ever: overwriting them overwrote other
+   * people's work, deleting them deleted it for everyone in the folder.
+   */
+  private async overwriteServer(plan: JoinPlan): Promise<{ taken: number; trashed: number; notTaken: string[] }> {
+    const { store, attachments, index, attachmentIndex, host } = this.parts
+    const notes = [...plan.notes.different, ...plan.notes.unknown]
+    const files = plan.files.different
+    const total = notes.length + files.length + plan.notes.onlyThere.length + plan.files.onlyThere.length
+    let done = 0
+    let taken = 0
+    let trashed = 0
+    const notTaken: string[] = []
+    const tick = (): void => {
+      done += 1
+      host.progress('apply', done, total)
+    }
+    host.progress('apply', 0, total)
+    const ownNote = (path: string): string | null => {
+      const docId = index.docIdForPath(path)
+      const entry = docId ? index.entry(docId) : undefined
+      return docId && entry && !entry.deletedAt && !entry.owner && !entry.folder ? docId : null
+    }
+    const ownFile = (path: string): string | null => {
+      const fileId = attachmentIndex.idForPath(path)
+      const entry = fileId ? attachmentIndex.entry(fileId) : undefined
+      return fileId && entry && !entry.deletedAt && !entry.via && !entry.folder ? fileId : null
+    }
+    await pool(notes, () => this.stopped, async (path) => {
+      const ok =
+        ownNote(path) !== null &&
+        (await store.serverAsBase(path).catch((error: unknown) => {
+          log.warn(`${path}: taking the server's version for the base failed`, error)
+          return false
+        }))
+      if (ok) taken += 1
+      else notTaken.push(path)
+      tick()
+    })
+    for (const path of files) {
+      if (this.stopped) break
+      if (ownFile(path) !== null && attachments.serverAsBase(path)) taken += 1
+      else notTaken.push(path)
+      tick()
+    }
+    for (const path of plan.notes.onlyThere) {
+      if (this.stopped) break
+      const docId = ownNote(path)
+      if (docId) {
+        index.markDeleted(docId)
+        trashed += 1
+        log.info(`${path}: only the server had it, deleted there`)
+      } else {
+        notTaken.push(path)
+      }
+      tick()
+    }
+    for (const path of plan.files.onlyThere) {
+      if (this.stopped) break
+      const fileId = ownFile(path)
+      if (fileId) {
+        attachmentIndex.markDeleted(fileId)
+        trashed += 1
+        log.info(`${path}: only the server had it, deleted there`)
+      } else {
+        notTaken.push(path)
       }
       tick()
     }

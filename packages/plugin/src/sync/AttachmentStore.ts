@@ -718,6 +718,22 @@ export class AttachmentStore {
     }
   }
 
+  /**
+   * This vault's version over the server's (joining, "Overwrite the server", 0.9.33): the server's
+   * taken for the version this device last agreed on, so the scan finds the file changed here and
+   * sends it as a new version naming the server's as the one it replaced - which stays among the
+   * versions (invariant 24).
+   */
+  serverAsBase(path: string): boolean {
+    const fileId = this.index.idForPath(path)
+    const entry = fileId ? this.index.entry(fileId) : undefined
+    if (!fileId || !entry || entry.deletedAt) return false
+    // Not as agreed in time or size: the scan reads it.
+    this.state.setAttachment(fileId, { path, mtime: 0, size: -1, hash: entry.hash })
+    log.info(`${path}: this vault's version goes over the server's`)
+    return true
+  }
+
   /** The index's version into a file that still has the base's content. */
   private async replace(fileId: string, file: TFile, entry: AttachmentEntry, read: Read): Promise<void> {
     if (!(await this.blobs.keep(read.hash))) await this.upload(read.data, read.hash)

@@ -2,8 +2,8 @@
 // what the comparison finds - upload, download, the same, another state, another vault -,
 // the copy of the whole vault made first, "Not now" touching nothing, "Take the server's
 // version" leaving this vault as the server has it without deleting anything for anyone,
-// merging as before, a choice carried on after a restart, and a device that synced before
-// never asked. The server runs in this process, on a port and in a directory of its own.
+// merging as before, a choice carried on after a restart, a device that synced before
+// never asked, and overwriting the server with this vault (0.9.33). The server runs in this process, on a port and in a directory of its own.
 //
 //   npm run test:join
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -516,6 +516,68 @@ try {
   check(!(await A7.boot()), 'a device with another vault waits')
   check(A7.joinPlans[0]?.kind === 'unrelated', 'it was told the two have almost nothing in common', A7.joinPlans[0]?.kind)
   await A7.shutdown()
+
+  // --- overwriting the server with this vault (0.9.33) ---------------------------------------
+  {
+    const { contentHash } = await import('@mycel/shared/crypto')
+    const NEW_PIC = bytes(5, 5, 5)
+    check(await eventually(async () => (await A1.sync?.notYetSent(1_000)) === null), 'the first device has sent everything')
+    const before = { one: A1.vault.text('One.md'), two: A1.vault.text('Two.md') ?? '' }
+    const A9 = new Device(name, false, { 'One.md': 'the ninth device wrote this\n', 'Two.md': before.two, 'pic.png': NEW_PIC, 'Ninth.md': 'only on the ninth device\n' })
+    devices.push(A9)
+    A9.joinAnswer = 'here'
+    check(await A9.boot(), 'a device overwriting the server with its vault starts')
+    const plan = A9.joinPlans[0]
+    check(
+      plan?.kind === 'related' && plan.notes.different.join() === 'One.md' && plan.files.different.join() === 'pic.png' && plan.notes.onlyHere.join() === 'Ninth.md',
+      'it was told what differs, and what only it has',
+      plan && { kind: plan.kind, notes: plan.notes, files: plan.files }
+    )
+    const gone = [...(plan?.notes.onlyThere ?? []), ...(plan?.files.onlyThere ?? [])]
+    const result = A9.joinResults.at(-1)
+    check(
+      result?.ok === true && result.choice === 'here' && result.taken === 2 && gone.length > 0 && result.trashed === gone.length && result.notTaken.length === 0,
+      'the note and the file that differ go up in its version, and what only the server had is deleted there',
+      { result, gone }
+    )
+    check(
+      await eventually(
+        () =>
+          A1.vault.text('One.md') === 'the ninth device wrote this\n' &&
+          same(A1.vault.bytes('pic.png'), NEW_PIC) &&
+          A1.vault.text('Ninth.md') === 'only on the ninth device\n' &&
+          gone.every((path) => !A1.vault.paths().includes(path))
+      ),
+      "the other device follows: this vault's versions, what only it had, and what only the server had gone",
+      A1.vault.paths()
+    )
+    check(A1.vault.text('Two.md') === before.two && !A1.vault.paths().some((path) => path.includes('conflict')), 'what was alike stays, nothing kept twice')
+    const notesGone = gone.filter((path) => path.endsWith('.md'))
+    check(
+      notesGone.every((path) => A1.index?.deleted().some(({ entry }) => entry.path === path)),
+      'the notes deleted on the server are in the trash, to restore',
+      A1.index?.deleted().map(({ entry }) => entry.path)
+    )
+    const picId = A1.attachmentIndex?.idForPath('pic.png')
+    const picEntry = picId ? A1.attachmentIndex?.entry(picId) : undefined
+    check(picEntry?.prev === (await contentHash(PIC)), "the file's new version names the server's as the one it replaced, which stays among the versions", picEntry)
+    await delay(500)
+    check(
+      A9.vault.text('One.md') === 'the ninth device wrote this\n' &&
+        same(A9.vault.bytes('pic.png'), NEW_PIC) &&
+        A9.reviews.length === 0 &&
+        !A9.vault.paths().some((path) => path.includes('conflict') || gone.includes(path)),
+      'its own vault stays as it was: nothing merged, nothing kept twice, nothing of the server pulled down',
+      A9.vault.paths()
+    )
+    const remoteCopy = [...A9.vault.adapter.files].find(([path]) => path.startsWith(`${PLUGIN_DIR}/backups/`) && path.endsWith('.remote.md') && path.includes('One'))
+    check(remoteCopy?.[1] === before.one, "the server's text of what it overwrote is backed up on the device first", remoteCopy?.[0])
+    check(
+      await eventually(() => (A1.sync?.accountSettings?.events() ?? []).some((event) => event.kind === 'joined' && event.choice === 'here')),
+      'and the Time Machine marks the moment before, to go back to'
+    )
+    await A9.shutdown()
+  }
 } catch (error) {
   check(false, 'the self-test ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {

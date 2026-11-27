@@ -771,6 +771,31 @@ export class DocStore {
     })
   }
 
+  /**
+   * This vault's version over the server's (joining, "Overwrite the server", 0.9.33): the server's
+   * text taken for the base file and note last agreed on, so the start finds the file changed here
+   * and sends it as an edit - merged three ways against that base, so what another device writes
+   * meanwhile stays. The server's text is backed up first (invariant 2); the history keeps it too.
+   * False while the server's copy is not known: the note is merged then, as ever.
+   */
+  async serverAsBase(path: string): Promise<boolean> {
+    const docId = this.index.docIdForPath(path)
+    const file = this.app.vault.getAbstractFileByPath(path)
+    if (!docId || !(file instanceof TFile)) return false
+    return this.withLock(docId, async () => {
+      if (this.stopped || !this.exists(file)) return false
+      const handle = await this.handleFor(docId)
+      if (!(await handle.whenRemoteReady(this.options.syncTimeoutMs))) return false
+      const text = handle.text()
+      if (text.length > 0) await this.backups.write(path, 'remote', text)
+      await this.state.setBaseText(docId, text)
+      // Not as agreed in time or size: the start reads the file, and finds it changed.
+      this.state.set(docId, { path, mtime: 0, size: -1 })
+      log.info(`${path}: this vault's version goes over the server's, the server's ${text.length} chars backed up`)
+      return true
+    })
+  }
+
   private forget(docId: string): void {
     this.state.forget(docId)
     this.agreed.delete(docId)

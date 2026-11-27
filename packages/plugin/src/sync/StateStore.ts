@@ -37,7 +37,8 @@ export interface AttachmentState extends FileState {
  */
 export interface JoinRecord {
   at: number
-  choice: 'merge' | 'server' | 'before'
+  /** `here`: this vault overwrote the server (0.9.33). */
+  choice: 'merge' | 'server' | 'here' | 'before'
   done: boolean
   /** The copy of the whole vault made before anything was changed. */
   backup?: string
