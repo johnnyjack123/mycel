@@ -532,7 +532,13 @@ check(
     hint(lined)
   )
   number('theirs', '2')?.click()
-  check(lined.contentEl.querySelectorAll('.is-selected').length === 0 && hint(lined) === '', 'clicked again, it is let go', hint(lined))
+  check(
+    lined.contentEl.querySelectorAll('.is-selected').length === 0 &&
+      hint(lined).startsWith('Drag lines by their number') &&
+      !lined.contentEl.querySelector('.mycel-merge-hint')?.classList.contains('is-selection'),
+    'clicked again, it is let go - the line under the buttons says again how to drag, and stays',
+    hint(lined)
+  )
   await dragTo(lined, number('theirs', '2'), passages(lined)[0]?.querySelector('.mycel-merge-slot'))
   check(
     middleLines(passages(lined)[0]).join() === '- Brot' && progress(lined) === 'All 1 passage decided' && lined.contentEl.querySelector('.mycel-merge-ghost, .mycel-merge-drop') === null && document.querySelector('.mycel-merge-ghost') === null,

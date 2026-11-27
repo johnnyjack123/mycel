@@ -697,16 +697,21 @@ export class ReviewModal extends Modal {
         : []
       if (selectors.length > 0) for (const el of Array.from(list.querySelectorAll(selectors.join(',')))) el.classList.add('is-selected')
     }
+    // Always a line, so selecting does not push the list down (the user, 2026-11-27).
     const hint = this.hintEl
     if (!hint) return
     hint.empty()
-    if (!selected) return
+    hint.toggleClass('is-selection', selected !== null)
+    if (!selected) {
+      hint.createSpan({ text: 'Drag lines by their number into the middle; a click selects several to drag together.' })
+      return
+    }
     const count = plural(selected.keys.size, 'line', 'lines')
     hint.createSpan({
       text:
         selected.column === 'result'
-          ? `${count} of the middle selected: drag one of them to move them all, or onto a side to take them out again (Delete does that too). `
-          : `${count} of ${selected.column === 'mine' ? this.names.mineWords : 'the other version'} selected: drag one of them into the middle, to where they belong. `
+          ? `${count} of the middle selected - drag one to move them, or onto a side to take them out (Delete too).`
+          : `${count} of ${selected.column === 'mine' ? this.names.mineWords : 'the other version'} selected - drag one of them into the middle.`
     })
     hint.createEl('button', { cls: 'mycel-merge-unselect', text: 'Unselect' }).addEventListener('click', () => this.clearSelection())
   }
