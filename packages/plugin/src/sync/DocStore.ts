@@ -1027,8 +1027,10 @@ export class DocStore {
     // Someone else's note where this device holds a file it never agreed on: two notes, never one. Merged
     // without a base, the file's text went into their document - a private note of the person's, made on a
     // device that was offline while another of theirs accepted the share at that path (audit 2, H3).
-    if (base === null && this.index.entry(docId)?.owner) {
-      await this.setAsideFor(docId, file, local, remote)
+    // A note never written yet is this device's own new one in their folder - a writer's: it seeds as ever.
+    const theirs = this.index.entry(docId)
+    if (base === null && theirs?.owner && !handle.pristine) {
+      await this.setAsideFor(docId, file, local, remote, theirs.folder ?? null)
       return
     }
     const outcome = reconcile({ base, local, remote, pristine: handle.pristine })
@@ -1036,9 +1038,9 @@ export class DocStore {
   }
 
   /** The file goes to a name of its own, a note of this account's; someone else's note takes its place. */
-  private async setAsideFor(docId: string, file: TFile, local: string, remote: string): Promise<void> {
+  private async setAsideFor(docId: string, file: TFile, local: string, remote: string, folder: string | null): Promise<void> {
     await this.backups.write(file.path, 'local', local)
-    const target = this.asidePath(file.path)
+    const target = this.asidePath(file.path, folder)
     await this.ensureFolder(parentOf(target))
     await this.app.vault.create(target, local)
     await this.writeFile(docId, file, remote, true)
@@ -1047,9 +1049,14 @@ export class DocStore {
     new Notice(`A note of yours lay where a note shared with you is: yours is now "${target}", and nothing of it went to them.`, 15_000)
   }
 
-  /** A free name beside `path` for a note of this account's that stood in another's way. */
-  private asidePath(path: string): string {
-    const stem = path.endsWith('.md') ? path.slice(0, -3) : path
+  /**
+   * A free name beside `path` for a note of this account's that stood in another's way - outside the shared folder
+   * `folder` when it lies in one: inside, it would be the folder's, shared with everyone in it.
+   */
+  private asidePath(path: string, folder: string | null = null): string {
+    const root = folder ? this.index.folder(folder)?.path : undefined
+    const placed = root && (path === root || path.startsWith(`${root}/`)) ? `${parentOf(root) ? `${parentOf(root)}/` : ''}${path.slice(path.lastIndexOf('/') + 1)}` : path
+    const stem = placed.endsWith('.md') ? placed.slice(0, -3) : placed
     let candidate = `${stem} (own copy).md`
     for (let n = 2; this.app.vault.getAbstractFileByPath(candidate) || this.index.docIdForPath(candidate); n += 1) candidate = `${stem} (own copy ${n}).md`
     return candidate
@@ -1403,7 +1410,9 @@ export class DocStore {
   private async moveAside(docId: string, path: string): Promise<void> {
     await this.withLock(docId, async () => {
       if (this.index.pathFor(docId) !== path) return
-      const target = this.asidePath(path)
+      // Outside any shared folder one of them lies in.
+      const folder = this.index.entry(docId)?.folder ?? this.index.entry(this.index.docIdForPath(path) ?? '')?.folder ?? null
+      const target = this.asidePath(path, folder)
       const agreed = this.state.get(docId)?.path === path
       this.index.rename(docId, target)
       const file = this.app.vault.getAbstractFileByPath(path)

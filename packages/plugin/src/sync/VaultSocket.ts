@@ -127,6 +127,11 @@ export interface RoomCursor {
   syncedAt: number
   /** The epoch new frames are encrypted under. */
   epoch: number
+  /**
+   * The highest epoch of a frame or snapshot applied, or sent and acknowledged: no later frame of an honest
+   * log is below it (audit 2, M10). Absent: 0.
+   */
+  lastEpoch?: number
   /** The payload waiting for its acknowledgement. */
   sending: Uint8Array | null
   /** Whether changes made since that payload was sent wait in the outbox. */
@@ -159,6 +164,7 @@ export function memoryCursor(): RoomCursor {
     held: false,
     syncedAt: 0,
     epoch: 0,
+    lastEpoch: 0,
     sending: null,
     get hasOutbox() {
       return outbox.length > 0
@@ -590,6 +596,8 @@ export class VaultSocket {
             cursor.held = true
             cursor.lastSeq = 0
             cursor.lastHash = null
+            // Another log, read from its start: its epochs from the first.
+            cursor.lastEpoch = 0
             cursor.persist(true)
             this.subscribe(registration)
             return
@@ -628,6 +636,7 @@ export class VaultSocket {
             cursor.lastSeq = seq
             cursor.lastHash = frame?.hash ?? null
             cursor.lastContent = frame?.content ?? null
+            cursor.lastEpoch = Math.max(cursor.lastEpoch ?? 0, cursor.epoch)
           }
           if (frame) registration.options.history?.({ authorTs: frame.authorTs, update: frame.payload })
           cursor.persist()
@@ -819,11 +828,17 @@ export class VaultSocket {
     if (verdict === 'forged' || !frame) {
       // Passed over for good: asked for again, it would be the same frame.
       log.error(`${registration.room}: frame #${seq} is not signed by someone who may write here; dropped`)
+    } else if (epoch < (cursor.lastEpoch ?? 0)) {
+      // A frame under an epoch the room had left: an honest server answers such a push with `rekey` and never
+      // stores it. Stored all the same, someone removed or made a reader went on writing under the key they
+      // kept (audit 2, M10).
+      log.error(`${registration.room}: frame #${seq} is of epoch ${epoch}, which the room had left for ${cursor.lastEpoch}; dropped`)
     } else {
       log.debug(`${registration.room}: frame #${seq}, ${frame.update.length} B, epoch ${epoch}`)
       const madeAt = changeTime(frame, serverTs, registration.options.crypto.self)
       this.applyRemote(registration.doc, frame.update, madeAt)
       registration.options.history?.({ authorTs: madeAt, update: frame.update })
+      cursor.lastEpoch = Math.max(cursor.lastEpoch ?? 0, epoch)
     }
     cursor.lastSeq = seq
     cursor.lastHash = hash
@@ -894,6 +909,7 @@ export class VaultSocket {
       cursor.lastSeq = uptoSeq
       cursor.lastHash = hash
       cursor.lastContent = content
+      cursor.lastEpoch = Math.max(cursor.lastEpoch ?? 0, epoch)
     }
     cursor.persist()
   }

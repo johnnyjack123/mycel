@@ -62,6 +62,7 @@ interface SavedCursor {
   held?: boolean
   syncedAt?: number
   epoch: number
+  lastEpoch?: number
   /** The first piece of the outbox still waiting (`outbox:<n>`); the others follow it without a gap. */
   outboxFrom?: number
   /** A payload waits for its acknowledgement, under `sending`. */
@@ -95,6 +96,7 @@ export class LocalCursor implements RoomCursor {
   held = false
   syncedAt = 0
   epoch = 0
+  lastEpoch = 0
   private sendingNow: Uint8Array | null = null
   private sendingStored = true
   private pieces: Piece[] = []
@@ -123,6 +125,7 @@ export class LocalCursor implements RoomCursor {
         cursor.held = saved.held ?? false
         cursor.syncedAt = saved.syncedAt ?? 0
         cursor.epoch = saved.epoch ?? 0
+        cursor.lastEpoch = saved.lastEpoch ?? 0
         cursor.from = saved.outboxFrom ?? 0
         if (typeof saved.sending === 'string' && saved.sending) {
           cursor.sendingNow = fromBase64(saved.sending)
@@ -248,6 +251,7 @@ export class LocalCursor implements RoomCursor {
       held: this.held,
       syncedAt: this.syncedAt,
       epoch: this.epoch,
+      lastEpoch: this.lastEpoch,
       outboxFrom: this.from,
       sendingKept: this.sendingNow !== null
     }

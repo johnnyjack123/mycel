@@ -100,6 +100,8 @@ export interface NoteKeyOptions extends NoteKeyPlace {
 export class KeyRing {
   private readonly keys = new Map<string, Promise<CryptoKey>>()
   private readonly sealedByRoom = new Map<string, Record<string, string>>()
+  /** The epoch a room was last said to be tied wrongly in, so the log says it once. */
+  private readonly toldTie = new Map<string, number>()
   private readonly tiesByRoom = new Map<string, KnownTies>()
   /** Raw folder keys, by `${folderId}#${epoch}`: notes' keys derive from them. */
   private readonly folderKeyCache = new Map<string, Promise<Bytes | null>>()
@@ -173,9 +175,9 @@ export class KeyRing {
       local = Number.isInteger(saved) && saved > 0 ? saved : 0
       this.floors.set(room, local)
     }
-    let sealed = 0
-    for (const epoch of Object.keys(this.sealed(room))) sealed = Math.max(sealed, Number(epoch) || 0)
-    return Math.max(local, sealed, this.epochRecord?.floor(room) ?? 0)
+    // Sealed keys count once their signature held (`raiseFloor` from `fetchKeys` and `openSealed`): counted as the server
+    // listed them, an epoch of 2^53 named by it blocked writing in the room for good (audit 2, L10).
+    return Math.max(local, this.epochRecord?.floor(room) ?? 0)
   }
 
   /** The epoch a room moves to next: past the server's, and past every one known here. */
@@ -194,13 +196,19 @@ export class KeyRing {
     return false
   }
 
+  /** An epoch known for certain - a key of it sealed to this account under its owner's signature: the floor rises to it. */
+  private raiseFloor(room: string, epoch: number): void {
+    if (epoch <= this.epochFloor(room)) return
+    this.floors.set(room, epoch)
+    this.secrets.save(`${FLOOR_PREFIX}${room}`, String(epoch))
+    this.epochRecord?.raise(room, epoch)
+  }
+
   /** What the server said a room's epoch is: the floor rises with it, and an epoch below it is reported. */
   private learnEpoch(room: string, epoch: number): void {
     const floor = this.epochFloor(room)
     if (epoch > floor) {
-      this.floors.set(room, epoch)
-      this.secrets.save(`${FLOOR_PREFIX}${room}`, String(epoch))
-      this.epochRecord?.raise(room, epoch)
+      this.raiseFloor(room, epoch)
       return
     }
     if (epoch < floor) {
@@ -230,6 +238,20 @@ export class KeyRing {
    * otherwise have this device read what it wrote as the owner's.
    */
   private async openSealed(room: string, epoch: number, value: string): Promise<Bytes | null> {
+    const signed = await this.sealedHolds(room, epoch, value)
+    if (!signed) return null
+    this.raiseFloor(room, epoch)
+    try {
+      return await unseal(this.account.privateKey, this.account.publicKey, signed.sealed, epochKeyContext(room, epoch))
+    } catch {
+      // Sealed to the key this account had before it replaced its keys: the owner seals it anew once they confirmed the new one.
+      log.info(`${room}: the key of epoch ${epoch} is sealed to a key this account no longer has`)
+      return null
+    }
+  }
+
+  /** A sealed key whose signature holds - its owner's, as pinned -, or null, said why in the log. */
+  private async sealedHolds(room: string, epoch: number, value: string): Promise<NonNullable<ReturnType<typeof splitSealed>> | null> {
     const signed = splitSealed(value)
     if (!signed) {
       log.warn(`${room}: the key of epoch ${epoch} carries no signature; not taken`)
@@ -252,13 +274,7 @@ export class KeyRing {
       log.error(`${room}: the signature on the key of epoch ${epoch} does not hold; not taken`)
       return null
     }
-    try {
-      return await unseal(this.account.privateKey, this.account.publicKey, signed.sealed, epochKeyContext(room, epoch))
-    } catch {
-      // Sealed to the key this account had before it replaced its keys: the owner seals it anew once they confirmed the new one.
-      log.info(`${room}: the key of epoch ${epoch} is sealed to a key this account no longer has`)
-      return null
-    }
+    return signed
   }
 
   /** A sealed epoch key of `room`: the one kept here, or - when that does not open - the server's, which the owner may have sealed anew. */
@@ -558,13 +574,27 @@ export class KeyRing {
       },
       checkPresence: async (epoch, plaintext) => this.checkPresenceOf(room, epoch, ownerOf(), await this.tieOf(docId, epoch, options), plaintext),
       check: async (kind, _seq, epoch, frame) => {
-        const verdict = await this.checkFrame(room, epoch, ownerOf(), await this.tieOf(docId, epoch, options), kind, frame)
+        const tie = await this.tieOf(docId, epoch, options)
+        // A note of this account's is read under a folder's key only when this vault's index has it in that folder -
+        // for the epoch the room is in and later ones; an earlier epoch's tie is the note's past, which the index no
+        // longer tells. Tied by the server's word alone, a folder's writer wrote into a private note (audit 2, M9). Not
+        // taken yet, never dropped: a note that just joined a folder is read once the index has it there. Someone
+        // else's note may lie in a folder of theirs this account is not in - shared with it on its own.
+        if (options.owned && tie && epoch >= this.epochFloor(room) && this.noteFolder && this.noteFolder(docId) !== tie.folder) {
+          if (this.toldTie.get(room) !== epoch) {
+            this.toldTie.set(room, epoch)
+            log.warn(`${room}: the server ties epoch ${epoch} to the folder ${tie.folder}, which this vault does not have it in; not read until it does`)
+          }
+          return 'unknown'
+        }
+        const verdict = await this.checkFrame(room, epoch, ownerOf(), tie, kind, frame)
         if (verdict !== 'forged' || !frame.cert) return verdict
         // The certificate may be the folder's, for an epoch this device has not heard was a folder's -
         // a note a writer made in the folder a moment ago: asked once before it is dropped.
         await this.fetchKeys(room)
-        const tie = this.knownTies(room).ties[String(epoch)] ?? null
-        return tie ? this.checkFrame(room, epoch, ownerOf(), tie, kind, frame) : verdict
+        const learned = this.knownTies(room).ties[String(epoch)] ?? null
+        if (options.owned && learned && epoch >= this.epochFloor(room) && this.noteFolder && this.noteFolder(docId) !== learned.folder) return 'unknown'
+        return learned ? this.checkFrame(room, epoch, ownerOf(), learned, kind, frame) : verdict
       }
     }
   }
@@ -748,6 +778,16 @@ export class KeyRing {
   }
 
   /** Which folder epoch a note's epoch belongs to, if any - asked of the server when it matters and is unknown. */
+  /** The folder epoch an epoch of a note of this account's belongs to, as known or as the server says; null for its own key. */
+  ownNoteTie(docId: string, epoch: number): Promise<FolderTie | null> {
+    return this.tieOf(docId, epoch, { owned: true, folder: true })
+  }
+
+  /** Whether this vault's index has the note in the folder a tie names - or the tie names none. */
+  indexHasTie(docId: string, tie: FolderTie | null): boolean {
+    return !tie || !this.noteFolder || this.noteFolder(docId) === tie.folder
+  }
+
   private async tieOf(docId: string, epoch: number, options: NoteKeyPlace): Promise<FolderTie | null> {
     const room = docRoom(docId)
     const known = this.knownTies(room)
@@ -768,6 +808,9 @@ export class KeyRing {
       const merged = { ...this.sealed(room), ...response.keys }
       this.sealedByRoom.set(room, merged)
       if (Object.keys(response.keys).length > 0) this.secrets.save(`${SEALED_PREFIX}${room}`, JSON.stringify(merged))
+      // The newest epoch sealed to this account, once its signature holds, is one it knew (invariant 33).
+      const newest = Math.max(-1, ...Object.keys(response.keys).map((epoch) => Number(epoch)).filter(Number.isSafeInteger))
+      if (newest > this.epochFloor(room) && (await this.sealedHolds(room, newest, response.keys[String(newest)] as string))) this.raiseFloor(room, newest)
       if (!tiesAscend(response.ties ?? {})) {
         log.error(`${room}: the server's folder epochs go backwards; refused`)
         return response

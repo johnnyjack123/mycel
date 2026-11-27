@@ -1,11 +1,13 @@
 import * as Y from 'yjs'
 import {
+  INDEX_FIELD,
   folderRoom,
   frameAad,
   roomKind,
   roomSubject,
   snapshotAad,
   type FolderTie,
+  type IndexEntry,
   type RewriteRequest,
   type Rotation,
   type WholeLogResponse
@@ -55,7 +57,8 @@ interface Rings {
   after: KeyRing
 }
 
-type Opened = { ok: true; frame: OpenedFrame } | { ok: false; authorTs: number }
+/** `unreadable`: keys of its epoch are here and open nothing of it. */
+type Opened = { ok: true; frame: OpenedFrame } | { ok: false; authorTs: number; unreadable?: true }
 
 /** The keys the replacement reads with are never kept on the device. */
 function memoryStore(): SecretStore {
@@ -118,7 +121,13 @@ export class KeyReplacement {
           settings = new AccountSettings()
           Y.applyUpdate(settings.doc, Y.encodeStateAsUpdate(doc))
         }
-        if (kind === 'idx') index = doc
+        if (kind === 'idx' && doc) {
+          index = doc
+          // Which folder each note is in, as the index says - rewritten before the notes: the server's tie alone chose
+          // a note's new key, and could have a private note written under a key a folder's member holds (audit 2, M12).
+          const entries = doc.getMap<IndexEntry>(INDEX_FIELD)
+          for (const ring of Object.values(rings) as KeyRing[]) ring.setNoteFolders((docId: string) => entries.get(docId)?.folder ?? null)
+        }
         done += 1
         this.options.progress?.({ vault: vault.name, what: 'notes', done, of: rooms.length })
       }
@@ -180,19 +189,38 @@ export class KeyReplacement {
         snapshots: [],
         keys: {}
       }
+      const snapshots = []
       for (const snapshot of whole.snapshots) {
         const aad = snapshotAad(room, snapshot.epoch)
-        const opened = await this.open(room, crypto, 'snapshot', snapshot.uptoSeq, snapshot.epoch, snapshot.data, aad)
+        snapshots.push({ snapshot, aad, opened: await this.open(room, crypto, 'snapshot', snapshot.uptoSeq, snapshot.epoch, snapshot.data, aad) })
+      }
+      const frames = []
+      for (const frame of whole.frames) {
+        const aad = frameAad(room, frame.epoch)
+        frames.push({ frame, aad, opened: await this.open(room, crypto, 'frame', frame.seq, frame.epoch, frame.data, aad) })
+      }
+      // An item no key of its epoch opens is bytes nobody sealed - but only where that key opens something else of the
+      // epoch. Opening nothing, the key is not the epoch's - a tie the server named wrongly - and every item would
+      // be written anew as nothing: the replacement stops instead, nothing changed (audit 2, H4).
+      const proven = new Set([...snapshots.map((item) => [item.snapshot.epoch, item.opened] as const), ...frames.map((item) => [item.frame.epoch, item.opened] as const)].filter(([, opened]) => !('unreadable' in opened)).map(([epoch]) => epoch))
+      const readable = (epoch: number, kind: string, seq: number, opened: Opened): Opened => {
+        if (!('unreadable' in opened)) return opened
+        if (!proven.has(epoch)) throw new KeyReplacementError(`${room}: nothing of epoch ${epoch} opens with its key (${kind} #${seq}); nothing of it was changed`)
+        log.warn(`${room}: ${kind} #${seq} opens with no key of its epoch; it goes on as an empty change`)
+        return { ok: false, authorTs: 0 }
+      }
+      for (const { snapshot, aad, opened: raw } of snapshots) {
+        const opened = readable(snapshot.epoch, 'snapshot', snapshot.uptoSeq, raw)
         if (doc && opened.ok) Y.applyUpdate(doc, opened.frame.update)
         if (!written) request.snapshots.push({ uptoSeq: snapshot.uptoSeq, data: await this.seal(rings.after, crypto.after, room, snapshot.epoch, opened, aad) })
       }
-      for (const frame of whole.frames) {
-        const aad = frameAad(room, frame.epoch)
-        const opened = await this.open(room, crypto, 'frame', frame.seq, frame.epoch, frame.data, aad)
+      for (const { frame, aad, opened: raw } of frames) {
+        const opened = readable(frame.epoch, 'frame', frame.seq, raw)
         if (doc && opened.ok) Y.applyUpdate(doc, opened.frame.update)
         if (!written) request.frames.push({ seq: frame.seq, data: await this.seal(rings.after, crypto.after, room, frame.epoch, opened, aad) })
       }
       if (written) return doc
+      if (roomKind(room) === 'doc') await this.sameTies(room, whole, rings, [...snapshots.map((item) => item.snapshot.epoch), ...frames.map((item) => item.frame.epoch)])
       await this.sealKeys(room, whole, rings.after, settings, request)
       try {
         await this.api.rewrite(room, request)
@@ -201,6 +229,26 @@ export class KeyReplacement {
         // Something moved meanwhile - a member wrote, the folder moved on: read it again.
         if (error instanceof ApiError && error.status === 409 && attempt < RETRIES) continue
         throw error
+      }
+    }
+  }
+
+  /**
+   * A note is written anew under the folder epochs it was read under: the same tie for every epoch in both rings - the
+   * folder's membership does not change with the keys -, and for the epoch it is in now, the folder the index has it
+   * in. The server's word for the new ring alone had a private note rewritten under a key a folder's member holds
+   * (audit 2, M12).
+   */
+  private async sameTies(room: string, whole: WholeLogResponse, rings: Rings, epochs: number[]): Promise<void> {
+    const docId = roomSubject(room)
+    for (const epoch of new Set([...epochs, whole.epoch])) {
+      const before = await rings.before.ownNoteTie(docId, epoch)
+      const after = await rings.after.ownNoteTie(docId, epoch)
+      if (JSON.stringify(before) !== JSON.stringify(after)) {
+        throw new KeyReplacementError(`${room}: the server names another folder epoch for epoch ${epoch} than before; nothing of it was changed`)
+      }
+      if (epoch >= whole.epoch && !rings.after.indexHasTie(docId, after)) {
+        throw new KeyReplacementError(`${room}: the server ties epoch ${epoch} to a folder this vault does not have the note in; nothing of it was changed`)
       }
     }
   }
@@ -239,10 +287,7 @@ export class KeyReplacement {
     // The epoch's keys are here and open nothing: bytes nobody sealed - pushed by anyone who may write,
     // or damaged on the server's disk. Every device drops such a frame; stopping at it here stopped the
     // replacement on every start, and with it all sync (audit 2, H4). It goes on as an empty change.
-    if (keyed) {
-      log.warn(`${room}: ${kind} #${seq} opens with no key of its epoch; it goes on as an empty change`)
-      return { ok: false, authorTs: 0 }
-    }
+    if (keyed) return { ok: false, authorTs: 0, unreadable: true }
     throw new KeyReplacementError(`${room}: no key opens ${kind} #${seq}; nothing of it was changed`)
   }
 
