@@ -257,7 +257,16 @@ Ordered by the user on 2026-10-14; the table is in CLAUDE.md, Conventions.
 
 ## In flight / half-finished
 
-Nothing. Every branch on the remote is merged into `main`, except `debug/start-race`. It holds
+- **`fix/cosmetics`** (2026-11-27, the user's two cosmetic findings on 0.9.32, pushed, not merged,
+  no version yet - the user: no build needed at once). "Compare versions" keeps a line under its
+  buttons at all times - how to drag, or what is selected with *Unselect* beside it - as high as
+  it gets at that width, so selecting no longer pushes the list down (measured in a headless
+  Edge from 360 to 1200 px: the list stays put). The Time Machine's legend is a group of its own
+  in the bar - "Timeline", a version, shown, before an event, a backup, each drawn as its line,
+  the long meaning as a tooltip - instead of the end of the text's second line, where it went
+  under. To go out with the second audit's fixes as the next version.
+
+Besides it, every branch on the remote is merged into `main`, except `debug/start-race`. It holds
 only temporary logging from chasing a CI failure of 0.9.6 (CHANGELOG), and it can go. Deleting
 the merged branches is the user's call.
 
