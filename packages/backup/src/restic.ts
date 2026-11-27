@@ -218,10 +218,11 @@ export class Restic {
    * tags - the notes and the files of a vault each keep their own. Nothing is
    * forgotten without a policy.
    */
-  async forget(repo: ResticRepo, keep: KeepPolicy): Promise<void> {
+  async forget(repo: ResticRepo, keep: KeepPolicy, tag?: string): Promise<void> {
     const rules = Object.entries(keep).filter(([, count]) => typeof count === 'number' && count > 0)
     if (rules.length === 0) return
-    await this.ok(repo, ['forget', '--host', this.host, '--group-by', 'host,tags', ...rules.flatMap(([rule, count]) => [`--keep-${rule}`, String(count)])])
+    // Only the snapshots of one vault, when it says which: a snapshot from before the vault tag is never forgotten.
+    await this.ok(repo, ['forget', '--host', this.host, ...(tag ? ['--tag', tag] : []), '--group-by', 'host,tags', ...rules.flatMap(([rule, count]) => [`--keep-${rule}`, String(count)])])
   }
 
   async prune(repo: ResticRepo): Promise<void> {

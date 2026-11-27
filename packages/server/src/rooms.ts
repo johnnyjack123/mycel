@@ -197,7 +197,11 @@ function epochKeysOf(keys: unknown, lastEpoch: number, what: string): Record<str
  * restored from a backup, or one working with someone who left, whose key the
  * earlier epochs are under: the device moves it past every epoch it knew.
  */
-const MAX_EPOCH_JUMP = 1 << 20
+// A thousand rotations behind is more than any restored server is; a million let a share with history carry a key for
+// each, every room's meta in memory at every start, and the server fail to start (audit 2, M8).
+const MAX_EPOCH_JUMP = 1024
+/** Epochs a share with history seals a key for, at most: beyond, a note is shared without it. */
+const HISTORY_EPOCHS_MAX = 4096
 
 function isLaterEpoch(current: number, proposed: unknown): boolean {
   return typeof proposed === 'number' && Number.isInteger(proposed) && proposed > current && proposed <= current + MAX_EPOCH_JUMP
@@ -666,6 +670,14 @@ export class RoomHub {
       return
     }
     let open = loaded
+    // A room someone else made, still empty, where a writer of a folder makes a note of it: the ids of a folder's new
+    // notes are computed from its key, and a reader claimed them first - the folder's notes then never synced (audit 2,
+    // L3). Empty and in no folder, nobody loses anything when it goes to the folder.
+    if (open && folder !== undefined && kind === 'doc' && !this.access(open.log.meta, client.account) && this.unused(open) && this.claimInFolder(client, room, folder) !== null) {
+      console.warn(`[mycel] ${room}: made empty by ${open.log.meta.owner.slice(0, 8)}, taken by the folder ${folder.slice(0, 8)} it belongs to`)
+      await this.dropRoom(room, open)
+      open = null
+    }
     if (!open && this.storage) {
       // A new room is its owner's: the folder's owner for a note made in their folder.
       const owner = folder !== undefined && kind === 'doc' && isHexId(folder) ? (this.metas.get(folderRoom(folder))?.owner ?? client.account) : client.account
@@ -707,6 +719,12 @@ export class RoomHub {
       if (snapshot && snapshotData) client.sendSnapshot(room, snapshot.uptoSeq, snapshot.epoch, snapshotData)
       const frames = snapshot ? open.log.frames.filter((frame) => frame.seq > after && frame.seq >= access.fromSeq) : fresh.frames
       for (const frame of frames) client.sendFrame(room, frame)
+      // Access asked again after the wait: revoked meanwhile, the member stayed subscribed (audit 2, L9).
+      const still = this.access(open.log.meta, client.account)
+      if (!still || still === 'revoked') {
+        client.sendRevoked(room, 'access was revoked')
+        return
+      }
       // Frames still being written reach the subscriber once they are on the disk.
       client.sendCaughtUp(room, open.log.writtenSeq, open.log.meta.epoch, this.tieOf(room, open.log.meta.epoch))
       open.subscribers.add(client)
@@ -721,6 +739,23 @@ export class RoomHub {
    * text one writes into a shared note does - and lives in the owner's vault.
    * Its first epoch is the folder's current one.
    */
+  /** A room nothing was written into, shared with nobody, in no folder. */
+  private unused(open: OpenRoom): boolean {
+    const meta = open.log.meta
+    return open.log.headSeq === 0 && meta.snapshots.length === 0 && Object.keys(meta.members).length === 0 && meta.folder === undefined
+  }
+
+  /** A room gone, its files with it - only one nothing was written into (`unused`). */
+  private async dropRoom(room: string, open: OpenRoom): Promise<void> {
+    for (const subscriber of open.subscribers) subscriber.sendDenied(room, 'missing')
+    open.subscribers.clear()
+    if (open.idleTimer) clearTimeout(open.idleTimer)
+    this.rooms.delete(room)
+    this.metas.delete(room)
+    this.heads.delete(room)
+    await open.log.remove()
+  }
+
   private claimInFolder(client: RoomClient, room: string, folderId: string): Promise<OpenRoom> | null {
     const folder = isHexId(folderId) ? this.metas.get(folderRoom(folderId)) : undefined
     if (!folder || this.gone.has(folder.owner)) return null
@@ -922,7 +957,11 @@ export class RoomHub {
     let fromSeq: number
 
     if (request.withHistory) {
+      if (meta.epoch >= HISTORY_EPOCHS_MAX) throw new HubError(400, 'the note went through too many epochs to be shared with its history; share it without')
       const keys = epochKeysOf(request.keys, meta.epoch, 'the keys')
+      const sealedBytes = Object.values(keys).reduce((sum, sealed) => sum + String(sealed).length, 0)
+      if (this.storage && !(await this.fits(owner, sealedBytes))) throw new HubError(507, 'the account has used up its storage')
+      this.grew(owner, sealedBytes)
       for (let epoch = 0; epoch <= meta.epoch; epoch += 1) {
         if (keys[String(epoch)] === undefined) throw new HubError(400, `the key of epoch ${epoch} is missing`)
       }
@@ -1516,8 +1555,9 @@ export class RoomHub {
     }
     if ((meta.epochSince ?? 0) > head) console.warn(`[mycel] ${room}: its epoch began after #${meta.epochSince}, but its head is #${head}`)
     const data = fromBase64(request.data, 'the snapshot')
+    // Within the quota like every write: counted only, a starting point per seq filled the disk past it (audit 2, M7).
+    if (this.storage && !(await this.fits(owner, data.length))) throw new HubError(507, 'the account has used up its storage')
     await open.log.addJoinSnapshot(uptoSeq, request.epoch, data)
-    // Counted, never refused: a share without its starting point reads nothing.
     this.grew(owner, data.length)
   }
 
@@ -2041,6 +2081,11 @@ export class RoomHub {
         if (typeof sealed !== 'string' || sealed.length === 0 || sealed.length > SEALED_MAX) throw new HubError(400, `the new key for ${member} is missing`)
       }
     }
+
+    // Written anew, the log may not grow past the quota: frames made larger were never counted (audit 2, M7).
+    const grown =
+      [...frames.values(), ...snapshots.values()].reduce((sum, data) => sum + data.length, 0) - open.log.frames.reduce((sum, frame) => sum + frame.data.length, 0)
+    if (this.storage && grown > 0 && !(await this.fits(account, grown))) throw new HubError(507, 'the account has used up its storage')
 
     // From here on nothing is awaited until the epoch moved.
     if (open.log.headSeq !== request.headSeq || meta.epoch !== request.epoch) throw new HubError(409, 'the room moved on; read it again')

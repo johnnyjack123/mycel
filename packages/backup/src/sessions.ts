@@ -35,6 +35,12 @@ export interface SessionRequest {
 }
 
 const FAILURE_WINDOW_MS = 60_000
+/**
+ * Invitations connecting now, and those that connected: two sessions on one invitation at once each found it unspent,
+ * and it paired two vaults (audit 2, L8).
+ */
+const inviting = new Set<string>()
+const invited = new Set<string>()
 const failures: number[] = []
 
 /** Failed handshakes are answered more and more slowly: guessing a secret takes a request each. */
@@ -151,10 +157,17 @@ export function serveSession(session: IncomingSession, deps: SessionDeps): void 
     if (method === 'info') return service.info()
     if (route.kind === 'invite') {
       if (method !== 'connect') throw new Error('an invitation connects a vault, and does nothing else')
-      if (spent) throw new Error('this invitation was used')
+      if (spent || invited.has(route.inviteId) || inviting.has(route.inviteId)) throw new Error('this invitation was used')
       if (route.expiresAt <= deps.now()) throw new Error('this invitation ran out; ask for a new one')
       const grant = params.grant as BackupGrant
-      const connected = await service.connect(grant, route.label)
+      inviting.add(route.inviteId)
+      let connected: Awaited<ReturnType<typeof service.connect>>
+      try {
+        connected = await service.connect(grant, route.label)
+        invited.add(route.inviteId)
+      } finally {
+        inviting.delete(route.inviteId)
+      }
       spent = true
       await deps.paired(connected.pairing.routeId)
       const answer: BackupConnected = {

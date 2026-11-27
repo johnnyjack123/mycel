@@ -146,6 +146,7 @@ export class AccountError extends Error {
 }
 
 const HEX_ID = /^[0-9a-f]{32}$/
+const VAULTS_PER_ACCOUNT = 100
 
 /**
  * A record's own entry under a key someone sent, or nothing. `replaces: "__proto__"` found
@@ -212,8 +213,10 @@ function recoveryOf(record: unknown, now: number): StoredRecovery {
 }
 
 /** Why a deleted vault cannot be taken back by `by` now; null when it can. */
-export function restoreRefusal(deleted: StoredDeletedVault, by: 'owner' | 'admin'): string | null {
+export function restoreRefusal(deleted: StoredDeletedVault, by: 'owner' | 'admin', now = Date.now()): string | null {
   if (deleted.purgedAt !== undefined || !deleted.wrappedKey) return 'its data is gone already'
+  // Its time up, the sweep may be clearing it this moment: restored meanwhile, a vault came back whose data was gone (audit 2, L9).
+  if (deleted.purgeAt <= now) return 'its data is being deleted'
   if (deleted.replacedBy) return 'a vault was made anew in its place'
   if (deleted.keysReplaced) return "the account's keys were replaced since; nothing opens what it holds"
   if (deleted.by === 'admin' && by === 'owner') return "the server's admin deleted it; only the admin takes it back"
@@ -426,6 +429,8 @@ export class AccountStore {
       for (const other of Object.values(data.accounts)) {
         if (other.accountId !== accountId && (other.vaults[vaultId] || other.deletedVaults?.[vaultId])) throw new AccountError(409, 'that vault id is taken')
       }
+      // A bound on what one account keeps in memory and on the disk for its vaults (audit 2, L9).
+      if (Object.keys(account.vaults).length >= VAULTS_PER_ACCOUNT) throw new AccountError(409, `an account keeps at most ${VAULTS_PER_ACCOUNT} vaults`)
       account.vaults[vaultId] = { sealedName: sealedName as string, wrappedKey: wrappedKey as string, createdAt: Date.now() }
       const replaced = own(account.deletedVaults, replaces)
       if (replaced && !replaced.replacedBy) replaced.replacedBy = vaultId

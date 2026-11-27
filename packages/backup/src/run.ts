@@ -433,7 +433,7 @@ export async function runBackup(job: Job, options: RunnerOptions, control: RunCo
 
   try {
     for (const destination of job.config.destinations) {
-      const target = { destination, workRoot, folder, notes, streamed, digest, whole, layOut }
+      const target = { destination, workRoot, folder, notes, streamed, digest, whole, layOut, vaultTag: `vault-${grant.vaultId}` }
       report.destinations.push(await backUpTo(target, state, cache, keys, options, now, forgetting, watch))
     }
   } catch (error) {
@@ -503,10 +503,15 @@ interface Target {
   /** `layoutDigest` of everything. */
   whole: string
   layOut: () => Promise<void>
+  /**
+   * The vault's own tag on every snapshot, and what the retention forgets by: two vaults backed up into one cloud
+   * repository were one group to `forget`, and one vault's backups went for the other's (audit 2, L8).
+   */
+  vaultTag: string
 }
 
 async function backUpTo(
-  { destination, workRoot, folder, notes, streamed, digest, whole, layOut }: Target,
+  { destination, workRoot, folder, notes, streamed, digest, whole, layOut, vaultTag }: Target,
   state: JobState,
   cache: Cache,
   keys: VaultKeys,
@@ -534,7 +539,7 @@ async function backUpTo(
     await layOut()
     await restic.ensureRepo(repo)
     watch.lap(`${destination.id}: opened`)
-    const notesSummary = await restic.backupFolder(repo, workRoot, topLevel(folder, notes), [TAG, 'notes'])
+    const notesSummary = await restic.backupFolder(repo, workRoot, topLevel(folder, notes), [TAG, 'notes', vaultTag])
     result.notesSnapshot = notesSummary.snapshotId
     watch.lap(`${destination.id}: notes`)
 
@@ -545,7 +550,7 @@ async function backUpTo(
       result.filesUnchanged = true
       result.filesSnapshot = known.filesSnapshot
     } else {
-      const filesSummary = await restic.backupStream(repo, tarName, [TAG, 'files'], async (stdin) => {
+      const filesSummary = await restic.backupStream(repo, tarName, [TAG, 'files', vaultTag], async (stdin) => {
         const tar = new TarWriter(stdin)
         for (const file of streamed) await tar.file(file.path, sizeOf(file), file.mtime, chunksOf(file, cache, keys))
         await tar.end()
@@ -558,7 +563,7 @@ async function backUpTo(
     watch.lap(`${destination.id}: files`)
 
     if (destination.keep && !control.keepAll) {
-      await restic.forget(repo, destination.keep)
+      await restic.forget(repo, destination.keep, vaultTag)
       if (now() - (known.pruneAt ?? 0) >= (options.pruneMs ?? WEEK_MS)) {
         await restic.prune(repo)
         known.pruneAt = now()
