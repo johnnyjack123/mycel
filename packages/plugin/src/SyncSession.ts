@@ -334,7 +334,8 @@ export class SyncSession {
         unknownMembers: (accounts, place) => host.unknownMembers(accounts, place),
         roles: {
           get: (room, account) => accountSettings.shareRole(room, account),
-          set: (room, account, role) => accountSettings.setShareRole(room, account, role)
+          set: (room, account, role) => accountSettings.setShareRole(room, account, role),
+          written: (room) => accountSettings.othersMayHaveWritten(room)
         },
         approveFiles: (docId) => this.sharedFiles?.approve(docId),
         claimLinks: async (docId) => this.linkClaims?.claimAll(docId),

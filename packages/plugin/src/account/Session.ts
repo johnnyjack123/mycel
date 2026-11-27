@@ -26,6 +26,7 @@ import {
   importPrivateKey,
   importSigningKey,
   newRecoverySecret,
+  publicKeyOf,
   normalizeName,
   randomBytes,
   recoveryKeys,
@@ -38,6 +39,18 @@ import {
   type Bytes
 } from '@mycel/shared/crypto'
 import { ApiError, type ConnectApi } from './api.js'
+import { log } from '../log.js'
+
+/**
+ * The account's own public key, from its private key: never the server's word for it. A server
+ * handing the device a public key of its own made friend codes vouch for that key, and it read
+ * what contacts shared (audit 2, C2). A bundle naming another key is told in the log.
+ */
+async function ownPublicKey(pkcs8: Bytes, kind: 'identity' | 'signing', named: string): Promise<Bytes> {
+  const own = await publicKeyOf(pkcs8, kind)
+  if (toBase64(own) !== named) log.error(`the server named ${kind === 'identity' ? 'an identity' : 'a signing'} key for this account that is not its own; this device uses its own`)
+  return own
+}
 
 // Signing in without the server ever learning a name. The device derives the
 // salt from the server's public id and the name, stretches the password with
@@ -501,12 +514,13 @@ export class Session {
   }
 
   private async unlockWith(bundle: AccountBundle, masterKey: Bytes, username: string): Promise<Unlocked> {
-    const privateKey = await importPrivateKey(await unwrapSecret(masterKey, bundle.wrappedPrivateKey, PRIVATE_KEY))
+    const privatePkcs8 = await unwrapSecret(masterKey, bundle.wrappedPrivateKey, PRIVATE_KEY)
+    const privateKey = await importPrivateKey(privatePkcs8)
     const accountSecret = await unwrapSecret(masterKey, bundle.wrappedAccountSecret, ACCOUNT_SECRET)
     const unlocked: Unlocked = {
       accountId: bundle.accountId,
       username,
-      publicKey: fromBase64(bundle.publicKey),
+      publicKey: await ownPublicKey(privatePkcs8, 'identity', bundle.publicKey),
       privateKey,
       masterKey,
       accountSecret,
@@ -609,7 +623,7 @@ export class Session {
 
   private async openSigningKey(bundle: AccountBundle, accountSecret: Bytes): Promise<Unlocked['signing']> {
     const pkcs8 = await unwrapSecret(await accountKeys.signingWrap(accountSecret), bundle.wrappedSigningKey, SIGNING_KEY)
-    return { privateKey: await importSigningKey(pkcs8), publicKey: fromBase64(bundle.signingPublicKey) }
+    return { privateKey: await importSigningKey(pkcs8), publicKey: await ownPublicKey(pkcs8, 'signing', bundle.signingPublicKey) }
   }
 
   /**

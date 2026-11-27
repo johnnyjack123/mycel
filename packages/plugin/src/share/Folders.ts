@@ -1612,7 +1612,7 @@ export class Folders {
     }
     // Shared from here with the files its notes link outside it: those the links show now go along.
     if (opened.index.linkedFiles) {
-      for (const { docId, entry } of this.index.live()) if (inside(entry.path, path)) this.sharing.approveFilesOf(docId)
+      for (const { docId, entry } of this.index.live()) if (inside(entry.path, path)) this.sharing.approveFilesOf(docId, folderId)
     }
     const title = await this.keys.sealTitle(folderId, opened.index.name || baseName(path), recipientKey)
     const wasWriter = this.sharing.roleOf(folderRoom(folderId), account) === 'write'

@@ -59,6 +59,10 @@ try {
     refused = error instanceof Error ? error.message : String(error)
   })
   check(refused !== null, "EXPECTED SAFE: the contact's device refuses a code whose keys the server chose (FAILS = the fingerprint vouched for the server's key)", refused)
+  if (refused !== null) {
+    // The attack ends here (fixed, 0.9.33): no contact is made under the server's key.
+    check(contact.contacts?.isContact(victim.accountId) !== true, 'EXPECTED SAFE: the contact did not take the victim for a contact under a key the server chose')
+  } else {
   check(await eventually(() => contact.contacts?.isContact(victim.accountId) === true, 15_000), 'the contact now counts the victim as a contact')
   const pinned = contact.settings?.contact(victim.accountId)?.publicKey
   check(pinned !== toBase64(servers.publicKey), "EXPECTED SAFE: the contact pins the victim's own key (FAILS = it pinned the server's)", { pinned })
@@ -96,6 +100,7 @@ try {
   }, 15_000)
   console.log('      what the server reads of the shared note:', JSON.stringify(read))
   check(read === null || read === '', 'EXPECTED SAFE: the server cannot read a note a contact shares with the victim (FAILS = finding reproduced)')
+  }
 } catch (error) {
   check(false, 'the reproduction ran to the end', error instanceof Error ? error.stack : String(error))
 } finally {

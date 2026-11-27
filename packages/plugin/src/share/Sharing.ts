@@ -64,6 +64,8 @@ export interface SharingOptions {
   roles: {
     get(room: string, account: string): ShareRole | null
     set(room: string, account: string, role: ShareRole | null): void
+    /** Whether anyone but this account may have written in the room (`AccountSettings.othersMayHaveWritten`). */
+    written?(room: string): boolean
   }
   /** A note is shared from here with its files: the files its links show now may go along (`SharedFiles.approve`). */
   approveFiles?: (docId: string) => void
@@ -311,13 +313,21 @@ export class Sharing {
       throw new Error('The server is not reachable.')
     }
     setAttachmentsShared(handle.doc, shared)
-    if (shared) this.options.approveFiles?.(docId)
+    if (shared && !this.othersMayHaveWritten(docId)) this.options.approveFiles?.(docId)
     log.info(`${entry.path}: its files ${shared ? 'go along with it' : 'no longer go along with it'}`)
   }
 
-  /** The files a note of this vault's links now go along with it - the folder sharing it says so. */
-  approveFilesOf(docId: string): void {
+  /** The files a note of this vault's links now go along with it - the folder sharing it says so; only while nobody else could write in it. */
+  approveFilesOf(docId: string, folderId?: string): void {
+    if (this.othersMayHaveWritten(docId) || (folderId !== undefined && this.options.roles.written?.(folderRoom(folderId)) === true)) return
     this.options.approveFiles?.(docId)
+  }
+
+  /** Whether anyone but this account may have written in the note - given it, or its folder, to write in. */
+  othersMayHaveWritten(docId: string): boolean {
+    const entry = this.store.entry(docId)
+    if (entry?.folder && this.options.roles.written?.(folderRoom(entry.folder)) === true) return true
+    return this.options.roles.written?.(docRoom(docId)) === true
   }
 
   /**
@@ -347,6 +357,8 @@ export class Sharing {
     const title = await this.keys.sealTitle(docId, landing || titleOf(entry.path), recipientKey)
     const room = docRoom(docId)
     const wasWriter = this.roleOf(room, account) === 'write'
+    // Before this share records a role: what the note holds is its owner's word only while nobody else could write in it.
+    const ownWordOnly = !this.othersMayHaveWritten(docId)
 
     for (let attempt = 0; ; attempt += 1) {
       const members = await this.api.members(docId)
@@ -399,8 +411,11 @@ export class Sharing {
     if (wasWriter && role === 'read' && withHistory) await this.rotate(docId)
     this.store.share(docId, true)
     if (withAttachments !== undefined && !handle.pristine) setAttachmentsShared(handle.doc, withAttachments)
-    if (withAttachments) this.options.approveFiles?.(docId)
-    await this.options.claimLinks?.(docId).catch((error: unknown) => log.warn(`${entry.path}: naming its links as this account's failed`, error))
+    // Shared again, a writer's unclaimed link was claimed and its file of this vault sent to them (audit 2, H2):
+    // once anyone else could write here, only links this account claimed take their files along.
+    if (withAttachments && ownWordOnly) this.options.approveFiles?.(docId)
+    if (ownWordOnly) await this.options.claimLinks?.(docId).catch((error: unknown) => log.warn(`${entry.path}: naming its links as this account's failed`, error))
+    else log.info(`${entry.path}: someone else could write in it, so only the links this account claimed are its own`)
     log.info(
       `${entry.path}: shared with ${account} to ${role}, ${withHistory ? 'with' : 'without'} history${withAttachments ? ', with its files' : ''}`
     )
@@ -452,6 +467,8 @@ export class Sharing {
     for (const { docId, entry } of this.store.allEntries()) {
       if (entry.owner || entry.deletedAt || (!entry.shared && !entry.folder)) continue
       const room = docRoom(docId)
+      // Only what this account gave them, as `memberKeys`: the server's list alone had their new key sealed every note it named (audit 2, M11).
+      if (this.options.roles.get(room, account) === null) continue
       let epochs: number[]
       try {
         epochs = (await this.api.sealedEpochs(room)).members[account] ?? []

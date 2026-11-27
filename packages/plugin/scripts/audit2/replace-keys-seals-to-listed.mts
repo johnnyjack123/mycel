@@ -68,7 +68,13 @@ try {
   }
 
   await victim.shutdown()
-  await victim.replaceKeys('an entirely new horse, battery and staple')
+  // Fixed (0.9.33): the replacement stops at a holder this account never gave the note to, sealing nothing to them.
+  const stopped = await victim.replaceKeys('an entirely new horse, battery and staple').then(
+    () => null,
+    (error: unknown) => (error instanceof Error ? error.message : String(error))
+  )
+  console.log('      the replacement:', stopped ?? 'went through')
+  check(stopped === null || stopped.includes('never shared with them'), 'EXPECTED SAFE: the replacement goes through, or stops at the stranger the server listed', stopped)
   const sealed = captured ? Object.entries((captured as { keys: Record<string, string> }).keys) : []
   console.log(`      keys of the private note sealed to the contact: ${sealed.length}`)
   let read = ''

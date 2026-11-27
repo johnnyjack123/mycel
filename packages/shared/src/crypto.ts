@@ -395,6 +395,29 @@ export function importSigningKey(pkcs8: Bytes): Promise<CryptoKey> {
   return crypto.subtle.importKey('pkcs8', pkcs8, ECDSA, false, ['sign'])
 }
 
+/**
+ * The public key that belongs to a private one, raw: what the account's own public keys are,
+ * whatever the server's copy of the account says. Taken from the server's bundle, a server could
+ * hand a device a key of its own; friend codes then vouched for it, and the server read what
+ * contacts shared (audit 2, C2).
+ */
+export async function publicKeyOf(pkcs8: Bytes, kind: 'identity' | 'signing'): Promise<Bytes> {
+  const key = await crypto.subtle.importKey('pkcs8', pkcs8, kind === 'identity' ? ECDH : ECDSA, true, kind === 'identity' ? ['deriveBits'] : ['sign'])
+  const jwk = await crypto.subtle.exportKey('jwk', key)
+  if (!jwk.x || !jwk.y) throw new Error('the private key names no public key')
+  const coordinate = (text: string): Bytes => {
+    const base64 = text.replace(/-/g, '+').replace(/_/g, '/')
+    return fromBase64(base64 + '='.repeat((4 - (base64.length % 4)) % 4))
+  }
+  const x = coordinate(jwk.x)
+  const y = coordinate(jwk.y)
+  const raw = new Uint8Array(1 + x.length + y.length)
+  raw[0] = 4
+  raw.set(x, 1)
+  raw.set(y, 1 + x.length)
+  return raw
+}
+
 const verifyKeys = new Map<string, Promise<CryptoKey>>()
 
 function importVerifyKey(raw: Bytes): Promise<CryptoKey> {
